@@ -1791,11 +1791,13 @@
             const deflated = new Uint8Array(result.deflated);
             const dp = pdfDoc.context.obj({ Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: result.w });
             img.contents = deflated;
-            img.dict.set(Nm('ColorSpace'), Nm('DeviceGray'));
-            img.dict.set(Nm('Length'),     PDFLib.PDFNumber.of(deflated.length));
-            img.dict.set(Nm('Width'),      PDFLib.PDFNumber.of(result.w));
-            img.dict.set(Nm('Height'),     PDFLib.PDFNumber.of(result.h));
-            img.dict.set(Nm('DecodeParms'), dp);
+            img.dict.set(Nm('Filter'),           Nm('FlateDecode'));
+            img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
+            img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
+            img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(result.w));
+            img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(result.h));
+            img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(deflated.length));
+            img.dict.set(Nm('DecodeParms'),      dp);
             img.dict.delete(Nm('SMask')); img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
             img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
             img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
@@ -1811,15 +1813,19 @@
         const deflated = new Uint8Array(result.deflated);
         const dp = pdfDoc.context.obj({ Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: w });
         img.contents = deflated;
-        img.dict.set(Nm('ColorSpace'), Nm('DeviceGray'));
-        img.dict.set(Nm('Length'),     PDFLib.PDFNumber.of(deflated.length));
-        img.dict.set(Nm('DecodeParms'), dp);
+        img.dict.set(Nm('Filter'),           Nm('FlateDecode'));   // 배열 형태 [/FlateDecode] → 이름으로 정규화
+        img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
+        img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
+        img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(w));
+        img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(h));
+        img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(deflated.length));
+        img.dict.set(Nm('DecodeParms'),      dp);
         img.dict.delete(Nm('SMask'));
         img.dict.delete(Nm('Mask'));
         img.dict.delete(Nm('ImageMask'));
         img.dict.delete(Nm('Intent'));
         img.dict.delete(Nm('Alternates'));
-        img.dict.delete(Nm('Decode'));       // RGB/CMYK Decode 배열 제거 (채널 수 불일치 → Acrobat 오류)
+        img.dict.delete(Nm('Decode'));
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
       } catch(e) { console.warn('Flate 이미지 변환 실패:', e); }
