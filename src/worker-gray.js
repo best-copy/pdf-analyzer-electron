@@ -335,7 +335,11 @@ self.onmessage = async function(e) {
       if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = lut[gray[i]]; }
       const predicted  = applyPNGPredictorGray(gray, iw, ih);
       const deflated   = pako.deflate(predicted, { level: 6 });
-      self.postMessage({ id, result: { deflated: deflated.buffer, w: iw, h: ih } }, [deflated.buffer]);
+      // pako는 단일 청크일 때 내부 버퍼의 subarray를 반환할 수 있음
+      // → .buffer.byteLength > .length 인 경우 PDF Length가 잘못 기록되어 파일이 열리지 않음
+      // → slice()로 정확한 크기의 새 버퍼 생성
+      const deflatedBuf = deflated.buffer.slice(deflated.byteOffset, deflated.byteOffset + deflated.length);
+      self.postMessage({ id, result: { deflated: deflatedBuf, w: iw, h: ih } }, [deflatedBuf]);
 
     // ── FlateDecode RGB/CMYK → FlateDecode DeviceGray ──────────────────────
     } else if (type === 'flate2gray') {
@@ -376,7 +380,8 @@ self.onmessage = async function(e) {
       if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = lut[gray[i]]; }
       const predicted = applyPNGPredictorGray(gray, w, h);
       const deflated  = pako.deflate(predicted, { level: 6 });
-      self.postMessage({ id, result: { deflated: deflated.buffer, w, h } }, [deflated.buffer]);
+      const deflatedBuf = deflated.buffer.slice(deflated.byteOffset, deflated.byteOffset + deflated.length);
+      self.postMessage({ id, result: { deflated: deflatedBuf, w, h } }, [deflatedBuf]);
 
     // ── ICCBased FlateDecode → DeviceGray (PNG+iCCP → OffscreenCanvas ICC 보정) ──
     } else if (type === 'icc-flate2gray') {
@@ -421,7 +426,8 @@ self.onmessage = async function(e) {
       if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = lut[gray[i]]; }
       const predicted = applyPNGPredictorGray(gray, bw, bh);
       const deflated  = pako.deflate(predicted, { level: 6 });
-      self.postMessage({ id, result: { deflated: deflated.buffer, w: bw, h: bh } }, [deflated.buffer]);
+      const deflatedBuf = deflated.buffer.slice(deflated.byteOffset, deflated.byteOffset + deflated.length);
+      self.postMessage({ id, result: { deflated: deflatedBuf, w: bw, h: bh } }, [deflatedBuf]);
 
     // ── 컨텐츠 스트림 색상 연산자 치환 ─────────────────────────────────────
     } else if (type === 'stream-grayify') {
