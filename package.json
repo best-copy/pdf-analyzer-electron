@@ -1,0 +1,30 @@
+{
+  "name": "pdf-analyzer",
+  "version": "1.0.0",
+  "description": "PDF 컬러/흑백 분석 및 변환",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.ilchung.pdf-analyzer",
+    "productName": "PDF 분석기",
+    "asar": false,
+    "win": {
+      "target": [{ "target": "dir" }]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.0.0"
+  }
+}
