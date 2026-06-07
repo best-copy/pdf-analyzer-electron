@@ -1443,17 +1443,153 @@
           const sn  = sub ? (sub.encodedName || '') : '';
 
           if (sn === '/Image') {
-            await convertXObjectImageToGrayscale(pdfDoc, xobj);
+            await convertXObjectImageToGrayscale(pdfDoc, xobj, resDict);
           } else if (sn === '/Form') {
             // Form 콘텐츠 스트림 변환
             await processContentStream(xobj);
+            // Transparency Group인 경우 Group/CS → DeviceGray
+            // (합성 시 기준 색공간이 남아 있으면 레이어 겹침에서 칼라 잔류)
+            try {
+              const grpRef = xobj.dict.get(Nm('Group'));
+              if (grpRef) {
+                const grp = pdfDoc.context.lookup(grpRef);
+                if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
+              }
+            } catch(e) {}
             // Form 자신의 Resources도 재귀 처리 (중첩 이미지 대응)
             const formResRef = xobj.dict.get(Nm('Resources'));
             if (formResRef) {
               const formRes = pdfDoc.context.lookup(formResRef);
               await processXObjects(formRes, depth + 1);
+              processShading(formRes);
             }
           }
+        }
+      };
+
+      // ── Shading 그라데이션 처리 ─────────────────────────────────────────────────
+      // sh 연산자로 참조되는 Shading 리소스를 DeviceGray로 변환
+      // Type 1-3 (function-based): ColorSpace + Function C0/C1 변환
+      // Type 4-7 (mesh): 스트림 내 바이너리 색상 데이터 — 미구현 (복잡)
+      const convertShadingFunc = (funcObj) => {
+        if (!funcObj || !funcObj.get) return;
+        try {
+          const ftObj = funcObj.get(Nm('FunctionType'));
+          const ft = ftObj != null ? +(ftObj.numberValue ?? ftObj.asNumber?.() ?? -1) : -1;
+          if (ft === 2) {
+            // Type 2 지수함수: C0/C1 → 그레이 값으로 교체
+            const getColorArr = (key) => {
+              const ref = funcObj.get(Nm(key));
+              if (!ref) return null;
+              const arr = pdfDoc.context.lookup(ref);
+              if (!arr || typeof arr.size !== 'function') {
+                const n = ref.numberValue ?? ref.asNumber?.();
+                return n != null ? [+n] : null;
+              }
+              return Array.from({ length: arr.size() }, (_, i) => {
+                const v = pdfDoc.context.lookup(arr.get(i));
+                return v != null ? +(v.numberValue ?? v.asNumber?.() ?? 0) : 0;
+              });
+            };
+            const c0 = getColorArr('C0') || [0];
+            const c1 = getColorArr('C1') || [1];
+            const toGray = (ch) => {
+              if (ch.length >= 4) {
+                const [c, m, y, k] = ch;
+                return 0.299*(1-c)*(1-k) + 0.587*(1-m)*(1-k) + 0.114*(1-y)*(1-k);
+              } else if (ch.length >= 3) {
+                return 0.299*ch[0] + 0.587*ch[1] + 0.114*ch[2];
+              }
+              return ch[0];
+            };
+            const g0 = Math.max(0, Math.min(1, toGray(c0)));
+            const g1 = Math.max(0, Math.min(1, toGray(c1)));
+            funcObj.set(Nm('C0'), pdfDoc.context.obj([g0]));
+            funcObj.set(Nm('C1'), pdfDoc.context.obj([g1]));
+            try { funcObj.set(Nm('Range'), pdfDoc.context.obj([0, 1])); } catch(e) {}
+          } else if (ft === 3) {
+            // Type 3 stitching: 하위 함수 배열 재귀 처리
+            const fnsRef = funcObj.get(Nm('Functions'));
+            if (!fnsRef) return;
+            const fns = pdfDoc.context.lookup(fnsRef);
+            if (!fns || typeof fns.size !== 'function') return;
+            for (let i = 0; i < fns.size(); i++) {
+              try { convertShadingFunc(pdfDoc.context.lookup(fns.get(i))); } catch(e) {}
+            }
+          }
+        } catch(e) {}
+      };
+
+      const processShading = (resDict) => {
+        if (!resDict) return;
+        try {
+          const shRef = resDict.get(Nm('Shading'));
+          if (!shRef) return;
+          const shDict = pdfDoc.context.lookup(shRef);
+          if (!shDict || typeof shDict.entries !== 'function') return;
+          for (const [, shdRef] of shDict.entries()) {
+            try {
+              const shd = pdfDoc.context.lookup(shdRef);
+              // Shading은 딕셔너리이거나 스트림(dict 속성 보유) — 공통 get() 추출
+              const shdGet = shd && (shd.get ? shd.get.bind(shd) : shd.dict?.get.bind(shd.dict));
+              const shdSet = shd && (shd.set ? shd.set.bind(shd) : shd.dict?.set.bind(shd.dict));
+              if (!shdGet || !shdSet) continue;
+              const typeRef = shdGet(Nm('ShadingType'));
+              const stype = typeRef ? +(typeRef.numberValue ?? typeRef.asNumber?.() ?? 0) : 0;
+              if (stype >= 1 && stype <= 3) {
+                shdSet(Nm('ColorSpace'), Nm('DeviceGray'));
+                const funcRef = shdGet(Nm('Function'));
+                if (funcRef) convertShadingFunc(pdfDoc.context.lookup(funcRef));
+              }
+            } catch(e) {}
+          }
+        } catch(e) {}
+      };
+
+      // ExtGState의 SMask Form XObject 처리
+      // gs 연산자로 참조되는 그래픽스 상태의 SMask는 별도 Form XObject(투명 마스크 그룹) 포함
+      // → 변환하지 않으면 투명도 합성(레이어 겹침) 시 칼라 잔류
+      const processExtGState = async (resDict, depth = 0) => {
+        if (!resDict || depth > 6) return;
+        const egRef = resDict.get(Nm('ExtGState'));
+        if (!egRef) return;
+        const egDict = pdfDoc.context.lookup(egRef);
+        if (!egDict || typeof egDict.entries !== 'function') return;
+        for (const [, gsRef] of egDict.entries()) {
+          try {
+            const gs = pdfDoc.context.lookup(gsRef);
+            if (!gs || !gs.get) continue;
+            const smRef = gs.get(Nm('SMask'));
+            if (!smRef || smRef.encodedName === '/None') continue;
+            const sm = pdfDoc.context.lookup(smRef);
+            if (!sm || !sm.get) continue;
+            const gRef = sm.get(Nm('G'));
+            if (!gRef) continue;
+            const refKey = gRef.objectNumber != null
+              ? `${gRef.objectNumber}_${gRef.generationNumber ?? 0}` : null;
+            if (refKey && processedObjs.has(refKey)) continue;
+            if (refKey) processedObjs.add(refKey);
+            const gForm = pdfDoc.context.lookup(gRef);
+            if (!gForm || !gForm.dict) continue;
+            // SMask 투명도 그룹 색공간 → DeviceGray
+            try {
+              const grpRef = gForm.dict.get(Nm('Group'));
+              if (grpRef) {
+                const grp = pdfDoc.context.lookup(grpRef);
+                if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
+              }
+            } catch(e) {}
+            // SMask Form 콘텐츠 스트림 변환
+            await processContentStream(gForm);
+            // SMask Form 내부 리소스 재귀 처리
+            const fResRef = gForm.dict.get(Nm('Resources'));
+            if (fResRef) {
+              const fRes = pdfDoc.context.lookup(fResRef);
+              await processXObjects(fRes, depth + 1);
+              await processExtGState(fRes, depth + 1);
+              processShading(fRes);
+            }
+          } catch(e) {}
         }
       };
 
@@ -1470,6 +1606,13 @@
                   const csName = typeof csNameObj === 'string' ? csNameObj
                     : (csNameObj.encodedName || String(csNameObj));
                   const csArr = pdfDoc.context.lookup(csValRef);
+                  // Pattern 색공간: cs/CS 연산자 제거 금지 표시
+                  if (csArr && typeof csArr.size === 'function') {
+                    const csType0 = (pdfDoc.context.lookup(csArr.get(0)))?.encodedName || '';
+                    if (csType0 === '/Pattern') { csGrayMap[csName] = { type: 'Pattern' }; continue; }
+                  } else if (csArr && csArr.encodedName === '/Pattern') {
+                    csGrayMap[csName] = { type: 'Pattern' }; continue;
+                  }
                   if (!csArr || typeof csArr.size !== 'function' || csArr.size() < 4) continue;
                   const csType = (pdfDoc.context.lookup(csArr.get(0)))?.encodedName || '';
                   if (csType !== '/Separation') continue;
@@ -1524,6 +1667,21 @@
       // ② XObject 리소스 처리 (Resources 상속 탐색 + Form XObject 재귀 포함)
       await processXObjects(resDict);
 
+      // ② ExtGState SMask Form XObject 처리 (레이어 합성 투명도)
+      await processExtGState(resDict);
+
+      // ② Shading 그라데이션 처리 (sh 연산자 참조 리소스)
+      processShading(resDict);
+
+      // ② 페이지 자체의 투명도 그룹 색공간 → DeviceGray
+      try {
+        const pageGrpRef = node.get(Nm('Group'));
+        if (pageGrpRef) {
+          const pageGrp = pdfDoc.context.lookup(pageGrpRef);
+          if (pageGrp && pageGrp.set) pageGrp.set(Nm('CS'), Nm('DeviceGray'));
+        }
+      } catch(e) {}
+
       // ③ 명명된 색공간 리소스 정리
       // Separation /All DeviceCMYK 등 비-그레이 색공간을 Resources.ColorSpace에서 제거
       // → 프린터 RIP이 리소스 딕셔너리를 스캔해서 칼라로 오인식하는 것을 방지
@@ -1533,16 +1691,41 @@
           if (csResRef) {
             const csResDict = pdfDoc.context.lookup(csResRef);
             if (csResDict && typeof csResDict.entries === 'function') {
+              // 변환 후에도 XObject가 여전히 참조 중인 색공간은 보존
+              // (변환 실패한 이미지의 색공간을 지우면 Acrobat 렌더링 오류 발생)
+              const stillUsedCSNames = new Set();
+              try {
+                const xRef2 = resDict.get(Nm('XObject'));
+                if (xRef2) {
+                  const xDict2 = pdfDoc.context.lookup(xRef2);
+                  if (xDict2 && typeof xDict2.entries === 'function') {
+                    for (const [, xObjRef2] of xDict2.entries()) {
+                      try {
+                        const xobj2 = pdfDoc.context.lookup(xObjRef2);
+                        if (!xobj2 || !xobj2.dict) continue;
+                        let cs2 = xobj2.dict.get(Nm('ColorSpace'));
+                        if (!cs2) continue;
+                        if (cs2.objectNumber != null) cs2 = pdfDoc.context.lookup(cs2);
+                        if (cs2 && cs2.encodedName) stillUsedCSNames.add(cs2.encodedName.replace(/^\//, ''));
+                      } catch(e2) {}
+                    }
+                  }
+                }
+              } catch(e2) {}
+
               const toDelete = [];
               for (const [csName, csValRef] of csResDict.entries()) {
+                // 아직 XObject에서 참조 중이면 보존
+                const keyStr = typeof csName === 'string' ? csName
+                  : (csName.encodedName || '').replace(/^\//, '');
+                if (stillUsedCSNames.has(keyStr)) continue;
                 try {
                   const csObj = pdfDoc.context.lookup(csValRef);
-                  // 직접 이름이거나 배열의 첫 요소로 색공간 종류 확인
                   const firstName = csObj && typeof csObj.size === 'function'
                     ? (pdfDoc.context.lookup(csObj.get(0))?.encodedName || '')
                     : (csObj?.encodedName || '');
-                  // DeviceGray / CalGray 이외는 모두 제거
-                  if (firstName !== '/DeviceGray' && firstName !== '/CalGray') {
+                  // DeviceGray / CalGray / Pattern 색공간은 보존
+                  if (firstName !== '/DeviceGray' && firstName !== '/CalGray' && firstName !== '/Pattern') {
                     toDelete.push(csName);
                   }
                 } catch(e) { toDelete.push(csName); }
@@ -1554,7 +1737,7 @@
       }
     }
 
-    async function convertXObjectImageToGrayscale(pdfDoc, img) {
+    async function convertXObjectImageToGrayscale(pdfDoc, img, resDict) {
       if (!img || !img.dict || !img.contents) return;
       const Nm = n => PDFLib.PDFName.of(n);
 
@@ -1588,7 +1771,7 @@
       if (fn === '/DCTDecode' || fn === '/DCT')
         await convertJpegXObjectToGrayscale(pdfDoc, img);
       else if (fn === '/FlateDecode' || fn === '/Fl')
-        await convertFlateXObjectToGrayscale(pdfDoc, img);
+        await convertFlateXObjectToGrayscale(pdfDoc, img, resDict);
       else if (fn === '/JPXDecode')
         await convertJpxXObjectToGrayscale(pdfDoc, img);
     }
@@ -1695,7 +1878,7 @@
       }
     }
 
-    async function convertFlateXObjectToGrayscale(pdfDoc, img) {
+    async function convertFlateXObjectToGrayscale(pdfDoc, img, resDict) {
       try {
         const Nm  = n => PDFLib.PDFName.of(n);
 
@@ -1705,6 +1888,26 @@
         // 간접 참조(PDFRef)라면 실제 객체로 해결
         if (csObj.objectNumber != null) {
           try { csObj = pdfDoc.context.lookup(csObj); } catch(e) { return; }
+        }
+
+        // 명명된 색공간 (예: /Cs1, /Cs2) → Resources.ColorSpace에서 실제 정의로 해결
+        // InDesign 등 전문 DTP 도구가 생성하는 PDF에서 흔히 사용됨
+        if (csObj.encodedName && resDict &&
+            !['/DeviceGray','/DeviceRGB','/DeviceCMYK','/CalGray','/CalRGB'].includes(csObj.encodedName)) {
+          try {
+            const csResRef = resDict.get(Nm('ColorSpace'));
+            if (csResRef) {
+              const csResDict = pdfDoc.context.lookup(csResRef);
+              if (csResDict) {
+                const csKey = Nm(csObj.encodedName.replace(/^\//, ''));
+                const realRef = csResDict.get(csKey);
+                if (realRef) {
+                  const resolved = pdfDoc.context.lookup(realRef);
+                  if (resolved) csObj = resolved; // 실제 색공간 배열/딕셔너리로 교체
+                }
+              }
+            }
+          } catch(e) {}
         }
         // 배열 형태 [/ICCBased ref] 또는 [/CalRGB dict] 처리
         let csn = '';

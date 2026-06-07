@@ -79,6 +79,111 @@ function buildDotGainLUT(gain) {
   return lut;
 }
 
+// ── 인라인 이미지(BI/EI) 바이트 레벨 전처리 ────────────────────────────────────
+// grayifyStream 이전에 실행 — RGB/CMYK 인라인 이미지를 DeviceGray로 변환
+// 바이트 배열 직접 처리로 string regex 오염 문제 완전 회피
+function preprocessInlineImages(raw, dotGain) {
+  const chunks = [];
+  let pos = 0;
+
+  while (pos < raw.length) {
+    // \nBI\n (0x0A 0x42 0x49 0x0A) 탐색
+    let biPos = -1;
+    for (let j = pos; j <= raw.length - 4; j++) {
+      if (raw[j] === 0x0A && raw[j+1] === 0x42 && raw[j+2] === 0x49 && raw[j+3] === 0x0A) {
+        biPos = j; break;
+      }
+    }
+    if (biPos < 0) { chunks.push(raw.slice(pos)); break; }
+
+    // BI 이전 바이트 그대로 추가 (\n 포함)
+    chunks.push(raw.slice(pos, biPos + 1));
+
+    // \nID\n (0x0A 0x49 0x44 0x0A) 탐색
+    let idPos = -1;
+    for (let j = biPos + 4; j <= raw.length - 4; j++) {
+      if (raw[j] === 0x0A && raw[j+1] === 0x49 && raw[j+2] === 0x44 && raw[j+3] === 0x0A) {
+        idPos = j; break;
+      }
+    }
+    if (idPos < 0) { chunks.push(raw.slice(biPos + 1)); break; }
+
+    // 딕셔너리 파싱 (biPos+4 ~ idPos)
+    const dictStr = decodeLatin1(raw.slice(biPos + 4, idPos));
+    const getNum = (s, ...keys) => { for (const k of keys) { const m = s.match(new RegExp('\\/' + k + '\\s+(\\d+)')); if (m) return +m[1]; } return 0; };
+    const getWord = (s, ...keys) => { for (const k of keys) { const m = s.match(new RegExp('\\/' + k + '\\s+\\/?([A-Za-z]+)')); if (m) return m[1]; } return ''; };
+
+    const w = getNum(dictStr, 'W', 'Width');
+    const h = getNum(dictStr, 'H', 'Height');
+    const bpc = getNum(dictStr, 'BPC', 'BitsPerComponent') || 8;
+    const csWord = getWord(dictStr, 'CS', 'ColorSpace');
+    const fWord  = getWord(dictStr, 'F', 'Filter');
+
+    const isRGB  = ['RGB','DeviceRGB','CalRGB'].includes(csWord);
+    const isCMYK = ['CMYK','DeviceCMYK'].includes(csWord);
+    const hasFilter = fWord !== '' && fWord !== 'None';
+    const channels  = isCMYK ? 4 : isRGB ? 3 : 1;
+    const dataStart = idPos + 4;
+
+    if (!hasFilter && (isRGB || isCMYK) && bpc === 8 && w > 0 && h > 0) {
+      // 비압축 RGB/CMYK → Gray 변환
+      const dataLen = w * h * channels;
+      const pix = raw.slice(dataStart, dataStart + dataLen);
+      const gray = new Uint8Array(w * h);
+      if (channels === 3) {
+        for (let pi = 0; pi < w * h; pi++)
+          gray[pi] = Math.round(0.299*pix[pi*3] + 0.587*pix[pi*3+1] + 0.114*pix[pi*3+2]);
+      } else {
+        for (let pi = 0; pi < w * h; pi++) {
+          const c=pix[pi*4]/255, m2=pix[pi*4+1]/255, y=pix[pi*4+2]/255, k=pix[pi*4+3]/255;
+          gray[pi] = Math.round(255*(0.299*(1-c)*(1-k) + 0.587*(1-m2)*(1-k) + 0.114*(1-y)*(1-k)));
+        }
+      }
+      if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let pi = 0; pi < gray.length; pi++) gray[pi] = lut[gray[pi]]; }
+
+      const newDict = encodeLatin1(dictStr.replace(/\/(CS|ColorSpace)\s+\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G'));
+      chunks.push(encodeLatin1('BI\n'));
+      chunks.push(newDict);
+      chunks.push(encodeLatin1('\nID\n'));
+      chunks.push(gray);
+
+      let nextPos = dataStart + dataLen;
+      if (nextPos + 2 < raw.length && raw[nextPos] === 0x0A && raw[nextPos+1] === 0x45 && raw[nextPos+2] === 0x49) {
+        chunks.push(encodeLatin1('\nEI')); pos = nextPos + 3;
+      } else { chunks.push(encodeLatin1('\nEI')); pos = nextPos; }
+
+    } else if (!hasFilter && w > 0 && h > 0 && bpc === 8) {
+      // 이미 그레이 또는 알 수 없는 CS — 그대로 통과 (바이너리 데이터 경계는 확정)
+      const dataLen = w * h * channels;
+      const nextPos = dataStart + dataLen;
+      chunks.push(raw.slice(biPos + 1, nextPos));
+      if (nextPos + 2 < raw.length && raw[nextPos] === 0x0A && raw[nextPos+1] === 0x45 && raw[nextPos+2] === 0x49) {
+        chunks.push(encodeLatin1('\nEI')); pos = nextPos + 3;
+      } else { chunks.push(encodeLatin1('\nEI')); pos = nextPos; }
+
+    } else {
+      // 필터 있음 또는 크기 불명 — heuristic EI 탐색 후 그대로 통과
+      let eiPos = dataStart;
+      while (eiPos < raw.length - 2) {
+        if (raw[eiPos] === 0x0A && raw[eiPos+1] === 0x45 && raw[eiPos+2] === 0x49) {
+          const after = (eiPos + 3 < raw.length) ? raw[eiPos+3] : 0;
+          if (after <= 0x20 || after === 0x51 || after === 0x71) break;
+        }
+        eiPos++;
+      }
+      chunks.push(raw.slice(biPos + 1, eiPos));
+      chunks.push(encodeLatin1('\nEI'));
+      pos = eiPos + 3;
+    }
+  }
+
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
 // ── 컨텐츠 스트림 색상 연산자 치환 ───────────────────────────────────────────
 function decodeLatin1(bytes) {
   let s = '';
@@ -137,9 +242,21 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
   let fillCS = null, strokeCS = null;
 
   const applyOps = seg => {
-    // /name cs, /name CS 색공간 지정 추적 (제거 전에 캡처)
-    seg = seg.replace(/\/(\w+)\s+cs(?=[\s\r\n]|$)/gm, (_, name) => { fillCS = '/' + name; return ''; });
-    seg = seg.replace(/\/(\w+)\s+CS(?=[\s\r\n]|$)/gm, (_, name) => { strokeCS = '/' + name; return ''; });
+    // /name cs, /name CS 색공간 지정
+    // Pattern 색공간은 제거하지 않음 (제거 시 /P0 SCN 등 패턴 호출이 오류 유발)
+    seg = seg.replace(/\/(\w+)\s+cs(?=[\s\r\n]|$)/gm, (_, name) => {
+      fillCS = '/' + name;
+      // csGrayMap 키는 '/' 포함 형태 (예: '/CS2') → '/' + name 으로 조회
+      const info = csGrayMap && csGrayMap['/' + name];
+      if (info && info.type === 'Pattern') return `/${name} cs`; // Pattern CS는 유지
+      return '';
+    });
+    seg = seg.replace(/\/(\w+)\s+CS(?=[\s\r\n]|$)/gm, (_, name) => {
+      strokeCS = '/' + name;
+      const info = csGrayMap && csGrayMap['/' + name];
+      if (info && info.type === 'Pattern') return `/${name} CS`; // Pattern CS는 유지
+      return '';
+    });
     // rg/RG (RGB)
     seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}rg(?=[\\s\\r\\n]|$)`, 'gm'),
       (_, r, g, b) => `${lum(r,g,b)} g`);
@@ -189,6 +306,11 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
     return seg;
   };
 
+  // BI 딕셔너리에서 숫자/이름 파싱 헬퍼
+  const biGetNum = (d, ...keys) => { for (const k of keys) { const m = d.match(new RegExp('\\/' + k + '\\s+(\\d+)')); if (m) return +m[1]; } return 0; };
+  const biGetCS  = (d) => { const m = d.match(/\/(CS|ColorSpace)\s+\/(\w+)/); return m ? '/' + m[2] : ''; };
+  const biGetF   = (d) => { const m = d.match(/\/(F(?:ilter)?)\s+\/(\w+)/); return m ? '/' + m[2] : ''; };
+
   let result = '', i = 0, segStart = 0;
   while (i < s.length) {
     const ch = s[i];
@@ -210,6 +332,73 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
         result += s.slice(i, end + 1);
         i = end + 1; segStart = i;
       } else { i++; }
+    } else if (ch === 'B' && s[i+1] === 'I' && (s[i+2] === '\n' || s[i+2] === '\r') &&
+               (i === 0 || s[i-1] === '\n' || s[i-1] === '\r')) {
+      // ── 인라인 이미지 (BI...ID...EI) ──────────────────────────────────────
+      // 바이너리 픽셀 데이터가 regex에 오염되지 않도록 보호 + RGB/CMYK → Gray 변환
+      result += applyOps(s.slice(segStart, i));
+
+      const idIdx = s.indexOf('\nID\n', i + 3);
+      if (idIdx < 0) { i++; segStart = i; continue; }  // BI 파싱 불가 → 스킵
+
+      const dictStr = s.slice(i + 3, idIdx);  // 'BI\n' 이후 ~ '\nID\n' 이전
+      const w  = biGetNum(dictStr, 'W', 'Width');
+      const h  = biGetNum(dictStr, 'H', 'Height');
+      const bpc = biGetNum(dictStr, 'BPC', 'BitsPerComponent') || 8;
+      const csName = biGetCS(dictStr);
+      const filterName = biGetF(dictStr);
+
+      const isRGB  = ['/RGB','/DeviceRGB','/CalRGB'].includes(csName);
+      const isCMYK = ['/CMYK','/DeviceCMYK'].includes(csName);
+      const hasFilter = filterName !== '' && filterName !== '/None';
+      const channels  = isCMYK ? 4 : isRGB ? 3 : 1;
+      const dataStart = idIdx + 4;  // '\nID\n' 이후
+
+      if (!hasFilter && (isRGB || isCMYK) && bpc === 8 && w > 0 && h > 0) {
+        // 비압축 RGB/CMYK 인라인 이미지 → 그레이스케일 변환
+        const dataLen = w * h * channels;
+        const grayChars = new Array(w * h);
+        if (channels === 3) {
+          for (let pi = 0; pi < w * h; pi++) {
+            const si = dataStart + pi * 3;
+            const r = s.charCodeAt(si) & 0xff, g2 = s.charCodeAt(si+1) & 0xff, b2 = s.charCodeAt(si+2) & 0xff;
+            grayChars[pi] = String.fromCharCode(Math.round(dgApply(0.299*r/255 + 0.587*g2/255 + 0.114*b2/255) * 255));
+          }
+        } else {
+          for (let pi = 0; pi < w * h; pi++) {
+            const si = dataStart + pi * 4;
+            const c=s.charCodeAt(si)&0xff, m2=s.charCodeAt(si+1)&0xff, y2=s.charCodeAt(si+2)&0xff, k2=s.charCodeAt(si+3)&0xff;
+            const R=(255-c)*(255-k2)/65025, G=(255-m2)*(255-k2)/65025, B2=(255-y2)*(255-k2)/65025;
+            grayChars[pi] = String.fromCharCode(Math.round(dgApply(0.299*R + 0.587*G + 0.114*B2) * 255));
+          }
+        }
+        const newDict = dictStr.replace(/\/(CS|ColorSpace)\s+\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G');
+        result += 'BI\n' + newDict + '\nID\n' + grayChars.join('');
+        i = dataStart + dataLen;
+        // EI 종결자 처리 ('\nEI' 또는 그냥 'EI')
+        if (s[i] === '\n' && s[i+1] === 'E' && s[i+2] === 'I') { result += '\nEI'; i += 3; }
+        else { result += '\nEI'; }
+      } else if (!hasFilter && w > 0 && h > 0 && bpc === 8) {
+        // 이미 그레이 또는 알 수 없는 CS — 바이너리 데이터 보호 후 그대로 통과
+        const dataLen = w * h * channels;
+        result += 'BI\n' + dictStr + '\nID\n' + s.slice(dataStart, dataStart + dataLen);
+        i = dataStart + dataLen;
+        if (s[i] === '\n' && s[i+1] === 'E' && s[i+2] === 'I') { result += '\nEI'; i += 3; }
+        else { result += '\nEI'; }
+      } else {
+        // 필터 있음 또는 크기 불명 — heuristic으로 EI 탐색 후 그대로 통과
+        let eiPos = dataStart;
+        while (eiPos < s.length - 2) {
+          if (s[eiPos] === '\n' && s[eiPos+1] === 'E' && s[eiPos+2] === 'I') {
+            const after = eiPos + 3 < s.length ? s.charCodeAt(eiPos + 3) : 0;
+            if (after <= 0x20 || after === 0x51 /*Q*/ || after === 0x71 /*q*/) break;
+          }
+          eiPos++;
+        }
+        result += 'BI\n' + dictStr + '\nID\n' + s.slice(dataStart, eiPos) + '\nEI';
+        i = eiPos + 3;
+      }
+      segStart = i;
     } else { i++; }
   }
   result += applyOps(s.slice(segStart));
@@ -437,6 +626,9 @@ self.onmessage = async function(e) {
         try { raw = pako.inflate(raw); }
         catch(e) { self.postMessage({ id, error: 'inflate_fail' }); return; }
       }
+      // Phase A: 바이트 레벨에서 인라인 이미지(BI/EI) RGB→Gray 변환
+      // grayifyStream보다 먼저 실행 — 바이너리 픽셀 데이터가 스트링 regex에 오염되지 않도록 격리
+      try { raw = preprocessInlineImages(raw, dotGain || 0); } catch(e) { /* 실패해도 grayifyStream은 계속 */ }
       const processed = grayifyStream(raw, csGrayMap || {}, dotGain || 0);
       let out = processed;
       if (wasCompressed) out = pako.deflate(processed, { level: 6 });
