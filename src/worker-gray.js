@@ -8,6 +8,26 @@
 
 importScripts('./libs/pako.min.js');
 
+// ── JPEG SOF 마커 파싱: 이미지 컴포넌트 수 반환 ────────────────────────────────
+// 3 = YCbCr (일반 RGB JPEG), 4 = CMYK / YCCK (PowerPoint·InDesign 등), 1 = Grayscale
+function getJpegComponentCount(data) {
+  if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+  if (data.length < 4 || data[0] !== 0xFF || data[1] !== 0xD8) return 3;
+  let i = 2;
+  while (i + 3 < data.length) {
+    if (data[i] !== 0xFF) { i++; continue; }
+    const marker = data[i + 1];
+    if (marker === 0xDA || marker === 0xD9) break; // SOS / EOI
+    const segLen = (data[i+2] << 8) | data[i+3];
+    // SOF0-SOF15 (DHT=C4, JPG=C8, DAC=CC 제외)
+    if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+      return (i + 9 < data.length) ? data[i + 9] : 3;
+    }
+    i += 2 + segLen;
+  }
+  return 3;
+}
+
 // ── PNG 예측 필터 복원 ─────────────────────────────────────────────────────
 function paethPredictor(a, b, c) {
   const p = a + b - c;
@@ -184,11 +204,40 @@ function preprocessInlineImages(raw, dotGain) {
   return out;
 }
 
+// ── 관대한 inflate: /Length 손상으로 잘린 스트림 부분 복구 ────────────────────
+function inflateLenientW(data, expectedLen, fillValue) {
+  try {
+    const r = pako.inflate(data);
+    if (r && r.length) return r;
+  } catch(e) {}
+  try {
+    const chunks = [];
+    const inf = new pako.Inflate();
+    inf.onData = (c) => chunks.push(c);
+    inf.onEnd = () => {};
+    inf.push(data, true);
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    if (!total) return null;
+    const outLen = expectedLen != null ? Math.max(total, expectedLen) : total;
+    const out = new Uint8Array(outLen);
+    if (fillValue) out.fill(fillValue);
+    let off = 0;
+    for (const ch of chunks) { out.set(ch, off); off += ch.length; }
+    if (fillValue && off < outLen) out.fill(fillValue, off);
+    return out;
+  } catch(e) { return null; }
+}
+
 // ── 컨텐츠 스트림 색상 연산자 치환 ───────────────────────────────────────────
+// 주의: TextDecoder('latin1')은 windows-1252라서 0x80~0x9F가 €(U+20AC) 등으로 디코딩됨
+// → charCodeAt & 0xff 재인코딩 시 바이너리 손상. 청크 fromCharCode로 정확한 1:1 왕복 보장
 function decodeLatin1(bytes) {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return s;
+  const CHUNK = 0x8000;
+  if (bytes.length <= CHUNK) return String.fromCharCode.apply(null, bytes);
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += CHUNK)
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
+  return parts.join('');
 }
 function encodeLatin1(str) {
   const b = new Uint8Array(str.length);
@@ -196,10 +245,27 @@ function encodeLatin1(str) {
   return b;
 }
 
+// applyOps용 정규식 pre-compile (매 호출 new RegExp 생성 방지 — 속도 최적화)
+const _NB = '(-?\\d*\\.?\\d+)', _WS = '\\s+', _TL = '(?=[\\s\\r\\n]|$)';
+const _RE_rg   = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}rg${_TL}`, 'gm');
+const _RE_RG   = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}RG${_TL}`, 'gm');
+const _RE_k    = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}k${_TL}`, 'gm');
+const _RE_K    = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}K${_TL}`, 'gm');
+const _RE_SCN4 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn4 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC4  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc4  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
+const _RE_SCN3 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn3 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC3  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc3  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
+const _RE_SCN1 = new RegExp(`${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn1 = new RegExp(`${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC1  = new RegExp(`${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc1  = new RegExp(`${_NB}${_WS}sc${_TL}`, 'gm');
+
 function grayifyStream(bytes, csGrayMap, dotGain) {
   const s = decodeLatin1(bytes);
-  const nb = '(-?\\d*\\.?\\d+)';
-  const ws = '\\s+';
   // dotGain 보정 함수 (0-1 범위, 0=검정 1=흰색)
   const dgApply = (v) => {
     if (!dotGain) return v;
@@ -258,48 +324,36 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
       return '';
     });
     // rg/RG (RGB)
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}rg(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, r, g, b) => `${lum(r,g,b)} g`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}RG(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, r, g, b) => `${lum(r,g,b)} G`);
+    seg = seg.replace(_RE_rg, (_, r, g, b) => `${lum(r,g,b)} g`);
+    seg = seg.replace(_RE_RG, (_, r, g, b) => `${lum(r,g,b)} G`);
     // k/K (CMYK)
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}k(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}K(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
+    seg = seg.replace(_RE_k, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
+    seg = seg.replace(_RE_K, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
     // sc/SC/scn/SCN (Separation, DeviceN, 명명된 색공간) — 4인수→3인수→1인수 순서
     // 4인수 CMYK 계열
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}SCN(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}scn(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}SC(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}sc(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
+    seg = seg.replace(_RE_SCN4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
+    seg = seg.replace(_RE_scn4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
+    seg = seg.replace(_RE_SC4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
+    seg = seg.replace(_RE_sc4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
     // 3인수 RGB 계열
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}SCN(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, r, g, b) => `${lum(r,g,b)} G`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}scn(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, r, g, b) => `${lum(r,g,b)} g`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}SC(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, r, g, b) => `${lum(r,g,b)} G`);
-    seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}sc(?=[\\s\\r\\n]|$)`, 'gm'),
-      (_, r, g, b) => `${lum(r,g,b)} g`);
+    seg = seg.replace(_RE_SCN3, (_, r, g, b) => `${lum(r,g,b)} G`);
+    seg = seg.replace(_RE_scn3, (_, r, g, b) => `${lum(r,g,b)} g`);
+    seg = seg.replace(_RE_SC3,  (_, r, g, b) => `${lum(r,g,b)} G`);
+    seg = seg.replace(_RE_sc3,  (_, r, g, b) => `${lum(r,g,b)} g`);
     // 1인수 Separation 계열 — csGrayMap으로 정확한 변환, 없으면 반전 폴백
-    seg = seg.replace(new RegExp(`${nb}${ws}SCN(?=[\\s\\r\\n]|$)`, 'gm'), (_, t) => {
+    seg = seg.replace(_RE_SCN1, (_, t) => {
       const info = strokeCS && csGrayMap && csGrayMap[strokeCS];
       return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} G`;
     });
-    seg = seg.replace(new RegExp(`${nb}${ws}scn(?=[\\s\\r\\n]|$)`, 'gm'), (_, t) => {
+    seg = seg.replace(_RE_scn1, (_, t) => {
       const info = fillCS && csGrayMap && csGrayMap[fillCS];
       return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} g`;
     });
-    seg = seg.replace(new RegExp(`${nb}${ws}SC(?=[\\s\\r\\n]|$)`, 'gm'), (_, t) => {
+    seg = seg.replace(_RE_SC1, (_, t) => {
       const info = strokeCS && csGrayMap && csGrayMap[strokeCS];
       return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} G`;
     });
-    seg = seg.replace(new RegExp(`${nb}${ws}sc(?=[\\s\\r\\n]|$)`, 'gm'), (_, t) => {
+    seg = seg.replace(_RE_sc1, (_, t) => {
       const info = fillCS && csGrayMap && csGrayMap[fillCS];
       return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} g`;
     });
@@ -478,37 +532,50 @@ self.onmessage = async function(e) {
 
     // ── JPEG → FlateDecode+DeviceGray ──────────────────────────────────────
     if (type === 'jpeg2gray') {
-      const { jpegBytes, dotGain } = payload;
+      const { jpegBytes, dotGain, lut } = payload;
+      const jpegArr = new Uint8Array(jpegBytes);
+      const jpegComps = getJpegComponentCount(jpegArr); // 3=YCbCr, 4=CMYK/YCCK
       let gray = null, iw, ih;
 
-      // 방법 1: ImageDecoder Y-채널 직접 추출
-      // JPEG 내부 Y값 = BT.601 휘도(압축 전 원본 기준) → 벡터 색상과 일관된 변환
+      // 방법 1: ImageDecoder
       try {
         if (typeof ImageDecoder !== 'undefined') {
-          const jpegArr = new Uint8Array(jpegBytes);
-          const decoder = new ImageDecoder({
-            data: new ReadableStream({
-              start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); }
-            }),
-            type: 'image/jpeg',
-            colorSpaceConversion: 'none',  // YCbCr 그대로 유지 (RGB 변환 없음)
-          });
-          const { image: frame } = await decoder.decode();
-          iw = frame.codedWidth;
-          ih = frame.codedHeight;
-          // I420: Y 플레인 = 앞 iw*ih 바이트 (full-resolution 휘도)
-          const bufSize = Math.ceil(iw * ih * 3 / 2);
-          const buf = new ArrayBuffer(bufSize);
-          await frame.copyTo(buf, { format: 'I420' });
-          frame.close();
-          decoder.close();
-          gray = new Uint8Array(buf.slice(0, iw * ih)); // Y 플레인만
+          if (jpegComps === 3) {
+            // 표준 YCbCr JPEG: colorSpaceConversion:'none' → I420 Y-플레인 직접 추출
+            const decoder = new ImageDecoder({
+              data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
+              type: 'image/jpeg',
+              colorSpaceConversion: 'none',
+            });
+            const { image: frame } = await decoder.decode();
+            iw = frame.codedWidth; ih = frame.codedHeight;
+            const buf = new ArrayBuffer(Math.ceil(iw * ih * 3 / 2));
+            await frame.copyTo(buf, { format: 'I420' });
+            frame.close(); decoder.close();
+            gray = new Uint8Array(buf.slice(0, iw * ih));
+          } else {
+            // CMYK / YCCK (4ch, PowerPoint·InDesign): ICC 색상 보정 → RGBA 변환
+            const decoder = new ImageDecoder({
+              data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
+              type: 'image/jpeg',
+              colorSpaceConversion: 'default', // ICC 프로파일 적용하여 sRGB로 변환
+            });
+            const { image: frame } = await decoder.decode();
+            iw = frame.codedWidth; ih = frame.codedHeight;
+            const buf = new ArrayBuffer(iw * ih * 4);
+            await frame.copyTo(buf, { format: 'RGBA' });
+            frame.close(); decoder.close();
+            const rgba = new Uint8Array(buf);
+            gray = new Uint8Array(iw * ih);
+            for (let pi = 0; pi < gray.length; pi++)
+              gray[pi] = Math.round(0.299*rgba[pi*4] + 0.587*rgba[pi*4+1] + 0.114*rgba[pi*4+2]);
+          }
         }
       } catch(e) { gray = null; }
 
       // 방법 2: OffscreenCanvas + BT.601 폴백
       if (!gray) {
-        const blob = new Blob([new Uint8Array(jpegBytes)], { type: 'image/jpeg' });
+        const blob = new Blob([jpegArr], { type: 'image/jpeg' });
         const bitmap = await createImageBitmap(blob);
         iw = bitmap.width; ih = bitmap.height;
         const canvas = new OffscreenCanvas(iw, ih);
@@ -521,9 +588,11 @@ self.onmessage = async function(e) {
           gray[pi] = Math.round(0.299*d[pi*4] + 0.587*d[pi*4+1] + 0.114*d[pi*4+2]);
       }
 
-      if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = lut[gray[i]]; }
+      // Separation 틴트 LUT (메인 스레드에서 전달) — 픽셀값 t → 그레이 변환
+      if (lut) { const tl = new Uint8Array(lut); for (let i = 0; i < gray.length; i++) gray[i] = tl[gray[i]]; }
+      if (dotGain) { const dl = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = dl[gray[i]]; }
       const predicted  = applyPNGPredictorGray(gray, iw, ih);
-      const deflated   = pako.deflate(predicted, { level: 6 });
+      const deflated   = pako.deflate(predicted, { level: 1 });
       // pako는 단일 청크일 때 내부 버퍼의 subarray를 반환할 수 있음
       // → .buffer.byteLength > .length 인 경우 PDF Length가 잘못 기록되어 파일이 열리지 않음
       // → slice()로 정확한 크기의 새 버퍼 생성
@@ -532,8 +601,22 @@ self.onmessage = async function(e) {
 
     // ── FlateDecode RGB/CMYK → FlateDecode DeviceGray ──────────────────────
     } else if (type === 'flate2gray') {
-      const { compressed, w, h, channels, predictor, dotGain } = payload;
-      let raw = pako.inflate(new Uint8Array(compressed));
+      const { compressed, w, h, channels, predictor, dotGain, raw: isRaw } = payload;
+      // isRaw: 비압축(Filter 없음) 픽셀 — inflate 생략
+      // /Length 손상으로 잘린 스트림은 부분 복구 후 흰색으로 채움 (RGB 255 / CMYK 0)
+      // predictor 행에는 행당 필터 바이트 1개 포함 + 채움값은 0 (유효한 필터 타입)
+      const expLen = predictor >= 10 ? h * (w * channels + 1) : w * h * channels;
+      const fill = predictor >= 10 ? 0 : (channels === 4 ? 0 : 255);
+      let raw = isRaw
+        ? new Uint8Array(compressed)
+        : inflateLenientW(new Uint8Array(compressed), expLen, fill);
+      if (!raw) { self.postMessage({ id, error: 'inflate_fail' }); return; }
+      if (isRaw && raw.length < expLen) {
+        const padded = new Uint8Array(expLen);
+        padded.fill(fill);
+        padded.set(raw, 0);
+        raw = padded;
+      }
 
       if (predictor >= 10) {
         const decoded = removePNGPredictor(raw, w, channels);
@@ -568,14 +651,25 @@ self.onmessage = async function(e) {
 
       if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = lut[gray[i]]; }
       const predicted = applyPNGPredictorGray(gray, w, h);
-      const deflated  = pako.deflate(predicted, { level: 6 });
+      const deflated  = pako.deflate(predicted, { level: 1 });
       const deflatedBuf = deflated.buffer.slice(deflated.byteOffset, deflated.byteOffset + deflated.length);
       self.postMessage({ id, result: { deflated: deflatedBuf, w, h } }, [deflatedBuf]);
 
     // ── ICCBased FlateDecode → DeviceGray (PNG+iCCP → OffscreenCanvas ICC 보정) ──
     } else if (type === 'icc-flate2gray') {
-      const { compressed, w, h, channels, predictor, iccBytes, dotGain } = payload;
-      let raw = pako.inflate(new Uint8Array(compressed));
+      const { compressed, w, h, channels, predictor, iccBytes, dotGain, raw: isRaw2 } = payload;
+      const expLen2 = predictor >= 10 ? h * (w * channels + 1) : w * h * channels;
+      const fill2 = predictor >= 10 ? 0 : (channels === 4 ? 0 : 255);
+      let raw = isRaw2
+        ? new Uint8Array(compressed)
+        : inflateLenientW(new Uint8Array(compressed), expLen2, fill2);
+      if (!raw) { self.postMessage({ id, error: 'inflate_fail' }); return; }
+      if (isRaw2 && raw.length < expLen2) {
+        const padded = new Uint8Array(expLen2);
+        padded.fill(fill2);
+        padded.set(raw, 0);
+        raw = padded;
+      }
 
       if (predictor >= 10) {
         const decoded = removePNGPredictor(raw, w, channels);
@@ -614,7 +708,7 @@ self.onmessage = async function(e) {
 
       if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = lut[gray[i]]; }
       const predicted = applyPNGPredictorGray(gray, bw, bh);
-      const deflated  = pako.deflate(predicted, { level: 6 });
+      const deflated  = pako.deflate(predicted, { level: 1 });
       const deflatedBuf = deflated.buffer.slice(deflated.byteOffset, deflated.byteOffset + deflated.length);
       self.postMessage({ id, result: { deflated: deflatedBuf, w: bw, h: bh } }, [deflatedBuf]);
 
@@ -631,7 +725,7 @@ self.onmessage = async function(e) {
       try { raw = preprocessInlineImages(raw, dotGain || 0); } catch(e) { /* 실패해도 grayifyStream은 계속 */ }
       const processed = grayifyStream(raw, csGrayMap || {}, dotGain || 0);
       let out = processed;
-      if (wasCompressed) out = pako.deflate(processed, { level: 6 });
+      if (wasCompressed) out = pako.deflate(processed, { level: 1 });
       self.postMessage({ id, result: { bytes: out.buffer, length: out.length } }, [out.buffer]);
 
     } else {

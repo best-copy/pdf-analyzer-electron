@@ -76,26 +76,38 @@ ipcMain.handle('dialog:saveFilePath', async (_, { defaultName }) => {
   return filePath;
 });
 
-// ── IPC: 업무관리 앱 열기 (BrowserWindow — Electron 세션 공유로 localStorage 동기화) ──
-ipcMain.handle('shell:openBizApp', async () => {
-  const p = 'D:\\claude\\projects\\business-mgmt\\index.html';
-  if (!fs.existsSync(p)) return false;
+// ── IPC: 견적서 HTML → PDF 변환 (숨겨진 BrowserWindow + printToPDF) ──────────
+// Electron 26+ 에서 margins 단위가 인치로 변경됨 → marginType:'none' 사용 (HTML body padding으로 여백 처리)
+// loadURL 완료를 did-finish-load 이벤트로 명시적 대기
+ipcMain.handle('print:toPDF', async (_, html) => {
+  const tmp = require('os').tmpdir();
+  const tmpFile = path.join(tmp, `quote_${Date.now()}.html`);
+  fs.writeFileSync(tmpFile, html, 'utf8');
 
-  // 이미 열려 있으면 포커스만 이동
-  const existing = BrowserWindow.getAllWindows().find(w => {
-    try { return w.webContents.getURL().includes('business-mgmt'); } catch { return false; }
+  const hiddenWin = new BrowserWindow({
+    show: false,
+    width: 1024, height: 768,
+    webPreferences: { contextIsolation: true, sandbox: true },
   });
-  if (existing) { existing.focus(); return true; }
 
-  const bizWin = new BrowserWindow({
-    width: 1280, height: 900,
-    title: '업무 관리 — 일청기획',
-    webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: false,
-      sandbox: false,
-    }
+  await new Promise((resolve, reject) => {
+    hiddenWin.webContents.once('did-finish-load', resolve);
+    hiddenWin.webContents.once('did-fail-load', (_, code, desc) =>
+      reject(new Error(`페이지 로드 실패: ${desc} (${code})`))
+    );
+    hiddenWin.loadURL('file:///' + tmpFile.replace(/\\/g, '/'));
   });
-  bizWin.loadFile(p);
-  return true;
+
+  let pdfBuffer;
+  try {
+    pdfBuffer = await hiddenWin.webContents.printToPDF({
+      pageSize: 'A4',
+      margins: { marginType: 'none' },
+      printBackground: true,
+    });
+  } finally {
+    hiddenWin.destroy();
+    try { fs.unlinkSync(tmpFile); } catch(e) {}
+  }
+  return pdfBuffer;
 });

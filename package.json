@@ -12,7 +12,11 @@
     "productName": "PDF 분석기",
     "asar": false,
     "win": {
-      "target": [{ "target": "dir" }]
+      "target": [
+        {
+          "target": "dir"
+        }
+      ]
     },
     "files": [
       "main.js",
@@ -26,5 +30,8 @@
   "devDependencies": {
     "electron": "^31.7.7",
     "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
   }
 }

@@ -8,367 +8,553 @@
   <script src="./libs/pdf-lib.min.js"></script>
   <script src="./libs/pako.min.js"></script>
   <style>
+    /* ── Apple-style Design System ─────────────────────────────────────── */
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
-      font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      background: #f5f5f7;
       min-height: 100vh;
-      padding: 20px;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
     }
     .container {
-      max-width: 1200px; margin: 0 auto; background: white;
-      border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+      max-width: 1200px; margin: 0 auto; background: #ffffff;
+      border-radius: 18px; box-shadow: 0 4px 32px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06);
       overflow: hidden;
     }
     .header {
-      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-      color: white; padding: 30px; text-align: center;
+      background: #1d1d1f;
+      color: white; padding: 28px 36px; text-align: center;
     }
-    .header h1 { font-size: 2.5em; margin-bottom: 10px; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-    .header p { font-size: 1.2em; opacity: 0.9; }
+    .header h1 { font-size: 2em; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.5px; }
+    .header p { font-size: 1em; opacity: 0.65; font-weight: 400; }
 
     .upload-section {
       padding: 52px 40px 44px;
       text-align: center;
-      border-bottom: 1px solid #eee;
-      transition: background 0.25s ease, box-shadow 0.25s ease;
+      border-bottom: 1px solid #e8e8ed;
+      transition: background 0.2s ease;
       cursor: pointer;
     }
-    .upload-section:hover { background: #fafbff; }
+    .upload-section:hover { background: #fafafa; }
     .upload-section.drag-over {
-      background: linear-gradient(135deg, #eef2ff 0%, #e8f4ff 100%);
-      box-shadow: inset 0 0 0 3px #667eea;
+      background: #f0f6ff;
+      box-shadow: inset 0 0 0 2px #0071e3;
     }
     .upload-section.drag-over .file-input-label {
       transform: translateY(-2px);
-      box-shadow: 0 8px 24px rgba(102,126,234,0.45);
+      box-shadow: 0 6px 20px rgba(0,113,227,0.35);
     }
-    .drop-hint { font-size: 1.05em; color: #868e96; margin-bottom: 14px; pointer-events: none; }
-    .drop-sub  { font-size: 0.82em; color: #adb5bd; margin-top: 10px; pointer-events: none; }
+    .drop-hint { font-size: 1em; color: #6e6e73; margin-bottom: 14px; pointer-events: none; }
+    .drop-sub  { font-size: 0.8em; color: #a1a1a6; margin-top: 10px; pointer-events: none; }
     .file-input-wrapper { position: relative; display: inline-block; margin: 20px 0; }
     .file-input { position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
     .file-input-label {
-      display: inline-block; padding: 15px 30px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white; border-radius: 50px; cursor: pointer;
-      font-size: 1.1em; font-weight: 600; transition: all 0.3s ease;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+      display: inline-block; padding: 13px 28px;
+      background: #0071e3;
+      color: white; border-radius: 980px; cursor: pointer;
+      font-size: 1em; font-weight: 600; transition: all 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0,113,227,0.3);
+      letter-spacing: -0.1px;
     }
-    .file-input-label:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
-    .file-info { margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 10px; display: none; }
+    .file-input-label:hover { background: #0077ed; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,113,227,0.4); }
+    .file-info { margin-top: 20px; padding: 13px 16px; background: #f5f5f7; border-radius: 10px; display: none; font-size: 0.9em; color: #1d1d1f; }
 
     .progress-bar {
-      width: 100%; height: 8px; background: #e9ecef; border-radius: 4px;
+      width: 100%; height: 4px; background: #e8e8ed; border-radius: 2px;
       overflow: hidden; margin: 20px 0; display: none;
     }
     .progress-fill {
-      height: 100%; background: linear-gradient(90deg, #4facfe, #00f2fe);
+      height: 100%; background: #0071e3;
       width: 0%; transition: width 0.3s ease;
     }
 
     .loading { display:none; text-align:center; padding:40px; }
-    .loading-msg { color: #495057; font-size: 1.1em; margin-top: 10px; }
+    .loading-msg { color: #6e6e73; font-size: 1em; margin-top: 10px; }
     .spinner {
-      border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%;
-      width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto 20px;
+      border: 3px solid #e8e8ed; border-top: 3px solid #0071e3; border-radius: 50%;
+      width: 44px; height: 44px; animation: spin 0.8s linear infinite; margin: 0 auto 20px;
     }
     @keyframes spin { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
 
-    .error, .success { padding: 15px; border-radius: 10px; margin: 20px; display: none; }
-    .error { background: #f8d7da; color: #721c24; }
-    .success { background: #d4edda; color: #155724; }
+    .error, .success { padding: 14px 18px; border-radius: 12px; margin: 20px; display: none; font-size: 0.9em; }
+    .error { background: #fff2f2; color: #c0392b; border: 1px solid #fcd0d0; }
+    .success { background: #f0faf4; color: #1a7f4b; border: 1px solid #c6edd6; }
 
     /* ---- 탭 바 ---- */
     .tab-bar {
       display: none;
       flex-wrap: nowrap;
       overflow-x: auto;
-      gap: 2px;
-      padding: 6px 20px 0;
-      background: #f1f3f5;
-      border-bottom: 2px solid #dee2e6;
+      gap: 1px;
+      padding: 8px 20px 0;
+      background: #f5f5f7;
+      border-bottom: 1px solid #e8e8ed;
       min-height: 44px;
       align-items: flex-end;
     }
     .tab-item {
       display: flex; align-items: center; gap: 6px;
-      padding: 7px 12px;
-      background: #e2e8f0;
-      border: 1px solid #cbd5e0; border-bottom: none;
-      border-radius: 6px 6px 0 0;
+      padding: 7px 14px;
+      background: #e8e8ed;
+      border: 1px solid #d2d2d7; border-bottom: none;
+      border-radius: 8px 8px 0 0;
       cursor: pointer; white-space: nowrap;
-      font-size: 0.82em; color: #4a5568;
+      font-size: 0.8em; color: #6e6e73;
       transition: background 0.15s;
       max-width: 220px;
     }
-    .tab-item:hover { background: #cbd5e0; }
+    .tab-item:hover { background: #d2d2d7; }
     .tab-item.active {
-      background: white; color: #1a202c; font-weight: 600;
-      border-color: #dee2e6;
-      position: relative; bottom: -2px;
+      background: white; color: #1d1d1f; font-weight: 600;
+      border-color: #e8e8ed;
+      position: relative; bottom: -1px;
     }
     .tab-name { overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
     .tab-close {
       background: none; border: none; cursor: pointer;
-      color: #a0aec0; font-size: 1em; padding: 0; line-height: 1; flex-shrink: 0;
+      color: #a1a1a6; font-size: 0.95em; padding: 0; line-height: 1; flex-shrink: 0;
     }
-    .tab-close:hover { color: #e53e3e; }
+    .tab-close:hover { color: #ff3b30; }
 
-    .results-section { padding: 40px; display: none; }
+    .results-section { padding: 36px 40px; display: none; }
     .stats-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 20px; margin-bottom: 30px;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px; margin-bottom: 28px;
     }
     .stat-card {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white; padding: 25px; border-radius: 15px; text-align: center;
-      box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+      background: #1d1d1f;
+      color: white; padding: 24px 20px; border-radius: 14px; text-align: center;
     }
-    .stat-number { font-size: 3em; font-weight: bold; margin-bottom: 10px; }
-    .stat-label { font-size: 1.1em; opacity: 0.9; }
+    .stat-number { font-size: 2.6em; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; }
+    .stat-label { font-size: 0.88em; opacity: 0.6; font-weight: 500; letter-spacing: 0.1px; }
 
     .range-summary {
-      background:#f1f3f5; padding:15px; border-radius:8px; margin: 20px 0 0 0;
-      line-height: 1.7; color:#343a40;
+      background: #f5f5f7; padding: 13px 16px; border-radius: 10px; margin: 20px 0 0 0;
+      line-height: 1.7; color: #1d1d1f; font-size: 0.9em;
     }
 
     .selection-controls {
-      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-      background: #f8f9fa; padding: 15px 20px; border-radius: 10px;
-      margin: 20px 0; border: 1px solid #dee2e6;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      background: #f5f5f7; padding: 12px 16px; border-radius: 12px;
+      margin: 14px 0; border: 1px solid #e8e8ed;
     }
     .sel-btn {
-      padding: 8px 14px; border: 1px solid #dee2e6; background: white;
-      border-radius: 6px; cursor: pointer; font-size: 0.9em; transition: all 0.2s;
+      padding: 7px 13px; border: 1px solid #d2d2d7; background: white;
+      border-radius: 8px; cursor: pointer; font-size: 0.85em;
+      transition: all 0.15s; color: #1d1d1f; font-weight: 500;
     }
-    .sel-btn:hover { background: #e9ecef; border-color: #adb5bd; }
-    .sel-count { color: #495057; font-size: 0.9em; font-weight: 600; }
+    .sel-btn:hover { background: #f5f5f7; border-color: #a1a1a6; }
+    .sel-count { color: #6e6e73; font-size: 0.85em; font-weight: 600; }
     .opt-btn {
-      padding: 9px 16px; border: 2px solid #bee3f8; background: white;
-      border-radius: 8px; cursor: pointer; font-size: 0.9em; font-weight: 600;
-      color: #4a5568; transition: all 0.2s;
+      padding: 8px 15px; border: 1.5px solid #d2d2d7; background: white;
+      border-radius: 8px; cursor: pointer; font-size: 0.88em; font-weight: 600;
+      color: #1d1d1f; transition: all 0.15s;
     }
-    .opt-btn:hover { background: #ebf8ff; border-color: #63b3ed; }
+    .opt-btn:hover { background: #f5f5f7; border-color: #a1a1a6; }
     .opt-btn.active {
-      background: linear-gradient(135deg, #4299e1, #3182ce);
-      border-color: #3182ce; color: white;
-      box-shadow: 0 3px 10px rgba(66,153,225,0.4);
+      background: #0071e3; border-color: #0071e3; color: white;
+      box-shadow: 0 2px 8px rgba(0,113,227,0.3);
     }
     .apply-btn {
-      margin-left: auto; padding: 10px 22px;
-      background: linear-gradient(135deg, #48bb78, #38a169);
+      margin-left: auto; padding: 9px 20px;
+      background: #34c759;
       color: white; border: none; border-radius: 8px;
-      cursor: pointer; font-size: 0.95em; font-weight: 700;
-      transition: all 0.3s; box-shadow: 0 4px 12px rgba(72,187,120,0.35);
+      cursor: pointer; font-size: 0.9em; font-weight: 700;
+      transition: all 0.2s; box-shadow: 0 2px 8px rgba(52,199,89,0.3);
     }
-    .apply-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(72,187,120,0.5); }
-    .apply-btn:disabled { background: #a0aec0; cursor: not-allowed; transform: none; box-shadow: none; }
+    .apply-btn:hover { background: #30b353; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(52,199,89,0.4); }
+    .apply-btn:disabled { background: #a1a1a6; cursor: not-allowed; transform: none; box-shadow: none; }
     .clear-opts-btn {
-      padding: 9px 14px; border: 2px solid #fed7d7; background: white;
-      border-radius: 8px; cursor: pointer; font-size: 0.85em; font-weight: 700;
-      color: #c53030; transition: all 0.2s;
+      padding: 8px 13px; border: 1.5px solid #ffd0cc; background: white;
+      border-radius: 8px; cursor: pointer; font-size: 0.82em; font-weight: 700;
+      color: #ff3b30; transition: all 0.15s;
     }
-    .clear-opts-btn:hover { background: #fff5f5; border-color: #fc8181; }
+    .clear-opts-btn:hover { background: #fff5f5; border-color: #ff3b30; }
     .quality-select {
-      padding: 8px 10px; border: 1px solid #bee3f8; border-radius: 6px;
-      background: white; font-size: 0.85em; color: #2c5282; font-weight: 600;
-      cursor: pointer; transition: border-color 0.2s;
+      padding: 7px 10px; border: 1px solid #d2d2d7; border-radius: 8px;
+      background: white; font-size: 0.85em; color: #1d1d1f; font-weight: 500;
+      cursor: pointer; transition: border-color 0.15s;
     }
-    .quality-select:focus { outline: none; border-color: #63b3ed; }
+    .quality-select:focus { outline: none; border-color: #0071e3; }
 
     .pages-grid {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 15px; margin-top: 10px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--thumb-size, 160px), 1fr));
+      gap: 14px; margin-top: 10px;
+      transition: grid-template-columns 0.2s ease;
     }
+    /* ---- 플로팅 썸네일 줌 위젯 ---- */
+    #thumbZoomWidget {
+      position: fixed; bottom: 84px; right: 28px;
+      display: none;
+      align-items: center; gap: 0;
+      background: rgba(29,29,31,0.88);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.28);
+      overflow: hidden;
+      z-index: 9998;
+    }
+    .thumb-zoom-btn {
+      width: 36px; height: 36px;
+      border: none; background: transparent; color: #f5f5f7;
+      font-size: 1.15em; font-weight: 500; cursor: pointer; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+    .thumb-zoom-btn:hover { background: rgba(255,255,255,0.12); }
+    .thumb-zoom-btn:disabled { opacity: 0.28; cursor: default; }
+    .thumb-zoom-btn:disabled:hover { background: transparent; }
+    .thumb-zoom-pct {
+      font-size: 0.78em; font-weight: 600; color: #aeaeb2;
+      min-width: 40px; text-align: center; pointer-events: none;
+      letter-spacing: 0.2px;
+    }
+    .thumb-zoom-divider {
+      width: 1px; height: 18px; background: rgba(255,255,255,0.15); flex-shrink: 0;
+    }
+    /* h3 헤더 내 인라인 줌바는 더 이상 사용 안 함 — 아래 .thumb-zoom-bar 클래스 제거 */
     .page-item {
-      background: white; border: 2px solid #e9ecef; border-radius: 10px;
+      background: #fafafa; border: 4px solid transparent; border-radius: 12px;
       padding: 10px; text-align: center;
-      transition: box-shadow 0.2s ease, border-color 0.2s ease;
+      transition: box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
       cursor: pointer; position: relative; user-select: none;
       overflow: hidden;
     }
-    .page-item:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.14); }
-    .page-item.color { border-color: #28a745; background: linear-gradient(135deg, #d4edda, #c3e6cb); }
-    .page-item.grayscale { border-color: #6c757d; background: linear-gradient(135deg, #e9ecef, #dee2e6); }
+    .page-item:hover,
+    .page-item.peer-hover {
+      box-shadow: 0 4px 20px rgba(0,113,227,0.22);
+      border-color: rgba(0,113,227,0.5) !important;
+    }
+    .page-item.peer-hover .page-thumb-wrap::after { opacity: 0.5; }
+    .page-item.color {
+      border-color: #30d158;
+      background: #f0fff4;
+    }
+    .page-item.grayscale { border-color: transparent; background: #f5f5f7; }
     .page-item.selected {
-      border-color: #007bff !important;
-      box-shadow: 0 0 0 3px rgba(0,123,255,0.35) !important;
-      background: linear-gradient(135deg, #cfe2ff, #b6d4fe) !important;
+      border-color: #555 !important;
+      box-shadow: 0 0 0 2px rgba(0,0,0,0.18) !important;
+      background: #2c2c2e !important;
     }
     .page-select-indicator {
       position: absolute; top: 6px; left: 6px;
       width: 22px; height: 22px; border-radius: 50%;
-      background: #007bff; color: white;
+      background: #0071e3; color: white;
       display: none; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+      font-size: 13px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.2);
       z-index: 11;
     }
     .page-item.selected .page-select-indicator { display: flex; }
     .page-thumb-wrap {
       position: relative;
       overflow: hidden;
-      border-radius: 6px; margin-bottom: 6px; background: #f0f0f0;
+      border-radius: 7px; margin-bottom: 7px; background: #e8e8ed;
     }
     .page-thumbnail {
       width: 100%; height: auto; display: block;
-      border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      border-radius: 5px; box-shadow: 0 1px 4px rgba(0,0,0,0.12);
       transform-origin: center;
     }
-    .page-item.selected .page-thumbnail { opacity: 0.92; }
-    .page-info { font-size: 1.0em; font-weight: 700; color: #333; }
-    .page-type-inline { font-size: 0.78em; font-weight: 600; letter-spacing: 0.5px; margin-left: 5px; }
-    .page-item.color .page-type-inline { color: #155724; }
-    .page-item.grayscale .page-type-inline { color: #495057; }
-    .page-item.selected .page-type-inline { color: #004085; }
-    .page-item.blank .page-type-inline { color: #6c757d; }
+    .page-item.selected .page-thumbnail { opacity: 0.90; }
+    .page-info { font-size: 13px; font-weight: 700; color: #1d1d1f; }
+    .page-item.selected .page-info { color: #f5f5f7; }
+    .page-type-inline { font-size: 10px; font-weight: 600; letter-spacing: 0.3px; margin-left: 4px; }
 
-    .convert-hint { text-align: center; color: #6c757d; font-size: 0.9em; margin-bottom: 10px; }
+    /* ── 8단계 글자 크기 (thumb-fs-1 ~ thumb-fs-8) ── */
+    #pagesGrid.thumb-fs-1 .page-info { font-size:  9px; }
+    #pagesGrid.thumb-fs-1 .page-type-inline { font-size:  7px; }
+    #pagesGrid.thumb-fs-2 .page-info { font-size: 11px; }
+    #pagesGrid.thumb-fs-2 .page-type-inline { font-size:  9px; }
+    #pagesGrid.thumb-fs-3 .page-info { font-size: 13px; }
+    #pagesGrid.thumb-fs-3 .page-type-inline { font-size: 10px; }
+    #pagesGrid.thumb-fs-4 .page-info { font-size: 15px; }
+    #pagesGrid.thumb-fs-4 .page-type-inline { font-size: 12px; }
+    #pagesGrid.thumb-fs-5 .page-info { font-size: 17px; }
+    #pagesGrid.thumb-fs-5 .page-type-inline { font-size: 13px; }
+    #pagesGrid.thumb-fs-6 .page-info { font-size: 19px; }
+    #pagesGrid.thumb-fs-6 .page-type-inline { font-size: 15px; }
+    #pagesGrid.thumb-fs-7 .page-info { font-size: 21px; }
+    #pagesGrid.thumb-fs-7 .page-type-inline { font-size: 17px; }
+    #pagesGrid.thumb-fs-8 .page-info { font-size: 23px; }
+    #pagesGrid.thumb-fs-8 .page-type-inline { font-size: 18px; }
+    .page-item.color .page-type-inline { color: #248a3d; }
+    .page-item.grayscale .page-type-inline { color: #6e6e73; }
+    .page-item.selected .page-type-inline { color: #aeaeb2 !important; }
+    .page-item.blank .page-type-inline { color: #a1a1a6; }
+
+    .convert-hint { text-align: center; color: #a1a1a6; font-size: 0.85em; margin-bottom: 10px; }
 
     .processing-controls {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-      background: #f0f7ff; padding: 15px 20px; border-radius: 10px;
-      margin: 0 0 20px; border: 1px solid #bdd7f5;
+      background: #f0f7ff; padding: 12px 16px; border-radius: 12px;
+      margin: 0 0 20px; border: 1px solid #cce4ff;
     }
-    .proc-label { color: #2c5282; font-size: 0.9em; font-weight: 700; white-space: nowrap; }
+    .proc-label { color: #0071e3; font-size: 0.88em; font-weight: 700; white-space: nowrap; }
     .dot-gain-select {
-      padding: 5px 8px; font-size: 0.85em; border: 1px solid #bdd7f5;
-      border-radius: 6px; background: #fff; color: #2c5282; cursor: pointer;
+      padding: 5px 8px; font-size: 0.85em; border: 1px solid #cce4ff;
+      border-radius: 8px; background: #fff; color: #0071e3; cursor: pointer;
       outline: none; height: 32px;
     }
-    .dot-gain-select:focus { border-color: #63b3ed; }
+    .dot-gain-select:focus { border-color: #0071e3; }
 
     .sticky-panel {
       position: sticky; top: 0; z-index: 100;
-      background: white; margin: 0 -40px; padding: 12px 40px 14px;
-      box-shadow: 0 4px 18px rgba(0,0,0,0.12); border-radius: 0 0 14px 14px;
+      background: rgba(255,255,255,0.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      margin: 0 -40px; padding: 12px 40px 14px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.08); border-radius: 0 0 14px 14px;
+      border-bottom: 1px solid #e8e8ed;
     }
-    .sticky-panel .range-summary { margin-bottom: 10px; font-size: 0.88em; padding: 8px 12px; line-height: 1.6; }
+    .sticky-panel .range-summary { margin-bottom: 10px; font-size: 0.86em; padding: 8px 12px; line-height: 1.6; }
     .sticky-panel .selection-controls { margin: 0 0 10px; }
-    .jump-bar { display:flex; align-items:center; gap:6px; margin-left:auto; }
+    .jump-bar { display:flex; align-items:center; gap:6px; }
     .jump-bar input[type=number] {
-      width:90px; padding:6px 9px; border:1px solid #dee2e6; border-radius:6px;
+      width:88px; padding:6px 9px; border:1px solid #d2d2d7; border-radius:8px;
       font-size:0.85em; text-align:center; -moz-appearance:textfield;
+      font-family: inherit; color: #1d1d1f;
     }
     .jump-bar input[type=number]::-webkit-inner-spin-button,
     .jump-bar input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
-    .jump-bar input[type=number]:focus { outline:none; border-color:#667eea; box-shadow:0 0 0 3px rgba(102,126,234,0.2); }
+    .jump-bar input[type=number]:focus { outline:none; border-color:#0071e3; box-shadow:0 0 0 3px rgba(0,113,227,0.15); }
     @keyframes jumpPulse {
-      0%   { box-shadow:0 0 0 0 rgba(245,158,11,0.8); }
-      40%  { box-shadow:0 0 0 7px rgba(245,158,11,0.35); }
-      100% { box-shadow:0 0 0 0 rgba(245,158,11,0); }
+      0%   { box-shadow:0 0 0 0 rgba(255,159,10,0.8); }
+      40%  { box-shadow:0 0 0 7px rgba(255,159,10,0.3); }
+      100% { box-shadow:0 0 0 0 rgba(255,159,10,0); }
     }
-    .page-jump-highlight { animation: jumpPulse 1.2s ease-out; outline:2px solid #f59e0b !important; }
+    .page-jump-highlight { animation: jumpPulse 1.2s ease-out; outline:2px solid #ff9f0a !important; }
     .sticky-panel .processing-controls { margin: 0; }
 
     /* ---- 견적서 ---- */
-    .quote-section { margin-top: 40px; padding-top: 30px; border-top: 2px solid #e9ecef; }
-    .q-label { display:block; font-size:0.82em; color:#6c757d; margin-bottom:4px; }
-    .q-input { width:100%; padding:8px 10px; border:1px solid #dee2e6; border-radius:6px; font-size:0.9em; box-sizing:border-box; }
+    .quote-section { margin-top: 40px; padding-top: 28px; border-top: 1px solid #e8e8ed; }
+    .q-label { display:block; font-size:0.8em; color:#6e6e73; margin-bottom:4px; font-weight:500; }
+    .q-input { width:100%; padding:8px 10px; border:1px solid #d2d2d7; border-radius:8px; font-size:0.9em; box-sizing:border-box; font-family:inherit; }
+    .q-input:focus { outline:none; border-color:#0071e3; box-shadow:0 0 0 3px rgba(0,113,227,0.12); }
     .q-table { width:100%; border-collapse:collapse; margin:14px 0; font-size:0.88em; }
-    .q-table th { background:#f1f3f5; padding:7px 8px; border:1px solid #dee2e6; font-weight:600; color:#495057; text-align:center; white-space:nowrap; }
+    .q-table th { background:#f5f5f7; padding:7px 8px; border:1px solid #e8e8ed; font-weight:600; color:#6e6e73; text-align:center; white-space:nowrap; font-size:0.9em; }
     .q-table th:first-child { text-align:left; }
-    .q-table td { padding:5px 6px; border:1px solid #dee2e6; vertical-align:middle; }
-    .q-table td input { width:100%; border:1px solid #ced4da; border-radius:4px; padding:4px 6px; font-size:0.88em; box-sizing:border-box; }
+    .q-table td { padding:5px 6px; border:1px solid #e8e8ed; vertical-align:middle; }
+    .q-table td input { width:100%; border:1px solid #d2d2d7; border-radius:6px; padding:4px 6px; font-size:0.88em; box-sizing:border-box; font-family:inherit; }
     .q-table td input[type=number] { text-align:right; }
-    .q-readonly { text-align:right; color:#495057; white-space:nowrap; background:#fafafa; }
-    .q-total-cell { text-align:right; font-weight:700; color:#1e3a8a; white-space:nowrap; background:#eff6ff; }
+    .q-readonly { text-align:right; color:#6e6e73; white-space:nowrap; background:#fafafa; }
+    .q-total-cell { text-align:right; font-weight:700; color:#0071e3; white-space:nowrap; background:#f0f7ff; }
     .q-total-table { width:280px; margin:14px 0 0 auto; border-collapse:collapse; font-size:0.9em; }
-    .q-total-table td { padding:7px 12px; border:1px solid #dee2e6; }
-    .q-total-table .tl { background:#f8f9fa; font-weight:600; color:#495057; text-align:right; }
-    .q-total-table .tv { text-align:right; font-weight:600; color:#2c5282; }
-    .q-total-table .grand td { background:#dbeafe; color:#1e3a8a; font-weight:700; font-size:1.0em; }
-    .q-total-table .korean td { background:#f0f7ff; color:#1e40af; font-weight:700; text-align:center; font-size:0.95em; border-top:2px solid #93c5fd; }
+    .q-total-table td { padding:7px 12px; border:1px solid #e8e8ed; }
+    .q-total-table .tl { background:#f5f5f7; font-weight:600; color:#6e6e73; text-align:right; }
+    .q-total-table .tv { text-align:right; font-weight:600; color:#0071e3; }
+    .q-total-table .grand td { background:#f0f7ff; color:#0071e3; font-weight:700; font-size:1.0em; }
+    .q-total-table .korean td { background:#f5f5f7; color:#1d1d1f; font-weight:700; text-align:center; font-size:0.95em; border-top:2px solid #0071e3; }
     .q-btn-row { display:flex; gap:8px; margin:10px 0 0; }
-    .q-add-btn { padding:7px 15px; border:1px dashed #adb5bd; background:#f8f9fa; border-radius:6px; cursor:pointer; font-size:0.85em; color:#495057; transition:all 0.2s; }
-    .q-add-btn:hover { background:#e9ecef; border-color:#868e96; }
-    .q-del-empty-btn { padding:7px 15px; border:1px solid #dee2e6; background:#fff; border-radius:6px; cursor:pointer; font-size:0.85em; color:#6c757d; transition:all 0.2s; }
-    .q-del-empty-btn:hover { background:#f8f9fa; color:#495057; }
+    .q-add-btn { padding:7px 15px; border:1px dashed #c7c7cc; background:#f5f5f7; border-radius:8px; cursor:pointer; font-size:0.85em; color:#6e6e73; transition:all 0.15s; font-family:inherit; }
+    .q-add-btn:hover { background:#e8e8ed; border-color:#a1a1a6; }
+    .q-del-empty-btn { padding:7px 15px; border:1px solid #e8e8ed; background:#fff; border-radius:8px; cursor:pointer; font-size:0.85em; color:#a1a1a6; transition:all 0.15s; font-family:inherit; }
+    .q-del-empty-btn:hover { background:#f5f5f7; color:#6e6e73; }
     .q-col-hide { display: none; }
-    .q-print-btn { padding:10px 22px; background:linear-gradient(135deg,#667eea,#764ba2); color:white; border:none; border-radius:8px; cursor:pointer; font-size:0.95em; font-weight:700; box-shadow:0 4px 12px rgba(102,126,234,0.4); transition:all 0.3s; }
-    .q-print-btn:hover { transform:translateY(-1px); box-shadow:0 6px 16px rgba(102,126,234,0.5); }
-    .q-del-btn { background:none; border:none; color:#dc3545; cursor:pointer; font-size:1.1em; padding:2px 4px; line-height:1; }
-    .q-del-btn:hover { color:#a71d2a; }
-    .q-export-btn { padding:10px 20px; background:linear-gradient(135deg,#fd7e14,#e85d04); color:white; border:none; border-radius:8px; cursor:pointer; font-size:0.9em; font-weight:700; box-shadow:0 4px 12px rgba(232,93,4,0.35); transition:all 0.3s; }
-    .q-export-btn:hover { transform:translateY(-1px); box-shadow:0 6px 16px rgba(232,93,4,0.5); }
+    .q-print-btn { padding:10px 22px; background:#1d1d1f; color:white; border:none; border-radius:10px; cursor:pointer; font-size:0.9em; font-weight:700; transition:all 0.2s; font-family:inherit; }
+    .q-print-btn:hover { background:#3a3a3c; transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,0.2); }
+    .q-del-btn { background:none; border:none; color:#ff3b30; cursor:pointer; font-size:1.1em; padding:2px 4px; line-height:1; }
+    .q-del-btn:hover { color:#c0392b; }
+    .q-pdf-btn { padding:10px 22px; background:#0071e3; color:white; border:none; border-radius:10px; cursor:pointer; font-size:0.9em; font-weight:700; transition:all 0.2s; font-family:inherit; }
+    .q-pdf-btn:hover { background:#0077ed; transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,113,227,0.35); }
 
     #scrollTopBtn {
-      position: fixed; bottom: 30px; right: 30px;
-      width: 48px; height: 48px; border-radius: 50%;
-      background: linear-gradient(135deg, #667eea, #764ba2);
-      color: white; border: none; font-size: 1.3em;
+      position: fixed; bottom: 28px; right: 28px;
+      width: 44px; height: 44px; border-radius: 50%;
+      background: #1d1d1f;
+      color: white; border: none; font-size: 1.1em;
       cursor: pointer; display: none;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-      transition: all 0.3s; z-index: 9999;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+      transition: all 0.2s; z-index: 9999;
     }
-    #scrollTopBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+    #scrollTopBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
+
+    /* ---- 썸네일 우클릭 컨텍스트 메뉴 ---- */
+    #pageCtxMenu {
+      position: fixed; z-index: 99999; display: none;
+      background: rgba(29,29,31,0.96);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.40);
+      padding: 5px; min-width: 210px;
+    }
+    .ctx-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-radius: 7px; cursor: pointer;
+      color: #f5f5f7; font-size: 0.87em; gap: 16px;
+      transition: background 0.12s;
+    }
+    .ctx-item:hover { background: rgba(255,255,255,0.13); }
+    .ctx-item.ctx-danger { color: #ff6961; }
+    .ctx-item.ctx-danger:hover { background: rgba(255,59,48,0.18); }
+    .ctx-key {
+      color: #8e8e93; font-size: 0.8em; font-weight: 600;
+      background: rgba(255,255,255,0.08); border-radius: 5px;
+      padding: 1px 6px; flex-shrink: 0; letter-spacing: 0.3px;
+    }
+    .ctx-sep { height: 1px; background: rgba(255,255,255,0.10); margin: 4px 2px; }
 
     /* ---- 썸네일 hover 반투명 오버레이 ---- */
     .page-thumb-wrap::after {
-      content: ''; position: absolute; inset: 0; border-radius: 6px;
-      background: rgba(0,0,0,0.22);
+      content: ''; position: absolute; inset: 0; border-radius: 5px;
+      background: rgba(0,0,0,0.18);
       opacity: 0; transition: opacity 0.15s; pointer-events: none; z-index: 9;
     }
     .page-item:hover .page-thumb-wrap::after { opacity: 1; }
 
-    /* ---- 삭제 버튼 — 썸네일 우상단 ---- */
+    /* ---- 삭제 버튼 — 카드 우상단 ---- */
     .page-btn-del {
       position: absolute; top: 7px; right: 7px;
-      width: 30px; height: 30px; border-radius: 8px;
-      background: rgba(56,161,105,0.88); color: white;
-      border: none; cursor: pointer; font-size: 13px; font-weight: 700;
+      width: clamp(22px, calc(var(--thumb-size, 160px) * 0.175), 40px);
+      height: clamp(22px, calc(var(--thumb-size, 160px) * 0.175), 40px);
+      border-radius: 7px;
+      background: rgba(44,44,46,0.82); color: white;
+      border: none; cursor: pointer;
+      font-size: clamp(10px, calc(var(--thumb-size, 160px) * 0.082), 16px);
+      font-weight: 700;
       display: flex; align-items: center; justify-content: center;
       padding: 0; z-index: 13;
       opacity: 0; pointer-events: none;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
       transition: opacity 0.15s, transform 0.12s, background 0.12s;
     }
     .page-item:hover .page-btn-del { opacity: 1; pointer-events: auto; }
-    .page-btn-del:hover { background: rgba(39,103,73,0.95) !important; transform: scale(1.1); }
+    .page-btn-del:hover { background: rgba(255,59,48,0.9) !important; transform: scale(1.1); }
 
-    /* ---- 회전 그룹 — 썸네일 중앙 ---- */
+    /* ---- 회전 그룹 — 썸네일 최하단 좌우 ---- */
     .page-rotate-group {
       position: absolute; inset: 0;
-      display: flex; align-items: center; justify-content: center; gap: 22px;
-      padding-top: 80px;
+      display: flex; align-items: flex-end; justify-content: space-between;
+      padding: 0 clamp(6px, calc(var(--thumb-size, 160px) * 0.06), 18px) clamp(6px, calc(var(--thumb-size, 160px) * 0.05), 12px);
       opacity: 0; pointer-events: none;
       transition: opacity 0.15s; z-index: 11;
     }
     .page-item:hover .page-rotate-group { opacity: 1; pointer-events: auto; }
     .page-btn-ccw, .page-btn-cw {
-      width: 30px; height: 30px; border-radius: 50%;
-      background: rgba(56,161,105,0.88); color: white;
-      border: none; cursor: pointer; font-size: 16px;
+      width: clamp(22px, calc(var(--thumb-size, 160px) * 0.175), 40px);
+      height: clamp(22px, calc(var(--thumb-size, 160px) * 0.175), 40px);
+      border-radius: 50%;
+      background: rgba(44,44,46,0.82); color: white;
+      border: none; cursor: pointer;
+      font-size: clamp(11px, calc(var(--thumb-size, 160px) * 0.096), 19px);
       display: flex; align-items: center; justify-content: center;
-      padding: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      padding: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       transition: transform 0.12s, background 0.12s;
     }
-    .page-btn-ccw:hover, .page-btn-cw:hover { background: rgba(39,103,73,0.95); transform: scale(1.12); }
+    .page-btn-ccw:hover, .page-btn-cw:hover { background: rgba(0,113,227,0.9); transform: scale(1.12); }
     .page-insert-btn {
       position: absolute; bottom: 0; left: 0; right: 0;
       padding: 5px 6px;
-      background: rgba(56,161,105,0.88); color: #fff;
-      border: none; border-radius: 0 0 8px 8px;
-      cursor: pointer; font-size: 0.74em; font-weight: 600;
+      background: rgba(44,44,46,0.82); color: #fff;
+      border: none; border-radius: 0 0 9px 9px;
+      cursor: pointer; font-size: 0.72em; font-weight: 600;
       opacity: 0; pointer-events: none;
       transition: opacity 0.15s;
       white-space: nowrap;
     }
     .page-item:hover .page-insert-btn { opacity: 1; pointer-events: auto; }
-    .page-insert-btn:hover { background: rgba(39,103,73,0.95); }
+    .page-insert-btn:hover { background: rgba(0,113,227,0.9); }
     .page-item.blank {
-      border-color: #adb5bd !important;
-      background: linear-gradient(135deg, #f8f9fa, #e9ecef) !important;
+      border-color: #d2d2d7 !important;
+      background: #f5f5f7 !important;
     }
-    .page-item.blank .page-type { color: #6c757d !important; }
-    .page-item.blank .page-thumbnail { opacity: 0.55; }
+    .page-item.blank .page-type { color: #a1a1a6 !important; }
+    .page-item.blank .page-thumbnail { opacity: 0.5; }
     .blank-badge {
       display: inline-block; font-size: 0.65em; font-weight: 400;
-      color: #868e96; vertical-align: middle; margin-left: 3px;
+      color: #a1a1a6; vertical-align: middle; margin-left: 3px;
     }
 
+    /* ---- 왼쪽 사이드바 ---- */
+    :root { --sb-width: 280px; }
+    #thumbSidebar {
+      position: fixed; left: 0; top: 0; bottom: 0; width: var(--sb-width);
+      background: #1c1c1e;
+      border-right: 1px solid rgba(255,255,255,0.08);
+      overflow-y: scroll; overflow-x: hidden;
+      display: none;
+      /* 폭에 따라 열 수 자동 조정 (110px 최소 셀) */
+      grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+      grid-auto-rows: min-content;
+      align-content: start;
+      gap: 16px;
+      padding: 50px 10px 50px 8px;
+      z-index: 500;
+    }
+    /* 사이드바 폭 조절 핸들 */
+    #sbResizer {
+      position: fixed; top: 0; bottom: 0; width: 7px;
+      left: calc(var(--sb-width) - 3px);
+      cursor: col-resize; z-index: 520;
+      display: none;
+    }
+    #sbResizer:hover, #sbResizer.sb-resizing { background: rgba(0,113,227,0.45); }
+    /* 사이드바 접기/펼치기 토글 탭 */
+    #sbToggle {
+      position: fixed; top: 50%; left: 0; transform: translateY(-50%);
+      width: 22px; height: 64px;
+      display: none; align-items: center; justify-content: center;
+      background: #2c2c2e; color: #f5f5f7;
+      border: 1px solid rgba(255,255,255,0.14); border-left: none;
+      border-radius: 0 8px 8px 0;
+      font-size: 11px; cursor: pointer; z-index: 521;
+      opacity: 0.75; transition: opacity 0.15s, background 0.15s;
+    }
+    #sbToggle:hover { opacity: 1; background: #0071e3; }
+    body.sidebar-open #sbToggle { left: var(--sb-width); }
+    /* 상시 보이는 스크롤바 — 사각형 */
+    #thumbSidebar::-webkit-scrollbar { width: 12px; }
+    #thumbSidebar::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); border-radius: 0; }
+    #thumbSidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.28); border-radius: 0; }
+    #thumbSidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.50); }
+    .sb-item {
+      cursor: grab; border-radius: 6px; padding: 5px 4px;
+      text-align: center;
+      border: 1.5px solid transparent;
+      transition: background 0.12s, border-color 0.12s;
+      user-select: none;
+    }
+    .sb-item:active  { cursor: grabbing; }
+    .sb-item:hover,
+    .sb-item.peer-hover {
+      background: rgba(0,113,227,0.22);
+      border-color: rgba(0,113,227,0.7) !important;
+      box-shadow: 0 0 0 1px rgba(0,113,227,0.4);
+    }
+    .sb-item.sb-active { background: rgba(255,255,255,0.07); box-shadow: inset 2px 0 0 #0071e3; }
+    .sb-item img     { width: 100%; height: auto; display: block; border-radius: 3px; pointer-events: none; }
+    .sb-item.sb-color-page { border-color: #30d158; }
+    .sb-item.sb-color-page.sb-active { border-color: #30d158; box-shadow: inset 2px 0 0 #0071e3; }
+    .sb-num { font-size: 0.62em; color: #f5f5f7; margin-top: 3px; }
+    .sb-item.sb-active .sb-num { color: #aeaeb2; font-weight: 600; }
+    .sb-item.sb-selected {
+      background: #2c2c2e !important;
+      border-color: #666 !important;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
+    }
+    .sb-item.sb-selected .sb-num { color: #aeaeb2; font-weight: 700; }
+    .sb-item.sb-dragging  { opacity: 0.35; }
+    .sb-item.sb-drag-before { box-shadow: -3px 0 0 #0071e3; }
+    .sb-item.sb-drag-after  { box-shadow:  3px 0 0 #0071e3; }
+    body.sidebar-open { padding-left: calc(var(--sb-width) + 12px); }
+    @keyframes appleNav {
+      0%   { transform: scale(1);     box-shadow: 0 2px  8px rgba(0,0,0,0.08);  }
+      30%  { transform: scale(1.022); box-shadow: 0 10px 36px rgba(0,113,227,0.22), 0 2px 8px rgba(0,0,0,0.10); }
+      100% { transform: scale(1);     box-shadow: 0 2px  8px rgba(0,0,0,0.08);  }
+    }
+    .page-apple-nav {
+      animation: appleNav 0.75s cubic-bezier(0.4, 0, 0.2, 1) both;
+      will-change: transform, box-shadow;
+    }
+
+    /* ---- 드래그 앤 드롭 ---- */
+    .page-item.dragging   { opacity: 0.35; cursor: grabbing; }
+    .page-item.drag-before { box-shadow: -4px 0 0 0 #0071e3 !important; }
+    .page-item.drag-after  { box-shadow:  4px 0 0 0 #0071e3 !important; }
+
     @media (max-width: 768px) {
-      .container { margin: 10px; border-radius: 15px; }
-      .header h1 { font-size: 2em; }
+      .container { margin: 10px; border-radius: 14px; }
+      .header h1 { font-size: 1.6em; }
       .stats-grid { grid-template-columns: 1fr; }
       .pages-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
       .selection-controls { flex-direction: column; align-items: flex-start; }
@@ -445,7 +631,7 @@
           <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
           <button class="sel-btn" onclick="insertBlankPage(-1)" title="1페이지 앞에 빈 페이지 삽입">➕ 맨 앞 빈 페이지</button>
           <button class="sel-btn" id="undoDeleteBtn" onclick="undoDelete()" style="display:none;">↩ 삭제 되돌리기</button>
-          <span class="jump-bar">
+          <span class="jump-bar" style="margin-left:auto;">
             <input type="number" id="jumpPageInput" min="1" placeholder="페이지 번호"
               onkeydown="if(event.key==='Enter')jumpToPage()">
             <button class="sel-btn" onclick="jumpToPage()">↳ 이동</button>
@@ -455,11 +641,15 @@
           <span class="proc-label">처리 옵션:</span>
           <button class="opt-btn" id="opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="clear-opts-btn" id="clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
+          <label style="display:flex;align-items:center;gap:5px;font-size:0.82em;color:#0071e3;font-weight:600;cursor:pointer;margin-left:4px;">
+            <input type="checkbox" id="includeAmountChk" style="accent-color:#0071e3;width:14px;height:14px;cursor:pointer;">
+            금액 포함
+          </label>
           <button class="apply-btn" id="applyBtn" onclick="applyAndDownload()" disabled>📥 적용 후 다운로드</button>
         </div>
       </div>
 
-      <h3 style="margin:30px 0 8px; color:#333;">📄 페이지별 상세 정보</h3>
+      <h3 style="color:#1d1d1f; margin:30px 0 8px;">📄 페이지별 상세 정보</h3>
       <p class="convert-hint">페이지 썸네일을 클릭하면 흑백으로 변환할 페이지를 선택할 수 있습니다</p>
 
       <div class="pages-grid" id="pagesGrid"></div>
@@ -504,10 +694,49 @@
         </table>
         <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end;">
           <button class="q-print-btn" onclick="printQuote()">🖨️ 견적서 인쇄</button>
-          <button class="q-export-btn" onclick="exportToBusinessMgmt()">📤 업무 관리 앱으로 내보내기</button>
+          <button class="q-pdf-btn" onclick="saveQuotePDF()">📄 PDF로 저장</button>
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- 왼쪽 미니 썸네일 사이드바 -->
+  <div id="thumbSidebar"></div>
+  <div id="sbResizer" title="드래그하여 사이드바 폭 조절"></div>
+  <button id="sbToggle" title="사이드바 접기/펼치기 (S)">◀</button>
+
+  <!-- 썸네일 우클릭 컨텍스트 메뉴 -->
+  <div id="pageCtxMenu">
+    <div class="ctx-item" onclick="ctxInsertBlank()">
+      <span>📄 빈 페이지 추가</span><span class="ctx-key">W</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxRotate(90)">
+      <span>↻ 오른쪽 회전</span><span class="ctx-key">R</span>
+    </div>
+    <div class="ctx-item" onclick="ctxRotate(-90)">
+      <span>↺ 왼쪽 회전</span><span class="ctx-key">L</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxApplyBW()">
+      <span>⬛ 흑백변환 선택</span><span class="ctx-key">B</span>
+    </div>
+    <div class="ctx-item ctx-danger" onclick="ctxClearBW()">
+      <span>✕ 선택 해제</span><span class="ctx-key">C</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item ctx-danger" onclick="ctxDeletePage()">
+      <span>🗑 페이지 삭제</span><span class="ctx-key">Del</span>
+    </div>
+  </div>
+
+  <!-- 플로팅 썸네일 줌 위젯 -->
+  <div id="thumbZoomWidget">
+    <button class="thumb-zoom-btn" id="zoomOutBtn" onclick="changeThumbZoom(-1)" title="썸네일 축소 (Ctrl+[)">−</button>
+    <span class="thumb-zoom-divider"></span>
+    <span class="thumb-zoom-pct" id="zoomPct">100%</span>
+    <span class="thumb-zoom-divider"></span>
+    <button class="thumb-zoom-btn" id="zoomInBtn" onclick="changeThumbZoom(+1)" title="썸네일 확대 (Ctrl+])">+</button>
   </div>
 
   <button id="scrollTopBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})">▲</button>
@@ -697,6 +926,8 @@
         } else {
           activeTabId = null;
           resultsSection.style.display = 'none';
+          setThumbZoomWidgetVisible(false);
+          showSidebar(false);
           hideLoading(); progressBar.style.display = 'none';
           hideError(); hideSuccess();
           originalPdfBytes = null; originalFileName = '';
@@ -723,6 +954,8 @@
     }
 
     function renderTabUI(tab) {
+      setThumbZoomWidgetVisible(true);
+      showSidebar(true);
       const total = tab.pageResults.length;
       totalPagesEl.textContent     = total;
       colorPagesEl.textContent     = tab.colorCount;
@@ -817,8 +1050,8 @@
 
         let colorCount = 0, bwCount = 0, done = 0;
 
-        // 페이지당 분석 동시 16개
-        const CONCURRENCY = 16;
+        // 페이지당 분석 동시 처리 — CPU 코어 수에 맞게 자동 설정 (최소 8, 최대 32)
+        const CONCURRENCY = Math.min(32, Math.max(8, navigator.hardwareConcurrency || 8));
         let qi = 0;
         const tasks = Array.from({ length: totalPages }, (_, i) => async () => {
           const pn   = i + 1;
@@ -854,30 +1087,29 @@
 
     async function analyzePageColor(page) {
       try {
-        const viewport = page.getViewport({ scale: 0.5 });
+        // 단일 렌더링(0.5x)으로 색상 분석 + 썸네일 동시 처리
+        // UI 최대 썸네일 너비 ~200px; A4(595pt) * 0.5 = 297px → 충분한 해상도
+        const vp = page.getViewport({ scale: 0.5 });
         const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-        canvas.width  = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        await page.render({ canvasContext: context, viewport }).promise;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        canvas.width  = Math.ceil(vp.width);
+        canvas.height = Math.ceil(vp.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
 
-        const imageData  = context.getImageData(0, 0, canvas.width, canvas.height);
-        const data       = imageData.data;
-        const totalPixels = data.length / 4;
-        const sampleStep  = Math.max(1, Math.floor(totalPixels / 30000));
-        let grayscalePixels = 0;
-
+        // 색상 분석
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        const totalPixels = data.length >> 2;
+        const sampleStep  = Math.max(1, totalPixels / 15000 | 0);
+        let gray = 0;
         for (let i = 0; i < data.length; i += sampleStep * 4) {
           const r = data[i], g = data[i+1], b = data[i+2];
-          const max   = Math.max(r, g, b);
-          const delta = max - Math.min(r, g, b);
-          if (Math.abs(r-g) <= 1 && Math.abs(g-b) <= 1 && Math.abs(r-b) <= 1 && (max === 0 ? 0 : delta/max) < 0.05) {
-            grayscalePixels++;
-          }
+          if (Math.abs(r-g) <= 1 && Math.abs(g-b) <= 1 && Math.abs(r-b) <= 1) gray++;
         }
-        const sampledCount = Math.ceil(totalPixels / sampleStep);
-        const isColor   = !(grayscalePixels / sampledCount >= 0.999999);
-        const thumbnail = canvas.toDataURL('image/jpeg', 0.5);
+        const sampled = Math.ceil(totalPixels / sampleStep);
+        const isColor = gray / sampled < 0.999999;
+
+        // 썸네일: 같은 캔버스에서 생성 (추가 렌더링 불필요)
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.85);
         return { isColor, thumbnail, thumbW: canvas.width, thumbH: canvas.height };
       } catch {
         return { isColor: false, thumbnail: null };
@@ -897,57 +1129,57 @@
       rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}`;
 
       resultsSection.style.display = 'block';
+      setThumbZoomWidgetVisible(true);
+      showSidebar(true);
+      applyThumbFontStep(thumbStepIdx);
+      setTimeout(initSidebarObserver, 200);
       updateSelectedCount();
       initQuoteSection(colorCount, grayscaleCount);
       updateDownloadBtn();
     }
 
-    // ── 썸네일 흑백 변환 ─────────────────────────────────────────────────────
+    // ── 썸네일 흑백 표시 — CSS filter (GPU 가속, 픽셀 연산 없음) ─────────────
     function convertImgToGrayscale(img) {
-      const canvas = document.createElement('canvas');
-      canvas.width  = img.naturalWidth  || img.width;
-      canvas.height = img.naturalHeight || img.height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const d = imageData.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const gray = Math.round(0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2]);
-        d[i] = d[i+1] = d[i+2] = gray;
-      }
-      ctx.putImageData(imageData, 0, 0);
-      img.src = canvas.toDataURL('image/jpeg', 0.85);
+      if (img) img.style.filter = 'grayscale(1)';
     }
 
-    function applyGrayscaleToEl(el, pageNum) {
+    function applyGrayscaleToEl(el, pageNum, sbEl) {
       const img = el.querySelector('.page-thumbnail');
-      if (!img) return;
-      if (!originalThumbnails.has(pageNum)) originalThumbnails.set(pageNum, img.src);
-      convertImgToGrayscale(img);
+      if (img) img.style.filter = 'grayscale(1)';
       const span = el.querySelector('.page-type-inline');
       if (span && !span.dataset.orig) span.dataset.orig = span.textContent;
       if (span) span.textContent = '흑백';
+      // 사이드바 동기 (sbEl 미전달 시 DOM 탐색)
+      const sb = sbEl ?? sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
+      if (sb) { const sbImg = sb.querySelector('img'); if (sbImg) sbImg.style.filter = 'grayscale(1)'; }
     }
 
-    function restoreThumbnailEl(el, pageNum) {
+    function restoreThumbnailEl(el, pageNum, sbEl) {
       const img = el.querySelector('.page-thumbnail');
-      if (img && originalThumbnails.has(pageNum)) img.src = originalThumbnails.get(pageNum);
+      if (img) img.style.filter = '';
       const span = el.querySelector('.page-type-inline');
       if (span && span.dataset.orig) { span.textContent = span.dataset.orig; delete span.dataset.orig; }
+      // 사이드바 동기
+      const sb = sbEl ?? sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
+      if (sb) { const sbImg = sb.querySelector('img'); if (sbImg) sbImg.style.filter = ''; }
     }
 
     // ── 페이지 선택 ──────────────────────────────────────────────────────────
     let lastClickedIdx = null; // Shift+클릭 범위 기준점
 
-    function selectPageEl(pageNum, element) {
+    function selectPageEl(pageNum, element, sbEl) {
       selectedPages.add(pageNum);
       element.classList.add('selected');
-      applyGrayscaleToEl(element, pageNum);
+      const sb = sbEl ?? sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
+      applyGrayscaleToEl(element, pageNum, sb);
+      if (sb) sb.classList.add('sb-selected');
     }
-    function deselectPageEl(pageNum, element) {
+    function deselectPageEl(pageNum, element, sbEl) {
       selectedPages.delete(pageNum);
       element.classList.remove('selected');
-      restoreThumbnailEl(element, pageNum);
+      const sb = sbEl ?? sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
+      restoreThumbnailEl(element, pageNum, sb);
+      if (sb) sb.classList.remove('sb-selected');
     }
 
     function togglePageSelection(pageNum, element, event) {
@@ -978,23 +1210,33 @@
       updateSelectedCount();
     }
 
+    // 요소 Map 한 번에 수집 → 루프 내 querySelector 제거 (O(n²) → O(n))
+    function buildElMaps() {
+      const pageElMap = new Map(), sbElMap = new Map();
+      document.querySelectorAll('.page-item[data-page]')
+        .forEach(el => pageElMap.set(+el.dataset.page, el));
+      sidebar.querySelectorAll('[data-sb-page]')
+        .forEach(el => sbElMap.set(+el.dataset.sbPage, el));
+      return { pageElMap, sbElMap };
+    }
+
     function selectAllColor() {
       deselectAll();
+      const { pageElMap, sbElMap } = buildElMaps();
       pageResults.forEach(r => {
         if (!r || !r.isColor) return;
-        selectedPages.add(r.pageNum);
-        const el = document.querySelector(`[data-page="${r.pageNum}"]`);
-        if (el) { el.classList.add('selected'); applyGrayscaleToEl(el, r.pageNum); }
+        const el = pageElMap.get(r.pageNum);
+        if (el) selectPageEl(r.pageNum, el, sbElMap.get(r.pageNum));
       });
       updateSelectedCount();
     }
 
     function selectAll() {
+      const { pageElMap, sbElMap } = buildElMaps();
       pageResults.forEach(r => {
         if (!r || selectedPages.has(r.pageNum)) return;
-        selectedPages.add(r.pageNum);
-        const el = document.querySelector(`[data-page="${r.pageNum}"]`);
-        if (el) { el.classList.add('selected'); applyGrayscaleToEl(el, r.pageNum); }
+        const el = pageElMap.get(r.pageNum);
+        if (el) selectPageEl(r.pageNum, el, sbElMap.get(r.pageNum));
       });
       updateSelectedCount();
     }
@@ -1003,7 +1245,15 @@
       selectedPages.clear();
       document.querySelectorAll('.page-item.selected').forEach(el => {
         el.classList.remove('selected');
-        restoreThumbnailEl(el, parseInt(el.dataset.page));
+        const img = el.querySelector('.page-thumbnail');
+        if (img) img.style.filter = '';
+        const span = el.querySelector('.page-type-inline');
+        if (span && span.dataset.orig) { span.textContent = span.dataset.orig; delete span.dataset.orig; }
+      });
+      sidebar.querySelectorAll('.sb-item.sb-selected').forEach(el => {
+        el.classList.remove('sb-selected');
+        const sbImg = el.querySelector('img');
+        if (sbImg) sbImg.style.filter = '';
       });
       updateSelectedCount();
     }
@@ -1028,6 +1278,126 @@
       colorPercentEl.textContent = Math.round(newColor / pageResults.filter(Boolean).length * 100) + '%';
       rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorPages)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayPages)}`;
       initQuoteSection(newColor, newGray);
+    }
+
+    // ── 썸네일 크기 조절 ─────────────────────────────────────────────────────
+    // 50% ~ 300%, 10% 단위 (기준 100% = 160px)
+    const THUMB_BASE  = 160;
+    const THUMB_STEPS = Array.from({ length: 26 }, (_, i) => Math.round(THUMB_BASE * (50 + i * 10) / 100));
+    // [80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480]
+    let thumbStepIdx = 5; // 100% (index 5: 50+5*10=100%)
+
+    function thumbFontStep(idx) {
+      if (idx <= 2)  return 1;
+      if (idx <= 4)  return 2;
+      if (idx <= 6)  return 3;
+      if (idx <= 9)  return 4;
+      if (idx <= 12) return 5;
+      if (idx <= 16) return 6;
+      if (idx <= 20) return 7;
+      return 8;
+    }
+    function applyThumbFontStep(idx) {
+      const grid = document.getElementById('pagesGrid');
+      for (let i = 1; i <= 8; i++) grid.classList.remove('thumb-fs-' + i);
+      grid.classList.add('thumb-fs-' + thumbFontStep(idx));
+    }
+
+    function changeThumbZoom(dir) {
+      const next = thumbStepIdx + dir;
+      if (next < 0 || next >= THUMB_STEPS.length) return;
+      thumbStepIdx = next;
+      const px  = THUMB_STEPS[thumbStepIdx];
+      const pct = 50 + thumbStepIdx * 10;
+      document.getElementById('pagesGrid').style.setProperty('--thumb-size', px + 'px');
+      document.getElementById('zoomPct').textContent = pct + '%';
+      document.getElementById('zoomOutBtn').disabled = thumbStepIdx === 0;
+      document.getElementById('zoomInBtn').disabled  = thumbStepIdx === THUMB_STEPS.length - 1;
+      applyThumbFontStep(thumbStepIdx);
+    }
+
+    function setThumbZoomWidgetVisible(visible) {
+      document.getElementById('thumbZoomWidget').style.display = visible ? 'flex' : 'none';
+    }
+
+    // ── 단축키 ───────────────────────────────────────────────────────────────
+    // Ctrl 조합: [ 축소 / ] 확대 / Z 삭제 되돌리기
+    document.addEventListener('keydown', e => {
+      if (!e.ctrlKey) return;
+      if (e.key === '[' || e.key === 'BracketLeft')  { e.preventDefault(); changeThumbZoom(-1); }
+      else if (e.key === ']' || e.key === 'BracketRight') { e.preventDefault(); changeThumbZoom(+1); }
+      else if (e.key === 'z' || e.key === 'Z')        { e.preventDefault(); undoDelete(); }
+    });
+
+    // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)
+    document.addEventListener('keydown', e => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+      if (!pageResults.length) return;
+      switch (e.key) {
+        case 'w': case 'W': e.preventDefault(); ctxInsertBlank();  break;
+        case 'r': case 'R': e.preventDefault(); ctxRotate(90);     break;
+        case 'l': case 'L': e.preventDefault(); ctxRotate(-90);    break;
+        case 'b': case 'B': e.preventDefault(); ctxApplyBW();      break;
+        case 'c': case 'C':      e.preventDefault(); ctxClearBW();      break;
+        case 's': case 'S':      e.preventDefault(); showSidebar(!sbVisible); break;
+        case 'Delete':           e.preventDefault(); ctxDeletePage();   break;
+      }
+    });
+
+    // ── 컨텍스트 메뉴 ────────────────────────────────────────────────────────
+    let ctxTargetIdx = -1;   // 우클릭·마우스오버된 썸네일의 pageResults 인덱스
+    const ctxMenu = document.getElementById('pageCtxMenu');
+
+    function showCtxMenu(e, idx) {
+      ctxTargetIdx = idx;
+      const menuW = 220, menuH = 200;
+      let x = e.clientX, y = e.clientY;
+      if (x + menuW > window.innerWidth)  x = window.innerWidth  - menuW - 6;
+      if (y + menuH > window.innerHeight) y = window.innerHeight - menuH - 6;
+      ctxMenu.style.left    = x + 'px';
+      ctxMenu.style.top     = y + 'px';
+      ctxMenu.style.display = 'block';
+    }
+    function hideCtxMenu() { ctxMenu.style.display = 'none'; }
+
+    document.addEventListener('click',       hideCtxMenu);
+    document.addEventListener('contextmenu', e => { if (!e.target.closest('.page-item')) hideCtxMenu(); });
+    document.addEventListener('keydown',     e => { if (e.key === 'Escape') hideCtxMenu(); });
+
+    // 컨텍스트 메뉴 액션 (ctxTargetIdx 또는 마우스오버 썸네일 기준)
+    function ctxInsertBlank() {
+      hideCtxMenu();
+      if (ctxTargetIdx < 0) return;
+      insertBlankPage(ctxTargetIdx);
+    }
+    function ctxRotate(deg) {
+      hideCtxMenu();
+      if (ctxTargetIdx < 0) return;
+      rotatePage(ctxTargetIdx, deg);
+    }
+    function ctxApplyBW() {
+      hideCtxMenu();
+      if (ctxTargetIdx < 0) return;
+      const r = pageResults[ctxTargetIdx];
+      if (!r) return;
+      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+      if (el && !el.classList.contains('selected')) selectPageEl(r.pageNum, el);
+      updateSelectedCount();
+    }
+    function ctxClearBW() {
+      hideCtxMenu();
+      if (ctxTargetIdx < 0) return;
+      const r = pageResults[ctxTargetIdx];
+      if (!r) return;
+      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+      if (el && el.classList.contains('selected')) deselectPageEl(r.pageNum, el);
+      updateSelectedCount();
+    }
+    function ctxDeletePage() {
+      hideCtxMenu();
+      if (ctxTargetIdx < 0) return;
+      deletePage(ctxTargetIdx);
     }
 
     function jumpToPage() {
@@ -1119,11 +1489,18 @@
                .filter(x => selectedPages.has(x.pageNum) && !x.isBlank)
           : [];
 
-        let sem = 8;
-        const waitSem = () => new Promise(res => {
-          const chk = () => { if (sem > 0) { sem--; res(); } else setTimeout(chk, 10); };
-          chk();
-        });
+        // Promise 기반 세마포어 (setTimeout 폴링 제거) — 동시 수는 CPU 코어 수 기반
+        const SEM_LIMIT = Math.max(navigator.hardwareConcurrency || 4, 4);
+        let sem = SEM_LIMIT;
+        const semQueue = [];
+        const waitSem = () => {
+          if (sem > 0) { sem--; return Promise.resolve(); }
+          return new Promise(res => semQueue.push(res));
+        };
+        const releaseSem = () => {
+          if (semQueue.length > 0) semQueue.shift()();
+          else sem++;
+        };
 
         let done = 0;
         const convStats = { errors: 0, errPages: [] };
@@ -1141,7 +1518,7 @@
               done++;
               updateProgress(10 + done / toConvert.length * 82);
             } finally {
-              sem++;
+              releaseSem();
             }
           })()));
         }
@@ -1157,8 +1534,10 @@
           + String(now.getMinutes()).padStart(2,'0')
           + String(now.getSeconds()).padStart(2,'0');
 
-        const suffix = toConvert.length > 0 ? '흑백' : '편집';
-        const defaultName = `${originalFileName}_${suffix}_${ds}.pdf`;
+        const includeAmt = document.getElementById('includeAmountChk')?.checked;
+        const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + it.qty * it.price * (it.copies || 1), 0) : 0;
+        const amountStr = (includeAmt && totalSum > 0) ? `_${totalSum}원` : '';
+        const defaultName = `${originalFileName}_수정_${ds}${amountStr}.pdf`;
         await window.electronAPI.saveFile({ defaultName, buffer: pdfBytes });
         updateProgress(100);
 
@@ -1229,11 +1608,344 @@
       return out;
     }
 
-    // Latin-1 인코딩으로 바이너리 안전하게 처리
+    // ── 관대한 inflate: /Length 손상으로 잘린 스트림 부분 복구 ──────────────────
+    // 일부 DTP PDF는 /Length가 실제보다 짧게 기록되어 pako.inflate가 undefined 반환
+    // (Acrobat·PDF.js는 부분 디코딩으로 정상 표시) → 스트리밍 모드로 가능한 만큼 복구
+    function inflateLenient(data, expectedLen, fillValue) {
+      try {
+        const r = pako.inflate(data);
+        if (r && r.length) return r;
+      } catch(e) {}
+      try {
+        const chunks = [];
+        const inf = new pako.Inflate();
+        inf.onData = (c) => chunks.push(c);
+        inf.onEnd = () => {};
+        inf.push(data, true);
+        const total = chunks.reduce((s, c) => s + c.length, 0);
+        if (!total) return null;
+        const outLen = expectedLen != null ? Math.max(total, expectedLen) : total;
+        const out = new Uint8Array(outLen);
+        if (fillValue) out.fill(fillValue, 0);
+        let off = 0;
+        for (const ch of chunks) { out.set(ch, off); off += ch.length; }
+        if (fillValue && off < outLen) out.fill(fillValue, off);
+        return out;
+      } catch(e) { return null; }
+    }
+
+    // ── 이미지 딕셔너리 공용 헬퍼 ────────────────────────────────────────────────
+    function imgFilterNameOf(pdfDoc, dict) {
+      const Nm = n => PDFLib.PDFName.of(n);
+      let f = dict.get(Nm('Filter'));
+      if (!f) return '';
+      try { if (f.objectNumber != null) f = pdfDoc.context.lookup(f); } catch(e) {}
+      if (f && f.encodedName) return f.encodedName;
+      if (f && typeof f.size === 'function' && f.size() === 1) {
+        try { const e = pdfDoc.context.lookup(f.get(0)) ?? f.get(0); return e?.encodedName || ''; } catch(e) {}
+      }
+      return f && typeof f.size === 'function' ? '[multi]' : '';
+    }
+    function imgPredictorOf(pdfDoc, dict) {
+      const Nm = n => PDFLib.PDFName.of(n);
+      let p = 1;
+      const dpRef = dict.get(Nm('DecodeParms')) || dict.get(Nm('DP'));
+      if (!dpRef) return 1;
+      try {
+        let dp = pdfDoc.context.lookup(dpRef) ?? dpRef;
+        if (dp && typeof dp.size === 'function' && dp.size() > 0) dp = pdfDoc.context.lookup(dp.get(0)) ?? dp.get(0);
+        if (dp && typeof dp.get === 'function') {
+          const pObj = dp.get(Nm('Predictor'));
+          if (pObj) p = +(pObj.numberValue ?? pObj.asNumber?.() ?? 1);
+        }
+      } catch(e) {}
+      return p;
+    }
+
+    // ── PDF 함수 평가기 — Type 2(지수)/0(샘플)/3(스티칭) → f(t)=출력배열, 미지원 null ──
+    function buildPdfFnEvaluator(pdfDoc, fnObjRaw, depth = 0) {
+      if (depth > 4) return null;
+      const Nm = n => PDFLib.PDFName.of(n);
+      const lkf = (v) => { try { const r = pdfDoc.context.lookup(v); return r !== undefined ? r : v; } catch(e) { return v; } };
+      const fnObj = lkf(fnObjRaw);
+      const fGet = fnObj && (fnObj.get ? fnObj.get.bind(fnObj) : fnObj.dict?.get?.bind(fnObj.dict));
+      if (!fGet) return null;
+      const num = (v) => { const o = lkf(v); const n = o?.numberValue ?? o?.asNumber?.(); return n != null ? +n : null; };
+      const arr = (ref) => {
+        const a = lkf(ref);
+        if (!a || typeof a.size !== 'function') return null;
+        const out = [];
+        for (let i = 0; i < a.size(); i++) { const n = num(a.get(i)); out.push(n != null ? n : 0); }
+        return out;
+      };
+      const ft = num(fGet(Nm('FunctionType')));
+      if (ft === 2) {
+        const c0 = arr(fGet(Nm('C0'))) || [0];
+        const c1 = arr(fGet(Nm('C1'))) || [1];
+        const N = num(fGet(Nm('N'))) ?? 1;
+        return (t) => c0.map((v, i) => v + Math.pow(t, N) * ((c1[i] ?? 1) - v));
+      }
+      if (ft === 0) {
+        const fd = fnObj.dict;
+        if (!fd || !fnObj.contents) return null;
+        const range = arr(fd.get(Nm('Range')));
+        const sizeA = arr(fd.get(Nm('Size')));
+        const bps = num(fd.get(Nm('BitsPerSample')));
+        if (!range || !sizeA || sizeA.length !== 1 || ![1,2,4,8,16,32].includes(bps)) return null;
+        const nOut = range.length / 2;
+        const fname = imgFilterNameOf(pdfDoc, fd);
+        let raw = fnObj.contents;
+        if (fname === '/FlateDecode' || fname === '/Fl') raw = inflateLenient(raw, null);
+        else if (fname !== '') return null;
+        const total = sizeA[0];
+        if (!raw || raw.length * 8 < total * nOut * bps) return null;
+        const maxS = Math.pow(2, bps) - 1;
+        const decode = arr(fd.get(Nm('Decode'))) || range;
+        const samples = [];
+        let rp = 0;
+        const rd = () => { let v = 0; for (let k = 0; k < bps; k++) { v = v*2 + ((raw[rp>>3] >> (7-(rp&7))) & 1); rp++; } return v; };
+        for (let si = 0; si < total; si++) {
+          const tuple = [];
+          for (let ci = 0; ci < nOut; ci++) {
+            const r = rd();
+            tuple.push(decode[ci*2] + (r / maxS) * (decode[ci*2+1] - decode[ci*2]));
+          }
+          samples.push(tuple);
+        }
+        const domain = arr(fd.get(Nm('Domain'))) || [0, 1];
+        const encode = arr(fd.get(Nm('Encode'))) || [0, total - 1];
+        return (t) => {
+          const tc = Math.max(domain[0], Math.min(domain[1], t));
+          let e = encode[0] + (tc - domain[0]) * (encode[1] - encode[0]) / ((domain[1] - domain[0]) || 1);
+          e = Math.max(0, Math.min(total - 1, e));
+          const i0 = Math.floor(e), i1 = Math.min(total - 1, i0 + 1), fr = e - i0;
+          return samples[i0].map((v, ci) => v + fr * (samples[i1][ci] - v));
+        };
+      }
+      if (ft === 3) {
+        const fnsA = lkf(fGet(Nm('Functions')));
+        if (!fnsA || typeof fnsA.size !== 'function') return null;
+        const subs = [];
+        for (let i = 0; i < fnsA.size(); i++) {
+          const ev = buildPdfFnEvaluator(pdfDoc, fnsA.get(i), depth + 1);
+          if (!ev) return null;
+          subs.push(ev);
+        }
+        const bounds = arr(fGet(Nm('Bounds'))) || [];
+        const domain = arr(fGet(Nm('Domain'))) || [0, 1];
+        const encode = arr(fGet(Nm('Encode'))) || [];
+        return (t) => {
+          const tc = Math.max(domain[0], Math.min(domain[1], t));
+          let k = 0;
+          while (k < bounds.length && tc >= bounds[k]) k++;
+          const lo = k === 0 ? domain[0] : bounds[k-1];
+          const hi = k === bounds.length ? domain[1] : bounds[k];
+          const e0 = encode.length > k*2 ? encode[k*2] : 0;
+          const e1 = encode.length > k*2+1 ? encode[k*2+1] : 1;
+          return subs[k](e0 + (tc - lo) * (e1 - e0) / ((hi - lo) || 1));
+        };
+      }
+      return null;
+    }
+
+    // ── 색공간 배열 → 채널 수/종류 (이미지 변환용 공용) ──────────────────────────
+    function imgResolveCSKind(pdfDoc, cs) {
+      const Nm = n => PDFLib.PDFName.of(n);
+      const lkf = (v) => { try { const r = pdfDoc.context.lookup(v); return r !== undefined ? r : v; } catch(e) { return v; } };
+      const o = lkf(cs);
+      if (!o) return null;
+      const name = o.encodedName || '';
+      if (name === '/DeviceCMYK' || name === '/CalCMYK') return 'cmyk';
+      if (name === '/DeviceRGB' || name === '/CalRGB') return 'rgb';
+      if (name === '/DeviceGray' || name === '/CalGray') return 'gray';
+      if (typeof o.size === 'function' && o.size() > 0) {
+        const f = lkf(o.get(0))?.encodedName || '';
+        if (f === '/ICCBased' && o.size() > 1) {
+          const st = lkf(o.get(1));
+          const nObj = st?.dict?.get?.(Nm('N'));
+          const n = nObj ? +(nObj.numberValue ?? nObj.asNumber?.() ?? 0) : 0;
+          return n === 4 ? 'cmyk' : n === 3 ? 'rgb' : n === 1 ? 'gray' : null;
+        }
+        if (f === '/CalRGB' || f === '/DeviceRGB') return 'rgb';
+        if (f === '/CalGray' || f === '/DeviceGray') return 'gray';
+        if (f === '/DeviceCMYK') return 'cmyk';
+      }
+      return null;
+    }
+    function imgGrayOfBytes(kind, b0, b1, b2, b3) {
+      if (kind === 'cmyk') {
+        const C = b0/255, M = b1/255, Y = b2/255, K = b3/255;
+        return Math.round(255 * Math.max(0, Math.min(1, 0.299*(1-C)*(1-K) + 0.587*(1-M)*(1-K) + 0.114*(1-Y)*(1-K))));
+      }
+      if (kind === 'rgb') return Math.round(Math.max(0, Math.min(255, 0.299*b0 + 0.587*b1 + 0.114*b2)));
+      return b0;
+    }
+
+    // ── Indexed 이미지: 팔레트만 그레이로 교체 (픽셀 무수정) ─────────────────────
+    // 픽셀 스트림이 /Length 손상으로 잘려 있어도 안전 + inflate/deflate 생략으로 고속
+    function convertIndexedImagePalette(pdfDoc, img, csArr) {
+      try {
+        const Nm = n => PDFLib.PDFName.of(n);
+        const lkf = (v) => { try { const r = pdfDoc.context.lookup(v); return r !== undefined ? r : v; } catch(e) { return v; } };
+        const kind = imgResolveCSKind(pdfDoc, csArr.get(1));
+        if (!kind) return false;
+        const hivalO = lkf(csArr.get(2));
+        const hival = hivalO != null ? +(hivalO.numberValue ?? hivalO.asNumber?.() ?? 255) : 255;
+        if (!(hival >= 0 && hival <= 255)) return false;
+        const nCh = kind === 'cmyk' ? 4 : kind === 'rgb' ? 3 : 1;
+        // 팔레트 바이트 추출 (PDFString/HexString 또는 스트림, Flate 압축 가능)
+        const luRaw = csArr.get(3);
+        const lu = lkf(luRaw);
+        let pal = null;
+        if (lu && lu.contents) {
+          const fname = lu.dict ? imgFilterNameOf(pdfDoc, lu.dict) : '';
+          if (fname === '/FlateDecode' || fname === '/Fl') pal = inflateLenient(lu.contents, (hival + 1) * nCh);
+          else if (fname === '') pal = lu.contents;
+        } else if (lu && lu.asBytes) pal = lu.asBytes();
+        else if (luRaw && luRaw.asBytes) pal = luRaw.asBytes();
+        if (!pal) return false;
+        // 그레이 팔레트 생성 → [/Indexed /DeviceGray hival <hex>]
+        let hex = '';
+        for (let i = 0; i <= hival; i++) {
+          const off = i * nCh;
+          const g = imgGrayOfBytes(kind, pal[off] ?? 0, pal[off+1] ?? 0, pal[off+2] ?? 0, pal[off+3] ?? 0);
+          hex += g.toString(16).padStart(2, '0');
+        }
+        const newCS = pdfDoc.context.obj([
+          Nm('Indexed'), Nm('DeviceGray'), PDFLib.PDFNumber.of(hival), PDFLib.PDFHexString.of(hex),
+        ]);
+        img.dict.set(Nm('ColorSpace'), newCS);
+        return true;
+      } catch(e) { console.warn('Indexed 팔레트 변환 실패:', e); return false; }
+    }
+
+    // ── Separation/DeviceN 틴트 → 그레이 LUT(256) ───────────────────────────────
+    function buildTintGrayLUT(pdfDoc, csArr) {
+      try {
+        const sz = csArr.size();
+        const altKind = imgResolveCSKind(pdfDoc, csArr.get(2));
+        const ev = sz > 3 ? buildPdfFnEvaluator(pdfDoc, csArr.get(3)) : null;
+        const lut = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) {
+          const t = i / 255;
+          let g;
+          if (ev && altKind) {
+            const ch = ev(t);
+            if (altKind === 'cmyk' && ch.length >= 4)
+              g = 0.299*(1-ch[0])*(1-ch[3]) + 0.587*(1-ch[1])*(1-ch[3]) + 0.114*(1-ch[2])*(1-ch[3]);
+            else if (altKind === 'rgb' && ch.length >= 3)
+              g = 0.299*ch[0] + 0.587*ch[1] + 0.114*ch[2];
+            else if (altKind === 'gray' && ch.length >= 1)
+              g = ch[0];
+            else g = 1 - t;
+          } else g = 1 - t;  // 함수 평가 불가 — 잉크량 반전 근사
+          lut[i] = Math.round(Math.max(0, Math.min(1, g)) * 255);
+        }
+        return lut;
+      } catch(e) { return null; }
+    }
+
+    // ── Separation 1채널 이미지 → DeviceGray ───────────────────────────────────
+    // 1순위: 픽셀을 LUT로 직접 변환 / 2순위(스트림 손상 등): 색공간만 그레이 버전으로 교체
+    async function convertSeparationImage(pdfDoc, img, csArr) {
+      try {
+        const Nm = n => PDFLib.PDFName.of(n);
+        const lut = buildTintGrayLUT(pdfDoc, csArr);
+        if (!lut) return;
+        // 이미지 Decode 배열([1 0] 반전 등)을 LUT에 합성
+        let lutF = lut;
+        try {
+          const decA = pdfDoc.context.lookup(img.dict.get(Nm('Decode')));
+          if (decA && typeof decA.size === 'function' && decA.size() >= 2) {
+            const dv = (i) => { const o = pdfDoc.context.lookup(decA.get(i)) ?? decA.get(i); return +(o.numberValue ?? o.asNumber?.() ?? (i === 0 ? 0 : 1)); };
+            const d0 = dv(0), d1 = dv(1);
+            if (d0 !== 0 || d1 !== 1) {
+              lutF = new Uint8Array(256);
+              for (let s = 0; s < 256; s++) {
+                const t = d0 + (s / 255) * (d1 - d0);
+                lutF[s] = lut[Math.round(Math.max(0, Math.min(1, t)) * 255)];
+              }
+            }
+          }
+        } catch(e) {}
+
+        const gn = (k, dflt) => { const o = img.dict.get(Nm(k)); return o ? +(o.numberValue ?? o.asNumber?.() ?? dflt) : dflt; };
+        const w = gn('Width', 0), h = gn('Height', 0), bpcV = gn('BitsPerComponent', 8);
+        const fname = imgFilterNameOf(pdfDoc, img.dict);
+
+        // DCT(JPEG) — 워커에 LUT 전달 (1채널 JPEG의 픽셀값 = 틴트 t)
+        if (fname === '/DCTDecode' || fname === '/DCT') {
+          await convertJpegXObjectToGrayscale(pdfDoc, img, lutF);
+          return;
+        }
+
+        // 픽셀 직접 변환 (무필터 또는 FlateDecode, 8bpc)
+        let tBytes = null;
+        if (bpcV === 8 && w > 0 && h > 0) {
+          if (fname === '') {
+            tBytes = img.contents;
+          } else if (fname === '/FlateDecode' || fname === '/Fl') {
+            tBytes = inflateLenient(img.contents, h * (imgPredictorOf(pdfDoc, img.dict) >= 10 ? w + 1 : w));
+            if (tBytes) {
+              const predictor = imgPredictorOf(pdfDoc, img.dict);
+              if (predictor >= 10) {
+                const d = removePNGPredictor(tBytes, w, 1);
+                tBytes = (d && d.length >= w * h) ? d : null;
+              } else if (tBytes.length < w * h) tBytes = null;
+            }
+          }
+        }
+        if (tBytes) {
+          const gray = new Uint8Array(w * h);
+          for (let i = 0; i < w * h; i++) gray[i] = lutF[tBytes[i] ?? 0];
+          const _dg = getDotGain();
+          if (_dg) {
+            for (let i = 0; i < gray.length; i++) {
+              const v = gray[i] / 255;
+              let out;
+              if (_dg === 25) out = Math.sqrt(v);
+              else { const disc = 0.04+3.2*v; const d = (1.8-Math.sqrt(disc<0?0:disc))/1.6; out = 1-Math.max(0,Math.min(1,d)); }
+              gray[i] = Math.round(Math.max(0, Math.min(255, out * 255)));
+            }
+          }
+          const predicted = applyPNGPredictorGray(gray, w, h);
+          const compressed = pako.deflate(predicted, { level: 1 });
+          img.contents = compressed;
+          img.dict.set(Nm('Filter'),           Nm('FlateDecode'));
+          img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
+          img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
+          img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(compressed.length));
+          img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({
+            Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: w }));
+          img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
+          img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
+          img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
+          return;
+        }
+
+        // 폴백: 색공간만 교체 — [/Separation name /DeviceGray 샘플함수(LUT)]
+        // 픽셀 무수정이라 손상 스트림도 렌더링 동작 보존
+        const lutDeflated = pako.deflate(lutF, { level: 1 });
+        const fnDict = pdfDoc.context.obj({
+          FunctionType: 0, Domain: [0, 1], Range: [0, 1],
+          Size: [256], BitsPerSample: 8, Filter: 'FlateDecode', Length: lutDeflated.length,
+        });
+        const fnStream = PDFLib.PDFRawStream.of(fnDict, lutDeflated);
+        const fnRef = pdfDoc.context.register(fnStream);
+        const sepName = csArr.size() > 1 ? csArr.get(1) : Nm('All');
+        img.dict.set(Nm('ColorSpace'), pdfDoc.context.obj([Nm('Separation'), sepName, Nm('DeviceGray'), fnRef]));
+      } catch(e) { console.warn('Separation 이미지 변환 실패:', e); }
+    }
+
+    // Latin-1 인코딩으로 바이너리 안전하게 처리 (청크 fromCharCode — O(n), 정확한 1:1 왕복)
+    // 주의: TextDecoder('latin1')은 windows-1252라서 0x80~0x9F 바이트가 손상됨 — 사용 금지
     function decodeLatin1(bytes) {
-      let s = '';
-      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-      return s;
+      const CHUNK = 0x8000;
+      if (bytes.length <= CHUNK) return String.fromCharCode.apply(null, bytes);
+      const parts = [];
+      for (let i = 0; i < bytes.length; i += CHUNK)
+        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
+      return parts.join('');
     }
     function encodeLatin1(str) {
       const b = new Uint8Array(str.length);
@@ -1241,11 +1953,28 @@
       return b;
     }
 
+    // applyOps용 정규식 pre-compile (매 호출 new RegExp 생성 방지 — 속도 최적화)
+    const _MS_NB = '(-?\\d*\\.?\\d+)', _MS_WS = '\\s+', _MS_TL = '(?=[\\s\\r\\n]|$)';
+    const _MS_RE_rg   = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}rg${_MS_TL}`, 'gm');
+    const _MS_RE_RG   = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}RG${_MS_TL}`, 'gm');
+    const _MS_RE_k    = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}k${_MS_TL}`, 'gm');
+    const _MS_RE_K    = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}K${_MS_TL}`, 'gm');
+    const _MS_RE_SCN4 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SCN${_MS_TL}`, 'gm');
+    const _MS_RE_scn4 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}scn${_MS_TL}`, 'gm');
+    const _MS_RE_SC4  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SC${_MS_TL}`, 'gm');
+    const _MS_RE_sc4  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}sc${_MS_TL}`, 'gm');
+    const _MS_RE_SCN3 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SCN${_MS_TL}`, 'gm');
+    const _MS_RE_scn3 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}scn${_MS_TL}`, 'gm');
+    const _MS_RE_SC3  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SC${_MS_TL}`, 'gm');
+    const _MS_RE_sc3  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}sc${_MS_TL}`, 'gm');
+    const _MS_RE_SCN1 = new RegExp(`${_MS_NB}${_MS_WS}SCN${_MS_TL}`, 'gm');
+    const _MS_RE_scn1 = new RegExp(`${_MS_NB}${_MS_WS}scn${_MS_TL}`, 'gm');
+    const _MS_RE_SC1  = new RegExp(`${_MS_NB}${_MS_WS}SC${_MS_TL}`, 'gm');
+    const _MS_RE_sc1  = new RegExp(`${_MS_NB}${_MS_WS}sc${_MS_TL}`, 'gm');
+
     // PDF 콘텐츠 스트림의 색상 연산자를 그레이스케일로 치환
     function grayifyStream(bytes) {
       const s = decodeLatin1(bytes);
-      const nb = '(-?\\d*\\.?\\d+)';
-      const ws = '\\s+';
       const lum = (r, g, b) => (0.2126*+r + 0.7152*+g + 0.0722*+b).toFixed(4);
       const lumCmyk = (c, m, y, k) => {
         const R=(1-+c)*(1-+k), G=(1-+m)*(1-+k), B=(1-+y)*(1-+k);
@@ -1255,44 +1984,28 @@
       // 색상 연산자 치환 함수 (세그먼트 단위 적용)
       const applyOps = seg => {
         // ── rg/RG (RGB) ──
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}rg(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, r, g, b) => `${lum(r,g,b)} g`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}RG(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, r, g, b) => `${lum(r,g,b)} G`);
+        seg = seg.replace(_MS_RE_rg, (_, r, g, b) => `${lum(r,g,b)} g`);
+        seg = seg.replace(_MS_RE_RG, (_, r, g, b) => `${lum(r,g,b)} G`);
         // ── k/K (CMYK) ──
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}k(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}K(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
+        seg = seg.replace(_MS_RE_k, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
+        seg = seg.replace(_MS_RE_K, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
         // ── sc/SC/scn/SCN (명명된 색공간·Separation·DeviceN) ──
         // 처리 순서: 4인수 → 3인수 → 1인수 (다인수 패턴 먼저)
         // 4인수 CMYK 계열
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}SCN(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}scn(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}SC(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}${nb}${ws}sc(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
+        seg = seg.replace(_MS_RE_SCN4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
+        seg = seg.replace(_MS_RE_scn4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
+        seg = seg.replace(_MS_RE_SC4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
+        seg = seg.replace(_MS_RE_sc4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
         // 3인수 RGB 계열
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}SCN(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, r, g, b) => `${lum(r,g,b)} G`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}scn(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, r, g, b) => `${lum(r,g,b)} g`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}SC(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, r, g, b) => `${lum(r,g,b)} G`);
-        seg = seg.replace(new RegExp(`${nb}${ws}${nb}${ws}${nb}${ws}sc(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, r, g, b) => `${lum(r,g,b)} g`);
+        seg = seg.replace(_MS_RE_SCN3, (_, r, g, b) => `${lum(r,g,b)} G`);
+        seg = seg.replace(_MS_RE_scn3, (_, r, g, b) => `${lum(r,g,b)} g`);
+        seg = seg.replace(_MS_RE_SC3,  (_, r, g, b) => `${lum(r,g,b)} G`);
+        seg = seg.replace(_MS_RE_sc3,  (_, r, g, b) => `${lum(r,g,b)} g`);
         // 1인수 Separation 계열 (tint 1=어둠·0=밝음 → 반전하여 그레이)
-        seg = seg.replace(new RegExp(`${nb}${ws}SCN(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, t) => `${(1 - +t).toFixed(4)} G`);
-        seg = seg.replace(new RegExp(`${nb}${ws}scn(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, t) => `${(1 - +t).toFixed(4)} g`);
-        seg = seg.replace(new RegExp(`${nb}${ws}SC(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, t) => `${(1 - +t).toFixed(4)} G`);
-        seg = seg.replace(new RegExp(`${nb}${ws}sc(?=[\\s\\r\\n]|$)`, 'gm'),
-          (_, t) => `${(1 - +t).toFixed(4)} g`);
+        seg = seg.replace(_MS_RE_SCN1, (_, t) => `${(1 - +t).toFixed(4)} G`);
+        seg = seg.replace(_MS_RE_scn1, (_, t) => `${(1 - +t).toFixed(4)} g`);
+        seg = seg.replace(_MS_RE_SC1,  (_, t) => `${(1 - +t).toFixed(4)} G`);
+        seg = seg.replace(_MS_RE_sc1,  (_, t) => `${(1 - +t).toFixed(4)} g`);
         // ── /name cs, /name CS 제거 (색공간 지정 연산자 — 이미 위에서 색값 치환 완료) ──
         seg = seg.replace(/\/\w+\s+cs(?=[\s\r\n]|$)/gm, '');
         seg = seg.replace(/\/\w+\s+CS(?=[\s\r\n]|$)/gm, '');
@@ -1428,6 +2141,8 @@
         const xDict = pdfDoc.context.lookup(xRef);
         if (!xDict || typeof xDict.entries !== 'function') return;
 
+        // 순차 await 대신 병렬 처리 (속도 최적화 — 이미지 여러 장이 동시에 변환됨)
+        const xobjTasks = [];
         for (const [, ref] of xDict.entries()) {
           // 이미 처리한 XObject 중복 건너뜀
           const refKey = ref && ref.objectNumber != null
@@ -1443,39 +2158,185 @@
           const sn  = sub ? (sub.encodedName || '') : '';
 
           if (sn === '/Image') {
-            await convertXObjectImageToGrayscale(pdfDoc, xobj, resDict);
+            xobjTasks.push(convertXObjectImageToGrayscale(pdfDoc, xobj, resDict));
           } else if (sn === '/Form') {
-            // Form 콘텐츠 스트림 변환
-            await processContentStream(xobj);
-            // Transparency Group인 경우 Group/CS → DeviceGray
-            // (합성 시 기준 색공간이 남아 있으면 레이어 겹침에서 칼라 잔류)
-            try {
-              const grpRef = xobj.dict.get(Nm('Group'));
-              if (grpRef) {
-                const grp = pdfDoc.context.lookup(grpRef);
-                if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
+            xobjTasks.push((async () => {
+              // Form 콘텐츠 스트림 변환
+              await processContentStream(xobj);
+              // Transparency Group인 경우 Group/CS → DeviceGray
+              // (합성 시 기준 색공간이 남아 있으면 레이어 겹침에서 칼라 잔류)
+              try {
+                const grpRef = xobj.dict.get(Nm('Group'));
+                if (grpRef) {
+                  const grp = pdfDoc.context.lookup(grpRef);
+                  if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
+                }
+              } catch(e) {}
+              // Form 자신의 Resources도 재귀 처리 (중첩 이미지 대응)
+              const formResRef = xobj.dict.get(Nm('Resources'));
+              if (formResRef) {
+                const formRes = pdfDoc.context.lookup(formResRef);
+                await processXObjects(formRes, depth + 1);
+                processShading(formRes);
+                await processPatterns(formRes, depth + 1);
               }
-            } catch(e) {}
-            // Form 자신의 Resources도 재귀 처리 (중첩 이미지 대응)
-            const formResRef = xobj.dict.get(Nm('Resources'));
-            if (formResRef) {
-              const formRes = pdfDoc.context.lookup(formResRef);
-              await processXObjects(formRes, depth + 1);
-              processShading(formRes);
-            }
+            })());
           }
         }
+        if (xobjTasks.length > 0) await Promise.all(xobjTasks);
       };
 
       // ── Shading 그라데이션 처리 ─────────────────────────────────────────────────
-      // sh 연산자로 참조되는 Shading 리소스를 DeviceGray로 변환
-      // Type 1-3 (function-based): ColorSpace + Function C0/C1 변환
-      // Type 4-7 (mesh): 스트림 내 바이너리 색상 데이터 — 미구현 (복잡)
-      const convertShadingFunc = (funcObj) => {
-        if (!funcObj || !funcObj.get) return;
+      // sh 연산자·Shading Pattern으로 참조되는 Shading 리소스를 DeviceGray로 변환
+      // Type 1-3 (function-based): ColorSpace + Function 변환
+      // Type 4-7 (mesh): 정점 비트스트림의 색상 성분을 직접 그레이로 재작성
+
+      // 숫자/배열 조회 헬퍼 (간접 참조 해결 포함)
+      const _shNum = (v) => {
+        if (v == null) return null;
+        const o = pdfDoc.context.lookup(v) ?? v;
+        const n = o.numberValue ?? o.asNumber?.();
+        return n != null ? +n : null;
+      };
+      const _shArr = (ref) => {
+        if (!ref) return null;
+        const arr = pdfDoc.context.lookup(ref) ?? ref;
+        if (!arr || typeof arr.size !== 'function') return null;
+        const out = [];
+        for (let i = 0; i < arr.size(); i++) {
+          const n = _shNum(arr.get(i));
+          out.push(n != null ? n : 0);
+        }
+        return out;
+      };
+      // ColorSpace → 채널 수/종류 해석 (DeviceRGB/CMYK/Gray, CalRGB/Gray, ICCBased N)
+      const _shResolveCS = (csRef) => {
         try {
-          const ftObj = funcObj.get(Nm('FunctionType'));
+          if (!csRef) return null;
+          const cs = pdfDoc.context.lookup(csRef) ?? csRef;
+          const name = cs.encodedName;
+          if (name === '/DeviceRGB' || name === '/CalRGB') return { n: 3, kind: 'rgb' };
+          if (name === '/DeviceCMYK') return { n: 4, kind: 'cmyk' };
+          if (name === '/DeviceGray' || name === '/CalGray') return { n: 1, kind: 'gray' };
+          if (typeof cs.size === 'function' && cs.size() > 0) {
+            const first = pdfDoc.context.lookup(cs.get(0)) ?? cs.get(0);
+            const fn = first?.encodedName || '';
+            if (fn === '/ICCBased' && cs.size() > 1) {
+              const st = pdfDoc.context.lookup(cs.get(1));
+              const n = _shNum(st?.dict?.get?.(Nm('N')) ?? st?.get?.(Nm('N')));
+              if (n === 3) return { n: 3, kind: 'rgb' };
+              if (n === 4) return { n: 4, kind: 'cmyk' };
+              if (n === 1) return { n: 1, kind: 'gray' };
+            }
+            if (fn === '/CalRGB') return { n: 3, kind: 'rgb' };
+            if (fn === '/CalGray') return { n: 1, kind: 'gray' };
+            if (fn === '/DeviceRGB') return { n: 3, kind: 'rgb' };
+            if (fn === '/DeviceCMYK') return { n: 4, kind: 'cmyk' };
+          }
+        } catch(e) {}
+        return null;
+      };
+      const _shGrayOf = (comps, kind) => {
+        let g;
+        if (kind === 'cmyk' && comps.length >= 4) {
+          const [c, m, y, k] = comps;
+          g = 0.299*(1-c)*(1-k) + 0.587*(1-m)*(1-k) + 0.114*(1-y)*(1-k);
+        } else if (comps.length >= 3) {
+          g = 0.299*comps[0] + 0.587*comps[1] + 0.114*comps[2];
+        } else g = comps[0] ?? 0;
+        return Math.max(0, Math.min(1, g));
+      };
+
+      // FunctionType 0 (샘플 함수) 출력 → 그레이 변환. dryRun=true면 변환 가능 여부만 검사
+      const convertSampledFunc = (fn, dryRun) => {
+        try {
+          const fd = fn && fn.dict;
+          if (!fd || !fn.contents) return false;
+          const range = _shArr(fd.get(Nm('Range')));
+          if (!range || range.length < 2) return false;
+          const nOut = range.length / 2;
+          if (nOut === 1) return true;            // 이미 1채널 출력
+          if (nOut !== 3 && nOut !== 4) return false;
+          const kind = nOut === 4 ? 'cmyk' : 'rgb';
+          const bps = _shNum(fd.get(Nm('BitsPerSample')));
+          if (![1,2,4,8,16,32].includes(bps)) return false;
+          const sizeArr = _shArr(fd.get(Nm('Size')));
+          if (!sizeArr || !sizeArr.length) return false;
+          const total = sizeArr.reduce((a, b) => a * b, 1);
+          if (!total || total > 4e6) return false;
+          const filt = fd.get(Nm('Filter'));
+          let wasComp = false;
+          if (filt) {
+            const f = resolveFilterName(filt);
+            if (f !== '/FlateDecode' && f !== '/Fl') return false;
+            if (fd.get(Nm('DecodeParms')) || fd.get(Nm('DP'))) return false;
+            wasComp = true;
+          }
+          let raw = fn.contents;
+          if (wasComp) { try { raw = pako.inflate(raw); } catch(e) { return false; } }
+          if (raw.length * 8 < total * nOut * bps) return false;
+          if (dryRun) return true;
+
+          const decode = _shArr(fd.get(Nm('Decode'))) || range;  // 기본값 = Range
+          const maxS = Math.pow(2, bps) - 1;
+          // 비트 리더/라이터 (MSB-first 연속 패킹)
+          let rp = 0;
+          const rd = () => {
+            let v = 0;
+            for (let k = 0; k < bps; k++) { v = v * 2 + ((raw[rp >> 3] >> (7 - (rp & 7))) & 1); rp++; }
+            return v;
+          };
+          const out = []; let ob = 0, obn = 0;
+          const wr = (v) => {
+            for (let k = bps - 1; k >= 0; k--) {
+              ob = (ob << 1) | (Math.floor(v / Math.pow(2, k)) % 2); obn++;
+              if (obn === 8) { out.push(ob); ob = 0; obn = 0; }
+            }
+          };
+          const comps = new Array(nOut);
+          for (let si = 0; si < total; si++) {
+            for (let ci = 0; ci < nOut; ci++) {
+              const r = rd();
+              comps[ci] = decode[ci*2] + (r / maxS) * (decode[ci*2 + 1] - decode[ci*2]);
+            }
+            wr(Math.round(_shGrayOf(comps, kind) * maxS));
+          }
+          if (obn > 0) { out.push((ob << (8 - obn)) & 0xff); }
+          let newBytes = new Uint8Array(out);
+          if (wasComp) newBytes = pako.deflate(newBytes, { level: 1 });
+          fn.contents = newBytes;
+          fd.set(Nm('Length'), PDFLib.PDFNumber.of(newBytes.length));
+          fd.set(Nm('Range'), pdfDoc.context.obj([0, 1]));
+          try { fd.delete(Nm('Decode')); } catch(e) {}
+          return true;
+        } catch(e) { return false; }
+      };
+
+      // Function이 그레이로 변환 가능한지 사전 검사 (변환 도중 실패로 인한 반파 상태 방지)
+      const _shFuncConvertible = (funcObj, depth = 0) => {
+        if (!funcObj || depth > 4) return false;
+        const fGet = funcObj.get ? funcObj.get.bind(funcObj) : funcObj.dict?.get?.bind(funcObj.dict);
+        if (!fGet) return false;
+        const ft = _shNum(fGet(Nm('FunctionType')));
+        if (ft === 2) return true;
+        if (ft === 0) return convertSampledFunc(funcObj, true);
+        if (ft === 3) {
+          const fns = pdfDoc.context.lookup(fGet(Nm('Functions')));
+          if (!fns || typeof fns.size !== 'function') return false;
+          for (let i = 0; i < fns.size(); i++)
+            if (!_shFuncConvertible(pdfDoc.context.lookup(fns.get(i)), depth + 1)) return false;
+          return true;
+        }
+        return false;  // Type 4 (PostScript) 등 — 미지원
+      };
+
+      const convertShadingFunc = (funcObj) => {
+        const fGet = funcObj && (funcObj.get ? funcObj.get.bind(funcObj) : funcObj.dict?.get?.bind(funcObj.dict));
+        if (!fGet) return;
+        try {
+          const ftObj = fGet(Nm('FunctionType'));
           const ft = ftObj != null ? +(ftObj.numberValue ?? ftObj.asNumber?.() ?? -1) : -1;
+          if (ft === 0) { convertSampledFunc(funcObj, false); return; }
           if (ft === 2) {
             // Type 2 지수함수: C0/C1 → 그레이 값으로 교체
             const getColorArr = (key) => {
@@ -1520,6 +2381,140 @@
         } catch(e) {}
       };
 
+      // ── Type 4-7 mesh shading: 정점 비트스트림의 색상 성분을 그레이로 재작성 ──
+      // 스트림 구조 (PDF 32000 §8.7.4.5.5~8):
+      //   Type 4: [flag][x][y][c1..cn]  — 정점마다 바이트 경계 패딩
+      //   Type 5: [x][y][c1..cn]        — 연속 패킹 (VerticesPerRow 단위)
+      //   Type 6: [flag][12 or 8 점][4 or 2 색]  — 패치마다 바이트 경계 패딩
+      //   Type 7: [flag][16 or 12 점][4 or 2 색] — 패치마다 바이트 경계 패딩
+      const convertMeshShading = (shd, stype, csInfo) => {
+        try {
+          const dict = shd.dict;
+          if (!dict || !shd.contents || !csInfo || csInfo.n < 1) return;
+          if (csInfo.n === 1) { dict.set(Nm('ColorSpace'), Nm('DeviceGray')); return; }
+          const bpc  = _shNum(dict.get(Nm('BitsPerCoordinate')));
+          const bpcm = _shNum(dict.get(Nm('BitsPerComponent')));
+          const bpf  = stype === 5 ? 0 : _shNum(dict.get(Nm('BitsPerFlag')));
+          if (!bpc || !bpcm || (stype !== 5 && !bpf)) return;
+          if (bpc > 32 || bpcm > 16) return;
+          const dec = _shArr(dict.get(Nm('Decode')));
+          if (!dec || dec.length < 4 + csInfo.n * 2) return;
+
+          // 압축 해제 (FlateDecode만, predictor 없을 때만 — 그 외 안전 통과)
+          let raw = shd.contents;
+          let wasComp = false;
+          const filt = dict.get(Nm('Filter'));
+          if (filt) {
+            const f = resolveFilterName(filt);
+            if (f !== '/FlateDecode' && f !== '/Fl') return;
+            if (dict.get(Nm('DecodeParms')) || dict.get(Nm('DP'))) return;
+            try { raw = pako.inflate(raw); } catch(e) { return; }
+            wasComp = true;
+          }
+
+          // 비트 리더/라이터 (MSB-first)
+          const totalBits = raw.length * 8;
+          let rp = 0;
+          const rd = (n) => {
+            let v = 0;
+            for (let k = 0; k < n; k++) { v = v * 2 + ((raw[rp >> 3] >> (7 - (rp & 7))) & 1); rp++; }
+            return v;
+          };
+          const out = []; let ob = 0, obn = 0;
+          const wr = (v, n) => {
+            for (let k = n - 1; k >= 0; k--) {
+              ob = (ob << 1) | (Math.floor(v / Math.pow(2, k)) % 2); obn++;
+              if (obn === 8) { out.push(ob & 0xff); ob = 0; obn = 0; }
+            }
+          };
+          const cp = (n) => wr(rd(n), n);                       // 그대로 복사
+          const alignR = () => { rp = (rp + 7) & ~7; };
+          const alignW = () => { if (obn > 0) { out.push((ob << (8 - obn)) & 0xff); ob = 0; obn = 0; } };
+
+          const maxC = Math.pow(2, bpcm) - 1;
+          const comps = new Array(csInfo.n);
+          const grayComp = () => {                              // n개 색상 성분 → 그레이 1개
+            for (let ci = 0; ci < csInfo.n; ci++) {
+              const r = rd(bpcm);
+              comps[ci] = dec[4 + ci*2] + (r / maxC) * (dec[4 + ci*2 + 1] - dec[4 + ci*2]);
+            }
+            wr(Math.round(_shGrayOf(comps, csInfo.kind) * maxC), bpcm);
+          };
+
+          if (stype === 4) {
+            const recBits = bpf + 2*bpc + csInfo.n*bpcm;
+            while (rp + recBits <= totalBits) {
+              cp(bpf); cp(bpc); cp(bpc);
+              grayComp();
+              alignR(); alignW();
+            }
+          } else if (stype === 5) {
+            const recBits = 2*bpc + csInfo.n*bpcm;
+            while (rp + recBits <= totalBits) {
+              cp(bpc); cp(bpc);
+              grayComp();
+            }
+          } else {  // 6 (Coons), 7 (tensor)
+            const npts0 = stype === 7 ? 16 : 12, nptsN = stype === 7 ? 12 : 8;
+            while (rp + bpf <= totalBits) {
+              const save = rp;
+              const flag = rd(bpf);
+              const npts = flag === 0 ? npts0 : nptsN;
+              const ncol = flag === 0 ? 4 : 2;
+              if (flag > 3 || rp + npts*2*bpc + ncol*csInfo.n*bpcm > totalBits) { rp = save; break; }
+              wr(flag, bpf);
+              for (let p = 0; p < npts * 2; p++) cp(bpc);
+              for (let c = 0; c < ncol; c++) grayComp();
+              alignR(); alignW();
+            }
+          }
+          alignW();
+
+          // 스트림 거의 전체를 소비하지 못했다면 구조 해석 실패 — 원본 유지
+          if (totalBits - rp > 128) return;
+
+          let newBytes = new Uint8Array(out);
+          if (wasComp) newBytes = pako.deflate(newBytes, { level: 1 });
+          shd.contents = newBytes;
+          dict.set(Nm('Length'), PDFLib.PDFNumber.of(newBytes.length));
+          dict.set(Nm('Decode'), pdfDoc.context.obj(dec.slice(0, 4).concat([0, 1])));
+          dict.set(Nm('ColorSpace'), Nm('DeviceGray'));
+        } catch(e) {}
+      };
+
+      // Shading 1개 변환 (sh 연산자 리소스·Shading Pattern 공용)
+      const convertOneShading = (shd) => {
+        try {
+          const sDict = shd && (shd.dict || (shd.get ? shd : null));
+          if (!sDict || !sDict.get) return;
+          const stype = _shNum(sDict.get(Nm('ShadingType'))) || 0;
+          if (stype < 1 || stype > 7) return;
+          const csInfo = _shResolveCS(sDict.get(Nm('ColorSpace')));   // CS 변경 전에 해석
+          const funcRef = sDict.get(Nm('Function'));
+          const funcObj = funcRef ? pdfDoc.context.lookup(funcRef) : null;
+          // Function 배열(1-out 함수 n개)은 단일 그레이 함수로 합성 불가 — 안전 통과
+          if (funcObj && typeof funcObj.size === 'function') return;
+
+          if (funcObj) {
+            // 정점/도메인 데이터는 t값 그대로 — 함수 출력만 그레이로
+            if (!_shFuncConvertible(funcObj)) return;   // 변환 불가 함수 — 렌더링 보존 우선
+            convertShadingFunc(funcObj);
+            sDict.set(Nm('ColorSpace'), Nm('DeviceGray'));
+          } else if (stype >= 4 && stype <= 7) {
+            convertMeshShading(shd, stype, csInfo);
+          } else {
+            sDict.set(Nm('ColorSpace'), Nm('DeviceGray'));
+          }
+
+          // Background [c1..cn] → [gray]
+          if (csInfo && csInfo.n > 1) {
+            const bg = _shArr(sDict.get(Nm('Background')));
+            if (bg && bg.length >= csInfo.n)
+              sDict.set(Nm('Background'), pdfDoc.context.obj([_shGrayOf(bg, csInfo.kind)]));
+          }
+        } catch(e) {}
+      };
+
       const processShading = (resDict) => {
         if (!resDict) return;
         try {
@@ -1529,18 +2524,14 @@
           if (!shDict || typeof shDict.entries !== 'function') return;
           for (const [, shdRef] of shDict.entries()) {
             try {
-              const shd = pdfDoc.context.lookup(shdRef);
-              // Shading은 딕셔너리이거나 스트림(dict 속성 보유) — 공통 get() 추출
-              const shdGet = shd && (shd.get ? shd.get.bind(shd) : shd.dict?.get.bind(shd.dict));
-              const shdSet = shd && (shd.set ? shd.set.bind(shd) : shd.dict?.set.bind(shd.dict));
-              if (!shdGet || !shdSet) continue;
-              const typeRef = shdGet(Nm('ShadingType'));
-              const stype = typeRef ? +(typeRef.numberValue ?? typeRef.asNumber?.() ?? 0) : 0;
-              if (stype >= 1 && stype <= 3) {
-                shdSet(Nm('ColorSpace'), Nm('DeviceGray'));
-                const funcRef = shdGet(Nm('Function'));
-                if (funcRef) convertShadingFunc(pdfDoc.context.lookup(funcRef));
+              // 공유 객체 중복 변환 방지 (mesh 재작성·함수 변환은 2회 적용 시 왜곡)
+              const refKey = shdRef && shdRef.objectNumber != null
+                ? `${shdRef.objectNumber}_${shdRef.generationNumber ?? 0}` : null;
+              if (refKey) {
+                if (processedObjs.has(refKey)) continue;
+                processedObjs.add(refKey);
               }
+              convertOneShading(pdfDoc.context.lookup(shdRef));
             } catch(e) {}
           }
         } catch(e) {}
@@ -1555,6 +2546,8 @@
         if (!egRef) return;
         const egDict = pdfDoc.context.lookup(egRef);
         if (!egDict || typeof egDict.entries !== 'function') return;
+        // 순차 await 대신 병렬 처리 (속도 최적화)
+        const egTasks = [];
         for (const [, gsRef] of egDict.entries()) {
           try {
             const gs = pdfDoc.context.lookup(gsRef);
@@ -1579,18 +2572,79 @@
                 if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
               }
             } catch(e) {}
-            // SMask Form 콘텐츠 스트림 변환
-            await processContentStream(gForm);
-            // SMask Form 내부 리소스 재귀 처리
-            const fResRef = gForm.dict.get(Nm('Resources'));
-            if (fResRef) {
-              const fRes = pdfDoc.context.lookup(fResRef);
-              await processXObjects(fRes, depth + 1);
-              await processExtGState(fRes, depth + 1);
-              processShading(fRes);
+            egTasks.push((async () => {
+              try {
+                // SMask Form 콘텐츠 스트림 변환
+                await processContentStream(gForm);
+                // SMask Form 내부 리소스 재귀 처리
+                const fResRef = gForm.dict.get(Nm('Resources'));
+                if (fResRef) {
+                  const fRes = pdfDoc.context.lookup(fResRef);
+                  await processXObjects(fRes, depth + 1);
+                  await processExtGState(fRes, depth + 1);
+                  processShading(fRes);
+                  await processPatterns(fRes, depth + 1);
+                }
+              } catch(e) {}
+            })());
+          } catch(e) {}
+        }
+        if (egTasks.length > 0) await Promise.all(egTasks);
+      };
+
+      // ── Pattern 리소스 처리 ─────────────────────────────────────────────────
+      // scn/SCN의 /P0 등으로 호출되는 패턴은 자체 색상 정의를 갖고 있어 별도 변환 필요
+      //   PatternType 2 (Shading Pattern): 내부 Shading을 그레이 변환 ← 그라데이션 채우기의 주 경로
+      //   PatternType 1 (Tiling Pattern): 자체 콘텐츠 스트림 + Resources 재귀 변환
+      const processPatterns = async (resDict, depth = 0) => {
+        if (!resDict || depth > 6) return;
+        const patRef = resDict.get(Nm('Pattern'));
+        if (!patRef) return;
+        const patDict = pdfDoc.context.lookup(patRef);
+        if (!patDict || typeof patDict.entries !== 'function') return;
+        const patTasks = [];
+        for (const [, pRef] of patDict.entries()) {
+          try {
+            const refKey = pRef && pRef.objectNumber != null
+              ? `${pRef.objectNumber}_${pRef.generationNumber ?? 0}` : null;
+            if (refKey) {
+              if (processedObjs.has(refKey)) continue;
+              processedObjs.add(refKey);
+            }
+            const pat = pdfDoc.context.lookup(pRef);
+            if (!pat) continue;
+            const pGet = pat.get ? pat.get.bind(pat) : pat.dict?.get?.bind(pat.dict);
+            if (!pGet) continue;
+            const ptype = _shNum(pGet(Nm('PatternType'))) || 0;
+            if (ptype === 2) {
+              // Shading Pattern — Shading 항목만 변환 (딕셔너리형)
+              const shdRef = pGet(Nm('Shading'));
+              if (shdRef) {
+                const sKey = shdRef.objectNumber != null
+                  ? `${shdRef.objectNumber}_${shdRef.generationNumber ?? 0}` : null;
+                if (sKey && processedObjs.has(sKey)) continue;
+                if (sKey) processedObjs.add(sKey);
+                convertOneShading(pdfDoc.context.lookup(shdRef) ?? shdRef);
+              }
+            } else if (ptype === 1 && pat.dict && pat.contents) {
+              // Tiling Pattern — 콘텐츠 스트림(색상 연산자) + 내부 리소스 변환
+              patTasks.push((async () => {
+                try {
+                  await processContentStream(pat);
+                  const rRef = pat.dict.get(Nm('Resources'));
+                  if (rRef) {
+                    const r = pdfDoc.context.lookup(rRef);
+                    await processXObjects(r, depth + 1);
+                    await processExtGState(r, depth + 1);
+                    processShading(r);
+                    await processPatterns(r, depth + 1);
+                  }
+                } catch(e) {}
+              })());
             }
           } catch(e) {}
         }
+        if (patTasks.length > 0) await Promise.all(patTasks);
       };
 
       // 페이지 Resources 취득 + csGrayMap 빌드 (①보다 먼저 실행해야 함)
@@ -1673,6 +2727,9 @@
       // ② Shading 그라데이션 처리 (sh 연산자 참조 리소스)
       processShading(resDict);
 
+      // ② Pattern 처리 (Shading Pattern 그라데이션 채우기 + Tiling Pattern)
+      await processPatterns(resDict);
+
       // ② 페이지 자체의 투명도 그룹 색공간 → DeviceGray
       try {
         const pageGrpRef = node.get(Nm('Group'));
@@ -1741,51 +2798,77 @@
       if (!img || !img.dict || !img.contents) return;
       const Nm = n => PDFLib.PDFName.of(n);
 
-      // 이미 흑백이면 건너뜀 (간접 참조도 해결)
-      const csRaw = img.dict.get(Nm('ColorSpace'));
-      if (csRaw) {
-        let csCheck = csRaw;
-        if (csCheck.objectNumber != null) {
-          try { csCheck = pdfDoc.context.lookup(csCheck); } catch(e) {}
-        }
-        const csnCheck = csCheck ? (csCheck.encodedName || '') : '';
-        if (csnCheck === '/DeviceGray' || csnCheck === '/CalGray') return;
+      // ColorSpace 해석 (간접 참조 + 명명된 색공간 해결)
+      let csCheck = img.dict.get(Nm('ColorSpace'));
+      if (csCheck && csCheck.objectNumber != null) {
+        try { csCheck = pdfDoc.context.lookup(csCheck); } catch(e) {}
       }
+      // 명명된 색공간 (예: /Cs1) → Resources.ColorSpace에서 실제 정의로 해결
+      if (csCheck && csCheck.encodedName && resDict &&
+          !['/DeviceGray','/DeviceRGB','/DeviceCMYK','/CalGray','/CalRGB'].includes(csCheck.encodedName)) {
+        try {
+          const csResDict = pdfDoc.context.lookup(resDict.get(Nm('ColorSpace')));
+          if (csResDict) {
+            const realRef = csResDict.get(Nm(csCheck.encodedName.replace(/^\//, '')));
+            if (realRef) {
+              const resolved = pdfDoc.context.lookup(realRef);
+              if (resolved) csCheck = resolved;
+            }
+          }
+        } catch(e) {}
+      }
+      const csnCheck = csCheck ? (csCheck.encodedName || '') : '';
+      // 이미 흑백이면 건너뜀
+      if (csnCheck === '/DeviceGray' || csnCheck === '/CalGray') return;
+      // ImageMask는 색상 없음 — 건너뜀
+      try {
+        const im = img.dict.get(Nm('ImageMask'));
+        if (im && (im === PDFLib.PDFBool.True || im.asBoolean?.() === true || String(im) === 'true')) return;
+      } catch(e) {}
 
-      // Filter 취득 — PDFName 또는 배열([/FlateDecode]) 모두 처리
-      let filter = img.dict.get(Nm('Filter'));
-      if (!filter) return;
-      let fn = filter.encodedName || '';
-      if (!fn && typeof filter.size === 'function') {
-        // 배열 형태: 단일 요소만 처리 (멀티 필터는 건너뜀)
-        if (filter.size() === 1) {
-          try {
-            const f = pdfDoc.context.lookup(filter.get(0));
-            fn = f && f.encodedName ? f.encodedName : '';
-          } catch(e) {}
-        } else {
+      // ── 색공간 우선 라우팅 (필터와 무관하게 처리 가능한 유형) ──
+      if (csCheck && typeof csCheck.size === 'function' && csCheck.size() > 0) {
+        let first = null;
+        try { first = pdfDoc.context.lookup(csCheck.get(0)) ?? csCheck.get(0); } catch(e) {}
+        const firstName = first && first.encodedName ? first.encodedName : '';
+        if (firstName === '/Indexed') {
+          // 팔레트만 교체 — 픽셀 무수정 (손상 스트림 안전, 고속)
+          convertIndexedImagePalette(pdfDoc, img, csCheck);
+          return;
+        }
+        if (firstName === '/Separation') {
+          await convertSeparationImage(pdfDoc, img, csCheck);
           return;
         }
       }
 
+      // Filter 취득 — PDFName 또는 배열([/FlateDecode]) 모두 처리
+      const fn = imgFilterNameOf(pdfDoc, img.dict);
+      if (fn === '[multi]') return;  // 멀티 필터는 건너뜀
+
       if (fn === '/DCTDecode' || fn === '/DCT')
         await convertJpegXObjectToGrayscale(pdfDoc, img);
       else if (fn === '/FlateDecode' || fn === '/Fl')
-        await convertFlateXObjectToGrayscale(pdfDoc, img, resDict);
+        await convertFlateXObjectToGrayscale(pdfDoc, img, resDict, false);
       else if (fn === '/JPXDecode')
         await convertJpxXObjectToGrayscale(pdfDoc, img);
+      else if (fn === '')
+        // 비압축(Filter 없음) RGB/CMYK 이미지 — raw 모드로 변환
+        await convertFlateXObjectToGrayscale(pdfDoc, img, resDict, true);
     }
 
-    async function convertJpegXObjectToGrayscale(pdfDoc, img) {
+    async function convertJpegXObjectToGrayscale(pdfDoc, img, tintLUT = null) {
       try {
         const jpegBuf = img.contents.buffer.slice(
           img.contents.byteOffset,
           img.contents.byteOffset + img.contents.byteLength
         );
+        // tintLUT: Separation 이미지의 틴트→그레이 변환표 (1채널 JPEG 픽셀값 = 틴트 t)
+        const lutBuf = tintLUT ? tintLUT.buffer.slice(tintLUT.byteOffset, tintLUT.byteOffset + tintLUT.byteLength) : null;
         const { deflated, w, h } = await grayWorkerPool.run(
           'jpeg2gray',
-          { jpegBytes: jpegBuf, dotGain: getDotGain() },
-          [jpegBuf]
+          { jpegBytes: jpegBuf, dotGain: getDotGain(), lut: lutBuf },
+          lutBuf ? [jpegBuf, lutBuf] : [jpegBuf]
         );
         const compressed = new Uint8Array(deflated);
         const Nm = n => PDFLib.PDFName.of(n);
@@ -1799,7 +2882,6 @@
         img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({
           Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: w,
         }));
-        img.dict.delete(Nm('SMask'));
         img.dict.delete(Nm('Mask'));
         img.dict.delete(Nm('ImageMask'));
         img.dict.delete(Nm('Intent'));
@@ -1854,7 +2936,7 @@
         }
 
         const predicted  = applyPNGPredictorGray(grayBytes, iw, ih);
-        const compressed = pako.deflate(predicted, { level: 6 });
+        const compressed = pako.deflate(predicted, { level: 1 });
         img.contents = compressed;
         img.dict.set(Nm('Filter'),           Nm('FlateDecode'));
         img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
@@ -1865,7 +2947,6 @@
         img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({
           Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: iw,
         }));
-        img.dict.delete(Nm('SMask'));
         img.dict.delete(Nm('Mask'));
         img.dict.delete(Nm('ImageMask'));
         img.dict.delete(Nm('Intent'));
@@ -1878,9 +2959,26 @@
       }
     }
 
-    async function convertFlateXObjectToGrayscale(pdfDoc, img, resDict) {
+    async function convertFlateXObjectToGrayscale(pdfDoc, img, resDict, isRaw = false) {
       try {
         const Nm  = n => PDFLib.PDFName.of(n);
+
+        // DecodeParms에서 Predictor 값 읽기 (Indexed 블록에서도 필요하므로 최상단에 배치)
+        // PowerPoint PDF는 Filter/DecodeParms를 배열로 저장하는 경우가 있음: [<< Predictor 15 ... >>]
+        let predictor = 1;
+        const dpRef = img.dict.get(Nm('DecodeParms'));
+        if (dpRef) {
+          try {
+            let dp = pdfDoc.context.lookup(dpRef);
+            if (dp && typeof dp.size === 'function' && dp.size() > 0) {
+              dp = pdfDoc.context.lookup(dp.get(0));
+            }
+            if (dp && typeof dp.get === 'function') {
+              const pObj = dp.get(Nm('Predictor'));
+              if (pObj) predictor = +(pObj.numberValue ?? pObj.asNumber?.() ?? 1);
+            }
+          } catch(e) {}
+        }
 
         // ColorSpace 취득 및 해석 (간접 참조 · 배열 형태 대응)
         let csObj = img.dict.get(Nm('ColorSpace'));
@@ -1909,7 +3007,7 @@
             }
           } catch(e) {}
         }
-        // 배열 형태 [/ICCBased ref] 또는 [/CalRGB dict] 처리
+        // 배열 형태 [/ICCBased ref] / [/CalRGB dict] / [/Indexed base hival lookup] 처리
         let csn = '';
         if (typeof csObj.size === 'function') {
           try {
@@ -1920,7 +3018,6 @@
             } else if (fn === '/DeviceCMYK' || fn === '/CalCMYK') {
               csn = '/DeviceCMYK';
             } else if (fn === '/ICCBased') {
-              // ICCBased: N=3 → RGB, N=4 → CMYK
               const iccStream = pdfDoc.context.lookup(csObj.get(1));
               if (iccStream && iccStream.dict) {
                 const nObj = iccStream.dict.get(Nm('N'));
@@ -1928,6 +3025,14 @@
                 if (nVal === 3) csn = '/ICCBased-RGB';
                 else if (nVal === 4) csn = '/DeviceCMYK';
               }
+            } else if (fn === '/Indexed') {
+              // Indexed는 convertXObjectImageToGrayscale에서 팔레트 교체로 우선 처리됨
+              // (여기 도달 = 명명된 CS 해석 후 발견된 경우) — 동일하게 팔레트 교체
+              convertIndexedImagePalette(pdfDoc, img, csObj);
+              return;
+            } else if (fn === '/Separation') {
+              await convertSeparationImage(pdfDoc, img, csObj);
+              return;
             }
           } catch(e) {}
         } else {
@@ -1945,19 +3050,6 @@
         const w  = wO ? (wO.numberValue ?? wO.asNumber?.() ?? 0) : 0;
         const h  = hO ? (hO.numberValue ?? hO.asNumber?.() ?? 0) : 0;
         if (!w || !h) return;
-
-        // DecodeParms에서 Predictor 값 읽기
-        let predictor = 1;
-        const dpRef = img.dict.get(Nm('DecodeParms'));
-        if (dpRef) {
-          try {
-            const dp = pdfDoc.context.lookup(dpRef);
-            if (dp && typeof dp.get === 'function') {
-              const pObj = dp.get(Nm('Predictor'));
-              if (pObj) predictor = +(pObj.numberValue ?? pObj.asNumber?.() ?? 1);
-            }
-          } catch(e) {}
-        }
 
         const compBuf = img.contents.buffer.slice(
           img.contents.byteOffset,
@@ -1988,7 +3080,7 @@
             if (iccBuf) transferables.push(iccBuf);
             const result = await grayWorkerPool.run(
               'icc-flate2gray',
-              { compressed: compBuf, w, h, channels, predictor, iccBytes: iccBuf || null, dotGain: getDotGain() },
+              { compressed: compBuf, w, h, channels, predictor, iccBytes: iccBuf || null, dotGain: getDotGain(), raw: isRaw },
               transferables
             );
             const deflated = new Uint8Array(result.deflated);
@@ -2001,7 +3093,7 @@
             img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(result.h));
             img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(deflated.length));
             img.dict.set(Nm('DecodeParms'),      dp);
-            img.dict.delete(Nm('SMask')); img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
+            img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
             img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
             img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
           } catch(e) { console.warn('ICCBased 이미지 변환 실패:', e); }
@@ -2010,7 +3102,7 @@
 
         const result = await grayWorkerPool.run(
           'flate2gray',
-          { compressed: compBuf, w, h, channels, predictor, dotGain: getDotGain() },
+          { compressed: compBuf, w, h, channels, predictor, dotGain: getDotGain(), raw: isRaw },
           [compBuf]
         );
         const deflated = new Uint8Array(result.deflated);
@@ -2023,7 +3115,6 @@
         img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(h));
         img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(deflated.length));
         img.dict.set(Nm('DecodeParms'),      dp);
-        img.dict.delete(Nm('SMask'));
         img.dict.delete(Nm('Mask'));
         img.dict.delete(Nm('ImageMask'));
         img.dict.delete(Nm('Intent'));
@@ -2149,42 +3240,29 @@
     }
 
     // ── 견적서 인쇄 ──────────────────────────────────────────────────────────
-    const BM_APP_PATH = 'file:///D:/claude/projects/business-mgmt/index.html';
-
-    async function exportToBusinessMgmt() {
+    // ── 견적서 PDF 저장 ──────────────────────────────────────────────────────
+    async function saveQuotePDF() {
       if (!quoteItems.length) { alert('견적 품목이 없습니다.'); return; }
-      const customer = document.getElementById('q-customer').value.trim();
-      const date     = document.getElementById('q-date').value;
-      const uid      = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-      const seqRaw   = localStorage.getItem('bm_seq');
-      const seq      = seqRaw ? JSON.parse(seqRaw) : { q: 0, i: 0 };
-      seq.q++;
-      localStorage.setItem('bm_seq', JSON.stringify(seq));
-      const now = new Date();
-      const yy  = String(now.getFullYear()).slice(2);
-      const mm  = String(now.getMonth() + 1).padStart(2, '0');
-      const no  = `Q${yy}${mm}-${String(seq.q).padStart(3, '0')}`;
-      const items = quoteItems.map(item => ({
-        name: item.name, spec: item.spec || '',
-        qty: item.qty * (item.copies || 1),
-        price: Math.round(item.price / 1.1), taxRate: 0.1,
-      }));
-      const quote = {
-        id: uid(), no, customerId: null, customerName: customer,
-        date: date || now.toISOString().slice(0, 10), validUntil: '', status: 'draft',
-        title: originalFileName ? `PDF 인쇄 견적 (${originalFileName})` : 'PDF 인쇄 견적',
-        memo: '', workNotes: '', items, calcRows: [],
-        calcHeaders: { content: '내용', price: '단가(원)', pages: '페이지', total: '합계금액' },
-      };
-      const existing = JSON.parse(localStorage.getItem('bm_quotes') || '[]');
-      existing.unshift(quote);
-      localStorage.setItem('bm_quotes', JSON.stringify(existing));
-      const ok = await window.electronAPI.openBizApp();
-      if (!ok) alert('업무 관리 앱을 찾을 수 없습니다.\nD:\\claude\\projects\\business-mgmt\\index.html 경로를 확인하세요.');
-      else alert(`견적서 ${no} 가 저장됐습니다.\n업무 관리 앱의 견적서 탭 최상단에서 확인하세요.`);
+      const html = buildQuoteHTML(true); // forPrint=true → print 스크립트 제외
+      let pdfBuffer;
+      try {
+        pdfBuffer = await window.electronAPI.printToPDF(html);
+      } catch(e) {
+        alert('PDF 변환 오류: ' + e.message); return;
+      }
+      const customer = (document.getElementById('q-customer').value || '견적서').replace(/[\\/:*?"<>|]/g, '_');
+      const date = (document.getElementById('q-date').value || '').replace(/-/g, '');
+      const defaultName = `견적서_${customer}_${date}.pdf`;
+      // IPC 직렬화 방식에 따라 Buffer가 {type:'Buffer',data:[...]} 형태로 올 수 있음
+      const raw = (pdfBuffer instanceof Uint8Array)
+        ? pdfBuffer
+        : new Uint8Array(pdfBuffer?.data ?? Object.values(pdfBuffer));
+      const saved = await window.electronAPI.saveFile({ defaultName, buffer: raw });
+      if (saved) showSuccess('견적서 PDF가 저장됐습니다.');
     }
 
-    function printQuote() {
+    // 견적서 HTML 빌드 (인쇄 · PDF 저장 공용)
+    function buildQuoteHTML(forPrint = false) {
       const customer = document.getElementById('q-customer').value || '(고객명)';
       const date     = document.getElementById('q-date').value;
       let supplySum = 0, vatSum = 0, totalSum = 0;
@@ -2205,8 +3283,8 @@
           <td style="text-align:right;font-weight:700">${total.toLocaleString()}</td>
         </tr>`;
       }).join('');
-      const win = window.open('', '_blank');
-      win.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>견적서</title>
+      const printScript = forPrint ? '' : `<script>window.onload=function(){window.print()}<\/script>`;
+      return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>견적서</title>
         <style>
           body{font-family:'Malgun Gothic',sans-serif;padding:20mm;font-size:9.5pt;color:#111}
           h1{text-align:center;font-size:22pt;letter-spacing:.4em;margin-bottom:16px}
@@ -2243,8 +3321,15 @@
           <tr class="gr"><td class="tl">최종 합계(VAT포함)</td><td class="tv">${totalSum.toLocaleString()}원</td></tr>
           <tr class="kr"><td colspan="2">${fmtKorean(totalSum)}</td></tr>
         </table>
-        <script>window.onload=function(){window.print()}<\/script>
-      </body></html>`);
+        ${printScript}
+      </body></html>`;
+    }
+
+    function printQuote() {
+      if (!quoteItems.length) { alert('견적 품목이 없습니다.'); return; }
+      const html = buildQuoteHTML(false); // forPrint=false → window.print() 스크립트 포함
+      const win = window.open('', '_blank');
+      win.document.write(html);
       win.document.close();
     }
 
@@ -2280,6 +3365,7 @@
     }
 
     function rerenderPages() {
+      setTimeout(initSidebarObserver, 150);
       const results = pageResults.filter(Boolean);
       const total = results.length;
       const colorList = results.filter(r => r.isColor && !r.isBlank).map(r => r.pageNum);
@@ -2348,6 +3434,162 @@
         if (!r) return;
         pagesGrid.appendChild(renderPageItem(r, idx));
       });
+      renderSidebar(results);
+    }
+
+    // ── 왼쪽 사이드바 ────────────────────────────────────────────────────────
+    const sidebar = document.getElementById('thumbSidebar');
+    const sbResizer = document.getElementById('sbResizer');
+    const sbToggle  = document.getElementById('sbToggle');
+
+    // 폭 조절 (드래그 핸들, localStorage 저장, 열 수는 CSS auto-fill로 자동)
+    const SB_MIN = 180, SB_MAX = 560;
+    function applySbWidth(w) {
+      const width = Math.min(SB_MAX, Math.max(SB_MIN, Math.round(w)));
+      document.documentElement.style.setProperty('--sb-width', width + 'px');
+      try { localStorage.setItem('sbWidth', width); } catch(e) {}
+    }
+    applySbWidth(parseInt(localStorage.getItem('sbWidth')) || 280);
+
+    let sbResizing = false;
+    sbResizer.addEventListener('mousedown', e => {
+      e.preventDefault();
+      sbResizing = true;
+      sbResizer.classList.add('sb-resizing');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+    document.addEventListener('mousemove', e => { if (sbResizing) applySbWidth(e.clientX); });
+    document.addEventListener('mouseup', () => {
+      if (!sbResizing) return;
+      sbResizing = false;
+      sbResizer.classList.remove('sb-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    });
+
+    let sbVisible = false;
+    function showSidebar(visible) {
+      sbVisible = visible;
+      sidebar.style.display = visible ? 'grid' : 'none';
+      document.body.classList.toggle('sidebar-open', visible);
+      sbResizer.style.display = visible ? 'block' : 'none';
+      sbToggle.style.display = (visible || pageResults.length) ? 'flex' : 'none';
+      sbToggle.textContent = visible ? '◀' : '▶';
+    }
+    sbToggle.addEventListener('click', () => showSidebar(!sbVisible));
+
+    function renderSidebar(results) {
+      sidebar.innerHTML = '';
+      results.filter(Boolean).forEach((r, orderedIdx) => {
+        const item = document.createElement('div');
+        item.className = 'sb-item' + (r.isColor && !r.isBlank ? ' sb-color-page' : '');
+        item.dataset.sbPage = r.pageNum;
+        item.innerHTML = r.thumbnail
+          ? `<img src="${r.thumbnail}" alt="${r.pageNum}">`
+          : `<div style="height:44px;background:#2c2c2e;border-radius:3px;"></div>`;
+        item.innerHTML += `<div class="sb-num">${r.pageNum}</div>`;
+
+        // 클릭 → 메인 그리드 해당 페이지로 이동
+        // Ctrl/Shift+클릭 → 메인 그리드와 동일한 페이지 선택 (개별 토글/범위 선택)
+        item.addEventListener('click', e => {
+          if (e._fromDrag) return;
+          if (e.ctrlKey || e.shiftKey) {
+            const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+            if (el) togglePageSelection(r.pageNum, el, e);
+            return;
+          }
+          scrollToPage(r.pageNum);
+        });
+
+        // peer-hover 동기는 컨테이너 이벤트 위임으로 처리
+
+        // 우클릭 → 메인 그리드와 동일한 컨텍스트 메뉴
+        item.addEventListener('contextmenu', e => {
+          e.preventDefault(); e.stopPropagation();
+          const idx = pageResults.findIndex(p => p && p.pageNum === r.pageNum);
+          if (idx >= 0) { ctxTargetIdx = idx; showCtxMenu(e, idx); }
+        });
+
+        // 사이드바 드래그 (메인 그리드와 dragSrcPageNum 공유)
+        item.draggable = true;
+        item.addEventListener('dragstart', e => {
+          dragSrcPageNum = r.pageNum;
+          e.dataTransfer.effectAllowed = 'move';
+          requestAnimationFrame(() => item.classList.add('sb-dragging'));
+        });
+        item.addEventListener('dragend', () => {
+          item.classList.remove('sb-dragging');
+          sidebar.querySelectorAll('.sb-drag-before,.sb-drag-after')
+            .forEach(el => el.classList.remove('sb-drag-before','sb-drag-after'));
+        });
+        item.addEventListener('dragover', e => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          sidebar.querySelectorAll('.sb-drag-before,.sb-drag-after')
+            .forEach(el => el.classList.remove('sb-drag-before','sb-drag-after'));
+          const rect = item.getBoundingClientRect();
+          item.classList.add(e.clientX < rect.left + rect.width / 2 ? 'sb-drag-before' : 'sb-drag-after');
+        });
+        item.addEventListener('dragleave', e => {
+          if (!item.contains(e.relatedTarget))
+            item.classList.remove('sb-drag-before','sb-drag-after');
+        });
+        item.addEventListener('drop', e => {
+          e.preventDefault(); e._fromDrag = true;
+          const insertAfter = item.classList.contains('sb-drag-after');
+          item.classList.remove('sb-drag-before','sb-drag-after');
+          if (!dragSrcPageNum || dragSrcPageNum === r.pageNum) return;
+          const srcIdx = pageResults.findIndex(p => p && p.pageNum === dragSrcPageNum);
+          const dstIdx = pageResults.findIndex(p => p && p.pageNum === r.pageNum);
+          if (srcIdx < 0 || dstIdx < 0) return;
+          movePage(srcIdx, dstIdx, insertAfter);
+        });
+
+        sidebar.appendChild(item);
+      });
+      // 사이드바 재렌더링 후 선택 상태·흑백 이미지 복원
+      results.filter(Boolean).forEach(r => {
+        if (!selectedPages.has(r.pageNum)) return;
+        const sbEl = sidebar.querySelector(`[data-sb-page="${r.pageNum}"]`);
+        if (!sbEl) return;
+        sbEl.classList.add('sb-selected');
+        const sbImg = sbEl.querySelector('img');
+        if (sbImg) sbImg.style.filter = 'grayscale(1)';
+      });
+    }
+
+    function scrollToPage(pageNum) {
+      const el = document.querySelector(`[data-page="${pageNum}"]`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.remove('page-apple-nav');
+      void el.offsetWidth;
+      el.classList.add('page-apple-nav');
+      setTimeout(() => el.classList.remove('page-apple-nav'), 800);
+    }
+
+    // IntersectionObserver로 현재 뷰에 가장 많이 보이는 썸네일을 사이드바에서 하이라이트
+    let sbObserver = null;
+    function initSidebarObserver() {
+      if (sbObserver) sbObserver.disconnect();
+      sbObserver = new IntersectionObserver(entries => {
+        let best = null, bestRatio = 0;
+        entries.forEach(e => { if (e.intersectionRatio > bestRatio) { bestRatio = e.intersectionRatio; best = e; } });
+        if (best) {
+          const pageNum = parseInt(best.target.dataset.page);
+          updateSidebarActive(pageNum);
+        }
+      }, { threshold: Array.from({ length: 11 }, (_, i) => i / 10) });
+      document.querySelectorAll('.page-item[data-page]').forEach(el => sbObserver.observe(el));
+    }
+
+    function updateSidebarActive(pageNum) {
+      sidebar.querySelectorAll('.sb-item').forEach(item => {
+        const active = parseInt(item.dataset.sbPage) === pageNum;
+        item.classList.toggle('sb-active', active);
+        if (active) item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
     }
 
     function renderPageItem(r, idx) {
@@ -2358,9 +3600,9 @@
       const typeLabel = isBlank ? '빈 페이지' : (isColor ? '🎨 컬러' : '흑백');
       el.innerHTML = `
         <div class="page-select-indicator">✓</div>
+        <button class="page-btn-del" title="페이지 삭제">✕</button>
         <div class="page-thumb-wrap">
           ${thumbnail ? `<img class="page-thumbnail" src="${thumbnail}" alt="페이지 ${pageNum}">` : ''}
-          <button class="page-btn-del" title="페이지 삭제">✕</button>
           <div class="page-rotate-group">
             <button class="page-btn-ccw" title="반시계 90° 회전">↺</button>
             <button class="page-btn-cw"  title="시계 90° 회전">↻</button>
@@ -2376,7 +3618,7 @@
       if (selectedPages.has(pageNum)) {
         el.classList.add('selected');
         const img = el.querySelector('.page-thumbnail');
-        if (img && !isBlank) convertImgToGrayscale(img);
+        if (img && !isBlank) img.style.filter = 'grayscale(1)';
       }
       el.addEventListener('click', e => {
         if (e.target.closest('button')) return;
@@ -2394,7 +3636,73 @@
       el.querySelector('.page-insert-btn').addEventListener('click', e => {
         e.stopPropagation(); insertBlankPage(idx);
       });
+      // 마우스오버 → ctxTargetIdx 추적 (peer-hover 동기는 컨테이너 이벤트 위임으로 처리)
+      el.addEventListener('mouseenter', () => { ctxTargetIdx = idx; });
+      // 우클릭 → 컨텍스트 메뉴
+      el.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        ctxTargetIdx = idx;
+        showCtxMenu(e, idx);
+      });
+
+      // ── 드래그 앤 드롭 (페이지 순서 이동) ──────────────────────────────────
+      el.draggable = true;
+      el.addEventListener('dragstart', e => {
+        dragSrcPageNum = pageNum;
+        e.dataTransfer.effectAllowed = 'move';
+        // 약간 지연 후 반투명 처리 (dragImage가 먼저 캡처된 뒤 적용)
+        requestAnimationFrame(() => el.classList.add('dragging'));
+      });
+      el.addEventListener('dragend', () => {
+        el.classList.remove('dragging');
+        document.querySelectorAll('.drag-before, .drag-after').forEach(e => {
+          e.classList.remove('drag-before', 'drag-after');
+        });
+      });
+      el.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        document.querySelectorAll('.drag-before, .drag-after').forEach(e => {
+          e.classList.remove('drag-before', 'drag-after');
+        });
+        const rect = el.getBoundingClientRect();
+        el.classList.add(e.clientX < rect.left + rect.width / 2 ? 'drag-before' : 'drag-after');
+      });
+      el.addEventListener('dragleave', e => {
+        if (!el.contains(e.relatedTarget)) el.classList.remove('drag-before', 'drag-after');
+      });
+      el.addEventListener('drop', e => {
+        e.preventDefault(); e.stopPropagation();
+        const insertAfter = el.classList.contains('drag-after');
+        el.classList.remove('drag-before', 'drag-after');
+        if (!dragSrcPageNum || dragSrcPageNum === pageNum) return;
+        const srcIdx = pageResults.findIndex(r => r && r.pageNum === dragSrcPageNum);
+        const dstIdx = pageResults.findIndex(r => r && r.pageNum === pageNum);
+        if (srcIdx < 0 || dstIdx < 0) return;
+        movePage(srcIdx, dstIdx, insertAfter);
+      });
+
       return el;
+    }
+
+    // ── 페이지 순서 이동 ─────────────────────────────────────────────────────
+    let dragSrcPageNum = null;
+
+    function movePage(srcIdx, dstIdx, insertAfter) {
+      const [page] = pageResults.splice(srcIdx, 1);
+      // splice 후 dstIdx 보정 (srcIdx가 앞에 있으면 한 칸 당겨짐)
+      let insertIdx = srcIdx < dstIdx ? dstIdx - 1 : dstIdx;
+      if (insertAfter) insertIdx++;
+      pageResults.splice(insertIdx, 0, page);
+      rebuildPageNums();
+      syncTabPageResults();
+      rerenderPages();
+      setPageEdited();
+      // 이동된 페이지로 스크롤
+      setTimeout(() => {
+        const moved = pageResults[insertIdx];
+        if (moved) scrollToPage(moved.pageNum);
+      }, 60);
     }
 
     // 90/270도 회전 시 이미지가 wrapper 안에 완전히 들어오도록 scale 보정
@@ -2414,10 +3722,17 @@
       const r = pageResults[idx];
       if (!r) return;
       r.rotation = ((r.rotation || 0) + deg + 360) % 360;
+      // 메인 그리드 업데이트
       const el = document.querySelector(`[data-page="${r.pageNum}"]`);
       if (el) {
         const img = el.querySelector('.page-thumbnail');
         if (img) applyRotationStyle(img, r.rotation, r.thumbW, r.thumbH);
+      }
+      // 사이드바 업데이트
+      const sbEl = sidebar.querySelector(`[data-sb-page="${r.pageNum}"]`);
+      if (sbEl) {
+        const sbImg = sbEl.querySelector('img');
+        if (sbImg) applyRotationStyle(sbImg, r.rotation, r.thumbW, r.thumbH);
       }
       setPageEdited();
     }
@@ -2453,6 +3768,34 @@
     window.addEventListener('scroll', () => {
       document.getElementById('scrollTopBtn').style.display = window.scrollY > 300 ? 'block' : 'none';
     });
+
+    // ── 메인↔사이드바 peer-hover 동기 (이벤트 위임) ─────────────────────────
+    // 개별 mouseenter/mouseleave 대신 컨테이너 단위로 처리 → 빠른 이동 시 잔류 없음
+    function clearAllPeerHover() {
+      document.querySelectorAll('.peer-hover').forEach(el => el.classList.remove('peer-hover'));
+    }
+
+    // 메인 그리드 → 사이드바
+    pagesGrid.addEventListener('mouseover', e => {
+      const item = e.target.closest('.page-item[data-page]');
+      clearAllPeerHover();
+      if (!item) return;
+      const pageNum = item.dataset.page;
+      const sbEl = sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
+      if (sbEl) sbEl.classList.add('peer-hover');
+    });
+    pagesGrid.addEventListener('mouseleave', clearAllPeerHover);
+
+    // 사이드바 → 메인 그리드
+    sidebar.addEventListener('mouseover', e => {
+      const item = e.target.closest('.sb-item[data-sb-page]');
+      clearAllPeerHover();
+      if (!item) return;
+      const pageNum = item.dataset.sbPage;
+      const mainEl = document.querySelector(`[data-page="${pageNum}"]`);
+      if (mainEl) mainEl.classList.add('peer-hover');
+    });
+    sidebar.addEventListener('mouseleave', clearAllPeerHover);
   </script>
 </body>
 </html>
