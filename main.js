@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs   = require('fs');
+const os   = require('os');
+const { execFile } = require('child_process');
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -54,8 +56,16 @@ app.on('window-all-closed', () => {
 // ── IPC: 파일 열기 다이얼로그 ──────────────────────────────────────────────
 ipcMain.handle('dialog:openFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
-    title: 'PDF 파일 선택',
-    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    title: '파일 선택 (PDF · HWP · HWPX · MS Office)',
+    filters: [
+      { name: '문서 전체 (PDF·HWP·Office)',
+        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'] },
+      { name: 'PDF',  extensions: ['pdf'] },
+      { name: '한글 (HWP·HWPX)', extensions: ['hwp', 'hwpx'] },
+      { name: 'Word (DOC·DOCX)', extensions: ['doc', 'docx'] },
+      { name: 'Excel (XLS·XLSX)', extensions: ['xls', 'xlsx'] },
+      { name: 'PowerPoint (PPT·PPTX)', extensions: ['ppt', 'pptx'] },
+    ],
     properties: ['openFile', 'multiSelections'],
   });
   if (canceled || !filePaths.length) return [];
@@ -110,4 +120,82 @@ ipcMain.handle('print:toPDF', async (_, html) => {
     try { fs.unlinkSync(tmpFile); } catch(e) {}
   }
   return pdfBuffer;
+});
+
+// ── IPC: HWP/HWPX → PDF 변환 (한컴오피스 한글 COM 자동화) ────────────────────
+// 한글은 단일 인스턴스로만 동작하므로 동시 변환 시 충돌 → 큐로 순차 처리.
+// 변환된 임시 PDF 경로를 반환하고, 렌더러는 preload.readFile()로 직접 읽는다.
+let hwpQueue = Promise.resolve();
+
+function convertHwpToPdf(srcPath) {
+  return new Promise((resolve, reject) => {
+    const outPath = path.join(
+      os.tmpdir(),
+      `hwpconv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.pdf`
+    );
+    const script = path.join(__dirname, 'src', 'convert_hwp.ps1');
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+       '-InPath', srcPath, '-OutPath', outPath],
+      { windowsHide: true, timeout: 180000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr || err.message || '').toString().trim();
+          return reject(new Error('한글 문서 변환 실패: ' + (msg || '알 수 없는 오류')));
+        }
+        if (!fs.existsSync(outPath)) {
+          return reject(new Error('한글 문서 변환 실패: PDF가 생성되지 않았습니다.'));
+        }
+        resolve(outPath);
+      }
+    );
+  });
+}
+
+ipcMain.handle('hwp:convertToPdf', (_, srcPath) => {
+  // 이전 변환의 성공/실패와 무관하게 다음 변환을 순차로 이어 실행
+  const run = () => convertHwpToPdf(srcPath);
+  const result = hwpQueue.then(run, run);
+  // 큐 체인은 실패가 전파되지 않도록 별도로 유지 (반환 promise만 실제 결과)
+  hwpQueue = result.catch(() => {});
+  return result;
+});
+
+// ── IPC: MS Office(Word·Excel·PowerPoint) → PDF 변환 (Office COM 자동화) ──────
+// 한글과 마찬가지로 동일 Office 앱은 단일 인스턴스로만 안전하므로 큐로 순차 처리.
+// (Word/Excel/PowerPoint가 섞여도 하나의 큐로 직렬화하여 충돌·자원 경합을 피한다)
+let officeQueue = Promise.resolve();
+
+function convertOfficeToPdf(srcPath) {
+  return new Promise((resolve, reject) => {
+    const outPath = path.join(
+      os.tmpdir(),
+      `officeconv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.pdf`
+    );
+    const script = path.join(__dirname, 'src', 'convert_office.ps1');
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+       '-InPath', srcPath, '-OutPath', outPath],
+      { windowsHide: true, timeout: 180000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr || err.message || '').toString().trim();
+          return reject(new Error('Office 문서 변환 실패: ' + (msg || '알 수 없는 오류')));
+        }
+        if (!fs.existsSync(outPath)) {
+          return reject(new Error('Office 문서 변환 실패: PDF가 생성되지 않았습니다.'));
+        }
+        resolve(outPath);
+      }
+    );
+  });
+}
+
+ipcMain.handle('office:convertToPdf', (_, srcPath) => {
+  const run = () => convertOfficeToPdf(srcPath);
+  const result = officeQueue.then(run, run);
+  officeQueue = result.catch(() => {});
+  return result;
 });

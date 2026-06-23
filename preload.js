@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const fs   = require('fs');
 const path = require('path');
 
@@ -20,6 +20,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     if (!filePath) return false;
     fs.writeFileSync(filePath, Buffer.from(buffer));
     return filePath;
+  },
+
+  // HWP/HWPX → PDF 변환 (main의 한글 COM 자동화) — 변환된 임시 PDF 경로 반환
+  convertHwpToPdf: (filePath) => ipcRenderer.invoke('hwp:convertToPdf', filePath),
+
+  // MS Office(Word·Excel·PowerPoint) → PDF 변환 (main의 Office COM 자동화) — 임시 PDF 경로 반환
+  convertOfficeToPdf: (filePath) => ipcRenderer.invoke('office:convertToPdf', filePath),
+
+  // 드래그&드롭된 File 객체의 실제 디스크 경로 취득 (HWP 변환 입력용)
+  getPathForFile: (file) => {
+    try { return webUtils.getPathForFile(file); }
+    catch (e) { return (file && file.path) || ''; }
   },
 
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)

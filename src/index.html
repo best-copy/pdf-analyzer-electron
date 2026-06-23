@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>PDF 컬러/흑백 분석기</title>
+  <title>PDF · 한글(HWP/HWPX) 컬러/흑백 분석기</title>
   <script src="./libs/pdf.min.js"></script>
   <script src="./libs/pdf-lib.min.js"></script>
   <script src="./libs/pako.min.js"></script>
@@ -20,7 +20,10 @@
     .container {
       max-width: 1200px; margin: 0 auto; background: #ffffff;
       border-radius: 18px; box-shadow: 0 4px 32px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06);
-      overflow: hidden;
+      /* overflow:hidden 은 자식의 position:sticky 를 깨뜨린다(스크롤 컨테이너 생성).
+         overflow:clip 은 동일하게 모서리를 클리핑하되 스크롤 컨테이너를 만들지 않아
+         .sticky-panel 이 뷰포트 상단에 정상적으로 고정된다. */
+      overflow: clip;
     }
     .header {
       background: #1d1d1f;
@@ -116,6 +119,102 @@
       color: #a1a1a6; font-size: 0.95em; padding: 0; line-height: 1; flex-shrink: 0;
     }
     .tab-close:hover { color: #ff3b30; }
+    /* 탭바의 '파일 합치기' 버튼 */
+    .tab-merge-btn {
+      margin-left: auto; align-self: center;
+      display: flex; align-items: center; gap: 5px;
+      padding: 6px 14px; margin-bottom: 4px;
+      background: #0071e3; color: #fff;
+      border: none; border-radius: 8px;
+      cursor: pointer; white-space: nowrap;
+      font-size: 0.8em; font-weight: 600; flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .tab-merge-btn:hover { background: #0060c0; }
+    /* 탭 드래그 정렬 */
+    .tab-item { user-select: none; }
+    .tab-item.dragging { opacity: 0.45; }
+    .tab-item.drag-over { box-shadow: inset 3px 0 0 #0071e3; }
+
+    /* ---- 파일 합치기 순서 모달 ---- */
+    .merge-overlay {
+      position: fixed; inset: 0; z-index: 100000;
+      background: rgba(0,0,0,0.32);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .merge-modal {
+      background: #fff; border-radius: 16px;
+      width: min(460px, 90vw); max-height: 80vh;
+      padding: 24px 24px 20px; box-sizing: border-box;
+      display: flex; flex-direction: column;
+      box-shadow: 0 18px 60px rgba(0,0,0,0.28);
+    }
+    .merge-title { margin: 0 0 4px; font-size: 1.1em; color: #1d1d1f; }
+    .merge-sub { margin: 0 0 14px; font-size: 0.82em; color: #6e6e73; }
+    .merge-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+    .merge-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px; margin-bottom: 6px;
+      background: #f5f5f7; border: 1px solid #e8e8ed; border-radius: 10px;
+      cursor: grab; user-select: none;
+    }
+    .merge-item.dragging { opacity: 0.45; }
+    .merge-item.drag-over { box-shadow: inset 0 3px 0 #0071e3; }
+    .merge-idx {
+      flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%;
+      background: #0071e3; color: #fff; font-size: 0.78em; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .merge-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.88em; color: #1d1d1f; }
+    .merge-move { display: flex; gap: 2px; flex-shrink: 0; }
+    .merge-move button {
+      width: 26px; height: 26px; border: 1px solid #d2d2d7; border-radius: 6px;
+      background: #fff; cursor: pointer; color: #6e6e73; font-size: 0.8em; line-height: 1;
+    }
+    .merge-move button:disabled { opacity: 0.3; cursor: default; }
+    .merge-move button:not(:disabled):hover { background: #e8e8ed; }
+    .merge-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    .merge-actions button {
+      padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer;
+      font-size: 0.88em; font-weight: 600;
+    }
+    .merge-cancel { background: #e8e8ed; color: #1d1d1f; }
+    .merge-cancel:hover { background: #d2d2d7; }
+    .merge-confirm { background: #0071e3; color: #fff; }
+    .merge-confirm:hover { background: #0060c0; }
+
+    /* ── 합본 파일별 챕터 구분 ── */
+    .chapter-divider {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; gap: 10px;
+      margin: 14px 2px 2px; padding: 11px 14px;
+      background: linear-gradient(90deg, #eaf3ff, #f6faff);
+      border: 1px solid #cfe2ff; border-left: 4px solid #0071e3;
+      border-radius: 10px;
+      font-weight: 700; color: #0a4a9e;
+    }
+    .chapter-divider:first-child { margin-top: 2px; }
+    .chapter-badge {
+      flex-shrink: 0; background: #0071e3; color: #fff;
+      font-size: 0.78em; font-weight: 700; padding: 3px 10px; border-radius: 20px;
+    }
+    .chapter-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95em; }
+    .chapter-pages { margin-left: auto; flex-shrink: 0; font-weight: 600; font-size: 0.82em; color: #6e6e73; }
+    /* 사이드바 챕터 구분 */
+    .sb-chapter {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; gap: 6px;
+      margin: 8px 2px 0; padding: 6px 8px;
+      background: rgba(0,113,227,0.18);
+      border-left: 3px solid #0a84ff; border-radius: 6px;
+      color: #cfe4ff; font-size: 11px; font-weight: 700; overflow: hidden;
+    }
+    .sb-chapter-badge {
+      flex-shrink: 0; min-width: 16px; height: 16px; padding: 0 4px;
+      display: flex; align-items: center; justify-content: center;
+      background: #0a84ff; color: #fff; border-radius: 8px; font-size: 10px;
+    }
+    .sb-chapter-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .results-section { padding: 36px 40px; display: none; }
     .stats-grid {
@@ -127,6 +226,8 @@
       color: white; padding: 24px 20px; border-radius: 14px; text-align: center;
     }
     .stat-number { font-size: 2.6em; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; }
+    /* 컬러 페이지 숫자는 사이드바와 동일하게 초록색으로 강조 */
+    #colorPages { color: #30d158; }
     .stat-label { font-size: 0.88em; opacity: 0.6; font-weight: 500; letter-spacing: 0.1px; }
 
     .range-summary {
@@ -165,6 +266,14 @@
     }
     .apply-btn:hover { background: #30b353; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(52,199,89,0.4); }
     .apply-btn:disabled { background: #a1a1a6; cursor: not-allowed; transform: none; box-shadow: none; }
+    .download-btn {
+      padding: 9px 20px; background: #0071e3; color: white; border: none; border-radius: 8px;
+      cursor: pointer; font-size: 0.9em; font-weight: 700; transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(0,113,227,0.3);
+    }
+    .download-btn:hover { background: #0077ed; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,113,227,0.4); }
+    .download-btn:disabled { background: #a1a1a6; cursor: not-allowed; transform: none; box-shadow: none; }
+    .action-btn-group { margin-left: auto; display: flex; gap: 8px; align-items: center; }
     .clear-opts-btn {
       padding: 8px 13px; border: 1.5px solid #ffd0cc; background: white;
       border-radius: 8px; cursor: pointer; font-size: 0.82em; font-weight: 700;
@@ -307,6 +416,15 @@
       border-bottom: 1px solid #e8e8ed;
     }
     .sticky-panel .range-summary { margin-bottom: 10px; font-size: 0.86em; padding: 8px 12px; line-height: 1.6; }
+    /* 스크롤 시에도 보이는 분석결과 요약(스티키 패널 내부) */
+    .sticky-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .ss-pill {
+      display: inline-flex; align-items: baseline; gap: 5px;
+      background: #1d1d1f; color: #fff; padding: 5px 13px;
+      border-radius: 8px; font-size: 0.8em; font-weight: 600; letter-spacing: 0.1px;
+    }
+    .ss-pill b { font-size: 1.25em; font-weight: 800; letter-spacing: -0.3px; }
+    .ss-pill.ss-color b { color: #30d158; }
     .sticky-panel .selection-controls { margin: 0 0 10px; }
     .jump-bar { display:flex; align-items:center; gap:6px; }
     .jump-bar input[type=number] {
@@ -478,7 +596,8 @@
       grid-auto-rows: min-content;
       align-content: start;
       gap: 16px;
-      padding: 50px 10px 50px 8px;
+      /* 상단 패널(#sbPanel)을 사이드바 맨 위에 붙이기 위해 top 패딩 제거 */
+      padding: 0 10px 50px 8px;
       z-index: 500;
     }
     /* 사이드바 폭 조절 핸들 */
@@ -536,6 +655,63 @@
     .sb-item.sb-dragging  { opacity: 0.35; }
     .sb-item.sb-drag-before { box-shadow: -3px 0 0 #0071e3; }
     .sb-item.sb-drag-after  { box-shadow:  3px 0 0 #0071e3; }
+    /* ── 사이드바 상단 고정 패널: 분석결과 + 처리옵션 ── */
+    #sbPanel {
+      grid-column: 1 / -1;            /* 그리드 전체 폭 차지 */
+      /* 사이드바 썸네일을 스크롤해도 분석결과·처리옵션이 항상 보이도록 상단 고정.
+         #thumbSidebar(overflow-y:scroll)가 스크롤 컨테이너라 sticky가 동작한다. */
+      position: sticky; top: 0; z-index: 10;
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 10px 12px 12px; margin-bottom: 4px;
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 0 0 10px 10px; border-top: none;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+    }
+    /* 패널 헤더 + 열기/닫기 토글 스위치 */
+    .sbp-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .sbp-head-title { font-size: 0.74em; font-weight: 700; color: #f5f5f7; letter-spacing: 0.3px; }
+    .sbp-switch { position: relative; display: inline-block; width: 38px; height: 20px; flex-shrink: 0; cursor: pointer; }
+    .sbp-switch input { opacity: 0; width: 0; height: 0; }
+    .sbp-slider { position: absolute; inset: 0; background: #48484a; border-radius: 20px; transition: background 0.15s; }
+    .sbp-slider::before {
+      content: ''; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px;
+      background: #fff; border-radius: 50%; transition: transform 0.15s;
+    }
+    .sbp-switch input:checked + .sbp-slider { background: #0a84ff; }
+    .sbp-switch input:checked + .sbp-slider::before { transform: translateX(18px); }
+    .sbp-body { display: flex; flex-direction: column; gap: 12px; }
+    #sbPanel.collapsed .sbp-body { display: none; }
+    .sbp-section { display: flex; flex-direction: column; gap: 8px; }
+    .sbp-title {
+      font-size: 0.72em; font-weight: 700; color: #aeaeb2;
+      letter-spacing: 0.3px;
+    }
+    .sbp-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .sbp-stat {
+      display: flex; flex-direction: column; align-items: center; gap: 1px;
+      background: #1c1c1e; border-radius: 7px; padding: 7px 4px;
+    }
+    .sbp-num { font-size: 1.15em; font-weight: 700; color: #f5f5f7; line-height: 1.1; }
+    .sbp-num.sbp-c { color: #30d158; }
+    .sbp-lbl { font-size: 0.62em; color: #8e8e93; }
+    .sbp-sel { font-size: 0.68em; color: #0a84ff; font-weight: 600; text-align: center; }
+    .sbp-opts { display: flex; flex-direction: column; gap: 6px; }
+    .sbp-opt, .sbp-clear, .sbp-btn {
+      font-size: 0.74em; font-weight: 600; cursor: pointer;
+      border-radius: 7px; padding: 7px 8px; text-align: center;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: #1c1c1e; color: #f5f5f7;
+      transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+    }
+    .sbp-opt:hover, .sbp-clear:hover, .sbp-btn:not(:disabled):hover { background: #3a3a3c; }
+    .sbp-opt.active { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+    .sbp-apply { background: #30d158; border-color: #30d158; color: #06320f; }
+    .sbp-dl    { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+    .sbp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* 적용 전이라 적용본은 없지만, 우클릭으로 원본 저장이 가능한 상태 표시 */
+    .btn-dim:not(:disabled) { opacity: 0.55; cursor: pointer; }
     body.sidebar-open { padding-left: calc(var(--sb-width) + 12px); }
     @keyframes appleNav {
       0%   { transform: scale(1);     box-shadow: 0 2px  8px rgba(0,0,0,0.08);  }
@@ -564,16 +740,16 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>🎨 PDF 컬러/흑백 분석기</h1>
-      <p>PDF 파일을 업로드하면 자동으로 각 페이지의 컬러 여부를 분석합니다</p>
+      <h1>🎨 PDF · 한글 · MS Office 컬러/흑백 분석기</h1>
+      <p>PDF · HWP · HWPX · Word · Excel · PowerPoint 파일을 업로드하면 자동으로 각 페이지의 컬러 여부를 분석합니다</p>
     </div>
 
     <div class="upload-section" id="uploadSection">
-      <p class="drop-hint">📂 PDF 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
+      <p class="drop-hint">📂 PDF · 한글 · MS Office 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
       <div class="file-input-wrapper">
-        <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()">📁 PDF 파일 선택하기</button>
+        <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()">📁 파일 선택하기 (PDF·HWP·Office)</button>
       </div>
-      <p class="drop-sub">여러 파일을 한꺼번에 드래그하면 각각 탭으로 동시 분석합니다</p>
+      <p class="drop-sub">한글(HWP·HWPX)·MS Office(Word·Excel·PowerPoint) 문서는 자동으로 PDF로 변환한 뒤 분석합니다 · 여러 파일은 각각 탭으로 동시 분석</p>
       <div class="file-info" id="fileInfo"></div>
       <div class="progress-bar" id="progressBar">
         <div class="progress-fill" id="progressFill"></div>
@@ -613,16 +789,16 @@
         </div>
       </div>
 
-      <div style="background:#f8f9fa; padding:20px; border-radius:10px; margin:20px 0; text-align:center;">
-        <h4 style="color:#495057; margin-bottom:15px;">🔍 분석 기준</h4>
-        <p style="color:#6c757d; line-height:1.6; margin:0;">
-          <strong>흑백 페이지:</strong> 그레이스케일 비중이 99.9999% 이상인 페이지<br>
-          <strong>컬러 페이지:</strong> 그레이스케일 비중이 99.9999% 미만인 페이지
-        </p>
-      </div>
+      <!-- 페이지 범위 목록: 스티키 패널 밖에 두어 스크롤 시 따라오지 않게 함 -->
+      <div id="rangeSummary" class="range-summary"></div>
 
       <div class="sticky-panel">
-        <div id="rangeSummary" class="range-summary"></div>
+        <div class="sticky-stats" id="stickyStats">
+          <span class="ss-pill">전체 <b id="stkTotal">0</b></span>
+          <span class="ss-pill ss-color">컬러 <b id="stkColor">0</b></span>
+          <span class="ss-pill">흑백 <b id="stkGray">0</b></span>
+          <span class="ss-pill">컬러비율 <b id="stkPct">0%</b></span>
+        </div>
         <div class="selection-controls">
           <button class="sel-btn" onclick="selectAllColor()">🎨 컬러만 전체 선택</button>
           <button class="sel-btn" onclick="selectAll()">모두 선택</button>
@@ -630,7 +806,8 @@
           <span class="sel-count" id="selectedCount">0개 선택됨</span>
           <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
           <button class="sel-btn" onclick="insertBlankPage(-1)" title="1페이지 앞에 빈 페이지 삽입">➕ 맨 앞 빈 페이지</button>
-          <button class="sel-btn" id="undoDeleteBtn" onclick="undoDelete()" style="display:none;">↩ 삭제 되돌리기</button>
+          <button class="sel-btn" id="undoBtn" onclick="undoEdit()" title="실행취소 (Ctrl+Z)" style="display:none;">↩ 실행취소</button>
+          <button class="sel-btn" id="redoBtn" onclick="redoEdit()" title="다시실행 (Ctrl+Y)" style="display:none;">↪ 다시실행</button>
           <span class="jump-bar" style="margin-left:auto;">
             <input type="number" id="jumpPageInput" min="1" placeholder="페이지 번호"
               onkeydown="if(event.key==='Enter')jumpToPage()">
@@ -645,7 +822,10 @@
             <input type="checkbox" id="includeAmountChk" style="accent-color:#0071e3;width:14px;height:14px;cursor:pointer;">
             금액 포함
           </label>
-          <button class="apply-btn" id="applyBtn" onclick="applyAndDownload()" disabled>📥 적용 후 다운로드</button>
+          <span class="action-btn-group">
+            <button class="apply-btn" id="applyBtn" onclick="applyChanges()" style="margin-left:0;" disabled>✅ 적용</button>
+            <button class="download-btn" id="downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>📥 다운로드</button>
+          </span>
         </div>
       </div>
 
@@ -674,6 +854,7 @@
               <th style="width:62px;">수량</th>
               <th style="width:88px;">단가</th>
               <th style="width:58px;">부수</th>
+              <th style="width:64px;">할인율(%)</th>
               <th style="width:90px;" class="q-col-hide">공급가</th>
               <th style="width:78px;" class="q-col-hide">부가세</th>
               <th style="width:108px;">합계(VAT포함)</th>
@@ -701,7 +882,40 @@
   </div>
 
   <!-- 왼쪽 미니 썸네일 사이드바 -->
-  <div id="thumbSidebar"></div>
+  <div id="thumbSidebar">
+    <!-- 상단 고정 패널: 분석결과 + 처리옵션 (renderSidebar가 보존) -->
+    <div id="sbPanel">
+      <div class="sbp-head">
+        <span class="sbp-head-title">📊 분석·처리옵션</span>
+        <label class="sbp-switch" title="패널 열기/닫기">
+          <input type="checkbox" id="sbPanelToggle" checked onchange="toggleSbPanel(this.checked)">
+          <span class="sbp-slider"></span>
+        </label>
+      </div>
+      <div class="sbp-body" id="sbPanelBody">
+      <div class="sbp-section">
+        <div class="sbp-title">📊 분석결과</div>
+        <div class="sbp-stats">
+          <div class="sbp-stat"><span class="sbp-num" id="sbTotal">0</span><span class="sbp-lbl">전체</span></div>
+          <div class="sbp-stat"><span class="sbp-num sbp-c" id="sbColor">0</span><span class="sbp-lbl">컬러</span></div>
+          <div class="sbp-stat"><span class="sbp-num" id="sbGray">0</span><span class="sbp-lbl">흑백</span></div>
+          <div class="sbp-stat"><span class="sbp-num" id="sbPct">0%</span><span class="sbp-lbl">컬러비율</span></div>
+        </div>
+        <div class="sbp-sel" id="sbSel">0개 선택됨</div>
+      </div>
+      <div class="sbp-section">
+        <div class="sbp-title">⚙ 처리옵션</div>
+        <div class="sbp-opts">
+          <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
+          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
+          <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
+          <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✅ 적용</button>
+          <button class="sbp-btn sbp-dl" id="sb-downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>📥 다운로드</button>
+        </div>
+      </div>
+      </div><!-- /.sbp-body -->
+    </div>
+  </div>
   <div id="sbResizer" title="드래그하여 사이드바 폭 조절"></div>
   <button id="sbToggle" title="사이드바 접기/펼치기 (S)">◀</button>
 
@@ -780,7 +994,12 @@
     let originalThumbnails = new Map();
     let quoteItems         = [];
     let pageEdited         = false;
-    let deletedPages       = []; // undo 스택: [{page, idx}, ...]
+    let undoStack          = []; // 실행취소 히스토리 (페이지 상태 스냅샷)
+    let redoStack          = []; // 다시실행 히스토리
+    const HISTORY_LIMIT    = 1000; // 보관 스냅샷 최대 개수 (사실상 무제한)
+    let processedPdfBytes  = null; // '적용'으로 생성된 결과 PDF (다운로드 대기)
+    let processedFileName  = '';
+    let applying           = false; // 적용(수정) 진행 중 여부
     const processingOptions = { bw: false };
 
     // ── 멀티코어 Worker Pool ──────────────────────────────────────────────────
@@ -847,7 +1066,7 @@
       return {
         id: 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5),
         fileName: file.name,
-        originalFileName: file.name.replace(/\.pdf$/i, ''),
+        originalFileName: file.name.replace(/\.(pdf|hwpx?|docx?|xlsx?|pptx?)$/i, ''),
         originalPdfBytes: null,
         pdfDoc: null,
         pageResults: [],
@@ -862,8 +1081,81 @@
         progress: 0,
         defaultPageSize: null,
         pageEdited: false,
-        deletedPages: [],
+        undoStack: [],
+        redoStack: [],
+        fileSize: file.size || 0,
       };
+    }
+
+    // PDF 페이지 크기(pt) → 표준 용지명 판별 (mm 기준, 오차 허용)
+    function detectPaperName(wmm, hmm) {
+      const std = [
+        ['A3', 297, 420], ['A4', 210, 297], ['A5', 148, 210], ['A6', 105, 148],
+        ['B4', 250, 353], ['B5', 176, 250], ['B6', 125, 176],
+        ['Letter', 216, 279], ['Legal', 216, 356], ['Tabloid', 279, 432],
+      ];
+      const tol = 3; // ±3mm
+      for (const [name, a, b] of std) {
+        if ((Math.abs(wmm - a) <= tol && Math.abs(hmm - b) <= tol) ||
+            (Math.abs(wmm - b) <= tol && Math.abs(hmm - a) <= tol)) return name;
+      }
+      return null;
+    }
+
+    // 페이지의 실제 크기(pt) 추출 — 빈 페이지는 pageSize, 분석된 페이지는 pageWpt/pageHpt
+    function pagePtSize(r) {
+      if (!r) return null;
+      if (r.isBlank && r.pageSize) return [r.pageSize[0], r.pageSize[1]];
+      if (r.pageWpt) return [r.pageWpt, r.pageHpt];
+      return null;
+    }
+
+    // pt 크기 → { key, text } (표준 용지명·방향 포함)
+    function sizeLabel(wpt, hpt) {
+      const wmm = wpt * 25.4 / 72, hmm = hpt * 25.4 / 72;
+      const w = Math.round(wmm), h = Math.round(hmm);
+      const name = detectPaperName(wmm, hmm);
+      const orient = wmm > hmm ? '가로' : '세로';
+      return {
+        key: `${w}x${h}`,
+        text: `${w} × ${h} mm` + (name ? ` (${name}·${orient})` : ` (${orient})`),
+      };
+    }
+
+    // 업로드 문서 정보(파일명·페이지 크기·페이지수)를 상단에 표시
+    // 페이지 크기가 다르면 "혼합 — 크기별 페이지 범위" 로 표기
+    function updateFileInfo(tab) {
+      if (!tab) return;
+      const results = tab.pageResults ? tab.pageResults.filter(Boolean) : [];
+      const pages = results.length;
+
+      // 크기별 그룹화 (key → { text, nums[] })
+      const groups = new Map();
+      results.forEach(r => {
+        const sz = pagePtSize(r);
+        if (!sz) return;
+        const lbl = sizeLabel(sz[0], sz[1]);
+        if (!groups.has(lbl.key)) groups.set(lbl.key, { text: lbl.text, nums: [] });
+        groups.get(lbl.key).nums.push(r.pageNum);
+      });
+
+      let sizeStr = '';
+      if (groups.size === 0 && tab.defaultPageSize) {
+        // 분석 전: 1페이지 크기로 임시 표시
+        sizeStr = `📐 ${sizeLabel(tab.defaultPageSize[0], tab.defaultPageSize[1]).text}`;
+      } else if (groups.size === 1) {
+        sizeStr = `📐 ${[...groups.values()][0].text}`;
+      } else if (groups.size > 1) {
+        const parts = [...groups.values()]
+          .sort((a, b) => b.nums.length - a.nums.length)
+          .map(g => `${g.text} ${formatRanges(g.nums)}p`);
+        sizeStr = `📐 혼합 — ${parts.join(' · ')}`;
+      }
+
+      fileInfo.style.display = 'block';
+      fileInfo.innerHTML = `<strong>${tab.fileName}</strong>`
+        + (sizeStr ? ` — ${sizeStr}` : '')
+        + (pages ? ` · 📄 ${pages}페이지` : '');
     }
 
     function createTab(file) {
@@ -893,7 +1185,11 @@
       quoteItems         = tab.quoteItems;
       Object.assign(processingOptions, tab.processingOptions);
       pageEdited         = tab.pageEdited;
-      deletedPages       = tab.deletedPages;
+      undoStack          = tab.undoStack;
+      redoStack          = tab.redoStack;
+      // 탭 전환 시 이전 탭의 '적용' 결과는 무효화 (다운로드 비활성)
+      processedPdfBytes  = null;
+      processedFileName  = '';
 
       hideError(); hideSuccess();
 
@@ -939,6 +1235,20 @@
       renderTabBar();
     }
 
+    let dragTabId = null;
+    // 탭 순서 변경: srcId 탭을 targetId 탭 앞으로 이동시켜 Map을 재구성
+    function moveTabBefore(srcId, targetId) {
+      if (srcId === targetId) return;
+      const ids = [...tabs.keys()].filter(id => id !== srcId);
+      const idx = ids.indexOf(targetId);
+      if (idx < 0) return;
+      ids.splice(idx, 0, srcId);
+      const entries = ids.map(id => [id, tabs.get(id)]);
+      tabs.clear();
+      entries.forEach(([id, st]) => tabs.set(id, st));
+      renderTabBar();
+    }
+
     function renderTabBar() {
       tabBar.innerHTML = '';
       tabs.forEach((state, id) => {
@@ -947,10 +1257,26 @@
         const icon = state.status === 'loading' ? '⏳ ' : state.status === 'error' ? '❌ ' : '📄 ';
         const short = state.fileName.length > 22 ? state.fileName.slice(0, 20) + '…' : state.fileName;
         tab.title = state.fileName;
+        tab.draggable = true;
         tab.innerHTML = `<span class="tab-name">${icon}${short}</span><button class="tab-close" onclick="event.stopPropagation();closeTab('${id}')">✕</button>`;
         tab.onclick = () => activateTab(id);
+        // 마우스 드래그로 탭 순서 변경
+        tab.ondragstart = (e) => { dragTabId = id; e.dataTransfer.effectAllowed = 'move'; tab.classList.add('dragging'); };
+        tab.ondragend = () => { dragTabId = null; tabBar.querySelectorAll('.tab-item').forEach(t => t.classList.remove('dragging','drag-over')); };
+        tab.ondragover = (e) => { if (dragTabId && dragTabId !== id) { e.preventDefault(); tab.classList.add('drag-over'); } };
+        tab.ondragleave = () => tab.classList.remove('drag-over');
+        tab.ondrop = (e) => { e.preventDefault(); tab.classList.remove('drag-over'); if (dragTabId) moveTabBefore(dragTabId, id); };
         tabBar.appendChild(tab);
       });
+      // 2개 이상 열려 있으면 '파일 합치기' 버튼 표시
+      if (tabs.size >= 2) {
+        const mb = document.createElement('button');
+        mb.className = 'tab-merge-btn';
+        mb.innerHTML = '🔗 파일 합치기';
+        mb.title = '열려 있는 모든 파일을 하나의 PDF로 합쳐 저장합니다';
+        mb.onclick = mergeAllTabs;
+        tabBar.appendChild(mb);
+      }
     }
 
     function renderTabUI(tab) {
@@ -973,9 +1299,8 @@
         const btn = document.getElementById('opt-' + k);
         if (btn) btn.classList.toggle('active', processingOptions[k]);
       });
-      const anyActive = Object.values(processingOptions).some(v => v);
-      document.getElementById('applyBtn').disabled = !originalPdfBytes;
-      document.getElementById('clearOptsBtn').style.display = anyActive ? '' : 'none';
+      updateDownloadBtn();
+      updateFileInfo(tab);
 
       updateSelectedCount();
 
@@ -990,31 +1315,74 @@
     }
 
     // ── 파일 핸들링 ──────────────────────────────────────────────────────────
+    const HWP_RE    = /\.hwpx?$/i;                  // 한글 (한컴오피스 COM)
+    const OFFICE_RE = /\.(docx?|xlsx?|pptx?)$/i;    // MS Office (Word·Excel·PowerPoint COM)
+    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?)$/i; // PDF 변환이 필요한 모든 확장자
+
+    // 경로 기반 입력({name, path})을 File-like 객체로 변환.
+    // HWP/HWPX는 한글 COM, MS Office는 Office COM으로 각각 PDF 변환 후,
+    // 그 임시 PDF를 읽도록 연결한다. (모두 단일 인스턴스라 순차 변환)
+    async function prepareFiles(items) {
+      const out = [];
+      for (const it of items) {
+        let pdfPath = null;
+        if (HWP_RE.test(it.name)) {
+          showLoading(`${it.name} → PDF로 변환 중…`);
+          pdfPath = await window.electronAPI.convertHwpToPdf(it.path);
+        } else if (OFFICE_RE.test(it.name)) {
+          showLoading(`${it.name} → PDF로 변환 중…`);
+          pdfPath = await window.electronAPI.convertOfficeToPdf(it.path);
+        }
+        const readPath = pdfPath || it.path;
+        out.push({
+          name: it.name,                       // 원본 이름(확장자 포함) 유지 — 표시·저장명에 사용
+          size: 0,
+          type: 'application/pdf',
+          arrayBuffer: () => Promise.resolve(window.electronAPI.readFile(readPath)),
+        });
+      }
+      return out;
+    }
+
     async function openFilesDialog() {
       try {
         const result = await window.electronAPI.openFile();
         if (!result || !result.length) return;
         hideError(); hideSuccess();
+        const needConvert = result.some(r => CONVERT_RE.test(r.name));
+        if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
         // preload의 readFile()로 파일을 직접 읽어 File-like 객체 생성
         // (IPC로 대용량 바이너리를 전달하지 않아 빠르고 안정적)
-        const fakeFiles = result.map(r => ({
-          name: r.name,
-          size: 0,
-          type: 'application/pdf',
-          arrayBuffer: () => Promise.resolve(window.electronAPI.readFile(r.path)),
-        }));
+        const fakeFiles = await prepareFiles(result);
+        if (needConvert) hideLoading();
         startLoad(fakeFiles);
       } catch(e) {
+        hideLoading();
         showError('파일 열기 오류: ' + (e && e.message ? e.message : String(e)));
         console.error('openFilesDialog 오류:', e);
       }
     }
 
+    // 분석이 끝나 챕터로 합칠 수 있는 상태인지
+    function isTabReady(t) {
+      return t && t.status === 'ready' && t.originalPdfBytes && t.pageResults.filter(Boolean).length;
+    }
+
     function startLoad(files) {
+      // 이미 분석이 끝난 문서가 있으면, 새 파일을 별도 탭이 아니라 그 문서에 챕터로 추가
+      // (활성 탭 우선, 없으면 분석이 끝난 첫 탭을 기준으로 합본)
+      const baseTab = isTabReady(tabs.get(activeTabId))
+        ? tabs.get(activeTabId)
+        : [...tabs.values()].find(isTabReady);
+      if (baseTab) {
+        appendImportedFiles(files, baseTab);
+        return;
+      }
+
       fileInfo.style.display = 'block';
       fileInfo.innerHTML = files.length > 1
         ? `<strong>${files.length}개 파일</strong> 동시 분석 중`
-        : `<strong>${files[0].name}</strong> — ${(files[0].size / 1024 / 1024).toFixed(2)} MB`;
+        : `<strong>${files[0].name}</strong> — 분석 중…`;
 
       const firstTab = createTab(files[0]);
       activateTab(firstTab.id);
@@ -1026,6 +1394,70 @@
       }
     }
 
+    // ── 기존 분석본에 새 파일을 챕터로 이어붙이기 ────────────────────────────
+    // 활성 분석본(baseTab)의 페이지(기존 챕터 보존)에 새로 가져온 파일들을 차례로
+    // 챕터로 추가해 하나의 PDF로 합치고, 그 합본을 다시 분석한다.
+    // 결과는 단일 탭이므로 다운로드 버튼으로 하나의 파일로 저장할 수 있다.
+    async function appendImportedFiles(newFiles, baseTab) {
+      try {
+        hideError(); hideSuccess();
+        showLoading(`기존 분석본에 ${newFiles.length}개 파일을 챕터로 추가하는 중…`);
+
+        const mergedDoc = await PDFLib.PDFDocument.create();
+        const chapters  = [];          // 파일별 챕터 경계 {name, start(1-based), count}
+
+        // 1) 기준 문서(베이스) 페이지 복사 — 기존 챕터는 보존, 없으면 전체를 한 챕터로
+        const baseSrc    = await PDFLib.PDFDocument.load(baseTab.originalPdfBytes.slice(0));
+        const baseIdx    = baseSrc.getPageIndices();
+        const baseCopied = await mergedDoc.copyPages(baseSrc, baseIdx);
+        baseCopied.forEach(p => mergedDoc.addPage(p));
+        if (baseTab.chapters && baseTab.chapters.length) {
+          baseTab.chapters.forEach(ch => chapters.push({ ...ch }));
+        } else {
+          chapters.push({ name: baseTab.fileName, start: 1, count: baseIdx.length });
+        }
+        let startPage = baseIdx.length + 1;
+
+        // 2) 새로 가져온 파일들을 차례로 챕터로 추가
+        for (const f of newFiles) {
+          const ab     = await f.arrayBuffer();
+          const src    = await PDFLib.PDFDocument.load(ab.slice(0));
+          const idx    = src.getPageIndices();
+          const copied = await mergedDoc.copyPages(src, idx);
+          copied.forEach(p => mergedDoc.addPage(p));
+          chapters.push({ name: f.name, start: startPage, count: idx.length });
+          startPage += idx.length;
+        }
+
+        const bytes = await mergedDoc.save();
+        hideLoading();
+
+        // 합본 파일명: 이미 합본이면 그 이름 유지, 아니면 베이스명 기준 "_합본.pdf"
+        const mergedName = /_합본\.pdf$/i.test(baseTab.fileName)
+          ? baseTab.fileName
+          : `${baseTab.fileName.replace(/\.[^.]+$/, '')}_합본.pdf`;
+
+        const buf  = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const file = {
+          name: mergedName, size: bytes.byteLength, type: 'application/pdf',
+          arrayBuffer: () => Promise.resolve(buf.slice(0)),
+        };
+
+        // 합본을 새 탭으로 열어 분석하고, 흡수된 베이스 탭은 닫는다
+        const tab = createTab(file);
+        tab.chapters = chapters;       // 분석 완료 후 페이지별 챕터 태깅에 사용
+        activateTab(tab.id);
+        closeTab(baseTab.id);
+        await analyzePDF(file, tab);
+
+        showSuccess(`${newFiles.length}개 파일을 챕터로 추가했습니다. 다운로드 버튼으로 하나의 PDF로 저장할 수 있습니다.`);
+      } catch (e) {
+        hideLoading();
+        showError('파일 추가 중 오류: ' + (e && e.message ? e.message : String(e)));
+        console.error('appendImportedFiles 오류:', e);
+      }
+    }
+
     // ── PDF 분석 (병렬, 탭별 독립 실행) ──────────────────────────────────────
     async function analyzePDF(file, tabState) {
       const isActive = () => activeTabId === tabState.id;
@@ -1033,16 +1465,18 @@
       try {
         const arrayBuffer = await file.arrayBuffer();
         tabState.originalPdfBytes = new Uint8Array(arrayBuffer.slice(0));
+        tabState.fileSize = arrayBuffer.byteLength;
         const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
         tabState.pdfDoc = pdf;
         if (isActive()) { originalPdfBytes = tabState.originalPdfBytes; globalPdfDoc = pdf; }
 
-        // 빈 페이지 삽입 시 사용할 기본 페이지 크기 저장 (pt 단위)
+        // 빈 페이지 삽입·문서 크기 표시에 사용할 1페이지 크기 저장 (pt 단위)
         try {
           const fp = await pdf.getPage(1);
           const vp = fp.getViewport({ scale: 1 });
           tabState.defaultPageSize = [vp.width, vp.height];
         } catch(e) {}
+        if (isActive()) updateFileInfo(tabState); // 실제 페이지 크기 표시
 
         const totalPages = pdf.numPages;
         // 인덱스 순서 보장을 위해 배열 미리 확장
@@ -1068,6 +1502,15 @@
         tabState.colorCount = colorCount;
         tabState.bwCount    = bwCount;
         tabState.status     = 'ready';
+
+        // 합본 탭이면 각 페이지에 원본 파일명(챕터) 태깅 — 그리드·사이드바 구분에 사용
+        if (tabState.chapters && tabState.chapters.length) {
+          tabState.chapters.forEach(ch => {
+            for (let i = ch.start - 1; i < ch.start - 1 + ch.count; i++) {
+              if (tabState.pageResults[i]) tabState.pageResults[i].chapter = ch.name;
+            }
+          });
+        }
 
         if (isActive()) {
           pageResults = tabState.pageResults;
@@ -1110,7 +1553,10 @@
 
         // 썸네일: 같은 캔버스에서 생성 (추가 렌더링 불필요)
         const thumbnail = canvas.toDataURL('image/jpeg', 0.85);
-        return { isColor, thumbnail, thumbW: canvas.width, thumbH: canvas.height };
+        // 실제 페이지 크기(pt) — 회전 반영된 표시 크기 (혼합 문서 크기 판별용)
+        const vp1 = page.getViewport({ scale: 1 });
+        return { isColor, thumbnail, thumbW: canvas.width, thumbH: canvas.height,
+                 pageWpt: vp1.width, pageHpt: vp1.height };
       } catch {
         return { isColor: false, thumbnail: null };
       }
@@ -1136,6 +1582,7 @@
       updateSelectedCount();
       initQuoteSection(colorCount, grayscaleCount);
       updateDownloadBtn();
+      if (activeTabId && tabs.has(activeTabId)) updateFileInfo(tabs.get(activeTabId));
     }
 
     // ── 썸네일 흑백 표시 — CSS filter (GPU 가속, 픽셀 연산 없음) ─────────────
@@ -1262,6 +1709,8 @@
       const count = selectedPages.size;
       selectedCountEl.textContent = `${count}개 선택됨`;
       document.getElementById('refreshBtn').style.display = count > 0 ? '' : 'none';
+      invalidateProcessed();
+      syncSidebarPanel();
     }
 
     function refreshResults() {
@@ -1278,6 +1727,7 @@
       colorPercentEl.textContent = Math.round(newColor / pageResults.filter(Boolean).length * 100) + '%';
       rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorPages)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayPages)}`;
       initQuoteSection(newColor, newGray);
+      syncSidebarPanel();
     }
 
     // ── 썸네일 크기 조절 ─────────────────────────────────────────────────────
@@ -1321,12 +1771,14 @@
     }
 
     // ── 단축키 ───────────────────────────────────────────────────────────────
-    // Ctrl 조합: [ 축소 / ] 확대 / Z 삭제 되돌리기
+    // Ctrl 조합: [ 축소 / ] 확대 / Z 실행취소 / Y·Shift+Z 다시실행
     document.addEventListener('keydown', e => {
       if (!e.ctrlKey) return;
       if (e.key === '[' || e.key === 'BracketLeft')  { e.preventDefault(); changeThumbZoom(-1); }
       else if (e.key === ']' || e.key === 'BracketRight') { e.preventDefault(); changeThumbZoom(+1); }
-      else if (e.key === 'z' || e.key === 'Z')        { e.preventDefault(); undoDelete(); }
+      else if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) { e.preventDefault(); redoEdit(); }
+      else if (e.key === 'z' || e.key === 'Z')        { e.preventDefault(); undoEdit(); }
+      else if (e.key === 'y' || e.key === 'Y')        { e.preventDefault(); redoEdit(); }
     });
 
     // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)
@@ -1418,17 +1870,35 @@
       setTimeout(() => el.classList.remove('page-jump-highlight'), 1300);
     }
 
-    // ── 처리 옵션 ────────────────────────────────────────────────────────────
+    // ── 처리 옵션 / 버튼 상태 ────────────────────────────────────────────────
+    // 적용 버튼: 수정사항(흑백옵션·페이지편집·페이지선택)이 있으면 활성화
+    // 다운로드 버튼: '적용'으로 결과가 만들어진 뒤에만 활성화, 적용 진행 중엔 비활성화
     function updateDownloadBtn() {
       const anyActive = Object.values(processingOptions).some(v => v);
-      document.getElementById('applyBtn').disabled = !originalPdfBytes;
-      document.getElementById('clearOptsBtn').style.display = anyActive ? '' : 'none';
+      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0);
+      const applyBtn    = document.getElementById('applyBtn');
+      const downloadBtn = document.getElementById('downloadBtn');
+      if (applyBtn)    applyBtn.disabled    = applying || !hasMod;
+      // 다운로드: PDF가 열려 있으면 클릭 가능(우클릭→원본 저장). 적용 전이면 흐리게 표시.
+      if (downloadBtn) {
+        downloadBtn.disabled = applying || !originalPdfBytes;
+        downloadBtn.classList.toggle('btn-dim', !processedPdfBytes);
+      }
+      const clearBtn = document.getElementById('clearOptsBtn');
+      if (clearBtn) clearBtn.style.display = anyActive ? '' : 'none';
+      syncSidebarPanel();
+    }
+
+    // 새 수정이 생기면 직전 '적용' 결과는 무효화 (다시 적용해야 다운로드 가능)
+    function invalidateProcessed() {
+      if (!applying) { processedPdfBytes = null; processedFileName = ''; }
+      updateDownloadBtn();
     }
 
     function toggleOption(key) {
       processingOptions[key] = !processingOptions[key];
       document.getElementById(`opt-${key}`).classList.toggle('active', processingOptions[key]);
-      updateDownloadBtn();
+      invalidateProcessed();
     }
 
     function clearOptions() {
@@ -1437,19 +1907,20 @@
         const btn = document.getElementById('opt-' + k);
         if (btn) btn.classList.remove('active');
       });
-      updateDownloadBtn();
+      invalidateProcessed();
     }
 
 
 
     // ── 흑백 PDF 다운로드 (벡터 레벨 변환 — 페이지 병렬 처리) ────────────────
-    async function applyAndDownload() {
+    async function applyChanges() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
       if (processingOptions.bw && !selectedPages.size) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
 
-      const applyBtn = document.getElementById('applyBtn');
       try {
-        applyBtn.disabled = true;
+        applying = true;
+        processedPdfBytes = null; processedFileName = '';
+        updateDownloadBtn(); // 적용·다운로드 모두 비활성화
         const bwMode = processingOptions.bw && selectedPages.size > 0;
         showLoading(bwMode ? `벡터 흑백변환 중 — 선택 ${selectedPages.size}페이지` : 'PDF 생성 중...');
         progressBar.style.display = 'block';
@@ -1535,26 +2006,174 @@
           + String(now.getSeconds()).padStart(2,'0');
 
         const includeAmt = document.getElementById('includeAmountChk')?.checked;
-        const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + it.qty * it.price * (it.copies || 1), 0) : 0;
+        const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + itemTotal(it), 0) : 0;
         const amountStr = (includeAmt && totalSum > 0) ? `_${totalSum}원` : '';
         const defaultName = `${originalFileName}_수정_${ds}${amountStr}.pdf`;
-        await window.electronAPI.saveFile({ defaultName, buffer: pdfBytes });
+
+        // 디스크에 바로 저장하지 않고 결과를 메모리에 보관 → '다운로드' 버튼으로 저장
+        processedPdfBytes = pdfBytes;
+        processedFileName = defaultName;
         updateProgress(100);
 
         let msg = toConvert.length > 0
-          ? `완료! ${toConvert.length}페이지 흑백 변환 PDF를 다운로드합니다.`
-          : `완료! 편집된 PDF(${valid.length}페이지)를 다운로드합니다.`;
+          ? `적용 완료! ${toConvert.length}페이지 흑백 변환됨 — '📥 다운로드'를 눌러 저장하세요.`
+          : `적용 완료! 편집된 PDF(${valid.length}페이지) — '📥 다운로드'를 눌러 저장하세요.`;
         if (convStats.errors > 0)
           msg += `\n⚠️ 주의: ${convStats.errors}개 페이지(${convStats.errPages.join(', ')})에서 일부 이미지 변환 실패 — 해당 페이지는 부분적으로 칼라가 남아있을 수 있습니다.`;
         showSuccess(msg);
 
       } catch (err) {
         console.error('흑백변환 오류:', err);
+        processedPdfBytes = null; processedFileName = '';
         showError('처리 중 오류: ' + (err && err.message ? err.message : String(err)));
       } finally {
-        applyBtn.disabled = false;
+        applying = false;
+        updateDownloadBtn(); // 적용 결과에 따라 다운로드 버튼 활성화
         hideLoading();
         progressBar.style.display = 'none';
+      }
+    }
+
+    // ── 적용된 결과 PDF 다운로드(저장) ───────────────────────────────────────
+    // 다운로드 버튼 우클릭: 적용을 누르지 않아도 원본 PDF를 바로 저장
+    async function downloadOriginal(ev) {
+      if (ev) ev.preventDefault();
+      if (!originalPdfBytes) { showError('다운로드할 PDF가 없습니다.'); return; }
+      try {
+        const name = (originalFileName || 'document') + '.pdf';
+        const saved = await window.electronAPI.saveFile({ defaultName: name, buffer: originalPdfBytes });
+        if (saved) showSuccess('원본 PDF를 다운로드했습니다.');
+      } catch (err) {
+        console.error('원본 다운로드 오류:', err);
+        showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    async function downloadProcessed() {
+      if (!processedPdfBytes) { showError('먼저 \'✅ 적용\'을 눌러 수정사항을 적용하거나, 다운로드 버튼을 우클릭해 원본을 저장하세요.'); return; }
+      try {
+        const saved = await window.electronAPI.saveFile({
+          defaultName: processedFileName,
+          buffer: processedPdfBytes,
+        });
+        if (saved) showSuccess('PDF를 다운로드했습니다.');
+      } catch (err) {
+        console.error('다운로드 오류:', err);
+        showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    // ── 여러 파일을 하나의 PDF로 합치기 ──────────────────────────────────────
+    // 열려 있는 모든 탭의 원본 PDF(HWP/HWPX는 변환된 PDF)를 탭 순서대로 병합.
+    // 병합본은 저장 다이얼로그로 바로 저장하고, 동시에 새 탭으로 열어 분석한다.
+    function mergeAllTabs() {
+      const ready = [...tabs.values()].filter(
+        t => t.originalPdfBytes && t.pageResults.filter(Boolean).length
+      );
+      if (ready.length < 2) {
+        showError('합치려면 분석이 끝난 파일이 2개 이상 필요합니다.');
+        return;
+      }
+      openMergeDialog(ready);
+    }
+
+    // 합치기 전에 파일 순서를 조정할 수 있는 모달을 띄운다.
+    function openMergeDialog(readyTabs) {
+      const order = readyTabs.slice();
+      const overlay = document.createElement('div');
+      overlay.className = 'merge-overlay';
+      overlay.innerHTML =
+        '<div class="merge-modal">'
+        + '<h3 class="merge-title">파일 합치기 순서</h3>'
+        + '<p class="merge-sub">드래그하거나 ▲▼ 버튼으로 순서를 바꾼 뒤 합치기를 누르세요. 맨 위 파일명이 합본 이름의 기준이 됩니다.</p>'
+        + '<ul class="merge-list" id="mergeList"></ul>'
+        + '<div class="merge-actions"><button class="merge-cancel" id="mergeCancel">취소</button>'
+        + '<button class="merge-confirm" id="mergeConfirm">🔗 합치기</button></div>'
+        + '</div>';
+      document.body.appendChild(overlay);
+      const listEl = overlay.querySelector('#mergeList');
+      let dragIdx = null;
+
+      function renderList() {
+        listEl.innerHTML = '';
+        order.forEach((t, i) => {
+          const li = document.createElement('li');
+          li.className = 'merge-item';
+          li.draggable = true;
+          li.innerHTML =
+            `<span class="merge-idx">${i + 1}</span>`
+            + `<span class="merge-name" title="${t.fileName}">📄 ${t.fileName}</span>`
+            + '<span class="merge-move">'
+            + `<button class="merge-up" ${i === 0 ? 'disabled' : ''}>▲</button>`
+            + `<button class="merge-down" ${i === order.length - 1 ? 'disabled' : ''}>▼</button>`
+            + '</span>';
+          li.querySelector('.merge-up').onclick = () => { if (i > 0) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; renderList(); } };
+          li.querySelector('.merge-down').onclick = () => { if (i < order.length - 1) { [order[i + 1], order[i]] = [order[i], order[i + 1]]; renderList(); } };
+          li.ondragstart = (e) => { dragIdx = i; e.dataTransfer.effectAllowed = 'move'; li.classList.add('dragging'); };
+          li.ondragend = () => { dragIdx = null; listEl.querySelectorAll('.merge-item').forEach(x => x.classList.remove('dragging','drag-over')); };
+          li.ondragover = (e) => { if (dragIdx !== null && dragIdx !== i) { e.preventDefault(); li.classList.add('drag-over'); } };
+          li.ondragleave = () => li.classList.remove('drag-over');
+          li.ondrop = (e) => {
+            e.preventDefault(); li.classList.remove('drag-over');
+            if (dragIdx !== null && dragIdx !== i) { const [m] = order.splice(dragIdx, 1); order.splice(i, 0, m); renderList(); }
+          };
+          listEl.appendChild(li);
+        });
+      }
+      renderList();
+
+      const close = () => overlay.remove();
+      overlay.querySelector('#mergeCancel').onclick = close;
+      overlay.onclick = (e) => { if (e.target === overlay) close(); };
+      overlay.querySelector('#mergeConfirm').onclick = () => { close(); performMerge(order); };
+    }
+
+    async function performMerge(ready) {
+      try {
+        hideError(); hideSuccess();
+        showLoading(`${ready.length}개 파일을 하나로 합치는 중…`);
+
+        const mergedDoc = await PDFLib.PDFDocument.create();
+        const chapters = [];           // 파일별 챕터 경계 {name, start(1-based), count}
+        let startPage = 1;
+        for (const t of ready) {
+          const src     = await PDFLib.PDFDocument.load(t.originalPdfBytes.slice(0));
+          const indices = src.getPageIndices();
+          const copied  = await mergedDoc.copyPages(src, indices);
+          copied.forEach(p => mergedDoc.addPage(p));
+          chapters.push({ name: t.fileName, start: startPage, count: indices.length });
+          startPage += indices.length;
+        }
+        const bytes = await mergedDoc.save();
+        hideLoading();
+
+        // 합본 파일명: 맨 위(첫 번째) 파일명 기준으로 확장자를 떼고 "_합본.pdf"를 붙인다.
+        const baseName = ready[0].fileName.replace(/\.[^.]+$/, '');
+        const mergedName = `${baseName}_합본.pdf`;
+
+        // 1) 저장 다이얼로그로 즉시 저장
+        let saved = false;
+        try {
+          saved = await window.electronAPI.saveFile({ defaultName: mergedName, buffer: bytes });
+        } catch (e) { /* 저장 실패는 아래 분석 탭으로 보완 */ }
+
+        // 2) 합본을 새 탭으로 열어 분석
+        const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const file = {
+          name: mergedName, size: bytes.byteLength, type: 'application/pdf',
+          arrayBuffer: () => Promise.resolve(ab.slice(0)),
+        };
+        const tab = createTab(file);
+        tab.chapters = chapters;       // 분석 완료 후 페이지별 챕터 태깅에 사용
+        activateTab(tab.id);
+        analyzePDF(file, tab);
+
+        showSuccess(saved
+          ? `${ready.length}개 파일을 합쳐 저장했습니다. 새 탭에서 분석 결과를 확인하세요.`
+          : `${ready.length}개 파일을 합쳤습니다. 새 탭에서 확인 후 저장할 수 있습니다.`);
+      } catch (e) {
+        hideLoading();
+        showError('파일 합치기 오류: ' + (e && e.message ? e.message : String(e)));
       }
     }
 
@@ -3163,14 +3782,21 @@
       return `일금 ${toKoreanAmount(Math.floor(n))}원정(￦${Math.floor(n).toLocaleString('ko-KR')})`;
     }
 
+    // 품목 합계(VAT포함) = 수량 × 단가 × 부수 × (1 − 할인율%)
+    function itemTotal(item) {
+      const base = item.qty * item.price * (item.copies || 1);
+      const disc = Math.max(0, Math.min(100, item.discount || 0));
+      return Math.round(base * (1 - disc / 100));
+    }
+
     // ── 견적서 ───────────────────────────────────────────────────────────────
     function initQuoteSection(colorCount, bwCount) {
       quoteItems.length = 0;
       document.getElementById('q-customer').value = '';
       document.getElementById('q-date').value = new Date().toISOString().split('T')[0];
-      if (colorCount > 0) quoteItems.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: 200, copies: 1 });
-      if (bwCount > 0)    quoteItems.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: 60,  copies: 1 });
-      quoteItems.push({ name: '제본비', spec: '', qty: 1, price: 2500, copies: 1 });
+      if (colorCount > 0) quoteItems.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: 200, copies: 1, discount: 0 });
+      if (bwCount > 0)    quoteItems.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: 60,  copies: 1, discount: 0 });
+      quoteItems.push({ name: '제본비', spec: '', qty: 1, price: 2500, copies: 1, discount: 0 });
       renderQuoteTable();
       document.getElementById('quoteSection').style.display = 'block';
     }
@@ -3179,7 +3805,7 @@
       const tbody = document.getElementById('quoteItemBody');
       tbody.innerHTML = '';
       quoteItems.forEach((item, idx) => {
-        const total  = item.qty * item.price * (item.copies || 1);
+        const total  = itemTotal(item);
         const supply = Math.round(total / 1.1);
         const vat    = total - supply;
         const tr = document.createElement('tr');
@@ -3189,6 +3815,7 @@
           <td><input type="number" value="${item.qty}" min="0" onchange="quoteItems[${idx}].qty=+this.value;recalcQuote()"></td>
           <td><input type="number" value="${item.price}" min="0" onchange="quoteItems[${idx}].price=+this.value;recalcQuote()"></td>
           <td><input type="number" value="${item.copies||1}" min="1" style="text-align:right;" onchange="syncCopies(this.value)"></td>
+          <td><input type="number" value="${item.discount||0}" min="0" max="100" step="0.1" style="text-align:right;" onchange="quoteItems[${idx}].discount=Math.max(0,Math.min(100,+this.value||0));recalcQuote()"></td>
           <td class="q-readonly q-col-hide" id="supply-${idx}">${supply.toLocaleString()}원</td>
           <td class="q-readonly q-col-hide" id="vat-${idx}">${vat.toLocaleString()}원</td>
           <td class="q-total-cell" id="total-${idx}">${total.toLocaleString()}원</td>
@@ -3207,7 +3834,7 @@
 
     function addQuoteItem() {
       const copies = quoteItems.length > 0 ? (quoteItems[0].copies || 1) : 1;
-      quoteItems.push({ name: '품목', spec: '', qty: 1, price: 0, copies });
+      quoteItems.push({ name: '품목', spec: '', qty: 1, price: 0, copies, discount: 0 });
       renderQuoteTable();
     }
 
@@ -3222,7 +3849,7 @@
     function recalcQuote() {
       let supplySum = 0, vatSum = 0, totalSum = 0;
       quoteItems.forEach((item, idx) => {
-        const total  = item.qty * item.price * (item.copies || 1);
+        const total  = itemTotal(item);
         const supply = Math.round(total / 1.1);
         const vat    = total - supply;
         supplySum += supply; vatSum += vat; totalSum += total;
@@ -3268,7 +3895,8 @@
       let supplySum = 0, vatSum = 0, totalSum = 0;
       const rows = quoteItems.map(item => {
         const copies = item.copies || 1;
-        const total  = item.qty * item.price * copies;
+        const disc   = Math.max(0, Math.min(100, item.discount || 0));
+        const total  = itemTotal(item);
         const supply = Math.round(total / 1.1);
         const vat    = total - supply;
         supplySum += supply; vatSum += vat; totalSum += total;
@@ -3278,6 +3906,7 @@
           <td style="text-align:right">${item.qty.toLocaleString()}</td>
           <td style="text-align:right">${item.price.toLocaleString()}</td>
           <td style="text-align:right">${copies.toLocaleString()}</td>
+          <td style="text-align:right">${disc ? disc + '%' : '-'}</td>
           <td style="text-align:right">${supply.toLocaleString()}</td>
           <td style="text-align:right">${vat.toLocaleString()}</td>
           <td style="text-align:right;font-weight:700">${total.toLocaleString()}</td>
@@ -3309,7 +3938,7 @@
           <thead><tr>
             <th>품목명</th><th style="width:9%">규격</th>
             <th style="width:8%">수량</th><th style="width:10%">단가</th>
-            <th style="width:7%">부수</th>
+            <th style="width:7%">부수</th><th style="width:7%">할인율</th>
             <th style="width:10%">공급가</th><th style="width:9%">부가세</th>
             <th style="width:11%">합계(VAT포함)</th>
           </tr></thead>
@@ -3376,23 +4005,77 @@
       colorPercentEl.textContent   = Math.round(colorList.length / Math.max(1, total) * 100) + '%';
       rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}`;
       renderAllPages(pageResults);
+      if (activeTabId && tabs.has(activeTabId)) updateFileInfo(tabs.get(activeTabId));
     }
 
     function setPageEdited() {
       pageEdited = true;
       if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).pageEdited = true;
-      updateDownloadBtn();
+      invalidateProcessed();
     }
 
     function updateUndoBtn() {
-      const btn = document.getElementById('undoDeleteBtn');
-      if (btn) btn.style.display = deletedPages.length > 0 ? '' : 'none';
+      const u = document.getElementById('undoBtn');
+      const r = document.getElementById('redoBtn');
+      if (u) u.style.display = undoStack.length > 0 ? '' : 'none';
+      if (r) r.style.display = redoStack.length > 0 ? '' : 'none';
+    }
+
+    // ── 실행취소 / 다시실행 히스토리 (페이지 순서·회전·삽입·삭제 모두 지원) ──
+    // 스냅샷 = 현재 페이지 객체 배열(참조)의 순서 + 각 페이지 회전값
+    function snapshotPages() {
+      return {
+        order: pageResults.slice(),
+        rot:   pageResults.map(r => (r ? (r.rotation || 0) : 0)),
+      };
+    }
+
+    function syncHistoryToTab() {
+      if (activeTabId && tabs.has(activeTabId)) {
+        const t = tabs.get(activeTabId);
+        t.undoStack = undoStack;
+        t.redoStack = redoStack;
+      }
+    }
+
+    // 변경을 가하기 직전에 호출 — 현재 상태를 실행취소 스택에 저장하고 다시실행 스택을 비움
+    function pushHistory() {
+      undoStack.push(snapshotPages());
+      if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+      redoStack.length = 0;
+      syncHistoryToTab();
+    }
+
+    function restoreSnapshot(snap) {
+      pageResults.length = 0;
+      snap.order.forEach(o => pageResults.push(o));
+      snap.order.forEach((o, i) => { if (o) o.rotation = snap.rot[i]; });
+      rebuildPageNums();
+      syncTabPageResults();
+      rerenderPages();
+    }
+
+    function undoEdit() {
+      if (!undoStack.length) return;
+      redoStack.push(snapshotPages());
+      restoreSnapshot(undoStack.pop());
+      syncHistoryToTab();
+      setPageEdited();
+      updateUndoBtn();
+    }
+
+    function redoEdit() {
+      if (!redoStack.length) return;
+      undoStack.push(snapshotPages());
+      restoreSnapshot(redoStack.pop());
+      syncHistoryToTab();
+      setPageEdited();
+      updateUndoBtn();
     }
 
     function deletePage(idx) {
-      const page = pageResults.splice(idx, 1)[0];
-      deletedPages.push({ page, idx });
-      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).deletedPages = deletedPages;
+      pushHistory();
+      pageResults.splice(idx, 1);
       rebuildPageNums();
       syncTabPageResults();
       rerenderPages();
@@ -3400,20 +4083,9 @@
       updateUndoBtn();
     }
 
-    function undoDelete() {
-      if (!deletedPages.length) return;
-      const { page, idx } = deletedPages.pop();
-      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).deletedPages = deletedPages;
-      const insertIdx = Math.min(idx, pageResults.length);
-      pageResults.splice(insertIdx, 0, page);
-      rebuildPageNums();
-      syncTabPageResults();
-      rerenderPages();
-      updateUndoBtn();
-    }
-
     function insertBlankPage(afterIdx) {
       // afterIdx = -1 이면 맨 앞에 삽입
+      pushHistory();
       const tab = activeTabId ? tabs.get(activeTabId) : null;
       const pageSize = (tab && tab.defaultPageSize) ? tab.defaultPageSize : [595.28, 841.89];
       const blank = {
@@ -3426,15 +4098,44 @@
       syncTabPageResults();
       rerenderPages();
       setPageEdited();
+      updateUndoBtn();
     }
 
     function renderAllPages(results) {
       pagesGrid.innerHTML = '';
+      let prevChapter = null, chapterNo = 0;
       results.forEach((r, idx) => {
         if (!r) return;
+        if (r.chapter && r.chapter !== prevChapter) {
+          chapterNo++;
+          pagesGrid.appendChild(makeChapterDivider(chapterNo, r.chapter, chapterRunLength(results, idx, r.chapter)));
+          prevChapter = r.chapter;
+        }
         pagesGrid.appendChild(renderPageItem(r, idx));
       });
       renderSidebar(results);
+    }
+
+    // 합본 그리드용 파일 구분 헤더(전체 열 너비 차지)
+    function makeChapterDivider(no, name, pageCount) {
+      const d = document.createElement('div');
+      d.className = 'chapter-divider';
+      const badge = document.createElement('span'); badge.className = 'chapter-badge'; badge.textContent = '파일 ' + no;
+      const nm = document.createElement('span'); nm.className = 'chapter-name'; nm.textContent = '📄 ' + name;
+      const pg = document.createElement('span'); pg.className = 'chapter-pages'; pg.textContent = pageCount + '페이지';
+      d.append(badge, nm, pg);
+      return d;
+    }
+
+    // idx에서 시작해 같은 챕터가 연속되는 페이지 수 (널 항목은 건너뜀, 다른 챕터에서 중단)
+    function chapterRunLength(results, startIdx, chapter) {
+      let n = 0;
+      for (let j = startIdx; j < results.length; j++) {
+        const p = results[j];
+        if (!p) continue;
+        if (p.chapter === chapter) n++; else break;
+      }
+      return n;
     }
 
     // ── 왼쪽 사이드바 ────────────────────────────────────────────────────────
@@ -3450,6 +4151,20 @@
       try { localStorage.setItem('sbWidth', width); } catch(e) {}
     }
     applySbWidth(parseInt(localStorage.getItem('sbWidth')) || 280);
+
+    // 사이드바 상단 패널 열기/닫기 토글 (상태는 localStorage에 저장)
+    function toggleSbPanel(open) {
+      const p = document.getElementById('sbPanel');
+      if (p) p.classList.toggle('collapsed', !open);
+      try { localStorage.setItem('sbPanelOpen', open ? '1' : '0'); } catch (e) {}
+    }
+    (function initSbPanel() {
+      const open = localStorage.getItem('sbPanelOpen') !== '0';
+      const cb = document.getElementById('sbPanelToggle');
+      if (cb) cb.checked = open;
+      const p = document.getElementById('sbPanel');
+      if (p) p.classList.toggle('collapsed', !open);
+    })();
 
     let sbResizing = false;
     sbResizer.addEventListener('mousedown', e => {
@@ -3480,8 +4195,21 @@
     sbToggle.addEventListener('click', () => showSidebar(!sbVisible));
 
     function renderSidebar(results) {
-      sidebar.innerHTML = '';
+      // 상단 패널(#sbPanel)은 보존하고 썸네일 항목·챕터 구분만 교체
+      sidebar.querySelectorAll('.sb-item, .sb-chapter').forEach(el => el.remove());
+      let sbPrevChapter = null, sbChapterNo = 0;
       results.filter(Boolean).forEach((r, orderedIdx) => {
+        if (r.chapter && r.chapter !== sbPrevChapter) {
+          sbChapterNo++;
+          const ch = document.createElement('div');
+          ch.className = 'sb-chapter';
+          const b = document.createElement('span'); b.className = 'sb-chapter-badge'; b.textContent = sbChapterNo;
+          const nm = document.createElement('span'); nm.className = 'sb-chapter-name'; nm.textContent = r.chapter;
+          ch.append(b, nm);
+          ch.title = r.chapter;
+          sidebar.appendChild(ch);
+          sbPrevChapter = r.chapter;
+        }
         const item = document.createElement('div');
         item.className = 'sb-item' + (r.isColor && !r.isBlank ? ' sb-color-page' : '');
         item.dataset.sbPage = r.pageNum;
@@ -3557,6 +4285,36 @@
         const sbImg = sbEl.querySelector('img');
         if (sbImg) sbImg.style.filter = 'grayscale(1)';
       });
+      syncSidebarPanel();
+    }
+
+    // 스티키 패널의 분석결과 요약(본문 stat-card 값을 그대로 미러링)
+    function updateStickyStats() {
+      const g = id => document.getElementById(id);
+      if (!g('stkTotal')) return;
+      g('stkTotal').textContent = totalPagesEl.textContent;
+      g('stkColor').textContent = colorPagesEl.textContent;
+      g('stkGray').textContent  = grayscalePagesEl.textContent;
+      g('stkPct').textContent   = colorPercentEl.textContent;
+    }
+
+    // 사이드바 상단 패널(분석결과·처리옵션)을 본문 상태와 동기화
+    function syncSidebarPanel() {
+      const g = id => document.getElementById(id);
+      updateStickyStats();
+      if (!g('sbPanel')) return;
+      g('sbTotal').textContent = totalPagesEl.textContent;
+      g('sbColor').textContent = colorPagesEl.textContent;
+      g('sbGray').textContent  = grayscalePagesEl.textContent;
+      g('sbPct').textContent   = colorPercentEl.textContent;
+      g('sbSel').textContent   = `${selectedPages.size}개 선택됨`;
+      g('sb-opt-bw').classList.toggle('active', !!processingOptions.bw);
+      const ab = g('applyBtn'), db = g('downloadBtn'), cb = g('clearOptsBtn');
+      g('sb-applyBtn').disabled    = ab ? ab.disabled : true;
+      g('sb-downloadBtn').disabled = db ? db.disabled : true;
+      g('sb-downloadBtn').classList.toggle('btn-dim', !processedPdfBytes);
+      g('sb-clearOptsBtn').style.display = (cb && cb.style.display !== 'none') ? '' : 'none';
+      g('sb-refreshBtn').style.display = selectedPages.size > 0 ? '' : 'none';
     }
 
     function scrollToPage(pageNum) {
@@ -3689,6 +4447,7 @@
     let dragSrcPageNum = null;
 
     function movePage(srcIdx, dstIdx, insertAfter) {
+      pushHistory();
       const [page] = pageResults.splice(srcIdx, 1);
       // splice 후 dstIdx 보정 (srcIdx가 앞에 있으면 한 칸 당겨짐)
       let insertIdx = srcIdx < dstIdx ? dstIdx - 1 : dstIdx;
@@ -3698,6 +4457,7 @@
       syncTabPageResults();
       rerenderPages();
       setPageEdited();
+      updateUndoBtn();
       // 이동된 페이지로 스크롤
       setTimeout(() => {
         const moved = pageResults[insertIdx];
@@ -3721,6 +4481,7 @@
     function rotatePage(idx, deg) {
       const r = pageResults[idx];
       if (!r) return;
+      pushHistory();
       r.rotation = ((r.rotation || 0) + deg + 360) % 360;
       // 메인 그리드 업데이트
       const el = document.querySelector(`[data-page="${r.pageNum}"]`);
@@ -3735,6 +4496,7 @@
         if (sbImg) applyRotationStyle(sbImg, r.rotation, r.thumbW, r.thumbH);
       }
       setPageEdited();
+      updateUndoBtn();
     }
 
     // ── 드래그&드롭 ──────────────────────────────────────────────────────────
@@ -3746,12 +4508,26 @@
     const uploadSection = document.getElementById('uploadSection');
     uploadSection.addEventListener('dragover', e => { e.preventDefault(); uploadSection.classList.add('drag-over'); });
     uploadSection.addEventListener('dragleave', e => { if (!uploadSection.contains(e.relatedTarget)) uploadSection.classList.remove('drag-over'); });
-    uploadSection.addEventListener('drop', e => {
+    uploadSection.addEventListener('drop', async e => {
       e.preventDefault();
       uploadSection.classList.remove('drag-over');
-      const files = [...e.dataTransfer.files].filter(f => f.type.includes('pdf') || /\.pdf$/i.test(f.name));
-      if (files.length) { hideError(); hideSuccess(); startLoad(files); }
-      else showError('PDF 파일만 업로드 가능합니다.');
+      const dropped = [...e.dataTransfer.files].filter(f =>
+        f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name)
+      );
+      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) 파일만 업로드 가능합니다.'); return; }
+      hideError(); hideSuccess();
+      try {
+        const needConvert = dropped.some(f => CONVERT_RE.test(f.name));
+        if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
+        // 드롭된 File → 실제 경로 취득 후 prepareFiles로 일괄 처리(HWP·Office는 PDF 변환)
+        const items = dropped.map(f => ({ name: f.name, path: window.electronAPI.getPathForFile(f) }));
+        const files = await prepareFiles(items);
+        if (needConvert) hideLoading();
+        startLoad(files);
+      } catch(err) {
+        hideLoading();
+        showError('파일 처리 오류: ' + (err && err.message ? err.message : String(err)));
+      }
     });
     uploadSection.addEventListener('click', e => {
       if (!e.target.closest('button')) openFilesDialog();
