@@ -12,6 +12,7 @@
     "productName": "PDF 분석기",
     "asar": false,
     "win": {
+      "icon": "src/icon.ico",
       "target": [
         {
           "target": "dir"
