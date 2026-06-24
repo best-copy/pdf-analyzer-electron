@@ -2,10 +2,11 @@
   "name": "pdf-analyzer",
   "version": "1.0.0",
   "description": "PDF 컬러/흑백 분석 및 변환",
+  "author": "일청기획",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win --x64"
+    "build": "electron-builder --win portable --x64"
   },
   "build": {
     "appId": "com.ilchung.pdf-analyzer",
@@ -15,9 +16,13 @@
       "icon": "src/icon.ico",
       "target": [
         {
-          "target": "dir"
+          "target": "portable",
+          "arch": ["x64"]
         }
       ]
+    },
+    "portable": {
+      "artifactName": "PDF분석기-포터블-${version}.exe"
     },
     "files": [
       "main.js",

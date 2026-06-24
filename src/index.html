@@ -1213,7 +1213,19 @@
       renderTabBar();
     }
 
+    // 닫는 탭의 썸네일 objectURL 해제 (메모리 누수 방지; blob: URL만 대상, data:는 무시)
+    function revokeThumbnails(results) {
+      if (!results) return;
+      results.forEach(r => {
+        if (r && typeof r.thumbnail === 'string' && r.thumbnail.startsWith('blob:')) {
+          try { URL.revokeObjectURL(r.thumbnail); } catch {}
+        }
+      });
+    }
+
     function closeTab(id) {
+      const closing = tabs.get(id);
+      if (closing) revokeThumbnails(closing.pageResults);
       tabs.delete(id);
       if (activeTabId === id) {
         const remaining = [...tabs.keys()];
@@ -1484,8 +1496,10 @@
 
         let colorCount = 0, bwCount = 0, done = 0;
 
-        // 페이지당 분석 동시 처리 — CPU 코어 수에 맞게 자동 설정 (최소 8, 최대 32)
-        const CONCURRENCY = Math.min(32, Math.max(8, navigator.hardwareConcurrency || 8));
+        // 페이지당 분석 동시 처리 — pdf.js 워커는 1개라 과도한 동시성은 메모리
+        // thrash만 유발(실병렬 X). 코어 수 기준 소수(2~6)가 디코드·페인트·인코딩
+        // 오버랩에 최적. (이전 32 → 메모리 부담만 큼)
+        const CONCURRENCY = Math.max(2, Math.min(navigator.hardwareConcurrency || 4, 6));
         let qi = 0;
         const tasks = Array.from({ length: totalPages }, (_, i) => async () => {
           const pn   = i + 1;
@@ -1530,9 +1544,10 @@
 
     async function analyzePageColor(page) {
       try {
-        // 단일 렌더링(0.5x)으로 색상 분석 + 썸네일 동시 처리
-        // UI 최대 썸네일 너비 ~200px; A4(595pt) * 0.5 = 297px → 충분한 해상도
-        const vp = page.getViewport({ scale: 0.5 });
+        // 단일 렌더링(0.35x)으로 색상 분석 + 썸네일 동시 처리
+        // UI 최대 썸네일 너비 ~200px; A4(595pt) * 0.35 = 208px → 충분한 해상도
+        // (0.5→0.35: 픽셀 수 ~2배 감소 → 렌더·getImageData·인코딩 모두 단축)
+        const vp = page.getViewport({ scale: 0.35 });
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         canvas.width  = Math.ceil(vp.width);
@@ -1551,8 +1566,12 @@
         const sampled = Math.ceil(totalPixels / sampleStep);
         const isColor = gray / sampled < 0.999999;
 
-        // 썸네일: 같은 캔버스에서 생성 (추가 렌더링 불필요)
-        const thumbnail = canvas.toDataURL('image/jpeg', 0.85);
+        // 썸네일: 같은 캔버스에서 비동기 인코딩(toBlob)→objectURL
+        // (toDataURL은 동기 + base64라 메인스레드를 막음. toBlob은 인코딩이
+        //  메인스레드를 막지 않아 다른 페이지 렌더와 겹쳐 진행됨. 닫을 때 revoke)
+        const thumbnail = await new Promise(res => {
+          canvas.toBlob(b => res(b ? URL.createObjectURL(b) : null), 'image/jpeg', 0.85);
+        });
         // 실제 페이지 크기(pt) — 회전 반영된 표시 크기 (혼합 문서 크기 판별용)
         const vp1 = page.getViewport({ scale: 1 });
         return { isColor, thumbnail, thumbW: canvas.width, thumbH: canvas.height,
