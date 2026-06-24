@@ -1544,10 +1544,18 @@
 
     async function analyzePageColor(page) {
       try {
-        // 단일 렌더링(0.35x)으로 색상 분석 + 썸네일 동시 처리
-        // UI 최대 썸네일 너비 ~200px; A4(595pt) * 0.35 = 208px → 충분한 해상도
-        // (0.5→0.35: 픽셀 수 ~2배 감소 → 렌더·getImageData·인코딩 모두 단축)
-        const vp = page.getViewport({ scale: 0.35 });
+        // 페이지 실제 크기(pt) — 표시 스케일 산출 + 혼합문서 크기 판별에 사용
+        const vp1 = page.getViewport({ scale: 1 });
+        // 썸네일 화질: 화면 DPI(Windows 125~200% 배율 등)와 표시폭에 맞춰
+        // '딱 필요한 만큼만' 렌더 → 화질↑·픽셀 낭비 없음. 색상 판정은 어느
+        // 해상도든 15k 샘플이면 충분하므로 화질을 올려도 분석 정확도엔 무관.
+        // 최대 줌(≈480px)에서도 선명하도록 페이지 폭·DPI 기준으로 타깃 산출.
+        // 보통 페이지는 ≈0.8(A4→476px ≈ 최대 줌 폭)로 렌더, 0.5~0.8로 제한해
+        // 큰 페이지의 과도 렌더만 방지. (DPI 영향은 1.5까지만 반영해 폭주 차단)
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+        let rScale = (480 * dpr) / vp1.width;            // 최대 표시폭 × DPI ÷ 페이지폭
+        rScale = Math.max(0.5, Math.min(rScale, 0.8));   // 0.5~0.8 제한
+        const vp = page.getViewport({ scale: rScale });
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         canvas.width  = Math.ceil(vp.width);
@@ -1572,8 +1580,7 @@
         const thumbnail = await new Promise(res => {
           canvas.toBlob(b => res(b ? URL.createObjectURL(b) : null), 'image/jpeg', 0.85);
         });
-        // 실제 페이지 크기(pt) — 회전 반영된 표시 크기 (혼합 문서 크기 판별용)
-        const vp1 = page.getViewport({ scale: 1 });
+        // vp1(실제 페이지 크기 pt)은 위에서 산출함. thumbW/H는 캔버스 실제 픽셀.
         return { isColor, thumbnail, thumbW: canvas.width, thumbH: canvas.height,
                  pageWpt: vp1.width, pageHpt: vp1.height };
       } catch {
