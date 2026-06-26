@@ -96,6 +96,13 @@
       min-height: 44px;
       align-items: flex-end;
     }
+    /* 메인 탭 바: 페이지를 스크롤해도 화면 밖으로 사라지지 않게 상단에 고정.
+       .container가 스크롤 컨테이너가 아니라(overflow:clip) body 스크롤 기준으로
+       sticky가 정상 동작한다. .sticky-panel보다 먼저(DOM상 위) 고정되므로
+       z-index를 더 높게 두고, --maintabbar-h로 .sticky-panel의 top을 밀어준다. */
+    #mainTabBar {
+      position: sticky; top: 0; z-index: 120;
+    }
     .tab-item {
       display: flex; align-items: center; gap: 6px;
       padding: 7px 14px;
@@ -135,6 +142,28 @@
     .tab-item { user-select: none; }
     .tab-item.dragging { opacity: 0.45; }
     .tab-item.drag-over { box-shadow: inset 3px 0 0 #0071e3; }
+
+    /* 사이드바(처리옵션 패널 아래)로 옮긴 탭 바: 그리드 전체 폭, 세로 목록, 다크 테마,
+       sticky가 아니라 일반 흐름이라 썸네일과 함께 마우스 스크롤로 같이 이동한다. */
+    #thumbSidebar .tab-bar {
+      grid-column: 1 / -1;
+      flex-direction: column; flex-wrap: wrap;
+      overflow-x: visible;
+      background: transparent; border-bottom: none;
+      min-height: 0; align-items: stretch;
+      padding: 0 0 4px; margin-bottom: 4px; gap: 6px;
+    }
+    #thumbSidebar .tab-item {
+      max-width: none; border-radius: 8px;
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.12);
+      color: #d2d2d7;
+    }
+    #thumbSidebar .tab-item:hover { background: #3a3a3c; }
+    #thumbSidebar .tab-item.active {
+      background: #0071e3; color: #fff; border-color: #0071e3;
+      position: static;
+    }
+    #thumbSidebar .tab-merge-btn { margin-left: 0; margin-bottom: 0; width: 100%; justify-content: center; }
 
     /* ---- 파일 합치기 순서 모달 ---- */
     .merge-overlay {
@@ -409,7 +438,7 @@
     .dot-gain-select:focus { border-color: #0071e3; }
 
     .sticky-panel {
-      position: sticky; top: 0; z-index: 100;
+      position: sticky; top: var(--maintabbar-h, 0px); z-index: 100;
       background: rgba(255,255,255,0.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
       margin: 0 -40px; padding: 12px 40px 14px;
       box-shadow: 0 2px 16px rgba(0,0,0,0.08); border-radius: 0 0 14px 14px;
@@ -764,8 +793,8 @@
     <div class="error" id="error"></div>
     <div class="success" id="success"></div>
 
-    <!-- 탭 바 -->
-    <div id="tabBar" class="tab-bar"></div>
+    <!-- 다중작업 파일 탭 + 파일 합치기 (메인) — 사이드바를 닫아도 항상 보이도록 메인에도 표시 -->
+    <div id="mainTabBar" class="tab-bar"></div>
 
     <div class="results-section" id="resultsSection">
       <h2 style="text-align:center; margin-bottom:30px; color:#333;">📊 분석 결과</h2>
@@ -915,6 +944,9 @@
       </div>
       </div><!-- /.sbp-body -->
     </div>
+
+    <!-- 다중작업 파일 탭 + 파일 합치기 (처리옵션 패널 아래, 썸네일과 함께 스크롤) -->
+    <div id="tabBar" class="tab-bar"></div>
   </div>
   <div id="sbResizer" title="드래그하여 사이드바 폭 조절"></div>
   <button id="sbToggle" title="사이드바 접기/펼치기 (S)">◀</button>
@@ -976,6 +1008,8 @@
     const errorEl          = document.getElementById('error');
     const successEl        = document.getElementById('success');
     const tabBar           = document.getElementById('tabBar');
+    const mainTabBar       = document.getElementById('mainTabBar');
+    const tabBars          = [tabBar, mainTabBar];
     const resultsSection   = document.getElementById('resultsSection');
     const pagesGrid        = document.getElementById('pagesGrid');
     const rangeSummary     = document.getElementById('rangeSummary');
@@ -1161,8 +1195,9 @@
     function createTab(file) {
       const state = newTabState(file);
       tabs.set(state.id, state);
-      if (tabs.size >= 2) tabBar.style.display = 'flex';
+      if (tabs.size >= 2) tabBars.forEach(b => b.style.display = 'flex');
       renderTabBar();
+      syncMainTabBarOffset();
       return state;
     }
 
@@ -1243,8 +1278,9 @@
           originalThumbnails = new Map(); quoteItems = [];
         }
       }
-      if (tabs.size < 2) tabBar.style.display = 'none';
+      if (tabs.size < 2) tabBars.forEach(b => b.style.display = 'none');
       renderTabBar();
+      syncMainTabBarOffset();
     }
 
     let dragTabId = null;
@@ -1261,34 +1297,47 @@
       renderTabBar();
     }
 
-    function renderTabBar() {
-      tabBar.innerHTML = '';
-      tabs.forEach((state, id) => {
-        const tab = document.createElement('div');
-        tab.className = 'tab-item' + (id === activeTabId ? ' active' : '');
-        const icon = state.status === 'loading' ? '⏳ ' : state.status === 'error' ? '❌ ' : '📄 ';
-        const short = state.fileName.length > 22 ? state.fileName.slice(0, 20) + '…' : state.fileName;
-        tab.title = state.fileName;
-        tab.draggable = true;
-        tab.innerHTML = `<span class="tab-name">${icon}${short}</span><button class="tab-close" onclick="event.stopPropagation();closeTab('${id}')">✕</button>`;
-        tab.onclick = () => activateTab(id);
-        // 마우스 드래그로 탭 순서 변경
-        tab.ondragstart = (e) => { dragTabId = id; e.dataTransfer.effectAllowed = 'move'; tab.classList.add('dragging'); };
-        tab.ondragend = () => { dragTabId = null; tabBar.querySelectorAll('.tab-item').forEach(t => t.classList.remove('dragging','drag-over')); };
-        tab.ondragover = (e) => { if (dragTabId && dragTabId !== id) { e.preventDefault(); tab.classList.add('drag-over'); } };
-        tab.ondragleave = () => tab.classList.remove('drag-over');
-        tab.ondrop = (e) => { e.preventDefault(); tab.classList.remove('drag-over'); if (dragTabId) moveTabBefore(dragTabId, id); };
-        tabBar.appendChild(tab);
+    // #mainTabBar(상단 고정)가 표시될 때 그 높이만큼 .sticky-panel을 밀어내려
+    // 두 sticky 요소가 스크롤 시 서로 겹치지 않게 한다.
+    function syncMainTabBarOffset() {
+      requestAnimationFrame(() => {
+        const h = mainTabBar.style.display === 'flex' ? mainTabBar.getBoundingClientRect().height : 0;
+        document.documentElement.style.setProperty('--maintabbar-h', h + 'px');
       });
-      // 2개 이상 열려 있으면 '파일 합치기' 버튼 표시
-      if (tabs.size >= 2) {
-        const mb = document.createElement('button');
-        mb.className = 'tab-merge-btn';
-        mb.innerHTML = '🔗 파일 합치기';
-        mb.title = '열려 있는 모든 파일을 하나의 PDF로 합쳐 저장합니다';
-        mb.onclick = mergeAllTabs;
-        tabBar.appendChild(mb);
-      }
+    }
+
+    // 사이드바(#tabBar)·메인(#mainTabBar) 두 곳에 동일한 탭 목록을 렌더링한다.
+    // 사이드바를 닫아도 메인 쪽 탭 바는 항상 보이도록 동시에 표시한다.
+    function renderTabBar() {
+      tabBars.forEach(container => {
+        container.innerHTML = '';
+        tabs.forEach((state, id) => {
+          const tab = document.createElement('div');
+          tab.className = 'tab-item' + (id === activeTabId ? ' active' : '');
+          const icon = state.status === 'loading' ? '⏳ ' : state.status === 'error' ? '❌ ' : '📄 ';
+          const short = state.fileName.length > 22 ? state.fileName.slice(0, 20) + '…' : state.fileName;
+          tab.title = state.fileName;
+          tab.draggable = true;
+          tab.innerHTML = `<span class="tab-name">${icon}${short}</span><button class="tab-close" onclick="event.stopPropagation();closeTab('${id}')">✕</button>`;
+          tab.onclick = () => activateTab(id);
+          // 마우스 드래그로 탭 순서 변경
+          tab.ondragstart = (e) => { dragTabId = id; e.dataTransfer.effectAllowed = 'move'; tab.classList.add('dragging'); };
+          tab.ondragend = () => { dragTabId = null; container.querySelectorAll('.tab-item').forEach(t => t.classList.remove('dragging','drag-over')); };
+          tab.ondragover = (e) => { if (dragTabId && dragTabId !== id) { e.preventDefault(); tab.classList.add('drag-over'); } };
+          tab.ondragleave = () => tab.classList.remove('drag-over');
+          tab.ondrop = (e) => { e.preventDefault(); tab.classList.remove('drag-over'); if (dragTabId) moveTabBefore(dragTabId, id); };
+          container.appendChild(tab);
+        });
+        // 2개 이상 열려 있으면 '파일 합치기' 버튼 표시
+        if (tabs.size >= 2) {
+          const mb = document.createElement('button');
+          mb.className = 'tab-merge-btn';
+          mb.innerHTML = '🔗 파일 합치기';
+          mb.title = '열려 있는 모든 파일을 하나의 PDF로 합쳐 저장합니다';
+          mb.onclick = mergeAllTabs;
+          container.appendChild(mb);
+        }
+      });
     }
 
     function renderTabUI(tab) {
@@ -1530,6 +1579,10 @@
           pageResults = tabState.pageResults;
           displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
           showSuccess('PDF 분석이 완료되었습니다!');
+        } else {
+          // 비활성(백그라운드) 탭: DOM은 그대로 두고 quoteItems만 채워, 나중에 이 탭으로
+          // 전환했을 때 renderTabUI가 견적서를 바로 표시할 수 있게 한다.
+          tabState.quoteItems.push(...buildQuoteItems(colorCount, bwCount));
         }
 
       } catch (err) {
@@ -3848,13 +3901,21 @@
     }
 
     // ── 견적서 ───────────────────────────────────────────────────────────────
+    // DOM에 의존하지 않는 견적 품목 생성 — 비활성(백그라운드) 탭의 분석이 끝났을 때도
+    // 해당 탭의 quoteItems를 채워둘 수 있어, 나중에 그 탭으로 전환해도 견적서가 보인다.
+    function buildQuoteItems(colorCount, bwCount) {
+      const items = [];
+      if (colorCount > 0) items.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: 200, copies: 1, discount: 0 });
+      if (bwCount > 0)    items.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: 60,  copies: 1, discount: 0 });
+      items.push({ name: '제본비', spec: '', qty: 1, price: 2500, copies: 1, discount: 0 });
+      return items;
+    }
+
     function initQuoteSection(colorCount, bwCount) {
       quoteItems.length = 0;
       document.getElementById('q-customer').value = '';
       document.getElementById('q-date').value = new Date().toISOString().split('T')[0];
-      if (colorCount > 0) quoteItems.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: 200, copies: 1, discount: 0 });
-      if (bwCount > 0)    quoteItems.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: 60,  copies: 1, discount: 0 });
-      quoteItems.push({ name: '제본비', spec: '', qty: 1, price: 2500, copies: 1, discount: 0 });
+      quoteItems.push(...buildQuoteItems(colorCount, bwCount));
       renderQuoteTable();
       document.getElementById('quoteSection').style.display = 'block';
     }
