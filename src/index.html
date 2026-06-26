@@ -2565,6 +2565,7 @@
           img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
           img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
           img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
+          fixSMaskMatte(pdfDoc, img);
           return;
         }
 
@@ -3502,6 +3503,33 @@
         await convertFlateXObjectToGrayscale(pdfDoc, img, resDict, true);
     }
 
+    // 부모 이미지가 흑백 변환된 후, 그 SMask의 /Matte(언프리멀티플라이 배경색)도
+    // 부모의 새 색공간(DeviceGray, 1채널)에 맞춰 갱신해야 함.
+    // 그대로 두면 옛 RGB/CMYK 채널 수(3~4개)와 불일치해 Acrobat이
+    // "Acrobat이 페이지를 제대로 표시하지 못할 수 있습니다" 오류를 내고 이미지가 사라짐.
+    function fixSMaskMatte(pdfDoc, img) {
+      try {
+        const Nm = n => PDFLib.PDFName.of(n);
+        const smaskRef = img.dict.get(Nm('SMask'));
+        if (!smaskRef) return;
+        const smaskObj = pdfDoc.context.lookup(smaskRef);
+        if (!smaskObj || !smaskObj.dict) return;
+        const matte = smaskObj.dict.get(Nm('Matte'));
+        if (!matte || typeof matte.size !== 'function') return;
+        const n = matte.size();
+        const num = (i) => {
+          const o = pdfDoc.context.lookup(matte.get(i)) ?? matte.get(i);
+          return +(o.numberValue ?? o.asNumber?.() ?? 0);
+        };
+        let r = 0, g = 0, b = 0;
+        if (n >= 3) { r = num(0); g = num(1); b = num(2); }
+        else if (n === 4) { const c = num(0), m = num(1), y = num(2), k = num(3); r = (1-c)*(1-k); g = (1-m)*(1-k); b = (1-y)*(1-k); }
+        else if (n === 1) { r = g = b = num(0); }
+        const gray = Math.max(0, Math.min(1, 0.299*r + 0.587*g + 0.114*b));
+        smaskObj.dict.set(Nm('Matte'), pdfDoc.context.obj([PDFLib.PDFNumber.of(gray)]));
+      } catch(e) {}
+    }
+
     async function convertJpegXObjectToGrayscale(pdfDoc, img, tintLUT = null) {
       try {
         const jpegBuf = img.contents.buffer.slice(
@@ -3534,6 +3562,7 @@
         img.dict.delete(Nm('Decode'));       // RGB/CMYK Decode 배열 제거 (DeviceGray와 채널 수 불일치 → Acrobat 오류)
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
+        fixSMaskMatte(pdfDoc, img);
       } catch(e) { console.warn('JPEG 그레이스케일 변환 실패:', e); }
     }
 
@@ -3599,6 +3628,7 @@
         img.dict.delete(Nm('Decode'));
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
+        fixSMaskMatte(pdfDoc, img);
       } catch(e) {
         console.warn('JPX 흑백변환 실패 (Chromium 미지원):', e);
       }
@@ -3741,6 +3771,7 @@
             img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
             img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
             img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
+            fixSMaskMatte(pdfDoc, img);
           } catch(e) { console.warn('ICCBased 이미지 변환 실패:', e); }
           return;
         }
@@ -3767,6 +3798,7 @@
         img.dict.delete(Nm('Decode'));
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
+        fixSMaskMatte(pdfDoc, img);
       } catch(e) { console.warn('Flate 이미지 변환 실패:', e); }
     }
 
