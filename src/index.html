@@ -483,6 +483,14 @@
     .q-table td { padding:5px 6px; border:1px solid #e8e8ed; vertical-align:middle; }
     .q-table td input { width:100%; border:1px solid #d2d2d7; border-radius:6px; padding:4px 6px; font-size:0.88em; box-sizing:border-box; font-family:inherit; }
     .q-table td input[type=number] { text-align:right; }
+    .q-price-settings { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:10px 14px; margin-bottom:6px; background:#f5f5f7; border:1px solid #e8e8ed; border-radius:10px; }
+    .q-ps-title { font-size:0.85em; font-weight:600; color:#1d1d1f; }
+    .q-ps-field { display:flex; align-items:center; gap:5px; font-size:0.82em; color:#6e6e73; }
+    .q-ps-field input { width:80px; padding:5px 7px; border:1px solid #d2d2d7; border-radius:6px; font-size:0.9em; text-align:right; box-sizing:border-box; font-family:inherit; }
+    .q-ps-field input:focus { outline:none; border-color:#0071e3; box-shadow:0 0 0 3px rgba(0,113,227,0.12); }
+    .q-ps-apply { padding:6px 16px; background:#0071e3; color:#fff; border:none; border-radius:7px; font-size:0.85em; font-weight:600; cursor:pointer; }
+    .q-ps-apply:hover { background:#0077ed; }
+    .q-ps-hint { font-size:0.76em; color:#86868b; }
     .q-readonly { text-align:right; color:#6e6e73; white-space:nowrap; background:#fafafa; }
     .q-total-cell { text-align:right; font-weight:700; color:#0071e3; white-space:nowrap; background:#f0f7ff; }
     .q-total-table { width:280px; margin:14px 0 0 auto; border-collapse:collapse; font-size:0.9em; }
@@ -833,7 +841,7 @@
           <button class="sel-btn" onclick="selectAll()">모두 선택</button>
           <button class="sel-btn" onclick="deselectAll()">선택 해제</button>
           <span class="sel-count" id="selectedCount">0개 선택됨</span>
-          <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
+          <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
           <button class="sel-btn" onclick="insertBlankPage(-1)" title="1페이지 앞에 빈 페이지 삽입">➕ 맨 앞 빈 페이지</button>
           <button class="sel-btn" id="undoBtn" onclick="undoEdit()" title="실행취소 (Ctrl+Z)" style="display:none;">↩ 실행취소</button>
           <button class="sel-btn" id="redoBtn" onclick="redoEdit()" title="다시실행 (Ctrl+Y)" style="display:none;">↪ 다시실행</button>
@@ -875,14 +883,22 @@
             <input type="date" id="q-date" class="q-input">
           </div>
         </div>
+        <div class="q-price-settings">
+          <span class="q-ps-title">⚙ 기본 단가 설정</span>
+          <label class="q-ps-field">컬러 <input type="number" id="dp-color" min="0"></label>
+          <label class="q-ps-field">흑백 <input type="number" id="dp-bw" min="0"></label>
+          <label class="q-ps-field">제본비 <input type="number" id="dp-binding" min="0"></label>
+          <button class="q-ps-apply" onclick="applyDefaultPrices()">적용</button>
+          <span class="q-ps-hint">적용 시 다음 견적부터 기본 단가로 표기됩니다</span>
+        </div>
         <table class="q-table">
           <thead>
             <tr>
               <th>품목명</th>
               <th style="width:80px;">규격</th>
-              <th style="width:62px;">수량</th>
+              <th style="width:88px;">수량</th>
               <th style="width:88px;">단가</th>
-              <th style="width:58px;">부수</th>
+              <th style="width:88px;">부수</th>
               <th style="width:64px;">할인율(%)</th>
               <th style="width:90px;" class="q-col-hide">공급가</th>
               <th style="width:78px;" class="q-col-hide">부가세</th>
@@ -936,7 +952,7 @@
         <div class="sbp-title">⚙ 처리옵션</div>
         <div class="sbp-opts">
           <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
-          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
+          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
           <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✅ 적용</button>
           <button class="sbp-btn sbp-dl" id="sb-downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>📥 다운로드</button>
@@ -1787,7 +1803,6 @@
     function updateSelectedCount() {
       const count = selectedPages.size;
       selectedCountEl.textContent = `${count}개 선택됨`;
-      document.getElementById('refreshBtn').style.display = count > 0 ? '' : 'none';
       invalidateProcessed();
       syncSidebarPanel();
     }
@@ -1858,6 +1873,14 @@
       else if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) { e.preventDefault(); redoEdit(); }
       else if (e.key === 'z' || e.key === 'Z')        { e.preventDefault(); undoEdit(); }
       else if (e.key === 'y' || e.key === 'Y')        { e.preventDefault(); redoEdit(); }
+    });
+
+    // F5: 결과 새로고침 (입력창 포커스 여부와 무관하게 동작 — 브라우저 새로고침 차단)
+    document.addEventListener('keydown', e => {
+      if (e.key === 'F5' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        refreshResults();
+      }
     });
 
     // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)
@@ -3903,11 +3926,51 @@
     // ── 견적서 ───────────────────────────────────────────────────────────────
     // DOM에 의존하지 않는 견적 품목 생성 — 비활성(백그라운드) 탭의 분석이 끝났을 때도
     // 해당 탭의 quoteItems를 채워둘 수 있어, 나중에 그 탭으로 전환해도 견적서가 보인다.
+    // 기본 단가 (localStorage에 저장 → 적용 버튼으로 갱신, 다음 견적부터 반영)
+    const DEFAULT_PRICES_FALLBACK = { color: 200, bw: 60, binding: 2500 };
+    function getDefaultPrices() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('quoteDefaultPrices'));
+        if (saved && typeof saved === 'object') {
+          return {
+            color:   Number.isFinite(+saved.color)   ? +saved.color   : DEFAULT_PRICES_FALLBACK.color,
+            bw:      Number.isFinite(+saved.bw)      ? +saved.bw      : DEFAULT_PRICES_FALLBACK.bw,
+            binding: Number.isFinite(+saved.binding) ? +saved.binding : DEFAULT_PRICES_FALLBACK.binding,
+          };
+        }
+      } catch (e) {}
+      return { ...DEFAULT_PRICES_FALLBACK };
+    }
+    function loadDefaultPricesUI() {
+      const dp = getDefaultPrices();
+      const c = document.getElementById('dp-color');   if (c) c.value = dp.color;
+      const b = document.getElementById('dp-bw');      if (b) b.value = dp.bw;
+      const g = document.getElementById('dp-binding'); if (g) g.value = dp.binding;
+    }
+    function applyDefaultPrices() {
+      const dp = {
+        color:   Math.max(0, parseInt(document.getElementById('dp-color').value)   || 0),
+        bw:      Math.max(0, parseInt(document.getElementById('dp-bw').value)      || 0),
+        binding: Math.max(0, parseInt(document.getElementById('dp-binding').value) || 0),
+      };
+      try { localStorage.setItem('quoteDefaultPrices', JSON.stringify(dp)); } catch (e) {}
+      loadDefaultPricesUI();
+      // 현재 견적에도 즉시 반영 — 기본 품목(컬러인쇄·흑백인쇄·제본비) 단가 갱신
+      const priceByName = { '컬러인쇄': dp.color, '흑백인쇄': dp.bw, '제본비': dp.binding };
+      quoteItems.forEach(item => {
+        if (Object.prototype.hasOwnProperty.call(priceByName, item.name)) item.price = priceByName[item.name];
+      });
+      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteItems = quoteItems;
+      renderQuoteTable();
+      showSuccess('기본 단가가 저장됐습니다. 현재 견적에 즉시 반영했고, 다음 견적부터도 적용됩니다.');
+    }
+
     function buildQuoteItems(colorCount, bwCount) {
+      const dp = getDefaultPrices();
       const items = [];
-      if (colorCount > 0) items.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: 200, copies: 1, discount: 0 });
-      if (bwCount > 0)    items.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: 60,  copies: 1, discount: 0 });
-      items.push({ name: '제본비', spec: '', qty: 1, price: 2500, copies: 1, discount: 0 });
+      if (colorCount > 0) items.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: dp.color, copies: 1, discount: 0 });
+      if (bwCount > 0)    items.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: dp.bw,  copies: 1, discount: 0 });
+      items.push({ name: '제본비', spec: '', qty: 1, price: dp.binding, copies: 1, discount: 0 });
       return items;
     }
 
@@ -3916,6 +3979,7 @@
       document.getElementById('q-customer').value = '';
       document.getElementById('q-date').value = new Date().toISOString().split('T')[0];
       quoteItems.push(...buildQuoteItems(colorCount, bwCount));
+      loadDefaultPricesUI();
       renderQuoteTable();
       document.getElementById('quoteSection').style.display = 'block';
     }
@@ -4433,7 +4497,7 @@
       g('sb-downloadBtn').disabled = db ? db.disabled : true;
       g('sb-downloadBtn').classList.toggle('btn-dim', !processedPdfBytes);
       g('sb-clearOptsBtn').style.display = (cb && cb.style.display !== 'none') ? '' : 'none';
-      g('sb-refreshBtn').style.display = selectedPages.size > 0 ? '' : 'none';
+      g('sb-refreshBtn').style.display = '';
     }
 
     function scrollToPage(pageNum) {
