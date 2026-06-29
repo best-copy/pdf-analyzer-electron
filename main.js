@@ -56,15 +56,16 @@ app.on('window-all-closed', () => {
 // ── IPC: 파일 열기 다이얼로그 ──────────────────────────────────────────────
 ipcMain.handle('dialog:openFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
-    title: '파일 선택 (PDF · HWP · HWPX · MS Office)',
+    title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe)',
     filters: [
-      { name: '문서 전체 (PDF·HWP·Office)',
-        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'] },
+      { name: '문서 전체 (PDF·HWP·Office·Adobe)',
+        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'ai', 'psd', 'indd'] },
       { name: 'PDF',  extensions: ['pdf'] },
       { name: '한글 (HWP·HWPX)', extensions: ['hwp', 'hwpx'] },
       { name: 'Word (DOC·DOCX)', extensions: ['doc', 'docx'] },
       { name: 'Excel (XLS·XLSX)', extensions: ['xls', 'xlsx'] },
       { name: 'PowerPoint (PPT·PPTX)', extensions: ['ppt', 'pptx'] },
+      { name: 'Adobe (AI·PSD·INDD)', extensions: ['ai', 'psd', 'indd'] },
     ],
     properties: ['openFile', 'multiSelections'],
   });
@@ -197,5 +198,43 @@ ipcMain.handle('office:convertToPdf', (_, srcPath) => {
   const run = () => convertOfficeToPdf(srcPath);
   const result = officeQueue.then(run, run);
   officeQueue = result.catch(() => {});
+  return result;
+});
+
+// ── IPC: Adobe(Photoshop·InDesign·Illustrator) → PDF 변환 (Adobe COM 자동화) ──
+// 각 Adobe 앱은 단일 인스턴스로만 안전하고 첫 실행이 느리므로(수십 초) 큐로 순차 처리.
+// PDF 호환 .ai는 렌더러에서 직접 처리하므로 여기로 오지 않는다(비호환 .ai만 폴백).
+let adobeQueue = Promise.resolve();
+
+function convertAdobeToPdf(srcPath) {
+  return new Promise((resolve, reject) => {
+    const outPath = path.join(
+      os.tmpdir(),
+      `adobeconv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.pdf`
+    );
+    const script = path.join(__dirname, 'src', 'convert_adobe.ps1');
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+       '-InPath', srcPath, '-OutPath', outPath],
+      { windowsHide: true, timeout: 300000 },   // Adobe 앱 실행이 느려 5분 여유
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr || err.message || '').toString().trim();
+          return reject(new Error('Adobe 파일 변환 실패: ' + (msg || '알 수 없는 오류')));
+        }
+        if (!fs.existsSync(outPath)) {
+          return reject(new Error('Adobe 파일 변환 실패: PDF가 생성되지 않았습니다.'));
+        }
+        resolve(outPath);
+      }
+    );
+  });
+}
+
+ipcMain.handle('adobe:convertToPdf', (_, srcPath) => {
+  const run = () => convertAdobeToPdf(srcPath);
+  const result = adobeQueue.then(run, run);
+  adobeQueue = result.catch(() => {});
   return result;
 });

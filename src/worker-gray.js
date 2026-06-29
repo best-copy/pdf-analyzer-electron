@@ -246,23 +246,26 @@ function encodeLatin1(str) {
 }
 
 // applyOps용 정규식 pre-compile (매 호출 new RegExp 생성 방지 — 속도 최적화)
-const _NB = '(-?\\d*\\.?\\d+)', _WS = '\\s+', _TL = '(?=[\\s\\r\\n]|$)';
-const _RE_rg   = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}rg${_TL}`, 'gm');
-const _RE_RG   = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}RG${_TL}`, 'gm');
-const _RE_k    = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}k${_TL}`, 'gm');
-const _RE_K    = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}K${_TL}`, 'gm');
-const _RE_SCN4 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn4 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC4  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc4  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
-const _RE_SCN3 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn3 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC3  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc3  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
-const _RE_SCN1 = new RegExp(`${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn1 = new RegExp(`${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC1  = new RegExp(`${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc1  = new RegExp(`${_NB}${_WS}sc${_TL}`, 'gm');
+// _LB: 좌측 경계. 패턴 이름(/P8, /Meta682 등) 내부의 숫자를 색상 틴트로 오매칭하면
+//      '/P8 scn' → '/P-7.0000 g' 처럼 토큰이 깨져 Acrobat이 페이지 오류를 낸다.
+//      → 숫자 토큰 앞이 이름/숫자 구성문자가 아닐 때만(공백·연산자 경계) 매칭.
+const _NB = '(-?\\d*\\.?\\d+)', _WS = '\\s+', _TL = '(?=[\\s\\r\\n]|$)', _LB = '(?<![\\w/.#-])';
+const _RE_rg   = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}rg${_TL}`, 'gm');
+const _RE_RG   = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}RG${_TL}`, 'gm');
+const _RE_k    = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}k${_TL}`, 'gm');
+const _RE_K    = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}K${_TL}`, 'gm');
+const _RE_SCN4 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn4 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC4  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc4  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
+const _RE_SCN3 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn3 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC3  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc3  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
+const _RE_SCN1 = new RegExp(`${_LB}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn1 = new RegExp(`${_LB}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC1  = new RegExp(`${_LB}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc1  = new RegExp(`${_LB}${_NB}${_WS}sc${_TL}`, 'gm');
 
 function grayifyStream(bytes, csGrayMap, dotGain) {
   const s = decodeLatin1(bytes);
@@ -314,13 +317,15 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
       fillCS = '/' + name;
       // csGrayMap 키는 '/' 포함 형태 (예: '/CS2') → '/' + name 으로 조회
       const info = csGrayMap && csGrayMap['/' + name];
-      if (info && info.type === 'Pattern') return `/${name} cs`; // Pattern CS는 유지
+      // Pattern CS는 유지 — 제거하면 뒤따르는 '/Pn scn' 패턴 호출이 깨진다.
+      // 내장 '/Pattern' 은 csGrayMap에 없으므로 이름으로도 직접 판정.
+      if (name === 'Pattern' || (info && info.type === 'Pattern')) return `/${name} cs`;
       return '';
     });
     seg = seg.replace(/\/(\w+)\s+CS(?=[\s\r\n]|$)/gm, (_, name) => {
       strokeCS = '/' + name;
       const info = csGrayMap && csGrayMap['/' + name];
-      if (info && info.type === 'Pattern') return `/${name} CS`; // Pattern CS는 유지
+      if (name === 'Pattern' || (info && info.type === 'Pattern')) return `/${name} CS`;
       return '';
     });
     // rg/RG (RGB)

@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // MS Office(Word·Excel·PowerPoint) → PDF 변환 (main의 Office COM 자동화) — 임시 PDF 경로 반환
   convertOfficeToPdf: (filePath) => ipcRenderer.invoke('office:convertToPdf', filePath),
 
+  // Adobe(Photoshop·InDesign·Illustrator) → PDF 변환 (main의 Adobe COM 자동화) — 임시 PDF 경로 반환
+  convertAdobeToPdf: (filePath) => ipcRenderer.invoke('adobe:convertToPdf', filePath),
+
   // 드래그&드롭된 File 객체의 실제 디스크 경로 취득 (HWP 변환 입력용)
   getPathForFile: (file) => {
     try { return webUtils.getPathForFile(file); }

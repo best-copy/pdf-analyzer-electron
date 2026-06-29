@@ -777,16 +777,16 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>🎨 PDF · 한글 · MS Office 컬러/흑백 분석기</h1>
-      <p>PDF · HWP · HWPX · Word · Excel · PowerPoint 파일을 업로드하면 자동으로 각 페이지의 컬러 여부를 분석합니다</p>
+      <h1>🎨 PDF · 한글 · MS Office · Adobe 컬러/흑백 분석기</h1>
+      <p>PDF · HWP · HWPX · Word · Excel · PowerPoint · Illustrator · Photoshop · InDesign 파일을 업로드하면 자동으로 각 페이지의 컬러 여부를 분석합니다</p>
     </div>
 
     <div class="upload-section" id="uploadSection">
-      <p class="drop-hint">📂 PDF · 한글 · MS Office 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
+      <p class="drop-hint">📂 PDF · 한글 · MS Office · Adobe(AI·PSD·INDD) 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
       <div class="file-input-wrapper">
-        <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()">📁 파일 선택하기 (PDF·HWP·Office)</button>
+        <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()">📁 파일 선택하기 (PDF·HWP·Office·Adobe)</button>
       </div>
-      <p class="drop-sub">한글(HWP·HWPX)·MS Office(Word·Excel·PowerPoint) 문서는 자동으로 PDF로 변환한 뒤 분석합니다 · 여러 파일은 각각 탭으로 동시 분석</p>
+      <p class="drop-sub">한글·MS Office·Adobe(Illustrator·Photoshop·InDesign) 문서는 자동으로 PDF로 변환한 뒤 분석합니다 · PSD/INDD는 해당 앱 실행에 수십 초 소요 · 여러 파일은 각각 탭으로 동시 분석</p>
       <div class="file-info" id="fileInfo"></div>
       <div class="progress-bar" id="progressBar">
         <div class="progress-fill" id="progressFill"></div>
@@ -1116,7 +1116,7 @@
       return {
         id: 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5),
         fileName: file.name,
-        originalFileName: file.name.replace(/\.(pdf|hwpx?|docx?|xlsx?|pptx?)$/i, ''),
+        originalFileName: file.name.replace(/\.(pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i, ''),
         originalPdfBytes: null,
         pdfDoc: null,
         pageResults: [],
@@ -1394,28 +1394,46 @@
     // ── 파일 핸들링 ──────────────────────────────────────────────────────────
     const HWP_RE    = /\.hwpx?$/i;                  // 한글 (한컴오피스 COM)
     const OFFICE_RE = /\.(docx?|xlsx?|pptx?)$/i;    // MS Office (Word·Excel·PowerPoint COM)
-    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?)$/i; // PDF 변환이 필요한 모든 확장자
+    const ADOBE_RE  = /\.(psd|indd)$/i;            // Photoshop·InDesign (Adobe COM)
+    const AI_RE     = /\.ai$/i;                    // Illustrator (PDF 호환본은 직접, 아니면 COM)
+    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i; // PDF 변환이 필요한 모든 확장자
 
     // 경로 기반 입력({name, path})을 File-like 객체로 변환.
-    // HWP/HWPX는 한글 COM, MS Office는 Office COM으로 각각 PDF 변환 후,
-    // 그 임시 PDF를 읽도록 연결한다. (모두 단일 인스턴스라 순차 변환)
+    // HWP/HWPX=한글 COM, MS Office=Office COM, Photoshop/InDesign=Adobe COM으로 PDF 변환.
+    // Illustrator .ai는 PDF 호환 저장본이면 그 자체가 PDF라 앱 실행 없이 직접 사용한다.
+    // (변환 계열은 모두 단일 인스턴스라 순차 변환)
     async function prepareFiles(items) {
       const out = [];
       for (const it of items) {
         let pdfPath = null;
+        let directBytes = null;   // 이미 읽어둔 PDF 바이트 재사용(.ai PDF 호환본)
         if (HWP_RE.test(it.name)) {
           showLoading(`${it.name} → PDF로 변환 중…`);
           pdfPath = await window.electronAPI.convertHwpToPdf(it.path);
         } else if (OFFICE_RE.test(it.name)) {
           showLoading(`${it.name} → PDF로 변환 중…`);
           pdfPath = await window.electronAPI.convertOfficeToPdf(it.path);
+        } else if (ADOBE_RE.test(it.name)) {
+          showLoading(`${it.name} → PDF로 변환 중… (Adobe 앱 실행, 수십 초 걸릴 수 있어요)`);
+          pdfPath = await window.electronAPI.convertAdobeToPdf(it.path);
+        } else if (AI_RE.test(it.name)) {
+          // Illustrator .ai: PDF 호환 저장본(%PDF로 시작)이면 그대로 PDF로 사용
+          const ab = window.electronAPI.readFile(it.path);
+          const h = new Uint8Array(ab.slice(0, 5));
+          const isPdf = h[0]===0x25 && h[1]===0x50 && h[2]===0x44 && h[3]===0x46; // "%PDF"
+          if (isPdf) {
+            directBytes = ab;
+          } else {
+            showLoading(`${it.name} → PDF로 변환 중… (Illustrator 실행)`);
+            pdfPath = await window.electronAPI.convertAdobeToPdf(it.path);
+          }
         }
         const readPath = pdfPath || it.path;
         out.push({
           name: it.name,                       // 원본 이름(확장자 포함) 유지 — 표시·저장명에 사용
           size: 0,
           type: 'application/pdf',
-          arrayBuffer: () => Promise.resolve(window.electronAPI.readFile(readPath)),
+          arrayBuffer: () => Promise.resolve(directBytes || window.electronAPI.readFile(readPath)),
         });
       }
       return out;
@@ -3287,11 +3305,29 @@
             const gForm = pdfDoc.context.lookup(gRef);
             if (!gForm || !gForm.dict) continue;
             // SMask 투명도 그룹 색공간 → DeviceGray
+            // + 배경색 /BC도 새 색공간(DeviceGray, 1채널)에 맞춰 변환.
+            //   그대로 두면 옛 RGB/CMYK 채널수(3~4)와 불일치 → GS "Group /BC differs
+            //   in number of components" / Acrobat "이 페이지에 오류가 있습니다".
             try {
               const grpRef = gForm.dict.get(Nm('Group'));
               if (grpRef) {
                 const grp = pdfDoc.context.lookup(grpRef);
                 if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
+              }
+              const bc = sm.get(Nm('BC'));
+              if (bc && typeof bc.size === 'function') {
+                const bn = bc.size();
+                const bnum = (i) => {
+                  const o = pdfDoc.context.lookup(bc.get(i)) ?? bc.get(i);
+                  return +(o.numberValue ?? o.asNumber?.() ?? 0);
+                };
+                let bgray;
+                if (bn === 4) { const c=bnum(0),m=bnum(1),y=bnum(2),k=bnum(3);
+                  bgray = 0.299*(1-c)*(1-k) + 0.587*(1-m)*(1-k) + 0.114*(1-y)*(1-k); }
+                else if (bn >= 3) { bgray = 0.299*bnum(0) + 0.587*bnum(1) + 0.114*bnum(2); }
+                else { bgray = bnum(0); }
+                bgray = Math.max(0, Math.min(1, bgray));
+                sm.set(Nm('BC'), pdfDoc.context.obj([PDFLib.PDFNumber.of(bgray)]));
               }
             } catch(e) {}
             egTasks.push((async () => {
@@ -4697,7 +4733,7 @@
       const dropped = [...e.dataTransfer.files].filter(f =>
         f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name)
       );
-      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) 파일만 업로드 가능합니다.'); return; }
+      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) · Adobe(AI·PSD·INDD) 파일만 업로드 가능합니다.'); return; }
       hideError(); hideSuccess();
       try {
         const needConvert = dropped.some(f => CONVERT_RE.test(f.name));
