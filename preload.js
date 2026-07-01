@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // MS Office(Word·Excel·PowerPoint) → PDF 변환 (main의 Office COM 자동화) — 임시 PDF 경로 반환
   convertOfficeToPdf: (filePath) => ipcRenderer.invoke('office:convertToPdf', filePath),
 
+  // Adobe(Photoshop·InDesign·Illustrator) → PDF 변환 (main의 Adobe COM 자동화) — 임시 PDF 경로 반환
+  convertAdobeToPdf: (filePath) => ipcRenderer.invoke('adobe:convertToPdf', filePath),
+
   // 드래그&드롭된 File 객체의 실제 디스크 경로 취득 (HWP 변환 입력용)
   getPathForFile: (file) => {
     try { return webUtils.getPathForFile(file); }
@@ -36,6 +39,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
+
+  // '저장 안 한 작업' 상태를 main에 보고 (종료 전 확인용)
+  setUnsaved: (dirty) => ipcRenderer.send('app:dirty', !!dirty),
+
+  // 사용 끝난 변환 임시 PDF 삭제 요청
+  cleanupTempFile: (filePath) => ipcRenderer.invoke('temp:cleanup', filePath),
+
+  // 설치된 시스템 폰트 목록 (머리글/바닥글 글꼴 선택용)
+  listFonts: () => ipcRenderer.invoke('fonts:list'),
 
   // PDF.js 워커 콘텐츠 — asar 안에서도 fs로 안전하게 읽어 blob URL 생성용으로 반환
   getWorkerContent: () => fs.readFileSync(

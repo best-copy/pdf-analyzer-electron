@@ -6,6 +6,7 @@
   <title>PDF · 한글(HWP/HWPX) 컬러/흑백 분석기</title>
   <script src="./libs/pdf.min.js"></script>
   <script src="./libs/pdf-lib.min.js"></script>
+  <script src="./libs/fontkit.umd.min.js"></script>
   <script src="./libs/pako.min.js"></script>
   <style>
     /* ── Apple-style Design System ─────────────────────────────────────── */
@@ -72,11 +73,21 @@
       width: 0%; transition: width 0.3s ease;
     }
 
-    .loading { display:none; text-align:center; padding:40px; }
-    .loading-msg { color: #6e6e73; font-size: 1em; margin-top: 10px; }
+    /* 처리 중 상태창 — 스크롤 위치·편집 사이드바 열림 여부와 무관하게 항상 보이도록
+       화면 하단 중앙에 고정 토스트로 표시(기존엔 상단에 묻혀 있어 안 보인다는 피드백). */
+    .loading {
+      display: none; align-items: center; gap: 12px;
+      position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+      z-index: 100050; background: #1d1d1f; color: #fff;
+      padding: 14px 22px; border-radius: 14px; min-width: 240px;
+      box-shadow: 0 10px 34px rgba(0,0,0,0.32); pointer-events: none;
+    }
+    .loading-text { text-align: left; }
+    .loading-msg { color: #fff; font-size: 0.92em; font-weight: 600; margin: 0; }
+    .loading-sub { color: #a1a1a6; font-size: 0.78em; margin: 2px 0 0; }
     .spinner {
-      border: 3px solid #e8e8ed; border-top: 3px solid #0071e3; border-radius: 50%;
-      width: 44px; height: 44px; animation: spin 0.8s linear infinite; margin: 0 auto 20px;
+      border: 3px solid rgba(255,255,255,0.22); border-top: 3px solid #0071e3; border-radius: 50%;
+      width: 26px; height: 26px; animation: spin 0.8s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
 
@@ -95,6 +106,13 @@
       border-bottom: 1px solid #e8e8ed;
       min-height: 44px;
       align-items: flex-end;
+    }
+    /* 메인 탭 바: 페이지를 스크롤해도 화면 밖으로 사라지지 않게 상단에 고정.
+       .container가 스크롤 컨테이너가 아니라(overflow:clip) body 스크롤 기준으로
+       sticky가 정상 동작한다. .sticky-panel보다 먼저(DOM상 위) 고정되므로
+       z-index를 더 높게 두고, --maintabbar-h로 .sticky-panel의 top을 밀어준다. */
+    #mainTabBar {
+      position: sticky; top: 0; z-index: 120;
     }
     .tab-item {
       display: flex; align-items: center; gap: 6px;
@@ -135,6 +153,28 @@
     .tab-item { user-select: none; }
     .tab-item.dragging { opacity: 0.45; }
     .tab-item.drag-over { box-shadow: inset 3px 0 0 #0071e3; }
+
+    /* 사이드바(처리옵션 패널 아래)로 옮긴 탭 바: 그리드 전체 폭, 세로 목록, 다크 테마,
+       sticky가 아니라 일반 흐름이라 썸네일과 함께 마우스 스크롤로 같이 이동한다. */
+    #thumbSidebar .tab-bar {
+      grid-column: 1 / -1;
+      flex-direction: column; flex-wrap: wrap;
+      overflow-x: visible;
+      background: transparent; border-bottom: none;
+      min-height: 0; align-items: stretch;
+      padding: 0 0 4px; margin-bottom: 4px; gap: 6px;
+    }
+    #thumbSidebar .tab-item {
+      max-width: none; border-radius: 8px;
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.12);
+      color: #d2d2d7;
+    }
+    #thumbSidebar .tab-item:hover { background: #3a3a3c; }
+    #thumbSidebar .tab-item.active {
+      background: #0071e3; color: #fff; border-color: #0071e3;
+      position: static;
+    }
+    #thumbSidebar .tab-merge-btn { margin-left: 0; margin-bottom: 0; width: 100%; justify-content: center; }
 
     /* ---- 파일 합치기 순서 모달 ---- */
     .merge-overlay {
@@ -409,7 +449,7 @@
     .dot-gain-select:focus { border-color: #0071e3; }
 
     .sticky-panel {
-      position: sticky; top: 0; z-index: 100;
+      position: sticky; top: var(--maintabbar-h, 0px); z-index: 100;
       background: rgba(255,255,255,0.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
       margin: 0 -40px; padding: 12px 40px 14px;
       box-shadow: 0 2px 16px rgba(0,0,0,0.08); border-radius: 0 0 14px 14px;
@@ -454,6 +494,14 @@
     .q-table td { padding:5px 6px; border:1px solid #e8e8ed; vertical-align:middle; }
     .q-table td input { width:100%; border:1px solid #d2d2d7; border-radius:6px; padding:4px 6px; font-size:0.88em; box-sizing:border-box; font-family:inherit; }
     .q-table td input[type=number] { text-align:right; }
+    .q-price-settings { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:10px 14px; margin-bottom:6px; background:#f5f5f7; border:1px solid #e8e8ed; border-radius:10px; }
+    .q-ps-title { font-size:0.85em; font-weight:600; color:#1d1d1f; }
+    .q-ps-field { display:flex; align-items:center; gap:5px; font-size:0.82em; color:#6e6e73; }
+    .q-ps-field input { width:80px; padding:5px 7px; border:1px solid #d2d2d7; border-radius:6px; font-size:0.9em; text-align:right; box-sizing:border-box; font-family:inherit; }
+    .q-ps-field input:focus { outline:none; border-color:#0071e3; box-shadow:0 0 0 3px rgba(0,113,227,0.12); }
+    .q-ps-apply { padding:6px 16px; background:#0071e3; color:#fff; border:none; border-radius:7px; font-size:0.85em; font-weight:600; cursor:pointer; }
+    .q-ps-apply:hover { background:#0077ed; }
+    .q-ps-hint { font-size:0.76em; color:#86868b; }
     .q-readonly { text-align:right; color:#6e6e73; white-space:nowrap; background:#fafafa; }
     .q-total-cell { text-align:right; font-weight:700; color:#0071e3; white-space:nowrap; background:#f0f7ff; }
     .q-total-table { width:280px; margin:14px 0 0 auto; border-collapse:collapse; font-size:0.9em; }
@@ -590,6 +638,7 @@
       background: #1c1c1e;
       border-right: 1px solid rgba(255,255,255,0.08);
       overflow-y: scroll; overflow-x: hidden;
+      overscroll-behavior: contain;
       display: none;
       /* 폭에 따라 열 수 자동 조정 (110px 최소 셀) */
       grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
@@ -735,21 +784,183 @@
       .pages-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
       .selection-controls { flex-direction: column; align-items: flex-start; }
     }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       오른쪽 편집 사이드바 (#editSidebar) — 크기·회전·조판(N-up)·테두리
+       ══════════════════════════════════════════════════════════════════════ */
+    :root { --edit-width: 330px; }
+    #editSidebar {
+      position: fixed; right: 0; top: 0; bottom: 0; width: var(--edit-width);
+      background: #1c1c1e; color: #f5f5f7;
+      border-left: 1px solid rgba(255,255,255,0.08);
+      overflow-y: auto; overflow-x: hidden;
+      overscroll-behavior: contain;
+      display: none; flex-direction: column;
+      padding: 0 0 60px; z-index: 500;
+      font-size: 13px;
+    }
+    body.edit-open #editSidebar { display: flex; }
+    body.edit-open { padding-right: calc(var(--edit-width) + 12px); }
+    #editSidebar::-webkit-scrollbar { width: 12px; }
+    #editSidebar::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+    #editSidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.28); }
+    #editSidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.50); }
+
+    /* 펼치기/접기 탭 (오른쪽 가장자리) */
+    #editToggle {
+      position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+      width: 24px; height: 88px;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 6px;
+      background: #2c2c2e; color: #f5f5f7;
+      border: 1px solid rgba(255,255,255,0.14); border-right: none;
+      border-radius: 8px 0 0 8px;
+      font-size: 11px; cursor: pointer; z-index: 521;
+      opacity: 0.82; transition: opacity 0.15s, background 0.15s;
+      writing-mode: vertical-rl; letter-spacing: 1px;
+    }
+    #editToggle:hover { opacity: 1; background: #0071e3; }
+    body.edit-open #editToggle { right: var(--edit-width); }
+
+    /* 편집 사이드바 폭 조절 핸들 (왼쪽 가장자리) */
+    #editResizer {
+      position: fixed; top: 0; bottom: 0; width: 7px;
+      right: calc(var(--edit-width) - 3px);
+      cursor: col-resize; z-index: 520; display: none;
+    }
+    body.edit-open #editResizer { display: block; }
+    #editResizer:hover, #editResizer.es-resizing { background: rgba(10,132,255,0.45); }
+
+    .es-head {
+      position: sticky; top: 0; z-index: 2;
+      background: #161617; padding: 14px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .es-head-title { font-size: 15px; font-weight: 700; }
+    .es-close {
+      background: none; border: none; color: #8e8e93; cursor: pointer;
+      font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px;
+    }
+    .es-close:hover { background: #2c2c2e; color: #fff; }
+
+    .es-section { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .es-section-title {
+      font-size: 12px; font-weight: 700; color: #0a84ff; text-transform: uppercase;
+      letter-spacing: 0.4px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+    }
+    .es-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .es-row:last-child { margin-bottom: 0; }
+    .es-label { color: #aeaeb2; min-width: 56px; font-size: 12px; }
+    .es-select, .es-input {
+      flex: 1; background: #2c2c2e; color: #f5f5f7;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 7px;
+      padding: 7px 9px; font-size: 12.5px; font-family: inherit;
+    }
+    .es-select:focus, .es-input:focus { outline: none; border-color: #0a84ff; }
+    .es-input[type=number] { -moz-appearance: textfield; }
+
+    /* 라디오/토글 버튼 그룹 */
+    .es-btngroup { display: flex; flex-wrap: wrap; gap: 6px; }
+    .es-chip {
+      background: #2c2c2e; color: #d1d1d6;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 7px;
+      padding: 7px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+      flex: 1 1 auto; text-align: center; white-space: nowrap;
+    }
+    .es-chip:hover { background: #3a3a3c; }
+    .es-chip.active { background: #0a84ff; border-color: #0a84ff; color: #fff; font-weight: 600; }
+
+    /* N-up 그리드 선택 */
+    .es-nup-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .es-nup-grid .es-chip { flex: none; padding: 9px 0; }
+
+    /* 여백 입력 4분할 */
+    .es-margins { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .es-margins label { display: flex; align-items: center; gap: 6px; color: #aeaeb2; font-size: 11.5px; }
+    .es-margins input { width: 100%; background: #2c2c2e; color: #f5f5f7;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; padding: 6px 7px; font-size: 12px; }
+
+    .es-hint { font-size: 11px; color: #8e8e93; margin-top: 7px; line-height: 1.5; }
+    .es-rotate-row { display: flex; gap: 8px; }
+    .es-rotate-row .es-chip { padding: 10px 0; font-size: 13px; }
+
+    .es-sub { display: none; }
+    .es-sub.show { display: block; }
+    .es-scope-info { font-size: 11px; color: #ffd60a; margin-top: 6px; min-height: 14px; white-space: pre-line; }
+
+    /* 하단 적용/내보내기 영역 */
+    .es-actions {
+      position: sticky; bottom: 0; margin-top: auto;
+      background: #161617; padding: 12px 16px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .es-action-row { display: flex; gap: 8px; }
+    .es-action-row .es-apply-btn, .es-action-row .es-dl-btn { flex: 1; }
+    .es-apply-btn {
+      background: #30d158; border: none; color: #06320f; font-weight: 700;
+      padding: 11px; border-radius: 9px; cursor: pointer; font-size: 13.5px; font-family: inherit;
+    }
+    .es-apply-btn:hover { background: #28b14c; }
+    .es-apply-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .es-dl-btn {
+      background: #0a84ff; border: none; color: #fff; font-weight: 700;
+      padding: 11px; border-radius: 9px; cursor: pointer; font-size: 13.5px; font-family: inherit;
+    }
+    .es-dl-btn:hover { background: #0077ed; }
+    .es-dl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* 머리글/바닥글 컴팩트 입력 — 사이드창을 넓히지 않아도 좌·중·우가 한 줄에 들어가게 */
+    .es-hf-grid { display: grid; grid-template-columns: 34px 1fr 1fr 1fr; gap: 5px; align-items: center; margin-bottom: 6px; }
+    .es-hf-grid > .es-hf-lbl { color: #aeaeb2; font-size: 11px; }
+    .es-hf-grid > input {
+      min-width: 0; width: 100%;
+      background: #2c2c2e; color: #f5f5f7;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
+      padding: 5px 6px; font-size: 11.5px; font-family: inherit;
+    }
+    .es-hf-grid > input:focus { outline: none; border-color: #0a84ff; }
+    .es-reset-btn {
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.14); color: #d1d1d6;
+      padding: 8px; border-radius: 8px; cursor: pointer; font-size: 12px; font-family: inherit;
+    }
+    .es-reset-btn:hover { background: #3a3a3c; }
+
+    /* ── 적용 결과(메인 영역에 그대로 표시) ── */
+    .preview-section { margin: 30px 0 8px; }
+    .preview-head { display: flex; align-items: center; gap: 12px; margin: 0 0 8px; flex-wrap: wrap; }
+    .preview-head h3 { font-size: 1.17em; }
+    .preview-sub { font-size: 0.82em; color: #0071e3; }
+    .preview-close {
+      margin-left: auto; background: #fff; border: 1px solid #d0d0d5; color: #1d1d1f;
+      padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85em; font-weight: 600;
+    }
+    .preview-close:hover { background: #eef4ff; border-color: #0071e3; color: #0071e3; }
+    .pv-cell { text-align: center; cursor: pointer; }
+    .pv-cell.pv-selected .pv-canvas { outline: 3px solid #0071e3; outline-offset: -3px; filter: grayscale(1); }
+    .pv-cell.pv-selected .pv-num { color: #0071e3; font-weight: 700; }
+    .pv-canvas {
+      width: 100%; height: auto; display: block; border-radius: 4px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.14); background: #fff; border: 1px solid #e0e0e6;
+    }
+    .pv-num { font-size: 0.78em; color: #6e6e73; margin-top: 6px; font-weight: 600; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>🎨 PDF · 한글 · MS Office 컬러/흑백 분석기</h1>
-      <p>PDF · HWP · HWPX · Word · Excel · PowerPoint 파일을 업로드하면 자동으로 각 페이지의 컬러 여부를 분석합니다</p>
+      <h1>🎨 PDF · 한글 · MS Office · Adobe 컬러/흑백 분석기</h1>
+      <p>PDF · HWP · HWPX · Word · Excel · PowerPoint · Illustrator · Photoshop · InDesign 파일을 업로드하면 자동으로 각 페이지의 컬러 여부를 분석합니다</p>
     </div>
 
     <div class="upload-section" id="uploadSection">
-      <p class="drop-hint">📂 PDF · 한글 · MS Office 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
+      <p class="drop-hint">📂 PDF · 한글 · MS Office · Adobe(AI·PSD·INDD) 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
       <div class="file-input-wrapper">
-        <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()">📁 파일 선택하기 (PDF·HWP·Office)</button>
+        <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()">📁 파일 선택하기 (PDF·HWP·Office·Adobe)</button>
       </div>
-      <p class="drop-sub">한글(HWP·HWPX)·MS Office(Word·Excel·PowerPoint) 문서는 자동으로 PDF로 변환한 뒤 분석합니다 · 여러 파일은 각각 탭으로 동시 분석</p>
+      <p class="drop-sub">한글·MS Office·Adobe(Illustrator·Photoshop·InDesign) 문서는 자동으로 PDF로 변환한 뒤 분석합니다 · PSD/INDD는 해당 앱 실행에 수십 초 소요 · 여러 파일은 각각 탭으로 동시 분석</p>
       <div class="file-info" id="fileInfo"></div>
       <div class="progress-bar" id="progressBar">
         <div class="progress-fill" id="progressFill"></div>
@@ -758,14 +969,17 @@
 
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <p class="loading-msg" id="loadingMsg">PDF를 분석하고 있습니다...</p>
+      <div class="loading-text">
+        <p class="loading-msg" id="loadingMsg">PDF를 분석하고 있습니다...</p>
+        <p class="loading-sub">처리 중입니다. 잠시만 기다려 주세요.</p>
+      </div>
     </div>
 
     <div class="error" id="error"></div>
     <div class="success" id="success"></div>
 
-    <!-- 탭 바 -->
-    <div id="tabBar" class="tab-bar"></div>
+    <!-- 다중작업 파일 탭 + 파일 합치기 (메인) — 사이드바를 닫아도 항상 보이도록 메인에도 표시 -->
+    <div id="mainTabBar" class="tab-bar"></div>
 
     <div class="results-section" id="resultsSection">
       <h2 style="text-align:center; margin-bottom:30px; color:#333;">📊 분석 결과</h2>
@@ -804,7 +1018,7 @@
           <button class="sel-btn" onclick="selectAll()">모두 선택</button>
           <button class="sel-btn" onclick="deselectAll()">선택 해제</button>
           <span class="sel-count" id="selectedCount">0개 선택됨</span>
-          <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
+          <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
           <button class="sel-btn" onclick="insertBlankPage(-1)" title="1페이지 앞에 빈 페이지 삽입">➕ 맨 앞 빈 페이지</button>
           <button class="sel-btn" id="undoBtn" onclick="undoEdit()" title="실행취소 (Ctrl+Z)" style="display:none;">↩ 실행취소</button>
           <button class="sel-btn" id="redoBtn" onclick="redoEdit()" title="다시실행 (Ctrl+Y)" style="display:none;">↪ 다시실행</button>
@@ -829,10 +1043,20 @@
         </div>
       </div>
 
-      <h3 style="color:#1d1d1f; margin:30px 0 8px;">📄 페이지별 상세 정보</h3>
-      <p class="convert-hint">페이지 썸네일을 클릭하면 흑백으로 변환할 페이지를 선택할 수 있습니다</p>
+      <h3 id="pagesDetailHead" style="color:#1d1d1f; margin:30px 0 8px;">📄 페이지별 상세 정보</h3>
+      <p class="convert-hint" id="pagesDetailHint">페이지 썸네일을 클릭하면 흑백으로 변환할 페이지를 선택할 수 있습니다</p>
 
       <div class="pages-grid" id="pagesGrid"></div>
+
+      <!-- 편집 적용 결과 — 메인 영역에 그대로 표시(전체보기) -->
+      <div class="preview-section" id="previewSection" style="display:none;">
+        <div class="preview-head">
+          <h3 style="margin:0; color:#1d1d1f;">✏️ 편집 적용 결과 <span id="previewCount" style="color:#0071e3;"></span></h3>
+          <span class="preview-sub" id="previewNote"></span>
+          <button class="preview-close" onclick="closePreview()">✕ 원본 페이지 보기</button>
+        </div>
+        <div class="pages-grid" id="previewGrid"></div>
+      </div>
 
       <div class="quote-section" id="quoteSection" style="display:none;">
         <h3 style="margin-bottom:20px; color:#333;">💰 인쇄 비용 산출 및 견적서</h3>
@@ -846,14 +1070,22 @@
             <input type="date" id="q-date" class="q-input">
           </div>
         </div>
+        <div class="q-price-settings">
+          <span class="q-ps-title">⚙ 기본 단가 설정</span>
+          <label class="q-ps-field">컬러 <input type="number" id="dp-color" min="0"></label>
+          <label class="q-ps-field">흑백 <input type="number" id="dp-bw" min="0"></label>
+          <label class="q-ps-field">제본비 <input type="number" id="dp-binding" min="0"></label>
+          <button class="q-ps-apply" onclick="applyDefaultPrices()">적용</button>
+          <span class="q-ps-hint">적용 시 다음 견적부터 기본 단가로 표기됩니다</span>
+        </div>
         <table class="q-table">
           <thead>
             <tr>
               <th>품목명</th>
               <th style="width:80px;">규격</th>
-              <th style="width:62px;">수량</th>
+              <th style="width:88px;">수량</th>
               <th style="width:88px;">단가</th>
-              <th style="width:58px;">부수</th>
+              <th style="width:88px;">부수</th>
               <th style="width:64px;">할인율(%)</th>
               <th style="width:90px;" class="q-col-hide">공급가</th>
               <th style="width:78px;" class="q-col-hide">부가세</th>
@@ -907,7 +1139,7 @@
         <div class="sbp-title">⚙ 처리옵션</div>
         <div class="sbp-opts">
           <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
-          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" style="display:none;">🔄 결과 새로고침</button>
+          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
           <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✅ 적용</button>
           <button class="sbp-btn sbp-dl" id="sb-downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>📥 다운로드</button>
@@ -915,9 +1147,271 @@
       </div>
       </div><!-- /.sbp-body -->
     </div>
+
+    <!-- 다중작업 파일 탭 + 파일 합치기 (처리옵션 패널 아래, 썸네일과 함께 스크롤) -->
+    <div id="tabBar" class="tab-bar"></div>
   </div>
   <div id="sbResizer" title="드래그하여 사이드바 폭 조절"></div>
   <button id="sbToggle" title="사이드바 접기/펼치기 (S)">◀</button>
+
+  <!-- ═══ 오른쪽 편집 사이드바: 크기·회전·조판(N-up)·테두리 ═══ -->
+  <button id="editToggle" title="편집 패널 열기/닫기 (E)" onclick="toggleEditSidebar()">✏ 편집</button>
+  <div id="editSidebar">
+    <div class="es-head">
+      <span class="es-head-title">✏️ 페이지 편집</span>
+      <button class="es-close" onclick="toggleEditSidebar(false)" title="닫기">✕</button>
+    </div>
+
+    <!-- 프리셋 -->
+    <div class="es-section">
+      <div class="es-section-title">💾 설정 프리셋</div>
+      <div class="es-row" style="gap:6px;">
+        <select class="es-select" id="esPresetSel" style="flex:1;" onchange="loadPreset(this.value)">
+          <option value="">프리셋 선택…</option>
+        </select>
+        <button class="es-chip" style="flex:0 0 auto;" onclick="deletePreset()" title="선택한 프리셋 삭제">🗑</button>
+      </div>
+      <div class="es-row" style="gap:6px; margin-top:6px;">
+        <input type="text" class="es-input" id="esPresetName" placeholder="새 프리셋 이름" style="flex:1;">
+        <button class="es-chip" style="flex:0 0 auto;" onclick="savePreset()" title="현재 설정을 프리셋으로 저장">＋ 저장</button>
+      </div>
+      <div class="es-hint">크기·회전·조판·테두리·머리글/바닥글·워터마크 설정을 저장합니다. 적용 범위가 '챕터'면 그 챕터에만, 아니면 전체 공통 설정에 적용됩니다.</div>
+    </div>
+
+    <!-- 적용 범위 -->
+    <div class="es-section">
+      <div class="es-section-title">🎯 적용 범위</div>
+      <div class="es-btngroup" id="esScopeGroup">
+        <button class="es-chip active" data-scope="all"      onclick="setEditScope('all')">전체</button>
+        <button class="es-chip"        data-scope="selected" onclick="setEditScope('selected')">선택 페이지</button>
+        <button class="es-chip"        data-scope="range"    onclick="setEditScope('range')">범위</button>
+        <button class="es-chip"        data-scope="chapter"  onclick="setEditScope('chapter')">챕터</button>
+      </div>
+      <div class="es-sub" id="esScopeRange">
+        <div class="es-row" style="margin-top:8px;">
+          <span class="es-label">페이지</span>
+          <input type="number" class="es-input" id="esRangeFrom" min="1" placeholder="시작" style="flex:0 0 70px;">
+          <span style="color:#8e8e93;">~</span>
+          <input type="number" class="es-input" id="esRangeTo" min="1" placeholder="끝" style="flex:0 0 70px;">
+        </div>
+      </div>
+      <div class="es-sub" id="esScopeChapter">
+        <div class="es-row" style="margin-top:8px;">
+          <span class="es-label">챕터</span>
+          <select class="es-select" id="esChapterSel"></select>
+        </div>
+      </div>
+      <div class="es-scope-info" id="esScopeInfo"></div>
+    </div>
+
+    <!-- 1. 크기 / 배율 -->
+    <div class="es-section">
+      <div class="es-section-title">📐 크기 · 배율</div>
+      <div class="es-btngroup">
+        <button class="es-chip active" data-scale="none"     onclick="setScaleMode('none')">원본 유지</button>
+        <button class="es-chip"        data-scale="standard" onclick="setScaleMode('standard')">규격 용지</button>
+        <button class="es-chip"        data-scale="custom"   onclick="setScaleMode('custom')">사용자 정의</button>
+      </div>
+      <div class="es-sub" id="esScaleStandard">
+        <div class="es-row" style="margin-top:8px;">
+          <span class="es-label">용지</span>
+          <select class="es-select" id="esPaperSel">
+            <optgroup label="A 시리즈">
+              <option value="A0">A0 (841×1189)</option>
+              <option value="A1">A1 (594×841)</option>
+              <option value="A2">A2 (420×594)</option>
+              <option value="A3">A3 (297×420)</option>
+              <option value="A4" selected>A4 (210×297)</option>
+              <option value="A5">A5 (148×210)</option>
+              <option value="A6">A6 (105×148)</option>
+            </optgroup>
+            <optgroup label="B 시리즈 (JIS)">
+              <option value="B0">B0 (1030×1456)</option>
+              <option value="B1">B1 (728×1030)</option>
+              <option value="B2">B2 (515×728)</option>
+              <option value="B3">B3 (364×515)</option>
+              <option value="B4">B4 (257×364)</option>
+              <option value="B5">B5 (182×257)</option>
+              <option value="B6">B6 (128×182)</option>
+            </optgroup>
+            <optgroup label="기타">
+              <option value="8K">8K (270×390)</option>
+              <option value="16K-1">16K-1 (194×267)</option>
+              <option value="16K-2">16K-2 (195×270)</option>
+              <option value="Letter">Letter (216×279)</option>
+              <option value="Legal">Legal (216×356)</option>
+              <option value="Tabloid">Tabloid (279×432)</option>
+            </optgroup>
+          </select>
+        </div>
+        <div class="es-row">
+          <span class="es-label">방향</span>
+          <div class="es-btngroup" style="flex:1;">
+            <button class="es-chip active" data-orient="auto"      onclick="setOrient('auto')">자동</button>
+            <button class="es-chip"        data-orient="portrait"  onclick="setOrient('portrait')">세로</button>
+            <button class="es-chip"        data-orient="landscape" onclick="setOrient('landscape')">가로</button>
+          </div>
+        </div>
+      </div>
+      <div class="es-sub" id="esScaleCustom">
+        <div class="es-row" style="margin-top:8px;">
+          <span class="es-label">크기(mm)</span>
+          <input type="number" class="es-input" id="esCustomW" min="10" value="210" placeholder="폭" style="flex:0 0 72px;">
+          <span style="color:#8e8e93;">×</span>
+          <input type="number" class="es-input" id="esCustomH" min="10" value="297" placeholder="높이" style="flex:0 0 72px;">
+        </div>
+      </div>
+      <label class="es-row" style="margin-top:10px; cursor:pointer;" id="esFitRow">
+        <input type="checkbox" id="esFitMargins" checked style="accent-color:#0a84ff; width:15px; height:15px;">
+        <span style="color:#d1d1d6;">여백 안에 맞추기 (fit to printable area)</span>
+      </label>
+      <div class="es-hint" id="esScaleHint">원본 크기를 유지합니다. 규격 용지/사용자 정의를 선택하면 콘텐츠를 그 크기에 맞춰 확대·축소합니다.</div>
+    </div>
+
+    <!-- 2. 회전 -->
+    <div class="es-section">
+      <div class="es-section-title">🔄 회전</div>
+      <div class="es-rotate-row">
+        <button class="es-chip" onclick="rotateScope(-90)">↺ 왼쪽 90°</button>
+        <button class="es-chip" onclick="rotateScope(90)">↻ 오른쪽 90°</button>
+        <button class="es-chip" onclick="rotateScope(180)">⤺ 180°</button>
+      </div>
+      <div class="es-hint">적용 범위의 모든 페이지를 동시에 회전합니다. (즉시 반영 · 실행취소 가능)</div>
+    </div>
+
+    <!-- 3. 조판 (N-up) -->
+    <div class="es-section">
+      <div class="es-section-title">🔲 조판 (모아찍기)</div>
+      <div class="es-nup-grid" id="esNupGroup">
+        <button class="es-chip active" data-nup="1"  onclick="setNup(1)">1</button>
+        <button class="es-chip" data-nup="2"  onclick="setNup(2)">2</button>
+        <button class="es-chip" data-nup="4"  onclick="setNup(4)">4</button>
+        <button class="es-chip" data-nup="6"  onclick="setNup(6)">6</button>
+        <button class="es-chip" data-nup="8"  onclick="setNup(8)">8</button>
+        <button class="es-chip" data-nup="9"  onclick="setNup(9)">9</button>
+        <button class="es-chip" data-nup="16" onclick="setNup(16)">16</button>
+      </div>
+      <div class="es-row" style="margin-top:10px;">
+        <span class="es-label">거터(mm)</span>
+        <input type="number" class="es-input" id="esGutter" min="0" step="1" value="0" style="flex:0 0 80px;">
+        <span class="es-hint" style="margin:0;">칸 사이 간격</span>
+      </div>
+      <div class="es-hint" style="margin-top:8px;">한 장에 모아찍을 페이지 수. (1 = 끄기)</div>
+    </div>
+
+    <!-- 여백 -->
+    <div class="es-section">
+      <div class="es-section-title">📏 여백 (mm)</div>
+      <div class="es-margins">
+        <label>위 <input type="number" id="esMgTop"    min="0" value="10"></label>
+        <label>아래 <input type="number" id="esMgBottom" min="0" value="10"></label>
+        <label>왼쪽 <input type="number" id="esMgLeft"   min="0" value="10"></label>
+        <label>오른쪽 <input type="number" id="esMgRight"  min="0" value="10"></label>
+      </div>
+      <div class="es-hint">규격화·조판 시 페이지 가장자리 여백입니다.</div>
+    </div>
+
+    <!-- 4. 테두리 -->
+    <div class="es-section">
+      <div class="es-section-title">🔳 테두리</div>
+      <div class="es-btngroup" id="esBorderGroup">
+        <button class="es-chip active" data-border="none"   onclick="setBorder('none')">없음</button>
+        <button class="es-chip" data-border="thin"   onclick="setBorder('thin')">얇은 실선</button>
+        <button class="es-chip" data-border="medium" onclick="setBorder('medium')">굵은 실선</button>
+        <button class="es-chip" data-border="dotted" onclick="setBorder('dotted')">점선</button>
+        <button class="es-chip" data-border="crop"   onclick="setBorder('crop')">재단선</button>
+      </div>
+      <div class="es-hint">조판 시 각 칸마다, 단일 페이지면 페이지 둘레에 그려집니다.</div>
+    </div>
+
+    <!-- 5. 머리글 / 바닥글 -->
+    <div class="es-section">
+      <label class="es-section-title" style="cursor:pointer;">
+        <input type="checkbox" id="esHfEnabled" style="accent-color:#0a84ff; width:15px; height:15px;">
+        🔖 머리글 · 바닥글
+      </label>
+      <div class="es-sub" id="esHfBody">
+        <div class="es-hf-grid" style="grid-template-columns:34px 1fr 1fr 1fr;">
+          <span class="es-hf-lbl" style="text-align:center;color:#8e8e93;"></span>
+          <span class="es-hf-lbl" style="text-align:center;">좌</span>
+          <span class="es-hf-lbl" style="text-align:center;">중</span>
+          <span class="es-hf-lbl" style="text-align:center;">우</span>
+          <span class="es-hf-lbl">머리글</span>
+          <input type="text" id="esHfHL"><input type="text" id="esHfHC"><input type="text" id="esHfHR">
+          <span class="es-hf-lbl">바닥글</span>
+          <input type="text" id="esHfFL"><input type="text" id="esHfFC"><input type="text" id="esHfFR">
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <select class="es-select" id="esHfPnumStyle" title="페이지 번호 표시 형식" style="flex:1;">
+            <option value="0">1</option>
+            <option value="1" selected>1 / 10</option>
+            <option value="2">- 1 -</option>
+            <option value="3">Page 1</option>
+            <option value="4">1 페이지</option>
+          </select>
+          <button class="es-chip" style="flex:0 0 auto;" onclick="insertPageNumberToken()" title="선택한 칸에 페이지번호 삽입">＋ 번호</button>
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto;">글꼴</span>
+          <select class="es-select" id="esHfFont" style="flex:1;" title="PDF에 임베드되는 시스템 글꼴">
+            <option value="C:\Windows\Fonts\malgun.ttf">맑은 고딕</option>
+          </select>
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto;">크기</span>
+          <input type="number" class="es-input" id="esHfSize" min="5" max="48" value="9" style="flex:0 0 50px;">
+          <input type="color" id="esHfColor" value="#333333" style="width:32px;height:28px;border:none;background:none;cursor:pointer;" title="색상">
+          <span class="es-label" style="min-width:auto;">여백(mm)</span>
+          <input type="number" class="es-input" id="esHfMargin" min="0" value="10" style="flex:0 0 50px;" title="가장자리에서 머리글/바닥글까지 거리(mm) — 문서 마진과 같은 기준">
+        </div>
+        <div class="es-hint" style="margin:2px 0 0;">자리표시자: <b>{n}</b>=번호 · {page} {total} {date} {filename}</div>
+      </div>
+    </div>
+
+    <!-- 6. 워터마크 -->
+    <div class="es-section">
+      <label class="es-section-title" style="cursor:pointer;">
+        <input type="checkbox" id="esWmEnabled" style="accent-color:#0a84ff; width:15px; height:15px;">
+        💧 워터마크
+      </label>
+      <div class="es-sub" id="esWmBody">
+        <div class="es-row" style="margin-top:6px;">
+          <span class="es-label">문구</span>
+          <input type="text" class="es-input" id="esWmText" placeholder="예: 대외비 · CONFIDENTIAL">
+        </div>
+        <div class="es-row">
+          <span class="es-label">크기</span>
+          <input type="number" class="es-input" id="esWmSize" min="8" max="200" value="48" style="flex:0 0 64px;">
+          <span class="es-label" style="min-width:auto;">색상</span>
+          <input type="color" id="esWmColor" value="#cccccc" style="width:38px;height:30px;border:none;background:none;cursor:pointer;">
+        </div>
+        <div class="es-row">
+          <span class="es-label">투명도</span>
+          <input type="range" id="esWmOpacity" min="5" max="100" value="30" style="flex:1;accent-color:#0a84ff;">
+          <span id="esWmOpacityVal" style="color:#aeaeb2;min-width:36px;text-align:right;">30%</span>
+        </div>
+        <div class="es-row">
+          <span class="es-label">각도</span>
+          <input type="number" class="es-input" id="esWmAngle" min="-90" max="90" value="45" style="flex:0 0 64px;">
+          <span class="es-label" style="min-width:auto;">배치</span>
+          <div class="es-btngroup" style="flex:1;">
+            <button class="es-chip active" data-wmmode="center" onclick="setWmMode('center')">가운데</button>
+            <button class="es-chip" data-wmmode="tile" onclick="setWmMode('tile')">바둑판</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="es-actions">
+      <div class="es-action-row">
+        <button class="es-apply-btn" id="esApplyBtn" onclick="applyChanges()">✅ 편집 적용</button>
+        <button class="es-dl-btn" id="esDownloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 저장 · 우클릭: 원본 저장" disabled>📥 다운로드</button>
+      </div>
+      <button class="es-reset-btn" onclick="resetEditSettings()">↺ 편집 설정 초기화</button>
+      <div class="es-hint" style="margin-top:2px;">옵션을 바꾸면 미리보기가 실시간 반영됩니다. <b>📥 다운로드</b>로 저장하세요.</div>
+    </div>
+  </div>
+  <div id="editResizer" title="드래그하여 편집창 폭 조절"></div>
 
   <!-- 썸네일 우클릭 컨텍스트 메뉴 -->
   <div id="pageCtxMenu">
@@ -976,6 +1470,8 @@
     const errorEl          = document.getElementById('error');
     const successEl        = document.getElementById('success');
     const tabBar           = document.getElementById('tabBar');
+    const mainTabBar       = document.getElementById('mainTabBar');
+    const tabBars          = [tabBar, mainTabBar];
     const resultsSection   = document.getElementById('resultsSection');
     const pagesGrid        = document.getElementById('pagesGrid');
     const rangeSummary     = document.getElementById('rangeSummary');
@@ -1001,15 +1497,46 @@
     let processedFileName  = '';
     let applying           = false; // 적용(수정) 진행 중 여부
     const processingOptions = { bw: false };
+    let editSettings       = null; // 현재 탭의 편집 설정(크기·회전·조판·테두리) 앨리어스
+
+    // 저장 안 한 작업 여부를 main에 보고 (종료 전 확인용)
+    let _isDirty = false;
+    function setDirty(v) {
+      v = !!v;
+      if (v === _isDirty) return;
+      _isDirty = v;
+      try { window.electronAPI.setUnsaved && window.electronAPI.setUnsaved(v); } catch (e) {}
+    }
+
+    // 편집 설정 기본값 팩토리 — 탭마다 독립 보관
+    function newEditSettings() {
+      return {
+        scope:   { mode: 'all', from: 1, to: 1, chapter: '' },
+        scaling: { mode: 'none', paper: 'A4', orient: 'auto', customW: 210, customH: 297, fitMargins: true },
+        margins: { top: 10, bottom: 10, left: 10, right: 10 }, // mm
+        nUp: 1,
+        gutter: 0,        // 조판 칸 사이 간격 (mm)
+        border: 'none',
+        // 머리글/바닥글 — 좌/중/우 6칸, 자리표시자 {page}{total}{date}{filename}{n}
+        hf: { enabled: false, hL: '', hC: '', hR: '', fL: '', fC: '', fR: '',
+              size: 9, color: '#333333', margin: 10, pnumStyle: 1, font: 'C:\\Windows\\Fonts\\malgun.ttf' },
+        // 워터마크
+        wm: { enabled: false, text: '', size: 48, color: '#cccccc',
+              opacity: 30, angle: 45, mode: 'center' },
+        // 합본 문서의 챕터별 개별 설정 — 적용 범위를 '챕터'로 두고 편집하면 여기에 저장되어
+        // 전역(위) 설정과 별개로 그 챕터에만 적용된다. { [챕터명]: {scaling,margins,nUp,gutter,border,hf,wm} }
+        byChapter: {},
+      };
+    }
 
     // ── 멀티코어 Worker Pool ──────────────────────────────────────────────────
-    class GrayWorkerPool {
-      constructor(numWorkers) {
+    class WorkerPool {
+      constructor(scriptPath, numWorkers) {
         this.pending = new Map();
         this.nextId = 0;
         this.freeWorkers = [];
         this.jobQueue = [];
-        const workerUrl = new URL('./worker-gray.js', window.location.href).href;
+        const workerUrl = new URL(scriptPath, window.location.href).href;
         this.workers = Array.from({ length: numWorkers }, () => {
           const w = new Worker(workerUrl);
           w.onmessage = (e) => this._onResult(w, e.data);
@@ -1024,10 +1551,10 @@
           return w;
         });
       }
-      run(type, payload, transferable = []) {
+      run(type, payload, transferable = [], onProgress = null) {
         return new Promise((resolve, reject) => {
           const id = this.nextId++;
-          this.jobQueue.push({ id, type, payload, transferable, resolve, reject });
+          this.jobQueue.push({ id, type, payload, transferable, resolve, reject, onProgress });
           this._flush();
         });
       }
@@ -1039,24 +1566,25 @@
         }
       }
       _dispatch(worker, job) {
-        this.pending.set(job.id, { resolve: job.resolve, reject: job.reject });
+        this.pending.set(job.id, { resolve: job.resolve, reject: job.reject, onProgress: job.onProgress });
         worker.__currentJob = job;
         worker.postMessage({ id: job.id, type: job.type, payload: job.payload }, job.transferable);
       }
       _onResult(worker, data) {
         const p = this.pending.get(data.id);
-        if (p) {
-          if (data.error) p.reject(new Error(data.error));
-          else p.resolve(data.result);
-          this.pending.delete(data.id);
-        }
+        if (!p) return;
+        if (data.progress !== undefined) { p.onProgress?.(data.progress); return; }
+        if (data.error) p.reject(new Error(data.error));
+        else p.resolve(data.result);
+        this.pending.delete(data.id);
         worker.__currentJob = null;
         this.freeWorkers.push(worker);
         this._flush();
       }
     }
     const CORES = Math.max(navigator.hardwareConcurrency || 4, 2);
-    const grayWorkerPool = new GrayWorkerPool(CORES);
+    const grayWorkerPool = new WorkerPool('./worker-gray.js', CORES);
+    const assembleWorkerPool = new WorkerPool('./worker-assemble.js', CORES);
 
     // ── 탭 관리 ──────────────────────────────────────────────────────────────
     const tabs = new Map(); // id → tabState
@@ -1066,7 +1594,7 @@
       return {
         id: 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5),
         fileName: file.name,
-        originalFileName: file.name.replace(/\.(pdf|hwpx?|docx?|xlsx?|pptx?)$/i, ''),
+        originalFileName: file.name.replace(/\.(pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i, ''),
         originalPdfBytes: null,
         pdfDoc: null,
         pageResults: [],
@@ -1084,6 +1612,7 @@
         undoStack: [],
         redoStack: [],
         fileSize: file.size || 0,
+        editSettings: newEditSettings(),
       };
     }
 
@@ -1152,17 +1681,35 @@
         sizeStr = `📐 혼합 — ${parts.join(' · ')}`;
       }
 
-      fileInfo.style.display = 'block';
-      fileInfo.innerHTML = `<strong>${tab.fileName}</strong>`
+      const html = `<strong>${tab.fileName}</strong>`
         + (sizeStr ? ` — ${sizeStr}` : '')
         + (pages ? ` · 📄 ${pages}페이지` : '');
+      fileInfo.innerHTML = html;
+      // 크기·내용이 바뀔 때만 3초간 표시 후 자동 숨김 (페이지 편집 영역을 가리지 않도록)
+      showFileInfoTransient(html);
+    }
+
+    // 문서 크기 배너: 내용 변동 시에만 3초 노출 후 자동 숨김
+    let _fileInfoTimer = null, _fileInfoLast = '';
+    function showFileInfoTransient(html) {
+      if (html === _fileInfoLast && fileInfo.style.display === 'none') return; // 동일 내용 재노출 안 함
+      _fileInfoLast = html;
+      fileInfo.style.display = 'block';
+      fileInfo.style.transition = 'opacity 0.4s';
+      fileInfo.style.opacity = '1';
+      clearTimeout(_fileInfoTimer);
+      _fileInfoTimer = setTimeout(() => {
+        fileInfo.style.opacity = '0';
+        setTimeout(() => { if (fileInfo.style.opacity === '0') fileInfo.style.display = 'none'; }, 450);
+      }, 3000);
     }
 
     function createTab(file) {
       const state = newTabState(file);
       tabs.set(state.id, state);
-      if (tabs.size >= 2) tabBar.style.display = 'flex';
+      if (tabs.size >= 2) tabBars.forEach(b => b.style.display = 'flex');
       renderTabBar();
+      syncMainTabBarOffset();
       return state;
     }
 
@@ -1187,9 +1734,13 @@
       pageEdited         = tab.pageEdited;
       undoStack          = tab.undoStack;
       redoStack          = tab.redoStack;
+      if (!tab.editSettings) tab.editSettings = newEditSettings();
+      editSettings       = tab.editSettings;
       // 탭 전환 시 이전 탭의 '적용' 결과는 무효화 (다운로드 비활성)
       processedPdfBytes  = null;
       processedFileName  = '';
+      if (typeof closePreview === 'function') closePreview();
+      if (typeof clearProcessCaches === 'function') clearProcessCaches();
 
       hideError(); hideSuccess();
 
@@ -1243,8 +1794,9 @@
           originalThumbnails = new Map(); quoteItems = [];
         }
       }
-      if (tabs.size < 2) tabBar.style.display = 'none';
+      if (tabs.size < 2) tabBars.forEach(b => b.style.display = 'none');
       renderTabBar();
+      syncMainTabBarOffset();
     }
 
     let dragTabId = null;
@@ -1261,34 +1813,47 @@
       renderTabBar();
     }
 
-    function renderTabBar() {
-      tabBar.innerHTML = '';
-      tabs.forEach((state, id) => {
-        const tab = document.createElement('div');
-        tab.className = 'tab-item' + (id === activeTabId ? ' active' : '');
-        const icon = state.status === 'loading' ? '⏳ ' : state.status === 'error' ? '❌ ' : '📄 ';
-        const short = state.fileName.length > 22 ? state.fileName.slice(0, 20) + '…' : state.fileName;
-        tab.title = state.fileName;
-        tab.draggable = true;
-        tab.innerHTML = `<span class="tab-name">${icon}${short}</span><button class="tab-close" onclick="event.stopPropagation();closeTab('${id}')">✕</button>`;
-        tab.onclick = () => activateTab(id);
-        // 마우스 드래그로 탭 순서 변경
-        tab.ondragstart = (e) => { dragTabId = id; e.dataTransfer.effectAllowed = 'move'; tab.classList.add('dragging'); };
-        tab.ondragend = () => { dragTabId = null; tabBar.querySelectorAll('.tab-item').forEach(t => t.classList.remove('dragging','drag-over')); };
-        tab.ondragover = (e) => { if (dragTabId && dragTabId !== id) { e.preventDefault(); tab.classList.add('drag-over'); } };
-        tab.ondragleave = () => tab.classList.remove('drag-over');
-        tab.ondrop = (e) => { e.preventDefault(); tab.classList.remove('drag-over'); if (dragTabId) moveTabBefore(dragTabId, id); };
-        tabBar.appendChild(tab);
+    // #mainTabBar(상단 고정)가 표시될 때 그 높이만큼 .sticky-panel을 밀어내려
+    // 두 sticky 요소가 스크롤 시 서로 겹치지 않게 한다.
+    function syncMainTabBarOffset() {
+      requestAnimationFrame(() => {
+        const h = mainTabBar.style.display === 'flex' ? mainTabBar.getBoundingClientRect().height : 0;
+        document.documentElement.style.setProperty('--maintabbar-h', h + 'px');
       });
-      // 2개 이상 열려 있으면 '파일 합치기' 버튼 표시
-      if (tabs.size >= 2) {
-        const mb = document.createElement('button');
-        mb.className = 'tab-merge-btn';
-        mb.innerHTML = '🔗 파일 합치기';
-        mb.title = '열려 있는 모든 파일을 하나의 PDF로 합쳐 저장합니다';
-        mb.onclick = mergeAllTabs;
-        tabBar.appendChild(mb);
-      }
+    }
+
+    // 사이드바(#tabBar)·메인(#mainTabBar) 두 곳에 동일한 탭 목록을 렌더링한다.
+    // 사이드바를 닫아도 메인 쪽 탭 바는 항상 보이도록 동시에 표시한다.
+    function renderTabBar() {
+      tabBars.forEach(container => {
+        container.innerHTML = '';
+        tabs.forEach((state, id) => {
+          const tab = document.createElement('div');
+          tab.className = 'tab-item' + (id === activeTabId ? ' active' : '');
+          const icon = state.status === 'loading' ? '⏳ ' : state.status === 'error' ? '❌ ' : '📄 ';
+          const short = state.fileName.length > 22 ? state.fileName.slice(0, 20) + '…' : state.fileName;
+          tab.title = state.fileName;
+          tab.draggable = true;
+          tab.innerHTML = `<span class="tab-name">${icon}${short}</span><button class="tab-close" onclick="event.stopPropagation();closeTab('${id}')">✕</button>`;
+          tab.onclick = () => activateTab(id);
+          // 마우스 드래그로 탭 순서 변경
+          tab.ondragstart = (e) => { dragTabId = id; e.dataTransfer.effectAllowed = 'move'; tab.classList.add('dragging'); };
+          tab.ondragend = () => { dragTabId = null; container.querySelectorAll('.tab-item').forEach(t => t.classList.remove('dragging','drag-over')); };
+          tab.ondragover = (e) => { if (dragTabId && dragTabId !== id) { e.preventDefault(); tab.classList.add('drag-over'); } };
+          tab.ondragleave = () => tab.classList.remove('drag-over');
+          tab.ondrop = (e) => { e.preventDefault(); tab.classList.remove('drag-over'); if (dragTabId) moveTabBefore(dragTabId, id); };
+          container.appendChild(tab);
+        });
+        // 2개 이상 열려 있으면 '파일 합치기' 버튼 표시
+        if (tabs.size >= 2) {
+          const mb = document.createElement('button');
+          mb.className = 'tab-merge-btn';
+          mb.innerHTML = '🔗 파일 합치기';
+          mb.title = '열려 있는 모든 파일을 하나의 PDF로 합쳐 저장합니다';
+          mb.onclick = mergeAllTabs;
+          container.appendChild(mb);
+        }
+      });
     }
 
     function renderTabUI(tab) {
@@ -1329,28 +1894,54 @@
     // ── 파일 핸들링 ──────────────────────────────────────────────────────────
     const HWP_RE    = /\.hwpx?$/i;                  // 한글 (한컴오피스 COM)
     const OFFICE_RE = /\.(docx?|xlsx?|pptx?)$/i;    // MS Office (Word·Excel·PowerPoint COM)
-    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?)$/i; // PDF 변환이 필요한 모든 확장자
+    const ADOBE_RE  = /\.(psd|indd)$/i;            // Photoshop·InDesign (Adobe COM)
+    const AI_RE     = /\.ai$/i;                    // Illustrator (PDF 호환본은 직접, 아니면 COM)
+    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i; // PDF 변환이 필요한 모든 확장자
 
     // 경로 기반 입력({name, path})을 File-like 객체로 변환.
-    // HWP/HWPX는 한글 COM, MS Office는 Office COM으로 각각 PDF 변환 후,
-    // 그 임시 PDF를 읽도록 연결한다. (모두 단일 인스턴스라 순차 변환)
+    // HWP/HWPX=한글 COM, MS Office=Office COM, Photoshop/InDesign=Adobe COM으로 PDF 변환.
+    // Illustrator .ai는 PDF 호환 저장본이면 그 자체가 PDF라 앱 실행 없이 직접 사용한다.
+    // (변환 계열은 모두 단일 인스턴스라 순차 변환)
     async function prepareFiles(items) {
       const out = [];
       for (const it of items) {
         let pdfPath = null;
+        let directBytes = null;   // 이미 읽어둔 PDF 바이트 재사용(.ai PDF 호환본)
         if (HWP_RE.test(it.name)) {
           showLoading(`${it.name} → PDF로 변환 중…`);
           pdfPath = await window.electronAPI.convertHwpToPdf(it.path);
         } else if (OFFICE_RE.test(it.name)) {
           showLoading(`${it.name} → PDF로 변환 중…`);
           pdfPath = await window.electronAPI.convertOfficeToPdf(it.path);
+        } else if (ADOBE_RE.test(it.name)) {
+          showLoading(`${it.name} → PDF로 변환 중… (Adobe 앱 실행, 수십 초 걸릴 수 있어요)`);
+          pdfPath = await window.electronAPI.convertAdobeToPdf(it.path);
+        } else if (AI_RE.test(it.name)) {
+          // Illustrator .ai: PDF 호환 저장본(%PDF로 시작)이면 그대로 PDF로 사용
+          const ab = window.electronAPI.readFile(it.path);
+          const h = new Uint8Array(ab.slice(0, 5));
+          const isPdf = h[0]===0x25 && h[1]===0x50 && h[2]===0x44 && h[3]===0x46; // "%PDF"
+          if (isPdf) {
+            directBytes = ab;
+          } else {
+            showLoading(`${it.name} → PDF로 변환 중… (Illustrator 실행)`);
+            pdfPath = await window.electronAPI.convertAdobeToPdf(it.path);
+          }
         }
         const readPath = pdfPath || it.path;
+        const tmpToClean = pdfPath; // 변환으로 생성된 임시 PDF만 정리 대상
         out.push({
           name: it.name,                       // 원본 이름(확장자 포함) 유지 — 표시·저장명에 사용
           size: 0,
           type: 'application/pdf',
-          arrayBuffer: () => Promise.resolve(window.electronAPI.readFile(readPath)),
+          arrayBuffer: () => Promise.resolve(directBytes || window.electronAPI.readFile(readPath))
+            .then(buf => {
+              // 메모리로 읽어들였으니 변환 임시 PDF는 즉시 삭제 (디스크 누적 방지)
+              if (tmpToClean && window.electronAPI.cleanupTempFile) {
+                try { window.electronAPI.cleanupTempFile(tmpToClean); } catch (e) {}
+              }
+              return buf;
+            }),
         });
       }
       return out;
@@ -1391,7 +1982,9 @@
         return;
       }
 
+      clearTimeout(_fileInfoTimer);
       fileInfo.style.display = 'block';
+      fileInfo.style.opacity = '1';
       fileInfo.innerHTML = files.length > 1
         ? `<strong>${files.length}개 파일</strong> 동시 분석 중`
         : `<strong>${files[0].name}</strong> — 분석 중…`;
@@ -1530,6 +2123,10 @@
           pageResults = tabState.pageResults;
           displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
           showSuccess('PDF 분석이 완료되었습니다!');
+        } else {
+          // 비활성(백그라운드) 탭: DOM은 그대로 두고 quoteItems만 채워, 나중에 이 탭으로
+          // 전환했을 때 renderTabUI가 견적서를 바로 표시할 수 있게 한다.
+          tabState.quoteItems.push(...buildQuoteItems(colorCount, bwCount));
         }
 
       } catch (err) {
@@ -1734,13 +2331,25 @@
     function updateSelectedCount() {
       const count = selectedPages.size;
       selectedCountEl.textContent = `${count}개 선택됨`;
-      document.getElementById('refreshBtn').style.display = count > 0 ? '' : 'none';
       invalidateProcessed();
       syncSidebarPanel();
+      if (typeof refreshPreviewMarks === 'function') refreshPreviewMarks();
+      // 미리보기가 켜져 있으면 선택 변경을 실제 흑백변환으로 즉시 반영(캐시로 빠름)
+      if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
     }
 
     function refreshResults() {
       if (!pageResults.length) return;
+      // 편집 적용 결과가 표시 중이면 결과 PDF를 다시 분석해 컬러/흑백 수 + 견적서 갱신
+      const pv = document.getElementById('previewSection');
+      if (pv && pv.style.display !== 'none' && processedPdfBytes) {
+        renderProcessedPreview(processedPdfBytes, { live: false }).then(() => {
+          const c = parseInt(colorPagesEl.textContent) || 0;
+          const g = parseInt(grayscalePagesEl.textContent) || 0;
+          updateQuoteCounts(c, g);
+        });
+        return;
+      }
       let newColor = 0, newGray = 0;
       const colorPages = [], grayPages = [];
       pageResults.forEach(r => {
@@ -1807,6 +2416,14 @@
       else if (e.key === 'y' || e.key === 'Y')        { e.preventDefault(); redoEdit(); }
     });
 
+    // F5: 결과 새로고침 (입력창 포커스 여부와 무관하게 동작 — 브라우저 새로고침 차단)
+    document.addEventListener('keydown', e => {
+      if (e.key === 'F5' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        refreshResults();
+      }
+    });
+
     // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)
     document.addEventListener('keydown', e => {
       if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -1819,6 +2436,7 @@
         case 'b': case 'B': e.preventDefault(); ctxApplyBW();      break;
         case 'c': case 'C':      e.preventDefault(); ctxClearBW();      break;
         case 's': case 'S':      e.preventDefault(); showSidebar(!sbVisible); break;
+        case 'e': case 'E':      e.preventDefault(); toggleEditSidebar(); break;
         case 'Delete':           e.preventDefault(); ctxDeletePage();   break;
       }
     });
@@ -1901,7 +2519,10 @@
     // 다운로드 버튼: '적용'으로 결과가 만들어진 뒤에만 활성화, 적용 진행 중엔 비활성화
     function updateDownloadBtn() {
       const anyActive = Object.values(processingOptions).some(v => v);
-      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0);
+      // 편집 사이드바(크기·N-up·테두리·머리글바닥글·워터마크, 챕터별 개별 설정 포함)만
+      // 설정한 경우도 '수정사항'으로 인정해야 메인/사이드바의 '적용' 버튼이 편집창의
+      // '편집 적용'과 같은 조건으로 활성화된다.
+      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout());
       const applyBtn    = document.getElementById('applyBtn');
       const downloadBtn = document.getElementById('downloadBtn');
       if (applyBtn)    applyBtn.disabled    = applying || !hasMod;
@@ -1912,6 +2533,11 @@
       }
       const clearBtn = document.getElementById('clearOptsBtn');
       if (clearBtn) clearBtn.style.display = anyActive ? '' : 'none';
+      // 편집 패널 적용/다운로드 버튼
+      const esApply = document.getElementById('esApplyBtn');
+      const esDownload = document.getElementById('esDownloadBtn');
+      if (esApply) esApply.disabled = applying || !originalPdfBytes;
+      if (esDownload) esDownload.disabled = applying || !processedPdfBytes;
       syncSidebarPanel();
     }
 
@@ -1925,6 +2551,7 @@
       processingOptions[key] = !processingOptions[key];
       document.getElementById(`opt-${key}`).classList.toggle('active', processingOptions[key]);
       invalidateProcessed();
+      if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
     }
 
     function clearOptions() {
@@ -1938,125 +2565,257 @@
 
 
 
-    // ── 흑백 PDF 다운로드 (벡터 레벨 변환 — 페이지 병렬 처리) ────────────────
+    // ── base(순서·회전·흑백) 빌드 — 결과를 시그니처로 캐시 (실시간 미리보기 재사용) ──
+    let _baseCache = { sig: null, bytes: null, stats: null };
+    // 페이지 단위 흑백변환 캐시: originalIdx → 변환된 단일페이지 PDFDocument.
+    // 선택이 바뀌어도 '새로 선택된 페이지'만 변환하므로 재적용이 매우 빠르다.
+    let _bwCache = new Map();
+    // 레이아웃 변환(N-up·규격화·테두리·머리글바닥글·워터마크) 결과 캐시 — 실시간 미리보기가
+    // 이미 계산한 결과를 '적용' 버튼이 그대로 재사용해 중복 워커 실행(딜레이)을 없앤다.
+    let _layoutCache = { sig: null, bytes: null };
+    // 조립된 base 문서 캐시(회전 제외한 순서+흑백 기준). 회전만 바뀌면 이 문서를 그대로
+    // 재사용해 각 페이지 /Rotate만 다시 세팅→재저장한다(load·copyPages·흑백조립 생략).
+    // pages[i] = { page(PDFPage), baseAngle(원본 /Rotate) } — baseAngle 기준이라 회전이
+    // 누적되지 않고 항상 (원본각+요청각)으로 idempotent하게 반영된다.
+    let _baseAssembled = null; // { key, outDoc, pages:[{page,baseAngle}], stats, validCount }
+    function clearProcessCaches() {
+      _baseCache = { sig: null, bytes: null, stats: null };
+      _bwCache = new Map();
+      _layoutCache = { sig: null, bytes: null };
+      _baseAssembled = null;
+      _pvPageCache = new Map();
+    }
+    // 회전을 뺀 base 키(페이지 순서 + 흑백선택). 회전만 바뀌면 이 키가 동일 → 조립본 재사용.
+    function baseOrderBwKey() {
+      const valid = pageResults.filter(Boolean);
+      const order = valid.map(r => r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx).join('|');
+      const bw = (processingOptions.bw && selectedPages.size) ? [...selectedPages].sort((a, b) => a - b).join(',') : '';
+      return order + '#' + bw;
+    }
+    function baseSignature() {
+      const valid = pageResults.filter(Boolean);
+      const order = valid.map(r => `${r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx}:${r.rotation || 0}`).join('|');
+      const bw = (processingOptions.bw && selectedPages.size) ? [...selectedPages].sort((a, b) => a - b).join(',') : '';
+      return order + '#' + bw;
+    }
+    // 필요한 흑백 페이지들을 캐시에 채움(없는 것만 병렬 변환). srcDoc는 1회 로드.
+    async function ensureBwConverted(indices, stats, onProgress) {
+      const todo = indices.filter(i => !_bwCache.has(i));
+      if (!todo.length) { if (onProgress) onProgress(92); return; }
+      const src = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+      // 1) 각 페이지를 개별 tmp 문서로 복사 (src 동시 접근 방지 위해 순차)
+      const tmps = [];
+      for (const idx of todo) {
+        const tmp = await PDFLib.PDFDocument.create();
+        const [pg] = await tmp.copyPages(src, [idx]);
+        tmp.addPage(pg);
+        tmps.push({ idx, tmp });
+      }
+      // 2) 변환은 CPU 코어 수만큼 병렬
+      const SEM = Math.max(navigator.hardwareConcurrency || 4, 4);
+      let sem = SEM; const q = [];
+      const wait = () => sem > 0 ? (sem--, Promise.resolve()) : new Promise(r => q.push(r));
+      const rel = () => { if (q.length) q.shift()(); else sem++; };
+      let done = 0;
+      await Promise.all(tmps.map(({ idx, tmp }) => (async () => {
+        await wait();
+        try {
+          try { await convertPageToGrayscaleVector(tmp, 0, stats); }
+          catch (e) { if (stats) { stats.errors++; stats.errPages.push(idx + 1); } console.error(`페이지 ${idx + 1} 변환 오류:`, e); }
+          _bwCache.set(idx, tmp);
+        } finally { done++; if (onProgress) onProgress(10 + done / tmps.length * 80); rel(); }
+      })()));
+    }
+    async function buildBaseProcessed(onProgress) {
+      const sig = baseSignature();
+      if (_baseCache.sig === sig && _baseCache.bytes) return _baseCache;
+      const valid = pageResults.filter(Boolean);
+      // ── 회전 전용 빠른 경로 ──
+      // 순서·흑백이 그대로고 회전만 바뀐 경우: 이미 조립된 outDoc을 재사용해 각 페이지
+      // /Rotate만 다시 세팅하고 재저장한다(무거운 load·copyPages·흑백조립 전부 생략).
+      const key = baseOrderBwKey();
+      if (_baseAssembled && _baseAssembled.key === key && _baseAssembled.pages.length === valid.length) {
+        const asm = _baseAssembled;
+        if (onProgress) onProgress(20);
+        for (let i = 0; i < valid.length; i++) {
+          const r = valid[i], { page, baseAngle } = asm.pages[i];
+          page.setRotation(PDFLib.degrees((((baseAngle + (r.rotation || 0)) % 360) + 360) % 360));
+        }
+        if (onProgress) onProgress(80);
+        const bytes = await asm.outDoc.save({ useObjectStreams: false });
+        _baseCache = { sig, bytes, stats: asm.stats, validCount: valid.length };
+        if (onProgress) onProgress(94);
+        return _baseCache;
+      }
+      const bwOn = processingOptions.bw && selectedPages.size > 0;
+      const isBw = r => bwOn && !r.isBlank && selectedPages.has(r.pageNum);
+      const stats = { errors: 0, errPages: [], converted: 0 };
+      if (onProgress) onProgress(5);
+      // 흑백 대상 페이지 미리 변환(캐시 미스만 변환)
+      const bwIdx = valid.filter(isBw).map(r => r.originalIdx);
+      stats.converted = bwIdx.length;
+      if (bwIdx.length) await ensureBwConverted(bwIdx, stats, onProgress);
+
+      const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+      const outDoc = await PDFLib.PDFDocument.create();
+      // 비변환(원본) 페이지는 일괄 copyPages로 리소스 공유 (파일 크기 최소화)
+      const origPages = valid.filter(r => !r.isBlank && !isBw(r));
+      const origCopied = origPages.length ? await outDoc.copyPages(srcDoc, origPages.map(r => r.originalIdx)) : [];
+      const origMap = new Map(origPages.map((r, i) => [r.originalIdx, origCopied[i]]));
+      // 변환 페이지는 캐시된 단일페이지 doc에서 복사
+      const bwMap = new Map();
+      for (const r of valid) {
+        if (!isBw(r)) continue;
+        const conv = _bwCache.get(r.originalIdx);
+        if (conv) { const [pg] = await outDoc.copyPages(conv, [0]); bwMap.set(r.originalIdx, pg); }
+      }
+      // 순서대로 조립 + 회전 (baseAngle=원본 /Rotate를 기록해 두면 이후 회전만 바뀔 때
+      // outDoc을 재사용해 setRotation→재저장만으로 처리 가능)
+      const asmPages = [];
+      for (const r of valid) {
+        let page;
+        if (r.isBlank) page = outDoc.addPage(r.pageSize || [595.28, 841.89]);
+        else if (isBw(r) && bwMap.has(r.originalIdx)) page = outDoc.addPage(bwMap.get(r.originalIdx));
+        else page = outDoc.addPage(origMap.get(r.originalIdx));
+        const baseAngle = (page.getRotation && page.getRotation().angle) || 0;
+        if (r.rotation) {
+          page.setRotation(PDFLib.degrees((((baseAngle + r.rotation) % 360) + 360) % 360));
+        }
+        asmPages.push({ page, baseAngle });
+      }
+      if (onProgress) onProgress(94);
+      const bytes = await outDoc.save({ useObjectStreams: false });
+      _baseAssembled = { key, outDoc, pages: asmPages, stats, validCount: valid.length };
+      _baseCache = { sig, bytes, stats, validCount: valid.length };
+      return _baseCache;
+    }
+
+    function describeLayoutParts(es) {
+      const parts = [];
+      if (es.scaling.mode === 'standard') parts.push(`${es.scaling.paper} 규격화`);
+      else if (es.scaling.mode === 'custom') parts.push(`${es.scaling.customW}×${es.scaling.customH}mm`);
+      if ((es.nUp | 0) > 1) parts.push(`${es.nUp}-up 조판${es.gutter ? `(거터 ${es.gutter}mm)` : ''}`);
+      if (es.border !== 'none') parts.push('테두리');
+      if (es.hf && es.hf.enabled) parts.push('머리글/바닥글');
+      if (es.wm && es.wm.enabled && es.wm.text.trim()) parts.push('워터마크');
+      return parts;
+    }
+    // 전역 설정 + 챕터별 개별 설정을 모두 반영해 적용 결과 메시지에 쓸 설명을 만든다.
+    function layoutNoteOf() {
+      if (!editSettings) return '';
+      const notes = [];
+      if (hasActiveLayout(editSettings)) notes.push(describeLayoutParts(editSettings).join(', '));
+      const byChapter = editSettings.byChapter || {};
+      Object.keys(byChapter).forEach(name => {
+        if (hasActiveLayout(byChapter[name])) notes.push(`[${name}] ${describeLayoutParts(byChapter[name]).join(', ')}`);
+      });
+      return notes.length ? ` · 레이아웃: ${notes.join(' / ')}` : '';
+    }
+    function defaultProcessedName() {
+      const now = new Date();
+      const ds = now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0')
+        + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0') + String(now.getSeconds()).padStart(2,'0');
+      const includeAmt = document.getElementById('includeAmountChk')?.checked;
+      const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + itemTotal(it), 0) : 0;
+      const amountStr = (includeAmt && totalSum > 0) ? `_${totalSum}원` : '';
+      return `${originalFileName}_수정_${ds}${amountStr}.pdf`;
+    }
+
+    // ── 흑백 PDF / 편집 적용 (명시적 '적용' 버튼) ─────────────────────────────
     async function applyChanges() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
       if (processingOptions.bw && !selectedPages.size) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
-
       try {
         applying = true;
         processedPdfBytes = null; processedFileName = '';
-        updateDownloadBtn(); // 적용·다운로드 모두 비활성화
+        updateDownloadBtn();
         const bwMode = processingOptions.bw && selectedPages.size > 0;
         showLoading(bwMode ? `벡터 흑백변환 중 — 선택 ${selectedPages.size}페이지` : 'PDF 생성 중...');
-        progressBar.style.display = 'block';
-        updateProgress(0);
+        progressBar.style.display = 'block'; updateProgress(0);
 
-        const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
-        const outDoc = await PDFLib.PDFDocument.create();
-        const valid  = pageResults.filter(Boolean);
-
-        // Phase 1: 빈 페이지가 아닌 것만 copyPages 일괄 호출
-        // (개별 호출 시 공유 XObject가 페이지 수만큼 중복 → 파일 크기 급증)
-        updateProgress(5);
-        const nonBlank = valid.filter(r => !r.isBlank);
-        const allCopied = nonBlank.length > 0
-          ? await outDoc.copyPages(srcDoc, nonBlank.map(r => r.originalIdx))
-          : [];
-        const origIdxToPage = new Map(nonBlank.map((r, i) => [r.originalIdx, allCopied[i]]));
-
-        // Phase 2: 순서대로 페이지 추가 — 빈 페이지는 원본 크기로 생성, 회전도 반영
-        for (const r of valid) {
-          let page;
-          if (r.isBlank) {
-            page = outDoc.addPage(r.pageSize || [595.28, 841.89]);
-          } else {
-            page = outDoc.addPage(origIdxToPage.get(r.originalIdx));
-          }
-          if (r.rotation) {
-            const existing = (page.getRotation && page.getRotation().angle) || 0;
-            page.setRotation(PDFLib.degrees((existing + r.rotation) % 360));
-          }
+        const base = await buildBaseProcessed(p => updateProgress(p));
+        let pdfBytes = base.bytes;
+        const groups = computeLayoutGroups();
+        if (groups.length) {
+          updateProgress(96);
+          pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         }
-        updateProgress(10);
+        const layoutNote = layoutNoteOf();
 
-        // Phase 3: 흑백변환 옵션이 켜져 있을 때만 선택 페이지 변환
-        const toConvert = (processingOptions.bw && selectedPages.size > 0)
-          ? valid.map((r, i) => ({ pageNum: r.pageNum, idx: i, isBlank: r.isBlank }))
-               .filter(x => selectedPages.has(x.pageNum) && !x.isBlank)
-          : [];
-
-        // Promise 기반 세마포어 (setTimeout 폴링 제거) — 동시 수는 CPU 코어 수 기반
-        const SEM_LIMIT = Math.max(navigator.hardwareConcurrency || 4, 4);
-        let sem = SEM_LIMIT;
-        const semQueue = [];
-        const waitSem = () => {
-          if (sem > 0) { sem--; return Promise.resolve(); }
-          return new Promise(res => semQueue.push(res));
-        };
-        const releaseSem = () => {
-          if (semQueue.length > 0) semQueue.shift()();
-          else sem++;
-        };
-
-        let done = 0;
-        const convStats = { errors: 0, errPages: [] };
-        if (toConvert.length > 0) {
-          await Promise.all(toConvert.map(({ idx, pageNum }) => (async () => {
-            await waitSem();
-            try {
-              await convertPageToGrayscaleVector(outDoc, idx, convStats);
-              done++;
-              updateProgress(10 + done / toConvert.length * 82);
-            } catch(pageErr) {
-              convStats.errors++;
-              convStats.errPages.push(pageNum);
-              console.error(`페이지 ${pageNum} 변환 오류:`, pageErr);
-              done++;
-              updateProgress(10 + done / toConvert.length * 82);
-            } finally {
-              releaseSem();
-            }
-          })()));
-        }
-
-        updateProgress(97);
-        const pdfBytes = await outDoc.save({ useObjectStreams: false });
-
-        const now = new Date();
-        const ds  = now.getFullYear()
-          + String(now.getMonth()+1).padStart(2,'0')
-          + String(now.getDate()).padStart(2,'0') + '_'
-          + String(now.getHours()).padStart(2,'0')
-          + String(now.getMinutes()).padStart(2,'0')
-          + String(now.getSeconds()).padStart(2,'0');
-
-        const includeAmt = document.getElementById('includeAmountChk')?.checked;
-        const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + itemTotal(it), 0) : 0;
-        const amountStr = (includeAmt && totalSum > 0) ? `_${totalSum}원` : '';
-        const defaultName = `${originalFileName}_수정_${ds}${amountStr}.pdf`;
-
-        // 디스크에 바로 저장하지 않고 결과를 메모리에 보관 → '다운로드' 버튼으로 저장
         processedPdfBytes = pdfBytes;
-        processedFileName = defaultName;
+        processedFileName = defaultProcessedName();
+        setDirty(true);
         updateProgress(100);
+        renderProcessedPreview(pdfBytes);
 
-        let msg = toConvert.length > 0
-          ? `적용 완료! ${toConvert.length}페이지 흑백 변환됨 — '📥 다운로드'를 눌러 저장하세요.`
-          : `적용 완료! 편집된 PDF(${valid.length}페이지) — '📥 다운로드'를 눌러 저장하세요.`;
-        if (convStats.errors > 0)
-          msg += `\n⚠️ 주의: ${convStats.errors}개 페이지(${convStats.errPages.join(', ')})에서 일부 이미지 변환 실패 — 해당 페이지는 부분적으로 칼라가 남아있을 수 있습니다.`;
+        const conv = base.stats || { converted: 0, errors: 0, errPages: [] };
+        let msg = conv.converted > 0
+          ? `적용 완료! ${conv.converted}페이지 흑백 변환됨${layoutNote} — '📥 다운로드'를 눌러 저장하세요.`
+          : `적용 완료! 편집된 PDF(${base.validCount}페이지)${layoutNote} — '📥 다운로드'를 눌러 저장하세요.`;
+        if (conv.errors > 0)
+          msg += `\n⚠️ 주의: ${conv.errors}개 페이지(${conv.errPages.join(', ')})에서 일부 이미지 변환 실패 — 해당 페이지는 부분적으로 칼라가 남아있을 수 있습니다.`;
         showSuccess(msg);
-
       } catch (err) {
-        console.error('흑백변환 오류:', err);
+        console.error('편집 적용 오류:', err);
         processedPdfBytes = null; processedFileName = '';
         showError('처리 중 오류: ' + (err && err.message ? err.message : String(err)));
       } finally {
         applying = false;
-        updateDownloadBtn(); // 적용 결과에 따라 다운로드 버튼 활성화
+        updateDownloadBtn();
         hideLoading();
         progressBar.style.display = 'none';
+      }
+    }
+
+    // ── 실시간 미리보기 (편집 옵션 변경 시 디바운스 자동 갱신) ─────────────────
+    let _livePvTimer = null, _liveRunning = false, _liveQueued = false;
+    // 미리보기가 필요한 상태: 편집 레이아웃이 있거나, 흑백변환+선택이 있음
+    function shouldPreview() {
+      return !!originalPdfBytes && (hasAnyActiveLayout() || (processingOptions.bw && selectedPages.size > 0));
+    }
+    function previewVisible() {
+      const s = document.getElementById('previewSection');
+      return !!s && s.style.display !== 'none';
+    }
+    function scheduleLivePreview() {
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
+      if (!shouldPreview()) { closePreview(); return; }
+      // 편집 사이드바 설정만으로도 '수정사항'이 생긴 것 — 렌더 완료를 기다리지 않고
+      // 메인/사이드바 '적용' 버튼을 편집창의 '편집 적용'과 즉시 같은 상태로 맞춘다.
+      updateDownloadBtn();
+      // 이미 결과가 보이는 중이면 작은 표시만(기존 화면은 그대로 유지 → 깜빡임 없음)
+      const sec = document.getElementById('previewSection');
+      const note = document.getElementById('previewNote');
+      if (sec && sec.style.display !== 'none' && note) note.textContent = '갱신 중…';
+      clearTimeout(_livePvTimer);
+      _livePvTimer = setTimeout(runLivePreview, 120);
+    }
+    async function runLivePreview() {
+      if (applying || _liveRunning) { _liveQueued = true; return; }
+      if (!shouldPreview()) { closePreview(); return; }
+      _liveRunning = true;
+      // 캐시가 히트하는 짧은 갱신에선 깜빡이지 않도록, 200ms 넘게 걸릴 때만 '처리중' 상태창 표시
+      let loadingShown = false;
+      const loadingTimer = setTimeout(() => { loadingShown = true; showLoading('편집 내용 반영 중...'); }, 200);
+      try {
+        const base = await buildBaseProcessed();
+        let pdfBytes = base.bytes;
+        const groups = computeLayoutGroups();
+        if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
+        processedPdfBytes = pdfBytes;
+        processedFileName = defaultProcessedName();
+        setDirty(true);
+        updateDownloadBtn();
+        await renderProcessedPreview(pdfBytes, { live: true });
+      } catch (e) {
+        console.error('실시간 미리보기 오류:', e);
+        const note = document.getElementById('previewNote');
+        if (note) note.textContent = '⚠️ 미리보기 생성 실패 (콘솔 확인)';
+      } finally {
+        clearTimeout(loadingTimer);
+        if (loadingShown) hideLoading();
+        _liveRunning = false;
+        if (_liveQueued) { _liveQueued = false; scheduleLivePreview(); }
       }
     }
 
@@ -2068,24 +2827,90 @@
       try {
         const name = (originalFileName || 'document') + '.pdf';
         const saved = await window.electronAPI.saveFile({ defaultName: name, buffer: originalPdfBytes });
-        if (saved) showSuccess('원본 PDF를 다운로드했습니다.');
+        if (saved) { setDirty(false); showSuccess('원본 PDF를 다운로드했습니다.'); }
       } catch (err) {
         console.error('원본 다운로드 오류:', err);
         showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
       }
     }
 
+    // ── 용량 최적화 base 빌드 (다운로드 전용) ────────────────────────────────
+    // 미리보기/적용은 페이지 캐시로 빠르게 처리하지만, 최종 파일은 여기서
+    // 모든 페이지를 한 번에 copyPages(리소스 공유)하고 선택 페이지만 제자리 변환해
+    // 파일 크기를 최소화한다. (변환은 이 순간 한 번만 수행)
+    async function buildBaseOptimized(onProgress) {
+      const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+      const outDoc = await PDFLib.PDFDocument.create();
+      const valid  = pageResults.filter(Boolean);
+      if (onProgress) onProgress(5);
+      const nonBlank = valid.filter(r => !r.isBlank);
+      const allCopied = nonBlank.length ? await outDoc.copyPages(srcDoc, nonBlank.map(r => r.originalIdx)) : [];
+      const origIdxToPage = new Map(nonBlank.map((r, i) => [r.originalIdx, allCopied[i]]));
+      for (const r of valid) {
+        const page = r.isBlank ? outDoc.addPage(r.pageSize || [595.28, 841.89])
+                               : outDoc.addPage(origIdxToPage.get(r.originalIdx));
+        if (r.rotation) {
+          const ex = (page.getRotation && page.getRotation().angle) || 0;
+          page.setRotation(PDFLib.degrees((ex + r.rotation) % 360));
+        }
+      }
+      if (onProgress) onProgress(10);
+      const toConvert = (processingOptions.bw && selectedPages.size > 0)
+        ? valid.map((r, i) => ({ pageNum: r.pageNum, idx: i, isBlank: r.isBlank }))
+             .filter(x => selectedPages.has(x.pageNum) && !x.isBlank)
+        : [];
+      const SEM = Math.max(navigator.hardwareConcurrency || 4, 4);
+      let sem = SEM; const q = [];
+      const wait = () => sem > 0 ? (sem--, Promise.resolve()) : new Promise(r => q.push(r));
+      const rel = () => { if (q.length) q.shift()(); else sem++; };
+      let done = 0; const stats = { errors: 0, errPages: [], converted: toConvert.length };
+      if (toConvert.length) {
+        await Promise.all(toConvert.map(({ idx, pageNum }) => (async () => {
+          await wait();
+          try { await convertPageToGrayscaleVector(outDoc, idx, stats); }
+          catch (e) { stats.errors++; stats.errPages.push(pageNum); console.error(`페이지 ${pageNum} 변환 오류:`, e); }
+          finally { done++; if (onProgress) onProgress(10 + done / toConvert.length * 82); rel(); }
+        })()));
+      }
+      if (onProgress) onProgress(94);
+      return { bytes: await outDoc.save({ useObjectStreams: false }), stats };
+    }
+    // 다운로드용 최종 바이트 (용량 최적화 base + 레이아웃 변환)
+    async function buildOptimizedOutput(onProgress) {
+      const base = await buildBaseOptimized(p => onProgress && onProgress(Math.round(p * 0.9)));
+      let bytes = base.bytes;
+      const groups = computeLayoutGroups();
+      if (groups.length) {
+        if (onProgress) onProgress(95);
+        bytes = await applyLayoutTransform(bytes, groups);
+      }
+      if (onProgress) onProgress(100);
+      return bytes;
+    }
+
     async function downloadProcessed() {
       if (!processedPdfBytes) { showError('먼저 \'✅ 적용\'을 눌러 수정사항을 적용하거나, 다운로드 버튼을 우클릭해 원본을 저장하세요.'); return; }
       try {
+        applying = true; updateDownloadBtn();
+        showLoading('다운로드용 PDF 최적화 중…');
+        progressBar.style.display = 'block'; updateProgress(0);
+        // 최종 파일은 용량 최적화 방식으로 새로 생성 (미리보기와 내용 동일)
+        const finalBytes = await buildOptimizedOutput(p => updateProgress(p));
+        applying = false; updateDownloadBtn();
+        hideLoading(); progressBar.style.display = 'none';
         const saved = await window.electronAPI.saveFile({
           defaultName: processedFileName,
-          buffer: processedPdfBytes,
+          buffer: finalBytes,
         });
-        if (saved) showSuccess('PDF를 다운로드했습니다.');
+        if (saved) { setDirty(false); showSuccess('PDF를 다운로드했습니다. (용량 최적화 적용)'); }
       } catch (err) {
         console.error('다운로드 오류:', err);
         showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
+      } finally {
+        applying = false;
+        updateDownloadBtn();
+        hideLoading();
+        progressBar.style.display = 'none';
       }
     }
 
@@ -2158,20 +2983,23 @@
       try {
         hideError(); hideSuccess();
         showLoading(`${ready.length}개 파일을 하나로 합치는 중…`);
+        progressBar.style.display = 'block'; updateProgress(0);
 
-        const mergedDoc = await PDFLib.PDFDocument.create();
+        // 원본 탭 데이터는 보존해야 하므로 복사본을 만들어 워커로 transfer한다.
+        const buffers = ready.map(t => t.originalPdfBytes.slice(0));
+        const { bytes: rawBytes, counts } = await assembleWorkerPool.run(
+          'merge', { buffers }, buffers.map(b => b.buffer), (pct) => updateProgress(pct * 100)
+        );
+        const bytes = new Uint8Array(rawBytes);
+
         const chapters = [];           // 파일별 챕터 경계 {name, start(1-based), count}
         let startPage = 1;
-        for (const t of ready) {
-          const src     = await PDFLib.PDFDocument.load(t.originalPdfBytes.slice(0));
-          const indices = src.getPageIndices();
-          const copied  = await mergedDoc.copyPages(src, indices);
-          copied.forEach(p => mergedDoc.addPage(p));
-          chapters.push({ name: t.fileName, start: startPage, count: indices.length });
-          startPage += indices.length;
-        }
-        const bytes = await mergedDoc.save();
-        hideLoading();
+        ready.forEach((t, i) => {
+          chapters.push({ name: t.fileName, start: startPage, count: counts[i] });
+          startPage += counts[i];
+        });
+
+        hideLoading(); progressBar.style.display = 'none';
 
         // 합본 파일명: 맨 위(첫 번째) 파일명 기준으로 확장자를 떼고 "_합본.pdf"를 붙인다.
         const baseName = ready[0].fileName.replace(/\.[^.]+$/, '');
@@ -2198,7 +3026,7 @@
           ? `${ready.length}개 파일을 합쳐 저장했습니다. 새 탭에서 분석 결과를 확인하세요.`
           : `${ready.length}개 파일을 합쳤습니다. 새 탭에서 확인 후 저장할 수 있습니다.`);
       } catch (e) {
-        hideLoading();
+        hideLoading(); progressBar.style.display = 'none';
         showError('파일 합치기 오류: ' + (e && e.message ? e.message : String(e)));
       }
     }
@@ -2565,6 +3393,7 @@
           img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
           img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
           img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
+          fixSMaskMatte(pdfDoc, img);
           return;
         }
 
@@ -3210,11 +4039,29 @@
             const gForm = pdfDoc.context.lookup(gRef);
             if (!gForm || !gForm.dict) continue;
             // SMask 투명도 그룹 색공간 → DeviceGray
+            // + 배경색 /BC도 새 색공간(DeviceGray, 1채널)에 맞춰 변환.
+            //   그대로 두면 옛 RGB/CMYK 채널수(3~4)와 불일치 → GS "Group /BC differs
+            //   in number of components" / Acrobat "이 페이지에 오류가 있습니다".
             try {
               const grpRef = gForm.dict.get(Nm('Group'));
               if (grpRef) {
                 const grp = pdfDoc.context.lookup(grpRef);
                 if (grp && grp.set) grp.set(Nm('CS'), Nm('DeviceGray'));
+              }
+              const bc = sm.get(Nm('BC'));
+              if (bc && typeof bc.size === 'function') {
+                const bn = bc.size();
+                const bnum = (i) => {
+                  const o = pdfDoc.context.lookup(bc.get(i)) ?? bc.get(i);
+                  return +(o.numberValue ?? o.asNumber?.() ?? 0);
+                };
+                let bgray;
+                if (bn === 4) { const c=bnum(0),m=bnum(1),y=bnum(2),k=bnum(3);
+                  bgray = 0.299*(1-c)*(1-k) + 0.587*(1-m)*(1-k) + 0.114*(1-y)*(1-k); }
+                else if (bn >= 3) { bgray = 0.299*bnum(0) + 0.587*bnum(1) + 0.114*bnum(2); }
+                else { bgray = bnum(0); }
+                bgray = Math.max(0, Math.min(1, bgray));
+                sm.set(Nm('BC'), pdfDoc.context.obj([PDFLib.PDFNumber.of(bgray)]));
               }
             } catch(e) {}
             egTasks.push((async () => {
@@ -3502,6 +4349,42 @@
         await convertFlateXObjectToGrayscale(pdfDoc, img, resDict, true);
     }
 
+    // 부모 이미지가 흑백 변환된 후, 그 SMask의 /Matte(언프리멀티플라이 배경색)도
+    // 부모의 새 색공간(DeviceGray, 1채널)에 맞춰 갱신해야 함.
+    // 그대로 두면 옛 RGB/CMYK 채널 수(3~4개)와 불일치해 Acrobat이
+    // "Acrobat이 페이지를 제대로 표시하지 못할 수 있습니다" 오류를 내고 이미지가 사라짐.
+    function fixSMaskMatte(pdfDoc, img) {
+      try {
+        const Nm = n => PDFLib.PDFName.of(n);
+        const smaskRef = img.dict.get(Nm('SMask'));
+        if (!smaskRef) return;
+        const smaskObj = pdfDoc.context.lookup(smaskRef);
+        if (!smaskObj || !smaskObj.dict) return;
+        const matte = smaskObj.dict.get(Nm('Matte'));
+        if (!matte || typeof matte.size !== 'function') return;
+        const n = matte.size();
+        const num = (i) => {
+          const o = pdfDoc.context.lookup(matte.get(i)) ?? matte.get(i);
+          return +(o.numberValue ?? o.asNumber?.() ?? 0);
+        };
+        let r = 0, g = 0, b = 0;
+        if (n >= 4) { const c = num(0), m = num(1), y = num(2), k = num(3); r = (1-c)*(1-k); g = (1-m)*(1-k); b = (1-y)*(1-k); }
+        else if (n === 3) { r = num(0); g = num(1); b = num(2); }
+        else if (n === 1) { r = g = b = num(0); }
+        const gray = Math.max(0, Math.min(1, 0.299*r + 0.587*g + 0.114*b));
+        // ★ /Matte 성분 수는 '부모 이미지'의 색공간과 일치해야 한다 (Acrobat 오류 방지).
+        //   흑백 변환 후 부모 색공간이 DeviceGray(1)일 수도, JPEG 재인코딩으로 DeviceRGB(3)일 수도 있음.
+        const csName = img.dict.get(Nm('ColorSpace'));
+        const csn = csName && csName.encodedName;
+        const comps = csn === '/DeviceRGB' ? 3 : csn === '/DeviceCMYK' ? 4 : 1;
+        let arr;
+        if (comps === 3) arr = [gray, gray, gray];
+        else if (comps === 4) arr = [0, 0, 0, 1 - gray]; // 중성 회색 = K only
+        else arr = [gray];
+        smaskObj.dict.set(Nm('Matte'), pdfDoc.context.obj(arr.map(v => PDFLib.PDFNumber.of(v))));
+      } catch(e) {}
+    }
+
     async function convertJpegXObjectToGrayscale(pdfDoc, img, tintLUT = null) {
       try {
         const jpegBuf = img.contents.buffer.slice(
@@ -3510,30 +4393,46 @@
         );
         // tintLUT: Separation 이미지의 틴트→그레이 변환표 (1채널 JPEG 픽셀값 = 틴트 t)
         const lutBuf = tintLUT ? tintLUT.buffer.slice(tintLUT.byteOffset, tintLUT.byteOffset + tintLUT.byteLength) : null;
-        const { deflated, w, h } = await grayWorkerPool.run(
+        const res = await grayWorkerPool.run(
           'jpeg2gray',
           { jpegBytes: jpegBuf, dotGain: getDotGain(), lut: lutBuf },
           lutBuf ? [jpegBuf, lutBuf] : [jpegBuf]
         );
-        const compressed = new Uint8Array(deflated);
+        const { w, h } = res;
         const Nm = n => PDFLib.PDFName.of(n);
-        img.contents = compressed;
-        img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(compressed.length));
-        img.dict.set(Nm('Filter'),           Nm('FlateDecode'));
-        img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
-        img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
-        img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(w));
-        img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(h));
-        img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({
-          Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: w,
-        }));
+        if (res.jpeg) {
+          // ★ 흑백을 JPEG(DCTDecode)로 유지 → 용량 최소화. 중성 회색(R=G=B) RGB.
+          const jbytes = new Uint8Array(res.jpeg);
+          img.contents = jbytes;
+          img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(jbytes.length));
+          img.dict.set(Nm('Filter'),           Nm('DCTDecode'));
+          img.dict.set(Nm('ColorSpace'),       Nm('DeviceRGB'));
+          img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
+          img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(w));
+          img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(h));
+          img.dict.delete(Nm('DecodeParms'));  // DCTDecode에는 predictor 없음
+        } else {
+          // 폴백: FlateDecode + DeviceGray
+          const compressed = new Uint8Array(res.deflated);
+          img.contents = compressed;
+          img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(compressed.length));
+          img.dict.set(Nm('Filter'),           Nm('FlateDecode'));
+          img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
+          img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
+          img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(w));
+          img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(h));
+          img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({
+            Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: w,
+          }));
+        }
         img.dict.delete(Nm('Mask'));
         img.dict.delete(Nm('ImageMask'));
         img.dict.delete(Nm('Intent'));
         img.dict.delete(Nm('Alternates'));
-        img.dict.delete(Nm('Decode'));       // RGB/CMYK Decode 배열 제거 (DeviceGray와 채널 수 불일치 → Acrobat 오류)
+        img.dict.delete(Nm('Decode'));       // RGB/CMYK Decode 배열 제거 (채널 수 불일치 방지)
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
+        fixSMaskMatte(pdfDoc, img);
       } catch(e) { console.warn('JPEG 그레이스케일 변환 실패:', e); }
     }
 
@@ -3599,6 +4498,7 @@
         img.dict.delete(Nm('Decode'));
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
+        fixSMaskMatte(pdfDoc, img);
       } catch(e) {
         console.warn('JPX 흑백변환 실패 (Chromium 미지원):', e);
       }
@@ -3741,6 +4641,7 @@
             img.dict.delete(Nm('Mask')); img.dict.delete(Nm('ImageMask'));
             img.dict.delete(Nm('Intent')); img.dict.delete(Nm('Alternates'));
             img.dict.delete(Nm('Decode')); img.dict.delete(Nm('Matte')); img.dict.delete(Nm('SMaskInData'));
+            fixSMaskMatte(pdfDoc, img);
           } catch(e) { console.warn('ICCBased 이미지 변환 실패:', e); }
           return;
         }
@@ -3767,6 +4668,7 @@
         img.dict.delete(Nm('Decode'));
         img.dict.delete(Nm('Matte'));
         img.dict.delete(Nm('SMaskInData'));
+        fixSMaskMatte(pdfDoc, img);
       } catch(e) { console.warn('Flate 이미지 변환 실패:', e); }
     }
 
@@ -3816,13 +4718,82 @@
     }
 
     // ── 견적서 ───────────────────────────────────────────────────────────────
+    // DOM에 의존하지 않는 견적 품목 생성 — 비활성(백그라운드) 탭의 분석이 끝났을 때도
+    // 해당 탭의 quoteItems를 채워둘 수 있어, 나중에 그 탭으로 전환해도 견적서가 보인다.
+    // 기본 단가 (localStorage에 저장 → 적용 버튼으로 갱신, 다음 견적부터 반영)
+    const DEFAULT_PRICES_FALLBACK = { color: 200, bw: 60, binding: 2500 };
+    function getDefaultPrices() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('quoteDefaultPrices'));
+        if (saved && typeof saved === 'object') {
+          return {
+            color:   Number.isFinite(+saved.color)   ? +saved.color   : DEFAULT_PRICES_FALLBACK.color,
+            bw:      Number.isFinite(+saved.bw)      ? +saved.bw      : DEFAULT_PRICES_FALLBACK.bw,
+            binding: Number.isFinite(+saved.binding) ? +saved.binding : DEFAULT_PRICES_FALLBACK.binding,
+          };
+        }
+      } catch (e) {}
+      return { ...DEFAULT_PRICES_FALLBACK };
+    }
+    function loadDefaultPricesUI() {
+      const dp = getDefaultPrices();
+      const c = document.getElementById('dp-color');   if (c) c.value = dp.color;
+      const b = document.getElementById('dp-bw');      if (b) b.value = dp.bw;
+      const g = document.getElementById('dp-binding'); if (g) g.value = dp.binding;
+    }
+    function applyDefaultPrices() {
+      const dp = {
+        color:   Math.max(0, parseInt(document.getElementById('dp-color').value)   || 0),
+        bw:      Math.max(0, parseInt(document.getElementById('dp-bw').value)      || 0),
+        binding: Math.max(0, parseInt(document.getElementById('dp-binding').value) || 0),
+      };
+      try { localStorage.setItem('quoteDefaultPrices', JSON.stringify(dp)); } catch (e) {}
+      loadDefaultPricesUI();
+      // 현재 견적에도 즉시 반영 — 기본 품목(컬러인쇄·흑백인쇄·제본비) 단가 갱신
+      const priceByName = { '컬러인쇄': dp.color, '흑백인쇄': dp.bw, '제본비': dp.binding };
+      quoteItems.forEach(item => {
+        if (Object.prototype.hasOwnProperty.call(priceByName, item.name)) item.price = priceByName[item.name];
+      });
+      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteItems = quoteItems;
+      renderQuoteTable();
+      showSuccess('기본 단가가 저장됐습니다. 현재 견적에 즉시 반영했고, 다음 견적부터도 적용됩니다.');
+    }
+
+    function buildQuoteItems(colorCount, bwCount) {
+      const dp = getDefaultPrices();
+      const items = [];
+      if (colorCount > 0) items.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: dp.color, copies: 1, discount: 0 });
+      if (bwCount > 0)    items.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: dp.bw,  copies: 1, discount: 0 });
+      items.push({ name: '제본비', spec: '', qty: 1, price: dp.binding, copies: 1, discount: 0 });
+      return items;
+    }
+
     function initQuoteSection(colorCount, bwCount) {
       quoteItems.length = 0;
       document.getElementById('q-customer').value = '';
       document.getElementById('q-date').value = new Date().toISOString().split('T')[0];
-      if (colorCount > 0) quoteItems.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: 200, copies: 1, discount: 0 });
-      if (bwCount > 0)    quoteItems.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: 60,  copies: 1, discount: 0 });
-      quoteItems.push({ name: '제본비', spec: '', qty: 1, price: 2500, copies: 1, discount: 0 });
+      quoteItems.push(...buildQuoteItems(colorCount, bwCount));
+      loadDefaultPricesUI();
+      renderQuoteTable();
+      document.getElementById('quoteSection').style.display = 'block';
+    }
+
+    // 견적서의 컬러/흑백 인쇄 수량만 갱신 (고객명·단가·기타 항목은 보존).
+    // 항목이 없으면 새로 만든다. (편집 적용 결과 새로고침 시 사용)
+    function updateQuoteCounts(colorCount, bwCount) {
+      const ci = quoteItems.find(it => it.name === '컬러인쇄');
+      const bi = quoteItems.find(it => it.name === '흑백인쇄');
+      if (!ci && !bi) { initQuoteSection(colorCount, bwCount); return; }
+      const dp = getDefaultPrices();
+      const copies = (quoteItems[0] && quoteItems[0].copies) || 1;
+      if (ci) ci.qty = colorCount;
+      else if (colorCount > 0) quoteItems.unshift({ name: '컬러인쇄', spec: '', qty: colorCount, price: dp.color, copies, discount: 0 });
+      if (bi) bi.qty = bwCount;
+      else if (bwCount > 0) {
+        const at = quoteItems.findIndex(it => it.name === '컬러인쇄');
+        quoteItems.splice(at >= 0 ? at + 1 : 0, 0, { name: '흑백인쇄', spec: '', qty: bwCount, price: dp.bw, copies, discount: 0 });
+      }
+      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteItems = quoteItems;
       renderQuoteTable();
       document.getElementById('quoteSection').style.display = 'block';
     }
@@ -4038,6 +5009,7 @@
       pageEdited = true;
       if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).pageEdited = true;
       invalidateProcessed();
+      if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
     }
 
     function updateUndoBtn() {
@@ -4070,6 +5042,7 @@
       if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
       redoStack.length = 0;
       syncHistoryToTab();
+      setDirty(true); // 페이지 편집 발생 → 저장 안 한 상태
     }
 
     function restoreSnapshot(snap) {
@@ -4217,8 +5190,778 @@
       sbResizer.style.display = visible ? 'block' : 'none';
       sbToggle.style.display = (visible || pageResults.length) ? 'flex' : 'none';
       sbToggle.textContent = visible ? '◀' : '▶';
+      // 편집 패널 토글 버튼: 분석 결과가 있을 때만 노출, 동시에 UI 동기화
+      const et = document.getElementById('editToggle');
+      if (et) et.style.display = pageResults.length ? 'flex' : 'none';
+      if (pageResults.length) { if (typeof syncEditUI === 'function') syncEditUI(); }
+      else document.body.classList.remove('edit-open');
     }
     sbToggle.addEventListener('click', () => showSidebar(!sbVisible));
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  오른쪽 편집 사이드바 로직 — 크기·회전·조판(N-up)·테두리
+    // ══════════════════════════════════════════════════════════════════════
+    // 머리글/바닥글 임베드 폰트 (시스템 TTF/OTF — PDF에 subset 임베드)
+    const WIN_FONTS = 'C:\\Windows\\Fonts\\';
+    const DEFAULT_HF_FONT = WIN_FONTS + 'malgun.ttf';
+    // 자주 쓰는 글꼴(상단 고정). 시스템 폰트 목록은 listFonts로 동적 로드.
+    const FAVORITE_FONTS = [
+      { name: '맑은 고딕',          file: WIN_FONTS + 'malgun.ttf' },
+      { name: '맑은 고딕 Bold',     file: WIN_FONTS + 'malgunbd.ttf' },
+      { name: '휴먼명조 (한글 명조)', file: WIN_FONTS + 'HMKMRHD.TTF' },
+      { name: 'Arial',              file: WIN_FONTS + 'arial.ttf' },
+      { name: 'Arial Bold',         file: WIN_FONTS + 'arialbd.ttf' },
+      { name: 'Times New Roman',    file: WIN_FONTS + 'times.ttf' },
+    ];
+    let _systemFonts = null; // [{name,file}] (listFonts 캐시)
+    const _fontBytesCache = new Map(); // 경로 → Uint8Array (디스크 1회 읽기)
+    // 파일명 또는 절대경로 모두 허용 (절대경로면 그대로, 아니면 Windows Fonts 폴더 기준)
+    function loadFontBytes(v) {
+      const p = /[\\/]/.test(v) ? v : (WIN_FONTS + v);
+      if (_fontBytesCache.has(p)) return _fontBytesCache.get(p);
+      const u8 = new Uint8Array(window.electronAPI.readFile(p));
+      _fontBytesCache.set(p, u8);
+      return u8;
+    }
+    // 글꼴 드롭다운 채우기: 자주 쓰는 글꼴 + 전체 시스템 글꼴
+    function populateFontDropdown() {
+      const sel = document.getElementById('esHfFont');
+      if (!sel) return;
+      const ls = activeLayoutSettings();
+      const cur = (ls && ls.hf.font) || DEFAULT_HF_FONT;
+      sel.innerHTML = '';
+      const favG = document.createElement('optgroup'); favG.label = '자주 쓰는 글꼴';
+      FAVORITE_FONTS.forEach(f => {
+        const o = document.createElement('option'); o.value = f.file; o.textContent = f.name; favG.appendChild(o);
+      });
+      sel.appendChild(favG);
+      if (_systemFonts && _systemFonts.length) {
+        const allG = document.createElement('optgroup'); allG.label = `전체 시스템 글꼴 (${_systemFonts.length})`;
+        _systemFonts.forEach(f => {
+          if (!f || !f.file) return;
+          const o = document.createElement('option'); o.value = f.file; o.textContent = f.name || f.file; allG.appendChild(o);
+        });
+        sel.appendChild(allG);
+      }
+      setFontSelectValue(cur);
+    }
+    // 선택값이 목록에 없으면 임시 옵션으로 추가 후 선택
+    function setFontSelectValue(path) {
+      const sel = document.getElementById('esHfFont');
+      if (!sel) return;
+      if (![...sel.options].some(o => o.value === path)) {
+        const o = document.createElement('option');
+        o.value = path; o.textContent = path.split(/[\\/]/).pop();
+        sel.insertBefore(o, sel.firstChild);
+      }
+      sel.value = path;
+    }
+    // 시스템 폰트 목록 1회 로드 (느릴 수 있어 비동기, 완료 후 드롭다운 갱신)
+    let _fontListLoading = false;
+    async function ensureFontList() {
+      if (_systemFonts || _fontListLoading) return;
+      _fontListLoading = true;
+      try { _systemFonts = await window.electronAPI.listFonts(); }
+      catch (e) { _systemFonts = []; }
+      _fontListLoading = false;
+      populateFontDropdown();
+    }
+
+    // data-속성 칩 활성화 토글
+    function activateChip(attr, val) {
+      document.querySelectorAll('[data-' + attr + ']').forEach(c =>
+        c.classList.toggle('active', c.dataset[attr] === String(val)));
+    }
+
+    function toggleEditSidebar(force) {
+      const open = (force === undefined)
+        ? !document.body.classList.contains('edit-open') : !!force;
+      document.body.classList.toggle('edit-open', open);
+      if (open) { populateFontDropdown(); ensureFontList(); loadPresetList(); syncEditUI(); }
+    }
+
+    // ── 편집 설정 프리셋 (localStorage) ──────────────────────────────────────
+    const PRESET_KEY = 'editPresets';
+    function getPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}') || {}; } catch (e) { return {}; } }
+    function savePresetsObj(o) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(o)); } catch (e) {} }
+    function presetFromSettings(es) {
+      return { scaling: es.scaling, margins: es.margins, nUp: es.nUp, gutter: es.gutter, border: es.border, hf: es.hf, wm: es.wm };
+    }
+    function loadPresetList() {
+      const sel = document.getElementById('esPresetSel'); if (!sel) return;
+      const names = Object.keys(getPresets()).sort();
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">프리셋 선택…</option>' +
+        names.map(n => `<option value="${n.replace(/"/g, '&quot;')}">${n}</option>`).join('');
+      if (names.includes(cur)) sel.value = cur;
+    }
+    function savePreset() {
+      if (!editSettings) return;
+      const inp = document.getElementById('esPresetName');
+      const name = (inp.value || '').trim();
+      if (!name) { showError('프리셋 이름을 입력하세요.'); inp.focus(); return; }
+      const presets = getPresets();
+      presets[name] = JSON.parse(JSON.stringify(presetFromSettings(activeLayoutSettings())));
+      savePresetsObj(presets);
+      inp.value = '';
+      loadPresetList();
+      document.getElementById('esPresetSel').value = name;
+      showSuccess(`프리셋 '${name}' 을(를) 저장했습니다.`);
+    }
+    function loadPreset(name) {
+      if (!name || !editSettings) return;
+      const p = getPresets()[name]; if (!p) return;
+      const c = JSON.parse(JSON.stringify(p));
+      const def = newEditSettings();
+      // 현재 포커스(전체 또는 특정 챕터)의 설정에 적용 — 적용 범위(scope) 자체는 유지
+      const t = activeLayoutSettings();
+      t.scaling = Object.assign(def.scaling, c.scaling || {});
+      t.margins = Object.assign(def.margins, c.margins || {});
+      t.nUp = c.nUp != null ? c.nUp : def.nUp;
+      t.gutter = c.gutter != null ? c.gutter : def.gutter;
+      t.border = c.border || def.border;
+      t.hf = Object.assign(def.hf, c.hf || {});
+      t.wm = Object.assign(def.wm, c.wm || {});
+      syncEditUI();
+      scheduleLivePreview();
+      showSuccess(`프리셋 '${name}' 을(를) 적용했습니다.`);
+    }
+    function deletePreset() {
+      const sel = document.getElementById('esPresetSel');
+      const name = sel && sel.value;
+      if (!name) { showError('삭제할 프리셋을 선택하세요.'); return; }
+      const presets = getPresets();
+      if (presets[name]) { delete presets[name]; savePresetsObj(presets); loadPresetList(); showSuccess(`프리셋 '${name}' 을(를) 삭제했습니다.`); }
+    }
+
+    // 편집 사이드바 폭 조절 (오른쪽 패널이라 왼쪽 핸들 드래그 → 폭 = 화면폭 - clientX)
+    const EDIT_MIN = 300, EDIT_MAX = 820;
+    function applyEditWidth(w) {
+      const width = Math.min(EDIT_MAX, Math.max(EDIT_MIN, Math.round(w)));
+      document.documentElement.style.setProperty('--edit-width', width + 'px');
+      try { localStorage.setItem('editWidth', width); } catch (e) {}
+    }
+    (function initEditResizer() {
+      applyEditWidth(parseInt(localStorage.getItem('editWidth')) || 330);
+      const handle = document.getElementById('editResizer');
+      if (!handle) return;
+      let resizing = false;
+      handle.addEventListener('mousedown', e => {
+        e.preventDefault(); resizing = true;
+        handle.classList.add('es-resizing');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      });
+      document.addEventListener('mousemove', e => { if (resizing) applyEditWidth(window.innerWidth - e.clientX); });
+      document.addEventListener('mouseup', () => {
+        if (!resizing) return;
+        resizing = false;
+        handle.classList.remove('es-resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      });
+    })();
+
+    // 사이드바 위에서 스크롤 시 메인 페이지가 함께 움직이지 않도록 격리
+    // (내용이 다 보여 스크롤할 게 없으면 본문 스크롤도 차단, 끝에 닿으면 전파 차단)
+    (function isolateSidebarScroll() {
+      ['editSidebar', 'thumbSidebar'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('wheel', e => {
+          const canScroll = el.scrollHeight > el.clientHeight + 1;
+          if (!canScroll) { e.preventDefault(); return; }
+          const atTop = el.scrollTop <= 0;
+          const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+          if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) e.preventDefault();
+        }, { passive: false });
+      });
+    })();
+
+    // ── 적용 범위(전체/선택/범위/챕터) ──────────────────────────────────────
+    // 'chapter'로 전환하거나 챕터를 바꾸면 syncEditUI()가 그 챕터만의 설정(activeLayoutSettings())으로
+    // 아래 크기·조판·테두리·머리글바닥글·워터마크 입력을 전부 다시 채운다.
+    function setEditScope(mode) {
+      if (!editSettings) return;
+      editSettings.scope.mode = mode;
+      syncEditUI();
+      scheduleLivePreview();
+    }
+    function populateChapterSel() {
+      const sel = document.getElementById('esChapterSel');
+      if (!sel) return;
+      const tab = tabs.get(activeTabId);
+      const chs = (tab && tab.chapters) ? tab.chapters.map(c => c.name)
+        : [...new Set(pageResults.filter(Boolean).map(r => r.chapter).filter(Boolean))];
+      sel.innerHTML = chs.length
+        ? chs.map(n => `<option value="${n}">${n}</option>`).join('')
+        : '<option value="">(이 문서엔 챕터가 없습니다)</option>';
+      if (editSettings) {
+        if (chs.includes(editSettings.scope.chapter)) sel.value = editSettings.scope.chapter;
+        else editSettings.scope.chapter = sel.value;
+      }
+    }
+    // valid(빈칸 제외) 순서 기준 boolean 마스크
+    function computeScopeMask() {
+      const valid = pageResults.filter(Boolean);
+      const n = valid.length;
+      const es = editSettings || newEditSettings();
+      const sc = es.scope;
+      if (sc.mode === 'selected') return valid.map(r => selectedPages.has(r.pageNum));
+      if (sc.mode === 'range') {
+        const a = Math.max(1, Math.min(sc.from || 1, n));
+        const b = Math.max(1, Math.min(sc.to   || n, n));
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        return valid.map((_, i) => (i + 1) >= lo && (i + 1) <= hi);
+      }
+      if (sc.mode === 'chapter') return valid.map(r => r.chapter === sc.chapter);
+      return valid.map(() => true);
+    }
+    // 전역(공통) 설정이 실제로 적용될 범위. computeScopeMask()와 달리 'chapter' 포커스는
+    // (편집 대상 선택일 뿐 적용 범위를 좁히는 게 아니므로) 'all'과 동일하게 취급한다 —
+    // 그래야 챕터 하나를 편집 중이어도 전역 설정이 나머지 챕터들에 그대로 적용된다.
+    function computeGlobalFallbackMask() {
+      const valid = pageResults.filter(Boolean);
+      const n = valid.length;
+      const sc = (editSettings || newEditSettings()).scope;
+      if (sc.mode === 'selected') return valid.map(r => selectedPages.has(r.pageNum));
+      if (sc.mode === 'range') {
+        const a = Math.max(1, Math.min(sc.from || 1, n));
+        const b = Math.max(1, Math.min(sc.to   || n, n));
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        return valid.map((_, i) => (i + 1) >= lo && (i + 1) <= hi);
+      }
+      return valid.map(() => true);
+    }
+    function updateScopeInfo() {
+      const el = document.getElementById('esScopeInfo');
+      if (!el) return;
+      if (!pageResults.filter(Boolean).length) { el.textContent = ''; return; }
+      const cnt = computeScopeMask().filter(Boolean).length;
+      let txt = `▸ 적용 대상: ${cnt}개 페이지`;
+      if (editSettings.scope.mode === 'chapter' && editSettings.scope.chapter) {
+        txt += ` — '${editSettings.scope.chapter}' 챕터만의 설정을 편집 중`;
+      }
+      const byChapter = editSettings.byChapter || {};
+      const overridden = Object.keys(byChapter).filter(n => hasActiveLayout(byChapter[n]));
+      if (overridden.length) txt += `\n▸ 챕터별 개별 설정 적용됨: ${overridden.join(', ')}`;
+      el.textContent = txt;
+    }
+
+    // ── 크기/배율 (activeLayoutSettings(): 전체 포커스면 전역 설정, 챕터 포커스면 그 챕터만의 설정) ──
+    function setScaleMode(mode) {
+      if (!editSettings) return;
+      activeLayoutSettings().scaling.mode = mode;
+      activateChip('scale', mode);
+      document.getElementById('esScaleStandard').classList.toggle('show', mode === 'standard');
+      document.getElementById('esScaleCustom').classList.toggle('show', mode === 'custom');
+      document.getElementById('esFitRow').style.display = (mode === 'none') ? 'none' : 'flex';
+      const hint = document.getElementById('esScaleHint');
+      if (hint) hint.textContent = mode === 'none'
+        ? '원본 크기를 유지합니다. 규격 용지·사용자 정의를 선택하면 콘텐츠를 그 크기에 맞춰 확대·축소합니다.'
+        : (mode === 'standard'
+            ? '선택한 규격 용지 크기에 맞춰 콘텐츠를 확대·축소합니다.'
+            : '입력한 mm 크기에 맞춰 콘텐츠를 확대·축소합니다.');
+      scheduleLivePreview();
+    }
+    function setOrient(o) { if (editSettings) { activeLayoutSettings().scaling.orient = o; activateChip('orient', o); scheduleLivePreview(); } }
+    function setNup(n)    { if (editSettings) { activeLayoutSettings().nUp = n; activateChip('nup', n); scheduleLivePreview(); } }
+    function setBorder(b) { if (editSettings) { activeLayoutSettings().border = b; activateChip('border', b); scheduleLivePreview(); } }
+    function setWmMode(m) { if (editSettings) { activeLayoutSettings().wm.mode = m; activateChip('wmmode', m); scheduleLivePreview(); } }
+
+    // ── 전체(범위) 동시 회전 — 기존 per-page rotation 모델 재사용 ────────────
+    function rotateScope(deg) {
+      if (!editSettings) return;
+      const valid = pageResults.filter(Boolean);
+      if (!valid.length) return;
+      const mask = computeScopeMask();
+      if (!mask.some(Boolean)) { showError('회전할 페이지가 적용 범위에 없습니다.'); return; }
+      if (typeof pushHistory === 'function') pushHistory();
+      let cnt = 0;
+      valid.forEach((r, i) => {
+        if (mask[i]) { r.rotation = ((((r.rotation || 0) + deg) % 360) + 360) % 360; cnt++; }
+      });
+      if (typeof renderAllPages === 'function') renderAllPages(pageResults);
+      if (typeof renderSidebar  === 'function') renderSidebar(pageResults);
+      pageEdited = true;
+      const t = tabs.get(activeTabId); if (t) t.pageEdited = true;
+      // 회전 후 결과를 다시 적용해야 하므로 이전 적용본 무효화
+      processedPdfBytes = null; processedFileName = '';
+      if (typeof updateDownloadBtn === 'function') updateDownloadBtn();
+      const dir = deg > 0 ? '오른쪽' : deg < 0 ? '왼쪽' : '';
+      showSuccess(`${cnt}개 페이지를 ${dir} ${Math.abs(deg)}° 회전했습니다.`);
+      scheduleLivePreview();
+    }
+
+    // ── 설정 초기화 / UI 동기화 ─────────────────────────────────────────────
+    // 현재 포커스(전체 또는 특정 챕터)의 설정만 초기화 — 다른 챕터의 개별 설정은 유지된다.
+    function resetEditSettings() {
+      if (!editSettings) return;
+      const def = newEditSettings();
+      Object.assign(activeLayoutSettings(), {
+        scaling: def.scaling, margins: def.margins, nUp: def.nUp,
+        gutter: def.gutter, border: def.border, hf: def.hf, wm: def.wm,
+      });
+      syncEditUI();
+      closePreview();
+      showSuccess('편집 설정을 초기화했습니다. (회전은 Ctrl+Z 실행취소로 되돌리세요)');
+    }
+    function syncEditUI() {
+      if (!editSettings) return;
+      const es = editSettings;
+      activateChip('scope', es.scope.mode);
+      document.getElementById('esScopeRange').classList.toggle('show', es.scope.mode === 'range');
+      document.getElementById('esScopeChapter').classList.toggle('show', es.scope.mode === 'chapter');
+      document.getElementById('esRangeFrom').value = es.scope.from || '';
+      document.getElementById('esRangeTo').value   = es.scope.to   || '';
+      if (es.scope.mode === 'chapter') populateChapterSel();
+      // 여기까지 적용 범위(포커스)를 확정 → 이제부터는 그 포커스의 설정(전역 또는 챕터별
+      // activeLayoutSettings())으로 아래 입력들을 채운다.
+      const ls = activeLayoutSettings();
+      setScaleMode(ls.scaling.mode);
+      document.getElementById('esPaperSel').value = ls.scaling.paper;
+      activateChip('orient', ls.scaling.orient);
+      document.getElementById('esCustomW').value = ls.scaling.customW;
+      document.getElementById('esCustomH').value = ls.scaling.customH;
+      document.getElementById('esFitMargins').checked = ls.scaling.fitMargins;
+      document.getElementById('esMgTop').value    = ls.margins.top;
+      document.getElementById('esMgBottom').value = ls.margins.bottom;
+      document.getElementById('esMgLeft').value   = ls.margins.left;
+      document.getElementById('esMgRight').value  = ls.margins.right;
+      activateChip('nup', ls.nUp);
+      document.getElementById('esGutter').value = ls.gutter;
+      activateChip('border', ls.border);
+      // 머리글/바닥글
+      document.getElementById('esHfEnabled').checked = ls.hf.enabled;
+      document.getElementById('esHfBody').classList.toggle('show', ls.hf.enabled);
+      document.getElementById('esHfHL').value = ls.hf.hL;
+      document.getElementById('esHfHC').value = ls.hf.hC;
+      document.getElementById('esHfHR').value = ls.hf.hR;
+      document.getElementById('esHfFL').value = ls.hf.fL;
+      document.getElementById('esHfFC').value = ls.hf.fC;
+      document.getElementById('esHfFR').value = ls.hf.fR;
+      document.getElementById('esHfSize').value = ls.hf.size;
+      document.getElementById('esHfColor').value = ls.hf.color;
+      document.getElementById('esHfMargin').value = ls.hf.margin;
+      setFontSelectValue(ls.hf.font || DEFAULT_HF_FONT);
+      document.getElementById('esHfPnumStyle').value = ls.hf.pnumStyle != null ? ls.hf.pnumStyle : 1;
+      // 워터마크
+      document.getElementById('esWmEnabled').checked = ls.wm.enabled;
+      document.getElementById('esWmBody').classList.toggle('show', ls.wm.enabled);
+      document.getElementById('esWmText').value = ls.wm.text;
+      document.getElementById('esWmSize').value = ls.wm.size;
+      document.getElementById('esWmColor').value = ls.wm.color;
+      document.getElementById('esWmOpacity').value = ls.wm.opacity;
+      document.getElementById('esWmOpacityVal').textContent = ls.wm.opacity + '%';
+      document.getElementById('esWmAngle').value = ls.wm.angle;
+      activateChip('wmmode', ls.wm.mode);
+      updateScopeInfo();
+    }
+
+    // 입력 위젯 → editSettings(또는 챕터별 개별 설정) 바인딩 (1회)
+    (function bindEditInputs() {
+      const onIn = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('input', () => { fn(el); scheduleLivePreview(); }); };
+      onIn('esRangeFrom', el => { if (editSettings) { editSettings.scope.from = parseInt(el.value) || 1; updateScopeInfo(); } });
+      onIn('esRangeTo',   el => { if (editSettings) { editSettings.scope.to   = parseInt(el.value) || 1; updateScopeInfo(); } });
+      onIn('esCustomW',   el => { if (editSettings) activeLayoutSettings().scaling.customW = parseFloat(el.value) || 0; });
+      onIn('esCustomH',   el => { if (editSettings) activeLayoutSettings().scaling.customH = parseFloat(el.value) || 0; });
+      const mg = { esMgTop:'top', esMgBottom:'bottom', esMgLeft:'left', esMgRight:'right' };
+      Object.entries(mg).forEach(([id, k]) => onIn(id, el => { if (editSettings) activeLayoutSettings().margins[k] = parseFloat(el.value) || 0; }));
+      const ch = document.getElementById('esChapterSel');
+      // 챕터를 바꾸면 그 챕터만의 설정으로 전환해야 하므로 syncEditUI()로 전체 입력을 다시 채운다.
+      if (ch) ch.addEventListener('change', () => { if (editSettings) { editSettings.scope.chapter = ch.value; syncEditUI(); scheduleLivePreview(); } });
+      const pp = document.getElementById('esPaperSel');
+      if (pp) pp.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.paper = pp.value; scheduleLivePreview(); });
+      const fm = document.getElementById('esFitMargins');
+      if (fm) fm.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.fitMargins = fm.checked; scheduleLivePreview(); });
+      onIn('esGutter', el => { if (editSettings) activeLayoutSettings().gutter = Math.max(0, parseFloat(el.value) || 0); });
+
+      // 머리글/바닥글
+      const hfToggle = document.getElementById('esHfEnabled');
+      if (hfToggle) hfToggle.addEventListener('change', () => {
+        if (editSettings) activeLayoutSettings().hf.enabled = hfToggle.checked;
+        document.getElementById('esHfBody').classList.toggle('show', hfToggle.checked);
+        scheduleLivePreview();
+      });
+      const hfMap = { esHfHL:'hL', esHfHC:'hC', esHfHR:'hR', esHfFL:'fL', esHfFC:'fC', esHfFR:'fR' };
+      Object.entries(hfMap).forEach(([id, k]) => onIn(id, el => { if (editSettings) activeLayoutSettings().hf[k] = el.value; }));
+      onIn('esHfSize',   el => { if (editSettings) activeLayoutSettings().hf.size = Math.max(5, parseFloat(el.value) || 9); });
+      onIn('esHfMargin', el => { if (editSettings) activeLayoutSettings().hf.margin = Math.max(0, parseFloat(el.value) || 0); });
+      const hfColor = document.getElementById('esHfColor');
+      if (hfColor) hfColor.addEventListener('input', () => { if (editSettings) activeLayoutSettings().hf.color = hfColor.value; scheduleLivePreview(); });
+      const pnSel = document.getElementById('esHfPnumStyle');
+      if (pnSel) pnSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.pnumStyle = parseInt(pnSel.value) || 0; scheduleLivePreview(); });
+      const fontSel = document.getElementById('esHfFont');
+      if (fontSel) fontSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.font = fontSel.value; scheduleLivePreview(); });
+
+      // 워터마크
+      const wmToggle = document.getElementById('esWmEnabled');
+      if (wmToggle) wmToggle.addEventListener('change', () => {
+        if (editSettings) activeLayoutSettings().wm.enabled = wmToggle.checked;
+        document.getElementById('esWmBody').classList.toggle('show', wmToggle.checked);
+        scheduleLivePreview();
+      });
+      onIn('esWmText',  el => { if (editSettings) activeLayoutSettings().wm.text = el.value; });
+      onIn('esWmSize',  el => { if (editSettings) activeLayoutSettings().wm.size = Math.max(8, parseFloat(el.value) || 48); });
+      onIn('esWmAngle', el => { if (editSettings) activeLayoutSettings().wm.angle = parseFloat(el.value) || 0; });
+      const wmColor = document.getElementById('esWmColor');
+      if (wmColor) wmColor.addEventListener('input', () => { if (editSettings) activeLayoutSettings().wm.color = wmColor.value; scheduleLivePreview(); });
+      const wmOp = document.getElementById('esWmOpacity'), wmOpVal = document.getElementById('esWmOpacityVal');
+      if (wmOp) wmOp.addEventListener('input', () => {
+        if (editSettings) activeLayoutSettings().wm.opacity = parseInt(wmOp.value) || 30;
+        if (wmOpVal) wmOpVal.textContent = wmOp.value + '%';
+        scheduleLivePreview();
+      });
+
+      // 머리글/바닥글 입력에 포커스 → 페이지번호 삽입 대상 기억
+      ['esHfHL','esHfHC','esHfHR','esHfFL','esHfFC','esHfFR'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('focus', () => { _lastHfField = id; });
+      });
+    })();
+    // 페이지번호 토큰 {n}을 마지막 포커스된 머리글/바닥글 칸에 삽입
+    let _lastHfField = 'esHfFC';
+    function insertPageNumberToken() {
+      const id = _lastHfField || 'esHfFC';
+      const el = document.getElementById(id);
+      if (!el || !editSettings) return;
+      const key = { esHfHL:'hL', esHfHC:'hC', esHfHR:'hR', esHfFL:'fL', esHfFC:'fC', esHfFR:'fR' }[id];
+      const pos = (el.selectionStart != null) ? el.selectionStart : el.value.length;
+      el.value = el.value.slice(0, pos) + '{n}' + el.value.slice(pos);
+      const ls = activeLayoutSettings();
+      ls.hf[key] = el.value;
+      if (!ls.hf.enabled) { ls.hf.enabled = true; document.getElementById('esHfEnabled').checked = true; document.getElementById('esHfBody').classList.add('show'); }
+      el.focus();
+      scheduleLivePreview();
+    }
+
+    // 레이아웃 변환이 필요한 설정이 하나라도 있는지
+    function hasActiveLayout(es) {
+      return !!es && (
+        es.scaling.mode !== 'none' || (es.nUp | 0) > 1 || es.border !== 'none' ||
+        (es.hf && es.hf.enabled) ||
+        (es.wm && es.wm.enabled && es.wm.text.trim())
+      );
+    }
+    // 전역 설정이든, 챕터별 개별 설정이든 하나라도 활성 레이아웃이 있는지
+    function hasAnyActiveLayout() {
+      if (!editSettings) return false;
+      if (hasActiveLayout(editSettings)) return true;
+      const byChapter = editSettings.byChapter || {};
+      return Object.values(byChapter).some(o => hasActiveLayout(o));
+    }
+    // 현재 스코프 포커스(전체/선택/범위/챕터)에서 편집 중인 설정 객체.
+    // '챕터' 포커스면 그 챕터 전용 설정(byChapter[챕터명])을 반환(없으면 새로 생성) — 전역 설정과 별개로
+    // 저장되어, 나중에 다른 챕터로 포커스를 옮겨도 이 챕터의 설정은 그대로 남아있다.
+    function activeLayoutSettings() {
+      if (!editSettings) return null;
+      if (editSettings.scope.mode === 'chapter' && editSettings.scope.chapter) {
+        const ch = editSettings.scope.chapter;
+        if (!editSettings.byChapter) editSettings.byChapter = {};
+        if (!editSettings.byChapter[ch]) {
+          const def = newEditSettings();
+          editSettings.byChapter[ch] = { scaling: def.scaling, margins: def.margins, nUp: def.nUp, gutter: def.gutter, border: def.border, hf: def.hf, wm: def.wm };
+        }
+        return editSettings.byChapter[ch];
+      }
+      return editSettings;
+    }
+    // 실제 적용 시 사용할 (마스크, 설정) 그룹 목록. 챕터별 개별 설정이 있는 챕터는 그 설정으로
+    // 독립된 그룹이 되고, 나머지 페이지는 전역 설정 기준(적용 범위)으로 한 그룹이 된다.
+    function computeLayoutGroups() {
+      if (!editSettings) return [];
+      const valid = pageResults.filter(Boolean);
+      if (!valid.length) return [];
+      const byChapter = editSettings.byChapter || {};
+      const overriddenChapters = Object.keys(byChapter).filter(name => hasActiveLayout(byChapter[name]));
+      const groups = [];
+      overriddenChapters.forEach(name => {
+        const mask = valid.map(r => r.chapter === name);
+        if (mask.some(Boolean)) groups.push({ mask, es: byChapter[name] });
+      });
+      if (hasActiveLayout(editSettings)) {
+        const overriddenSet = new Set(overriddenChapters);
+        const baseMask = computeGlobalFallbackMask();
+        const mask = valid.map((r, i) => baseMask[i] && !(r.chapter && overriddenSet.has(r.chapter)));
+        if (mask.some(Boolean)) groups.push({ mask, es: editSettings });
+      }
+      return groups;
+    }
+
+    // ── 레이아웃 변환 패스: 크기 규격화 + N-up + 테두리 (worker-assemble.js에서 실행) ──
+    // srcBytes: 순서·회전·흑백이 이미 반영된 base PDF. groups: [{mask, es}] — 마스크는 base 페이지
+    // 순서 기준이며 그룹끼리 겹치지 않는다(챕터별 개별 설정 + 전역 설정 나머지).
+    // 폰트 파일 읽기(electronAPI.readFile)는 워커에서 접근 불가한 API라 여기서 미리 읽어 전달한다.
+    async function applyLayoutTransform(srcBytes, groups, baseSig) {
+      const sig = (baseSig || '') + '::' + JSON.stringify(groups);
+      if (_layoutCache.sig === sig) return _layoutCache.bytes;
+      const fileName = (typeof originalFileName === 'string' ? originalFileName : '') || '';
+      const fontBytesMap = {}; // 폰트 경로 → Uint8Array (그룹 간 동일 폰트는 1회만 로드)
+      const workerGroups = groups.map(g => {
+        const hf = g.es.hf;
+        const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
+        if (!hfOn) return g;
+        const fontSel = (hf.font && hf.font.trim()) ? hf.font : DEFAULT_HF_FONT;
+        if (fontBytesMap[fontSel] === undefined) {
+          try { fontBytesMap[fontSel] = loadFontBytes(fontSel).slice(0); }
+          catch (e) { console.warn('머리글/바닥글 글꼴 로드 실패 → 이미지로 대체:', e); fontBytesMap[fontSel] = null; }
+        }
+        // 워커는 이미 해석된(빈값이면 기본값 대입된) 폰트 경로만 안다 — fontBytesMap의 키와 맞춰준다.
+        return { mask: g.mask, es: Object.assign({}, g.es, { hf: Object.assign({}, hf, { font: fontSel }) }) };
+      });
+      const srcCopy = srcBytes.slice(0);
+      const transfer = [srcCopy.buffer];
+      Object.values(fontBytesMap).forEach(b => { if (b) transfer.push(b.buffer); });
+      const resultBytes = await assembleWorkerPool.run(
+        'layout-transform', { srcBytes: srcCopy, groups: workerGroups, fontBytesMap, fileName, baseSig: baseSig || null }, transfer
+      );
+      const out = new Uint8Array(resultBytes);
+      _layoutCache = { sig, bytes: out };
+      return out;
+    }
+
+    // 렌더된 캔버스가 컬러를 포함하는지 샘플링 (출력 결과의 컬러/흑백 재집계용)
+    function canvasIsColor(canvas) {
+      try {
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const { width: w, height: h } = canvas;
+        const data = ctx.getImageData(0, 0, w, h).data;
+        const totalPx = data.length >> 2;
+        const step = Math.max(1, (totalPx / 9000) | 0);
+        for (let i = 0; i < data.length; i += step * 4) {
+          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+          if (a < 8) continue;
+          if (Math.abs(r - g) > 6 || Math.abs(g - b) > 6 || Math.abs(r - b) > 6) return true;
+        }
+        return false;
+      } catch (e) { return false; }
+    }
+
+    // 출력(미리보기) 페이지 → 원본 pageNum 배열 매핑 (조판 시 N:1). 흑백 선택·컨텍스트메뉴에 사용.
+    // computeLayoutGroups()/워커의 그룹별 버킷 분할과 동일한 로직으로 계산해야 출력 페이지 수가 일치한다
+    // (챕터마다 N-up 등 설정이 다를 수 있으므로 전역 nUp 하나로는 계산할 수 없음).
+    function computeOutputSourceMap() {
+      const valid = pageResults.filter(Boolean);
+      const groups = computeLayoutGroups();
+      if (!groups.length) return valid.map(r => [r.pageNum]);
+      const groupIds = new Array(valid.length).fill(-1);
+      groups.forEach((g, gi) => { g.mask.forEach((v, i) => { if (v) groupIds[i] = gi; }); });
+      const map = [];
+      let bucket = [], bucketGid = -1;
+      const flush = () => {
+        if (!bucket.length) return;
+        const nUp = Math.max(1, groups[bucketGid].es.nUp | 0);
+        for (let g = 0; g < bucket.length; g += nUp) {
+          map.push(bucket.slice(g, g + nUp).map(idx => valid[idx].pageNum));
+        }
+        bucket = [];
+      };
+      for (let i = 0; i < valid.length; i++) {
+        const gid = groupIds[i];
+        if (gid !== -1 && gid === bucketGid) { bucket.push(i); }
+        else {
+          flush();
+          if (gid === -1) map.push([valid[i].pageNum]);
+          else bucket.push(i);
+          bucketGid = gid;
+        }
+      }
+      flush();
+      return map;
+    }
+
+    // 흑백변환 옵션 자동 ON (미리보기에서 페이지 선택 시)
+    function ensureBwOn() {
+      if (processingOptions.bw) return;
+      processingOptions.bw = true;
+      const b = document.getElementById('opt-bw'); if (b) b.classList.add('active');
+    }
+
+    // 미리보기 셀들의 선택 표시(파랑 테두리+흑백)를 selectedPages 기준으로 갱신
+    let _pvCells = []; // [{cell, sbItem, src:[pageNum,...]}]
+    function refreshPreviewMarks() {
+      _pvCells.forEach(({ cell, sbItem, src }) => {
+        const on = src && src.length && src.every(pn => selectedPages.has(pn));
+        if (cell) cell.classList.toggle('pv-selected', on);
+        if (sbItem) sbItem.classList.toggle('sb-selected', on);
+      });
+    }
+    // 미리보기 셀 클릭 → 해당(원본) 페이지 흑백 선택 토글
+    function togglePreviewSelect(src) {
+      if (!src || !src.length) return;
+      const allSel = src.every(pn => selectedPages.has(pn));
+      src.forEach(pn => {
+        const el = document.querySelector(`.page-item[data-page="${pn}"]`);
+        if (el) { allSel ? deselectPageEl(pn, el) : selectPageEl(pn, el); }
+        else { allSel ? selectedPages.delete(pn) : selectedPages.add(pn); }
+      });
+      if (!allSel) ensureBwOn();          // 선택하면 흑백변환 자동 ON
+      updateSelectedCount();              // invalidateProcessed 포함
+      refreshPreviewMarks();
+    }
+
+    // ── 적용 결과 미리보기 (적용 PDF를 pdf.js로 렌더해 메인·사이드바에 표시) ────
+    let previewRenderToken = 0;
+    let _origStats = null; // 미리보기 진입 전 분석 통계 스냅샷
+    // 출력 페이지 단위 캔버스 캐시 — 1페이지만 회전/편집해도 나머지 전체를 다시
+    // 렌더링하던 것을 방지(그 페이지만 다시 그림). N-up(원본 여러 장→1출력)은 대응이
+    // 모호해 캐시 대상에서 제외.
+    let _pvPageCache = new Map();
+    function setStatCounts(total, color) {
+      const gray = Math.max(0, total - color);
+      totalPagesEl.textContent     = total;
+      colorPagesEl.textContent     = color;
+      grayscalePagesEl.textContent = gray;
+      colorPercentEl.textContent   = total ? Math.round(color / total * 100) + '%' : '0%';
+      syncSidebarPanel();
+    }
+    // opts.live=true → 빠른 렌더(작은 해상도)
+    async function renderProcessedPreview(bytes, opts) {
+      opts = opts || {};
+      const section = document.getElementById('previewSection');
+      const grid = document.getElementById('previewGrid');
+      const note = document.getElementById('previewNote');
+      if (!section || !grid || !bytes) return;
+      const myToken = ++previewRenderToken;
+      const pxW = opts.live ? 170 : 240;   // 캔버스 폭(작을수록 빠름)
+      // 진입 시 원본 통계 스냅샷(최초 1회)
+      if (!_origStats) _origStats = {
+        t: totalPagesEl.textContent, c: colorPagesEl.textContent,
+        g: grayscalePagesEl.textContent, p: colorPercentEl.textContent,
+      };
+      let pdf = null;
+      try {
+        pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+        if (myToken !== previewRenderToken) return;
+        const total = pdf.numPages;
+        // 깜빡임 방지: 새 내용을 오프스크린(DocumentFragment)에 모두 그린 뒤 한 번에 교체.
+        // 렌더 도중에는 기존 화면이 그대로 보이고, 더 새 갱신이 오면 교체 없이 중단(기존 유지).
+        const mainFrag = document.createDocumentFragment();
+        const sbFrag = document.createDocumentFragment();
+        // 출력→원본 페이지 매핑 (흑백 선택 클릭용). 길이 불일치 시 클릭 비활성.
+        const srcMap = computeOutputSourceMap();
+        const canSelect = srcMap.length === total;
+        const pvCells = [];
+        let colorCount = 0;
+        // 1:1(비N-up) 페이지는 (해상도·레이아웃설정·원본페이지·회전·흑백선택)이 그대로면
+        // 이전 렌더의 캔버스를 재사용 — 한 페이지만 회전해도 나머지 전체를 다시 그리지 않는다.
+        const layoutSig = JSON.stringify(editSettings);
+        const pnMap = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r]));
+        const pvPageCacheNext = new Map();
+        for (let i = 1; i <= total; i++) {
+          if (myToken !== previewRenderToken) return;
+          const src = canSelect ? srcMap[i - 1] : null;
+          let sig = null;
+          if (src && src.length === 1) {
+            const r = pnMap.get(src[0]);
+            if (r) sig = [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0, selectedPages.has(src[0]) ? 1 : 0].join('|');
+          }
+          const cached = sig ? _pvPageCache.get(i) : null;
+          let canvas, isColor;
+          if (cached && cached.sig === sig) {
+            canvas = document.createElement('canvas');
+            canvas.width = cached.w; canvas.height = cached.h;
+            canvas.getContext('2d').drawImage(cached.canvas, 0, 0);
+            isColor = cached.isColor;
+          } else {
+            const page = await pdf.getPage(i);
+            const vp1 = page.getViewport({ scale: 1 });
+            const vp = page.getViewport({ scale: pxW / vp1.width });
+            canvas = document.createElement('canvas');
+            canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+            await page.render({ canvasContext: canvas.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
+            if (myToken !== previewRenderToken) return;
+            isColor = canvasIsColor(canvas);
+          }
+          if (sig) pvPageCacheNext.set(i, { sig, canvas, w: canvas.width, h: canvas.height, isColor });
+          if (isColor) colorCount++;
+          const selected = !!(src && src.length && src.every(pn => selectedPages.has(pn)));
+          // 메인 셀
+          canvas.className = 'pv-canvas';
+          const cell = document.createElement('div'); cell.className = 'pv-cell' + (selected ? ' pv-selected' : '');
+          const num = document.createElement('div'); num.className = 'pv-num'; num.textContent = i;
+          cell.append(canvas, num); mainFrag.appendChild(cell);
+          // 사이드바 미니 썸네일 (메인과 동일 모양으로 다운스케일)
+          const sc = document.createElement('canvas');
+          const sbw = 104, sbh = Math.max(1, Math.round(canvas.height * sbw / canvas.width));
+          sc.width = sbw; sc.height = sbh;
+          sc.getContext('2d').drawImage(canvas, 0, 0, sbw, sbh);
+          sc.style.cssText = 'width:100%;height:auto;display:block;border-radius:3px;';
+          const sbItem = document.createElement('div');
+          sbItem.className = 'sb-item' + (isColor ? ' sb-color-page' : '') + (selected ? ' sb-selected' : '');
+          sbItem.appendChild(sc);
+          const sn = document.createElement('div'); sn.className = 'sb-num'; sn.textContent = i;
+          sbItem.appendChild(sn);
+          sbFrag.appendChild(sbItem);
+          // 클릭 → 해당 페이지 흑백 선택 토글 (조판 시 시트의 원본 페이지 전부)
+          if (src) {
+            const handler = () => togglePreviewSelect(src);
+            cell.addEventListener('click', handler);
+            sbItem.style.cursor = 'pointer';
+            sbItem.addEventListener('click', handler);
+            pvCells.push({ cell, sbItem, src });
+          }
+          // 우클릭 → 원본 페이지 1:1 매칭(N-up 미적용)일 때만 기존 컨텍스트 메뉴 재사용
+          // (회전·삭제·빈 페이지 삽입 — 조판 미리보기 중에도 편집 가능하도록)
+          if (src && src.length === 1) {
+            const pageNum = src[0];
+            const ctxHandler = e => {
+              e.preventDefault(); e.stopPropagation();
+              const idx = pageResults.findIndex(p => p && p.pageNum === pageNum);
+              if (idx >= 0) { ctxTargetIdx = idx; showCtxMenu(e, idx); }
+            };
+            cell.addEventListener('contextmenu', ctxHandler);
+            sbItem.addEventListener('contextmenu', ctxHandler);
+          }
+          // 큰 문서에서도 UI가 멈추지 않게 가끔 양보
+          if (opts.live && i % 8 === 0) await new Promise(r => setTimeout(r));
+        }
+        if (myToken !== previewRenderToken) return;
+        _pvPageCache = pvPageCacheNext;
+        // ── 한 번에 교체 (깜빡임 없음) ──
+        grid.replaceChildren(mainFrag);
+        sidebar.querySelectorAll('.sb-item, .sb-chapter').forEach(el => el.remove());
+        sidebar.appendChild(sbFrag);
+        _pvCells = pvCells;
+        document.getElementById('previewCount').textContent = `(전체 ${total}페이지)` + (canSelect ? ' · 페이지를 클릭해 흑백 선택' : '');
+        note.textContent = '';
+        setAnalysisGridVisible(false);
+        section.style.display = 'block';
+        // 출력 결과 기준으로 컬러/흑백 통계 갱신
+        setStatCounts(total, colorCount);
+      } catch (e) {
+        console.error('미리보기 렌더 실패:', e);
+      } finally {
+        // pdf.js 문서는 매 갱신마다 새로 파싱되므로 다 쓰면 반드시 해제
+        // (안 하면 편집을 반복할수록 pdf.js 워커 메모리가 쌓여 세션 전체가 느려짐)
+        if (pdf) { try { await pdf.destroy(); } catch (e) {} }
+      }
+    }
+    function closePreview() {
+      previewRenderToken++; // 진행 중 렌더 취소
+      _pvCells = [];
+      const s = document.getElementById('previewSection');
+      if (s) s.style.display = 'none';
+      const g = document.getElementById('previewGrid'); if (g) g.innerHTML = '';
+      setAnalysisGridVisible(true);
+      // 원본 통계·사이드바 복원
+      if (_origStats) {
+        totalPagesEl.textContent     = _origStats.t;
+        colorPagesEl.textContent     = _origStats.c;
+        grayscalePagesEl.textContent = _origStats.g;
+        colorPercentEl.textContent   = _origStats.p;
+        _origStats = null;
+        syncSidebarPanel();
+      }
+      if (pageResults && pageResults.filter(Boolean).length) renderSidebar(pageResults);
+    }
+    // 분석 썸네일 그리드(헤딩·힌트 포함) 표시/숨김 — 편집 결과를 같은 자리에 보여주기 위함
+    function setAnalysisGridVisible(visible) {
+      ['pagesGrid', 'pagesDetailHead', 'pagesDetailHint'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = visible ? '' : 'none';
+      });
+    }
 
     function renderSidebar(results) {
       // 상단 패널(#sbPanel)은 보존하고 썸네일 항목·챕터 구분만 교체
@@ -4340,7 +6083,7 @@
       g('sb-downloadBtn').disabled = db ? db.disabled : true;
       g('sb-downloadBtn').classList.toggle('btn-dim', !processedPdfBytes);
       g('sb-clearOptsBtn').style.display = (cb && cb.style.display !== 'none') ? '' : 'none';
-      g('sb-refreshBtn').style.display = selectedPages.size > 0 ? '' : 'none';
+      g('sb-refreshBtn').style.display = '';
     }
 
     function scrollToPage(pageNum) {
@@ -4540,7 +6283,7 @@
       const dropped = [...e.dataTransfer.files].filter(f =>
         f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name)
       );
-      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) 파일만 업로드 가능합니다.'); return; }
+      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) · Adobe(AI·PSD·INDD) 파일만 업로드 가능합니다.'); return; }
       hideError(); hideSuccess();
       try {
         const needConvert = dropped.some(f => CONVERT_RE.test(f.name));
@@ -4560,7 +6303,7 @@
     });
 
     // ── 공통 UI ──────────────────────────────────────────────────────────────
-    function showLoading(msg) { loadingMsg.textContent = msg || 'PDF를 분석하고 있습니다...'; loading.style.display = 'block'; }
+    function showLoading(msg) { loadingMsg.textContent = msg || 'PDF를 분석하고 있습니다...'; loading.style.display = 'flex'; }
     function hideLoading()    { loading.style.display = 'none'; }
     function showError(msg)   { errorEl.textContent = msg; errorEl.style.display = 'block'; successEl.style.display = 'none'; }
     function hideError()      { errorEl.style.display = 'none'; }
