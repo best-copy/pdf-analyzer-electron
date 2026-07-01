@@ -85,25 +85,26 @@ async function textToPngEmbed(outDoc, text, opt, cache) {
   return res;
 }
 
-// srcBytes: 순서·회전·흑백이 이미 반영된 base PDF. scopeMask: base 페이지 순서 기준.
-// fontBytes: 머리글/바닥글용 폰트 바이트(메인 스레드에서 미리 읽어 전달, 없으면 이미지 폴백).
+// srcBytes: 순서·회전·흑백이 이미 반영된 base PDF.
+// groups: [{mask, es}] — mask는 base 페이지 순서 기준 boolean[], 그룹끼리 겹치지 않는다
+//   (합본 문서에서 챕터별로 다른 es를 쓸 수 있도록 전역 설정 + 챕터별 개별 설정을 그룹으로 분리해 전달).
+// fontBytesMap: 머리글/바닥글용 폰트 경로 → 바이트(메인 스레드에서 미리 읽어 전달, 없으면 이미지 폴백).
 async function handleLayoutTransform(payload) {
-  const { srcBytes, es, scopeMask, fontBytes, fileName } = payload;
+  const { srcBytes, groups, fontBytesMap, fileName } = payload;
   const src = await PDFLib.PDFDocument.load(srcBytes);
   const out = await PDFLib.PDFDocument.create();
   const pages = src.getPages();
   const N = pages.length;
-  const mask = (scopeMask && scopeMask.length === N) ? scopeMask : pages.map(() => true);
-  const nUp  = Math.max(1, es.nUp | 0);
-  const [cols, rows] = NUP_GRID[nUp] || [1, 1];
-  const m = es.margins;
-  const mT = mm2pt(m.top), mB = mm2pt(m.bottom), mL = mm2pt(m.left), mR = mm2pt(m.right);
+
+  // groupIds[i] = groups 배열의 인덱스, 또는 -1(그대로 복사 = 어떤 그룹에도 속하지 않음)
+  const groupIds = new Array(N).fill(-1);
+  groups.forEach((g, gi) => { g.mask.forEach((v, i) => { if (v) groupIds[i] = gi; }); });
 
   const embCache = new Map();
   const emb = async i => { if (!embCache.has(i)) embCache.set(i, await out.embedPage(pages[i])); return embCache.get(i); };
   const angOf = i => (((pages[i].getRotation().angle || 0) % 360) + 360) % 360;
 
-  function sheetSizeFor(refW, refH) {
+  function sheetSizeFor(es, refW, refH) {
     if (es.scaling.mode === 'standard') return paperSizePt(es.scaling.paper, es.scaling.orient, refW, refH);
     if (es.scaling.mode === 'custom') {
       let w = mm2pt(es.scaling.customW || 210), h = mm2pt(es.scaling.customH || 297);
@@ -139,24 +140,28 @@ async function handleLayoutTransform(payload) {
     line(x - off - L, y + h, x - off, y + h);     line(x, y + h + off, x, y + h + off + L);
     line(x + w + off, y + h, x + w + off + L, y + h); line(x + w, y + h + off, x + w, y + h + off + L);
   }
-  function drawBorder(p, x, y, w, h) {
-    const b = es.border;
-    if (b === 'none') return;
-    if (b === 'crop') { drawCropMarks(p, x, y, w, h); return; }
-    const lw = b === 'medium' ? 2 : b === 'thin' ? 0.75 : 1;
+  function drawBorder(border, p, x, y, w, h) {
+    if (border === 'none') return;
+    if (border === 'crop') { drawCropMarks(p, x, y, w, h); return; }
+    const lw = border === 'medium' ? 2 : border === 'thin' ? 0.75 : 1;
     const opt = { x, y, width: w, height: h, borderColor: PDFLib.rgb(0, 0, 0), borderWidth: lw };
-    if (b === 'dotted') opt.borderDashArray = [lw * 2.5, lw * 2.5];
+    if (border === 'dotted') opt.borderDashArray = [lw * 2.5, lw * 2.5];
     p.drawRectangle(opt);
   }
 
-  // in-scope 페이지를 시트로 방출. flags[]: 출력 페이지가 in-scope(오버레이 대상)인지
-  async function flushBucket(bucket, flags) {
+  // 한 그룹(전역 또는 특정 챕터) 내의 in-scope 페이지를 그 그룹의 es로 시트에 방출.
+  // flags[]: 출력 페이지가 오버레이 대상인지, flagEs[]: 그 출력 페이지를 만든 es(오버레이에 사용).
+  async function flushBucket(es, bucket, flags, flagEs) {
     if (!bucket.length) return;
+    const nUp = Math.max(1, es.nUp | 0);
+    const [cols, rows] = NUP_GRID[nUp] || [1, 1];
+    const m = es.margins;
+    const mT = mm2pt(m.top), mB = mm2pt(m.bottom), mL = mm2pt(m.left), mR = mm2pt(m.right);
     const fa = angOf(bucket[0]);
     const fsize = pages[bucket[0]].getSize();
     const refW = (fa === 90 || fa === 270) ? fsize.height : fsize.width;
     const refH = (fa === 90 || fa === 270) ? fsize.width  : fsize.height;
-    const [sw, sh] = sheetSizeFor(refW, refH);
+    const [sw, sh] = sheetSizeFor(es, refW, refH);
 
     if (nUp === 1) {
       const marginRect = { x: mL, y: mB, w: Math.max(10, sw - mL - mR), h: Math.max(10, sh - mT - mB) };
@@ -167,8 +172,8 @@ async function handleLayoutTransform(payload) {
           ? fullRect
           : (es.scaling.fitMargins ? marginRect : fullRect);
         drawFit(p, await emb(idx), angOf(idx), contentRect);
-        if (es.border !== 'none') drawBorder(p, marginRect.x, marginRect.y, marginRect.w, marginRect.h);
-        flags.push(true);
+        if (es.border !== 'none') drawBorder(es.border, p, marginRect.x, marginRect.y, marginRect.w, marginRect.h);
+        flags.push(true); flagEs.push(es);
       }
       return;
     }
@@ -189,89 +194,108 @@ async function handleLayoutTransform(payload) {
           w: cellW, h: cellH,
         };
         drawFit(p, await emb(idx), angOf(idx), rect);
-        if (es.border !== 'none') drawBorder(p, rect.x, rect.y, rect.w, rect.h);
+        if (es.border !== 'none') drawBorder(es.border, p, rect.x, rect.y, rect.w, rect.h);
       }
-      flags.push(true);
+      flags.push(true); flagEs.push(es);
     }
   }
 
   const outScope = [];
-  for (let i = 0; i < N; i++) if (!mask[i]) outScope.push(i);
+  for (let i = 0; i < N; i++) if (groupIds[i] === -1) outScope.push(i);
   const copied = new Map();
   if (outScope.length) {
     const cps = await out.copyPages(src, outScope);
     outScope.forEach((idx, j) => copied.set(idx, cps[j]));
   }
 
-  const flags = [];
+  const flags = [];   // 출력 페이지가 in-scope(오버레이 대상)인지
+  const flagEs = [];  // 그 출력 페이지를 만든 그룹의 es (오버레이용, pass-through면 null)
   let bucket = [];
+  let bucketGid = -1;
   for (let i = 0; i < N; i++) {
-    if (mask[i]) bucket.push(i);
-    else { await flushBucket(bucket, flags); bucket = []; out.addPage(copied.get(i)); flags.push(false); }
+    const gid = groupIds[i];
+    if (gid !== -1 && gid === bucketGid) {
+      bucket.push(i);
+    } else {
+      if (bucket.length) await flushBucket(groups[bucketGid].es, bucket, flags, flagEs);
+      bucket = [];
+      if (gid === -1) { out.addPage(copied.get(i)); flags.push(false); flagEs.push(null); }
+      else bucket.push(i);
+      bucketGid = gid;
+    }
     self.postMessage({ id: self.__currentId, progress: (i + 1) / N * 0.6 });
   }
-  await flushBucket(bucket, flags);
+  if (bucket.length) await flushBucket(groups[bucketGid].es, bucket, flags, flagEs);
 
-  // ── 오버레이 패스: 머리글/바닥글 + 워터마크 (in-scope 출력 페이지에만) ──
-  const hf = es.hf, wm = es.wm;
-  const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
-  const wmOn = wm && wm.enabled && wm.text.trim();
-  if (hfOn || wmOn) {
-    const outPages = out.getPages();
-    const total = outPages.length;
-    const cache = new Map();
-    const td = new Date();
-    const dateStr = td.getFullYear() + '-' + String(td.getMonth() + 1).padStart(2, '0') + '-' + String(td.getDate()).padStart(2, '0');
-    const fname = fileName || '';
-    let hfFont = null;
-    if (hfOn && fontBytes) {
+  // ── 오버레이 패스: 그룹(챕터)별 머리글/바닥글 + 워터마크 (in-scope 출력 페이지에만) ──
+  const outPages = out.getPages();
+  const total = outPages.length;
+  const cache = new Map();
+  const td = new Date();
+  const dateStr = td.getFullYear() + '-' + String(td.getMonth() + 1).padStart(2, '0') + '-' + String(td.getDate()).padStart(2, '0');
+  const fname = fileName || '';
+  const fontCache = new Map(); // 폰트 경로 → PDFFont (그룹 간 동일 폰트는 1회만 임베드)
+  let fontkitRegistered = false;
+  async function embedHfFont(fontSel) {
+    if (fontCache.has(fontSel)) return fontCache.get(fontSel);
+    const bytes = fontBytesMap && fontBytesMap[fontSel];
+    let font = null;
+    if (bytes) {
       try {
-        out.registerFontkit(self.fontkit);
-        hfFont = await out.embedFont(fontBytes, { subset: true });
-      } catch (e) { hfFont = null; }
+        if (!fontkitRegistered) { out.registerFontkit(self.fontkit); fontkitRegistered = true; }
+        font = await out.embedFont(bytes, { subset: true });
+      } catch (e) { font = null; }
     }
-    const hfColorRgb = hfOn ? hexToRgb(hf.color) : null;
-    for (let i = 0; i < total; i++) {
-      if (!flags[i]) continue;
-      const p = outPages[i];
-      const ps = p.getSize(), pw = ps.width, ph = ps.height;
-      if (wmOn) {
-        const im = await textToPngEmbed(out, wm.text, { size: wm.size, css: wm.color, angle: wm.angle, bold: true }, cache);
-        const op = Math.max(0.02, Math.min(1, (wm.opacity || 30) / 100));
-        if (wm.mode === 'tile') {
-          const stepX = Math.max(20, im.w * 1.5), stepY = Math.max(20, im.h * 2.0);
-          for (let yy = -im.h; yy < ph + im.h; yy += stepY)
-            for (let xx = -im.w; xx < pw + im.w; xx += stepX)
-              p.drawImage(im.png, { x: xx, y: yy, width: im.w, height: im.h, opacity: op });
+    fontCache.set(fontSel, font);
+    return font;
+  }
+  for (let i = 0; i < total; i++) {
+    const es = flagEs[i];
+    if (!es) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
+    const hf = es.hf, wm = es.wm;
+    const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
+    const wmOn = wm && wm.enabled && wm.text.trim();
+    if (!hfOn && !wmOn) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
+    const p = outPages[i];
+    const ps = p.getSize(), pw = ps.width, ph = ps.height;
+    if (wmOn) {
+      const im = await textToPngEmbed(out, wm.text, { size: wm.size, css: wm.color, angle: wm.angle, bold: true }, cache);
+      const op = Math.max(0.02, Math.min(1, (wm.opacity || 30) / 100));
+      if (wm.mode === 'tile') {
+        const stepX = Math.max(20, im.w * 1.5), stepY = Math.max(20, im.h * 2.0);
+        for (let yy = -im.h; yy < ph + im.h; yy += stepY)
+          for (let xx = -im.w; xx < pw + im.w; xx += stepX)
+            p.drawImage(im.png, { x: xx, y: yy, width: im.w, height: im.h, opacity: op });
+      } else {
+        p.drawImage(im.png, { x: (pw - im.w) / 2, y: (ph - im.h) / 2, width: im.w, height: im.h, opacity: op });
+      }
+    }
+    if (hfOn) {
+      const hfFont = await embedHfFont(hf.font);
+      const ctx = { page: i + 1, total, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
+      const mL = mm2pt(es.margins.left), mR = mm2pt(es.margins.right);
+      const segs = [
+        ['hL', mL,      'left',   true],  ['hC', pw / 2,  'center', true],  ['hR', pw - mR, 'right', true],
+        ['fL', mL,      'left',   false], ['fC', pw / 2,  'center', false], ['fR', pw - mR, 'right', false],
+      ];
+      const mHF = mm2pt(hf.margin || 0);
+      for (const [key, ax, align, isHeader] of segs) {
+        const txt = resolveHF(hf[key], ctx);
+        if (!txt || !txt.trim()) continue;
+        if (hfFont) {
+          const w = hfFont.widthOfTextAtSize(txt, hf.size);
+          const x = align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w);
+          const y = isHeader ? (ph - mHF - hf.size) : mHF;
+          p.drawText(txt, { x, y, size: hf.size, font: hfFont, color: hexToRgb(hf.color) });
         } else {
-          p.drawImage(im.png, { x: (pw - im.w) / 2, y: (ph - im.h) / 2, width: im.w, height: im.h, opacity: op });
+          const im = await textToPngEmbed(out, txt, { size: hf.size, css: hf.color, angle: 0 }, cache);
+          const x = align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w);
+          const y = isHeader ? (ph - mHF - im.h) : mHF;
+          p.drawImage(im.png, { x, y, width: im.w, height: im.h });
         }
       }
-      if (hfOn) {
-        const ctx = { page: i + 1, total, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
-        const segs = [
-          ['hL', mL,      'left',   true],  ['hC', pw / 2,  'center', true],  ['hR', pw - mR, 'right', true],
-          ['fL', mL,      'left',   false], ['fC', pw / 2,  'center', false], ['fR', pw - mR, 'right', false],
-        ];
-        const mHF = mm2pt(hf.margin || 0);
-        for (const [key, ax, align, isHeader] of segs) {
-          const txt = resolveHF(hf[key], ctx);
-          if (!txt || !txt.trim()) continue;
-          if (hfFont) {
-            const w = hfFont.widthOfTextAtSize(txt, hf.size);
-            const x = align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w);
-            const y = isHeader ? (ph - mHF - hf.size) : mHF;
-            p.drawText(txt, { x, y, size: hf.size, font: hfFont, color: hfColorRgb });
-          } else {
-            const im = await textToPngEmbed(out, txt, { size: hf.size, css: hf.color, angle: 0 }, cache);
-            const x = align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w);
-            const y = isHeader ? (ph - mHF - im.h) : mHF;
-            p.drawImage(im.png, { x, y, width: im.w, height: im.h });
-          }
-        }
-      }
-      self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 });
     }
+    self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 });
   }
 
   return out.save({ useObjectStreams: false });

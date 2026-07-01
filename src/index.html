@@ -73,11 +73,21 @@
       width: 0%; transition: width 0.3s ease;
     }
 
-    .loading { display:none; text-align:center; padding:40px; }
-    .loading-msg { color: #6e6e73; font-size: 1em; margin-top: 10px; }
+    /* 처리 중 상태창 — 스크롤 위치·편집 사이드바 열림 여부와 무관하게 항상 보이도록
+       화면 하단 중앙에 고정 토스트로 표시(기존엔 상단에 묻혀 있어 안 보인다는 피드백). */
+    .loading {
+      display: none; align-items: center; gap: 12px;
+      position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+      z-index: 100050; background: #1d1d1f; color: #fff;
+      padding: 14px 22px; border-radius: 14px; min-width: 240px;
+      box-shadow: 0 10px 34px rgba(0,0,0,0.32); pointer-events: none;
+    }
+    .loading-text { text-align: left; }
+    .loading-msg { color: #fff; font-size: 0.92em; font-weight: 600; margin: 0; }
+    .loading-sub { color: #a1a1a6; font-size: 0.78em; margin: 2px 0 0; }
     .spinner {
-      border: 3px solid #e8e8ed; border-top: 3px solid #0071e3; border-radius: 50%;
-      width: 44px; height: 44px; animation: spin 0.8s linear infinite; margin: 0 auto 20px;
+      border: 3px solid rgba(255,255,255,0.22); border-top: 3px solid #0071e3; border-radius: 50%;
+      width: 26px; height: 26px; animation: spin 0.8s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
 
@@ -878,7 +888,7 @@
 
     .es-sub { display: none; }
     .es-sub.show { display: block; }
-    .es-scope-info { font-size: 11px; color: #ffd60a; margin-top: 6px; min-height: 14px; }
+    .es-scope-info { font-size: 11px; color: #ffd60a; margin-top: 6px; min-height: 14px; white-space: pre-line; }
 
     /* 하단 적용/내보내기 영역 */
     .es-actions {
@@ -959,7 +969,10 @@
 
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <p class="loading-msg" id="loadingMsg">PDF를 분석하고 있습니다...</p>
+      <div class="loading-text">
+        <p class="loading-msg" id="loadingMsg">PDF를 분석하고 있습니다...</p>
+        <p class="loading-sub">처리 중입니다. 잠시만 기다려 주세요.</p>
+      </div>
     </div>
 
     <div class="error" id="error"></div>
@@ -1162,7 +1175,7 @@
         <input type="text" class="es-input" id="esPresetName" placeholder="새 프리셋 이름" style="flex:1;">
         <button class="es-chip" style="flex:0 0 auto;" onclick="savePreset()" title="현재 설정을 프리셋으로 저장">＋ 저장</button>
       </div>
-      <div class="es-hint">크기·회전·조판·테두리·머리글/바닥글·워터마크 설정을 저장합니다(적용 범위 제외).</div>
+      <div class="es-hint">크기·회전·조판·테두리·머리글/바닥글·워터마크 설정을 저장합니다. 적용 범위가 '챕터'면 그 챕터에만, 아니면 전체 공통 설정에 적용됩니다.</div>
     </div>
 
     <!-- 적용 범위 -->
@@ -1510,6 +1523,9 @@
         // 워터마크
         wm: { enabled: false, text: '', size: 48, color: '#cccccc',
               opacity: 30, angle: 45, mode: 'center' },
+        // 합본 문서의 챕터별 개별 설정 — 적용 범위를 '챕터'로 두고 편집하면 여기에 저장되어
+        // 전역(위) 설정과 별개로 그 챕터에만 적용된다. { [챕터명]: {scaling,margins,nUp,gutter,border,hf,wm} }
+        byChapter: {},
       };
     }
 
@@ -2503,7 +2519,10 @@
     // 다운로드 버튼: '적용'으로 결과가 만들어진 뒤에만 활성화, 적용 진행 중엔 비활성화
     function updateDownloadBtn() {
       const anyActive = Object.values(processingOptions).some(v => v);
-      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0);
+      // 편집 사이드바(크기·N-up·테두리·머리글바닥글·워터마크, 챕터별 개별 설정 포함)만
+      // 설정한 경우도 '수정사항'으로 인정해야 메인/사이드바의 '적용' 버튼이 편집창의
+      // '편집 적용'과 같은 조건으로 활성화된다.
+      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout());
       const applyBtn    = document.getElementById('applyBtn');
       const downloadBtn = document.getElementById('downloadBtn');
       if (applyBtn)    applyBtn.disabled    = applying || !hasMod;
@@ -2551,7 +2570,15 @@
     // 페이지 단위 흑백변환 캐시: originalIdx → 변환된 단일페이지 PDFDocument.
     // 선택이 바뀌어도 '새로 선택된 페이지'만 변환하므로 재적용이 매우 빠르다.
     let _bwCache = new Map();
-    function clearProcessCaches() { _baseCache = { sig: null, bytes: null, stats: null }; _bwCache = new Map(); }
+    // 레이아웃 변환(N-up·규격화·테두리·머리글바닥글·워터마크) 결과 캐시 — 실시간 미리보기가
+    // 이미 계산한 결과를 '적용' 버튼이 그대로 재사용해 중복 워커 실행(딜레이)을 없앤다.
+    let _layoutCache = { sig: null, bytes: null };
+    function clearProcessCaches() {
+      _baseCache = { sig: null, bytes: null, stats: null };
+      _bwCache = new Map();
+      _layoutCache = { sig: null, bytes: null };
+      _pvPageCache = new Map();
+    }
     function baseSignature() {
       const valid = pageResults.filter(Boolean);
       const order = valid.map(r => `${r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx}:${r.rotation || 0}`).join('|');
@@ -2629,8 +2656,7 @@
       return _baseCache;
     }
 
-    function layoutNoteOf(es) {
-      if (!hasActiveLayout(es)) return '';
+    function describeLayoutParts(es) {
       const parts = [];
       if (es.scaling.mode === 'standard') parts.push(`${es.scaling.paper} 규격화`);
       else if (es.scaling.mode === 'custom') parts.push(`${es.scaling.customW}×${es.scaling.customH}mm`);
@@ -2638,7 +2664,18 @@
       if (es.border !== 'none') parts.push('테두리');
       if (es.hf && es.hf.enabled) parts.push('머리글/바닥글');
       if (es.wm && es.wm.enabled && es.wm.text.trim()) parts.push('워터마크');
-      return parts.length ? ` · 레이아웃: ${parts.join(', ')}` : '';
+      return parts;
+    }
+    // 전역 설정 + 챕터별 개별 설정을 모두 반영해 적용 결과 메시지에 쓸 설명을 만든다.
+    function layoutNoteOf() {
+      if (!editSettings) return '';
+      const notes = [];
+      if (hasActiveLayout(editSettings)) notes.push(describeLayoutParts(editSettings).join(', '));
+      const byChapter = editSettings.byChapter || {};
+      Object.keys(byChapter).forEach(name => {
+        if (hasActiveLayout(byChapter[name])) notes.push(`[${name}] ${describeLayoutParts(byChapter[name]).join(', ')}`);
+      });
+      return notes.length ? ` · 레이아웃: ${notes.join(' / ')}` : '';
     }
     function defaultProcessedName() {
       const now = new Date();
@@ -2664,11 +2701,12 @@
 
         const base = await buildBaseProcessed(p => updateProgress(p));
         let pdfBytes = base.bytes;
-        if (hasActiveLayout(editSettings)) {
+        const groups = computeLayoutGroups();
+        if (groups.length) {
           updateProgress(96);
-          pdfBytes = await applyLayoutTransform(pdfBytes, editSettings, computeScopeMask());
+          pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         }
-        const layoutNote = layoutNoteOf(editSettings);
+        const layoutNote = layoutNoteOf();
 
         processedPdfBytes = pdfBytes;
         processedFileName = defaultProcessedName();
@@ -2699,7 +2737,7 @@
     let _livePvTimer = null, _liveRunning = false, _liveQueued = false;
     // 미리보기가 필요한 상태: 편집 레이아웃이 있거나, 흑백변환+선택이 있음
     function shouldPreview() {
-      return !!originalPdfBytes && (hasActiveLayout(editSettings) || (processingOptions.bw && selectedPages.size > 0));
+      return !!originalPdfBytes && (hasAnyActiveLayout() || (processingOptions.bw && selectedPages.size > 0));
     }
     function previewVisible() {
       const s = document.getElementById('previewSection');
@@ -2708,6 +2746,9 @@
     function scheduleLivePreview() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
       if (!shouldPreview()) { closePreview(); return; }
+      // 편집 사이드바 설정만으로도 '수정사항'이 생긴 것 — 렌더 완료를 기다리지 않고
+      // 메인/사이드바 '적용' 버튼을 편집창의 '편집 적용'과 즉시 같은 상태로 맞춘다.
+      updateDownloadBtn();
       // 이미 결과가 보이는 중이면 작은 표시만(기존 화면은 그대로 유지 → 깜빡임 없음)
       const sec = document.getElementById('previewSection');
       const note = document.getElementById('previewNote');
@@ -2719,10 +2760,14 @@
       if (applying || _liveRunning) { _liveQueued = true; return; }
       if (!shouldPreview()) { closePreview(); return; }
       _liveRunning = true;
+      // 캐시가 히트하는 짧은 갱신에선 깜빡이지 않도록, 200ms 넘게 걸릴 때만 '처리중' 상태창 표시
+      let loadingShown = false;
+      const loadingTimer = setTimeout(() => { loadingShown = true; showLoading('편집 내용 반영 중...'); }, 200);
       try {
         const base = await buildBaseProcessed();
         let pdfBytes = base.bytes;
-        if (hasActiveLayout(editSettings)) pdfBytes = await applyLayoutTransform(pdfBytes, editSettings, computeScopeMask());
+        const groups = computeLayoutGroups();
+        if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         processedPdfBytes = pdfBytes;
         processedFileName = defaultProcessedName();
         setDirty(true);
@@ -2733,6 +2778,8 @@
         const note = document.getElementById('previewNote');
         if (note) note.textContent = '⚠️ 미리보기 생성 실패 (콘솔 확인)';
       } finally {
+        clearTimeout(loadingTimer);
+        if (loadingShown) hideLoading();
         _liveRunning = false;
         if (_liveQueued) { _liveQueued = false; scheduleLivePreview(); }
       }
@@ -2798,9 +2845,10 @@
     async function buildOptimizedOutput(onProgress) {
       const base = await buildBaseOptimized(p => onProgress && onProgress(Math.round(p * 0.9)));
       let bytes = base.bytes;
-      if (hasActiveLayout(editSettings)) {
+      const groups = computeLayoutGroups();
+      if (groups.length) {
         if (onProgress) onProgress(95);
-        bytes = await applyLayoutTransform(bytes, editSettings, computeScopeMask());
+        bytes = await applyLayoutTransform(bytes, groups);
       }
       if (onProgress) onProgress(100);
       return bytes;
@@ -4927,6 +4975,7 @@
       pageEdited = true;
       if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).pageEdited = true;
       invalidateProcessed();
+      if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
     }
 
     function updateUndoBtn() {
@@ -5144,7 +5193,8 @@
     function populateFontDropdown() {
       const sel = document.getElementById('esHfFont');
       if (!sel) return;
-      const cur = (editSettings && editSettings.hf.font) || DEFAULT_HF_FONT;
+      const ls = activeLayoutSettings();
+      const cur = (ls && ls.hf.font) || DEFAULT_HF_FONT;
       sel.innerHTML = '';
       const favG = document.createElement('optgroup'); favG.label = '자주 쓰는 글꼴';
       FAVORITE_FONTS.forEach(f => {
@@ -5217,7 +5267,7 @@
       const name = (inp.value || '').trim();
       if (!name) { showError('프리셋 이름을 입력하세요.'); inp.focus(); return; }
       const presets = getPresets();
-      presets[name] = JSON.parse(JSON.stringify(presetFromSettings(editSettings)));
+      presets[name] = JSON.parse(JSON.stringify(presetFromSettings(activeLayoutSettings())));
       savePresetsObj(presets);
       inp.value = '';
       loadPresetList();
@@ -5229,14 +5279,15 @@
       const p = getPresets()[name]; if (!p) return;
       const c = JSON.parse(JSON.stringify(p));
       const def = newEditSettings();
-      // 적용 범위(scope)는 현재 문서 기준 유지, 나머지 적용
-      editSettings.scaling = Object.assign(def.scaling, c.scaling || {});
-      editSettings.margins = Object.assign(def.margins, c.margins || {});
-      editSettings.nUp = c.nUp != null ? c.nUp : def.nUp;
-      editSettings.gutter = c.gutter != null ? c.gutter : def.gutter;
-      editSettings.border = c.border || def.border;
-      editSettings.hf = Object.assign(def.hf, c.hf || {});
-      editSettings.wm = Object.assign(def.wm, c.wm || {});
+      // 현재 포커스(전체 또는 특정 챕터)의 설정에 적용 — 적용 범위(scope) 자체는 유지
+      const t = activeLayoutSettings();
+      t.scaling = Object.assign(def.scaling, c.scaling || {});
+      t.margins = Object.assign(def.margins, c.margins || {});
+      t.nUp = c.nUp != null ? c.nUp : def.nUp;
+      t.gutter = c.gutter != null ? c.gutter : def.gutter;
+      t.border = c.border || def.border;
+      t.hf = Object.assign(def.hf, c.hf || {});
+      t.wm = Object.assign(def.wm, c.wm || {});
       syncEditUI();
       scheduleLivePreview();
       showSuccess(`프리셋 '${name}' 을(를) 적용했습니다.`);
@@ -5294,14 +5345,12 @@
     })();
 
     // ── 적용 범위(전체/선택/범위/챕터) ──────────────────────────────────────
+    // 'chapter'로 전환하거나 챕터를 바꾸면 syncEditUI()가 그 챕터만의 설정(activeLayoutSettings())으로
+    // 아래 크기·조판·테두리·머리글바닥글·워터마크 입력을 전부 다시 채운다.
     function setEditScope(mode) {
       if (!editSettings) return;
       editSettings.scope.mode = mode;
-      activateChip('scope', mode);
-      document.getElementById('esScopeRange').classList.toggle('show', mode === 'range');
-      document.getElementById('esScopeChapter').classList.toggle('show', mode === 'chapter');
-      if (mode === 'chapter') populateChapterSel();
-      updateScopeInfo();
+      syncEditUI();
       scheduleLivePreview();
     }
     function populateChapterSel() {
@@ -5334,18 +5383,41 @@
       if (sc.mode === 'chapter') return valid.map(r => r.chapter === sc.chapter);
       return valid.map(() => true);
     }
+    // 전역(공통) 설정이 실제로 적용될 범위. computeScopeMask()와 달리 'chapter' 포커스는
+    // (편집 대상 선택일 뿐 적용 범위를 좁히는 게 아니므로) 'all'과 동일하게 취급한다 —
+    // 그래야 챕터 하나를 편집 중이어도 전역 설정이 나머지 챕터들에 그대로 적용된다.
+    function computeGlobalFallbackMask() {
+      const valid = pageResults.filter(Boolean);
+      const n = valid.length;
+      const sc = (editSettings || newEditSettings()).scope;
+      if (sc.mode === 'selected') return valid.map(r => selectedPages.has(r.pageNum));
+      if (sc.mode === 'range') {
+        const a = Math.max(1, Math.min(sc.from || 1, n));
+        const b = Math.max(1, Math.min(sc.to   || n, n));
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        return valid.map((_, i) => (i + 1) >= lo && (i + 1) <= hi);
+      }
+      return valid.map(() => true);
+    }
     function updateScopeInfo() {
       const el = document.getElementById('esScopeInfo');
       if (!el) return;
       if (!pageResults.filter(Boolean).length) { el.textContent = ''; return; }
       const cnt = computeScopeMask().filter(Boolean).length;
-      el.textContent = `▸ 적용 대상: ${cnt}개 페이지`;
+      let txt = `▸ 적용 대상: ${cnt}개 페이지`;
+      if (editSettings.scope.mode === 'chapter' && editSettings.scope.chapter) {
+        txt += ` — '${editSettings.scope.chapter}' 챕터만의 설정을 편집 중`;
+      }
+      const byChapter = editSettings.byChapter || {};
+      const overridden = Object.keys(byChapter).filter(n => hasActiveLayout(byChapter[n]));
+      if (overridden.length) txt += `\n▸ 챕터별 개별 설정 적용됨: ${overridden.join(', ')}`;
+      el.textContent = txt;
     }
 
-    // ── 크기/배율 ───────────────────────────────────────────────────────────
+    // ── 크기/배율 (activeLayoutSettings(): 전체 포커스면 전역 설정, 챕터 포커스면 그 챕터만의 설정) ──
     function setScaleMode(mode) {
       if (!editSettings) return;
-      editSettings.scaling.mode = mode;
+      activeLayoutSettings().scaling.mode = mode;
       activateChip('scale', mode);
       document.getElementById('esScaleStandard').classList.toggle('show', mode === 'standard');
       document.getElementById('esScaleCustom').classList.toggle('show', mode === 'custom');
@@ -5358,10 +5430,10 @@
             : '입력한 mm 크기에 맞춰 콘텐츠를 확대·축소합니다.');
       scheduleLivePreview();
     }
-    function setOrient(o) { if (editSettings) { editSettings.scaling.orient = o; activateChip('orient', o); scheduleLivePreview(); } }
-    function setNup(n)    { if (editSettings) { editSettings.nUp = n; activateChip('nup', n); scheduleLivePreview(); } }
-    function setBorder(b) { if (editSettings) { editSettings.border = b; activateChip('border', b); scheduleLivePreview(); } }
-    function setWmMode(m) { if (editSettings) { editSettings.wm.mode = m; activateChip('wmmode', m); scheduleLivePreview(); } }
+    function setOrient(o) { if (editSettings) { activeLayoutSettings().scaling.orient = o; activateChip('orient', o); scheduleLivePreview(); } }
+    function setNup(n)    { if (editSettings) { activeLayoutSettings().nUp = n; activateChip('nup', n); scheduleLivePreview(); } }
+    function setBorder(b) { if (editSettings) { activeLayoutSettings().border = b; activateChip('border', b); scheduleLivePreview(); } }
+    function setWmMode(m) { if (editSettings) { activeLayoutSettings().wm.mode = m; activateChip('wmmode', m); scheduleLivePreview(); } }
 
     // ── 전체(범위) 동시 회전 — 기존 per-page rotation 모델 재사용 ────────────
     function rotateScope(deg) {
@@ -5388,9 +5460,14 @@
     }
 
     // ── 설정 초기화 / UI 동기화 ─────────────────────────────────────────────
+    // 현재 포커스(전체 또는 특정 챕터)의 설정만 초기화 — 다른 챕터의 개별 설정은 유지된다.
     function resetEditSettings() {
       if (!editSettings) return;
-      Object.assign(editSettings, newEditSettings());
+      const def = newEditSettings();
+      Object.assign(activeLayoutSettings(), {
+        scaling: def.scaling, margins: def.margins, nUp: def.nUp,
+        gutter: def.gutter, border: def.border, hf: def.hf, wm: def.wm,
+      });
       syncEditUI();
       closePreview();
       showSuccess('편집 설정을 초기화했습니다. (회전은 Ctrl+Z 실행취소로 되돌리세요)');
@@ -5404,96 +5481,100 @@
       document.getElementById('esRangeFrom').value = es.scope.from || '';
       document.getElementById('esRangeTo').value   = es.scope.to   || '';
       if (es.scope.mode === 'chapter') populateChapterSel();
-      setScaleMode(es.scaling.mode);
-      document.getElementById('esPaperSel').value = es.scaling.paper;
-      activateChip('orient', es.scaling.orient);
-      document.getElementById('esCustomW').value = es.scaling.customW;
-      document.getElementById('esCustomH').value = es.scaling.customH;
-      document.getElementById('esFitMargins').checked = es.scaling.fitMargins;
-      document.getElementById('esMgTop').value    = es.margins.top;
-      document.getElementById('esMgBottom').value = es.margins.bottom;
-      document.getElementById('esMgLeft').value   = es.margins.left;
-      document.getElementById('esMgRight').value  = es.margins.right;
-      activateChip('nup', es.nUp);
-      document.getElementById('esGutter').value = es.gutter;
-      activateChip('border', es.border);
+      // 여기까지 적용 범위(포커스)를 확정 → 이제부터는 그 포커스의 설정(전역 또는 챕터별
+      // activeLayoutSettings())으로 아래 입력들을 채운다.
+      const ls = activeLayoutSettings();
+      setScaleMode(ls.scaling.mode);
+      document.getElementById('esPaperSel').value = ls.scaling.paper;
+      activateChip('orient', ls.scaling.orient);
+      document.getElementById('esCustomW').value = ls.scaling.customW;
+      document.getElementById('esCustomH').value = ls.scaling.customH;
+      document.getElementById('esFitMargins').checked = ls.scaling.fitMargins;
+      document.getElementById('esMgTop').value    = ls.margins.top;
+      document.getElementById('esMgBottom').value = ls.margins.bottom;
+      document.getElementById('esMgLeft').value   = ls.margins.left;
+      document.getElementById('esMgRight').value  = ls.margins.right;
+      activateChip('nup', ls.nUp);
+      document.getElementById('esGutter').value = ls.gutter;
+      activateChip('border', ls.border);
       // 머리글/바닥글
-      document.getElementById('esHfEnabled').checked = es.hf.enabled;
-      document.getElementById('esHfBody').classList.toggle('show', es.hf.enabled);
-      document.getElementById('esHfHL').value = es.hf.hL;
-      document.getElementById('esHfHC').value = es.hf.hC;
-      document.getElementById('esHfHR').value = es.hf.hR;
-      document.getElementById('esHfFL').value = es.hf.fL;
-      document.getElementById('esHfFC').value = es.hf.fC;
-      document.getElementById('esHfFR').value = es.hf.fR;
-      document.getElementById('esHfSize').value = es.hf.size;
-      document.getElementById('esHfColor').value = es.hf.color;
-      document.getElementById('esHfMargin').value = es.hf.margin;
-      setFontSelectValue(es.hf.font || DEFAULT_HF_FONT);
-      document.getElementById('esHfPnumStyle').value = es.hf.pnumStyle != null ? es.hf.pnumStyle : 1;
+      document.getElementById('esHfEnabled').checked = ls.hf.enabled;
+      document.getElementById('esHfBody').classList.toggle('show', ls.hf.enabled);
+      document.getElementById('esHfHL').value = ls.hf.hL;
+      document.getElementById('esHfHC').value = ls.hf.hC;
+      document.getElementById('esHfHR').value = ls.hf.hR;
+      document.getElementById('esHfFL').value = ls.hf.fL;
+      document.getElementById('esHfFC').value = ls.hf.fC;
+      document.getElementById('esHfFR').value = ls.hf.fR;
+      document.getElementById('esHfSize').value = ls.hf.size;
+      document.getElementById('esHfColor').value = ls.hf.color;
+      document.getElementById('esHfMargin').value = ls.hf.margin;
+      setFontSelectValue(ls.hf.font || DEFAULT_HF_FONT);
+      document.getElementById('esHfPnumStyle').value = ls.hf.pnumStyle != null ? ls.hf.pnumStyle : 1;
       // 워터마크
-      document.getElementById('esWmEnabled').checked = es.wm.enabled;
-      document.getElementById('esWmBody').classList.toggle('show', es.wm.enabled);
-      document.getElementById('esWmText').value = es.wm.text;
-      document.getElementById('esWmSize').value = es.wm.size;
-      document.getElementById('esWmColor').value = es.wm.color;
-      document.getElementById('esWmOpacity').value = es.wm.opacity;
-      document.getElementById('esWmOpacityVal').textContent = es.wm.opacity + '%';
-      document.getElementById('esWmAngle').value = es.wm.angle;
-      activateChip('wmmode', es.wm.mode);
+      document.getElementById('esWmEnabled').checked = ls.wm.enabled;
+      document.getElementById('esWmBody').classList.toggle('show', ls.wm.enabled);
+      document.getElementById('esWmText').value = ls.wm.text;
+      document.getElementById('esWmSize').value = ls.wm.size;
+      document.getElementById('esWmColor').value = ls.wm.color;
+      document.getElementById('esWmOpacity').value = ls.wm.opacity;
+      document.getElementById('esWmOpacityVal').textContent = ls.wm.opacity + '%';
+      document.getElementById('esWmAngle').value = ls.wm.angle;
+      activateChip('wmmode', ls.wm.mode);
       updateScopeInfo();
     }
 
-    // 입력 위젯 → editSettings 바인딩 (1회)
+    // 입력 위젯 → editSettings(또는 챕터별 개별 설정) 바인딩 (1회)
     (function bindEditInputs() {
       const onIn = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('input', () => { fn(el); scheduleLivePreview(); }); };
       onIn('esRangeFrom', el => { if (editSettings) { editSettings.scope.from = parseInt(el.value) || 1; updateScopeInfo(); } });
       onIn('esRangeTo',   el => { if (editSettings) { editSettings.scope.to   = parseInt(el.value) || 1; updateScopeInfo(); } });
-      onIn('esCustomW',   el => { if (editSettings) editSettings.scaling.customW = parseFloat(el.value) || 0; });
-      onIn('esCustomH',   el => { if (editSettings) editSettings.scaling.customH = parseFloat(el.value) || 0; });
+      onIn('esCustomW',   el => { if (editSettings) activeLayoutSettings().scaling.customW = parseFloat(el.value) || 0; });
+      onIn('esCustomH',   el => { if (editSettings) activeLayoutSettings().scaling.customH = parseFloat(el.value) || 0; });
       const mg = { esMgTop:'top', esMgBottom:'bottom', esMgLeft:'left', esMgRight:'right' };
-      Object.entries(mg).forEach(([id, k]) => onIn(id, el => { if (editSettings) editSettings.margins[k] = parseFloat(el.value) || 0; }));
+      Object.entries(mg).forEach(([id, k]) => onIn(id, el => { if (editSettings) activeLayoutSettings().margins[k] = parseFloat(el.value) || 0; }));
       const ch = document.getElementById('esChapterSel');
-      if (ch) ch.addEventListener('change', () => { if (editSettings) { editSettings.scope.chapter = ch.value; updateScopeInfo(); scheduleLivePreview(); } });
+      // 챕터를 바꾸면 그 챕터만의 설정으로 전환해야 하므로 syncEditUI()로 전체 입력을 다시 채운다.
+      if (ch) ch.addEventListener('change', () => { if (editSettings) { editSettings.scope.chapter = ch.value; syncEditUI(); scheduleLivePreview(); } });
       const pp = document.getElementById('esPaperSel');
-      if (pp) pp.addEventListener('change', () => { if (editSettings) editSettings.scaling.paper = pp.value; scheduleLivePreview(); });
+      if (pp) pp.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.paper = pp.value; scheduleLivePreview(); });
       const fm = document.getElementById('esFitMargins');
-      if (fm) fm.addEventListener('change', () => { if (editSettings) editSettings.scaling.fitMargins = fm.checked; scheduleLivePreview(); });
-      onIn('esGutter', el => { if (editSettings) editSettings.gutter = Math.max(0, parseFloat(el.value) || 0); });
+      if (fm) fm.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.fitMargins = fm.checked; scheduleLivePreview(); });
+      onIn('esGutter', el => { if (editSettings) activeLayoutSettings().gutter = Math.max(0, parseFloat(el.value) || 0); });
 
       // 머리글/바닥글
       const hfToggle = document.getElementById('esHfEnabled');
       if (hfToggle) hfToggle.addEventListener('change', () => {
-        if (editSettings) editSettings.hf.enabled = hfToggle.checked;
+        if (editSettings) activeLayoutSettings().hf.enabled = hfToggle.checked;
         document.getElementById('esHfBody').classList.toggle('show', hfToggle.checked);
         scheduleLivePreview();
       });
       const hfMap = { esHfHL:'hL', esHfHC:'hC', esHfHR:'hR', esHfFL:'fL', esHfFC:'fC', esHfFR:'fR' };
-      Object.entries(hfMap).forEach(([id, k]) => onIn(id, el => { if (editSettings) editSettings.hf[k] = el.value; }));
-      onIn('esHfSize',   el => { if (editSettings) editSettings.hf.size = Math.max(5, parseFloat(el.value) || 9); });
-      onIn('esHfMargin', el => { if (editSettings) editSettings.hf.margin = Math.max(0, parseFloat(el.value) || 0); });
+      Object.entries(hfMap).forEach(([id, k]) => onIn(id, el => { if (editSettings) activeLayoutSettings().hf[k] = el.value; }));
+      onIn('esHfSize',   el => { if (editSettings) activeLayoutSettings().hf.size = Math.max(5, parseFloat(el.value) || 9); });
+      onIn('esHfMargin', el => { if (editSettings) activeLayoutSettings().hf.margin = Math.max(0, parseFloat(el.value) || 0); });
       const hfColor = document.getElementById('esHfColor');
-      if (hfColor) hfColor.addEventListener('input', () => { if (editSettings) editSettings.hf.color = hfColor.value; scheduleLivePreview(); });
+      if (hfColor) hfColor.addEventListener('input', () => { if (editSettings) activeLayoutSettings().hf.color = hfColor.value; scheduleLivePreview(); });
       const pnSel = document.getElementById('esHfPnumStyle');
-      if (pnSel) pnSel.addEventListener('change', () => { if (editSettings) editSettings.hf.pnumStyle = parseInt(pnSel.value) || 0; scheduleLivePreview(); });
+      if (pnSel) pnSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.pnumStyle = parseInt(pnSel.value) || 0; scheduleLivePreview(); });
       const fontSel = document.getElementById('esHfFont');
-      if (fontSel) fontSel.addEventListener('change', () => { if (editSettings) editSettings.hf.font = fontSel.value; scheduleLivePreview(); });
+      if (fontSel) fontSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.font = fontSel.value; scheduleLivePreview(); });
 
       // 워터마크
       const wmToggle = document.getElementById('esWmEnabled');
       if (wmToggle) wmToggle.addEventListener('change', () => {
-        if (editSettings) editSettings.wm.enabled = wmToggle.checked;
+        if (editSettings) activeLayoutSettings().wm.enabled = wmToggle.checked;
         document.getElementById('esWmBody').classList.toggle('show', wmToggle.checked);
         scheduleLivePreview();
       });
-      onIn('esWmText',  el => { if (editSettings) editSettings.wm.text = el.value; });
-      onIn('esWmSize',  el => { if (editSettings) editSettings.wm.size = Math.max(8, parseFloat(el.value) || 48); });
-      onIn('esWmAngle', el => { if (editSettings) editSettings.wm.angle = parseFloat(el.value) || 0; });
+      onIn('esWmText',  el => { if (editSettings) activeLayoutSettings().wm.text = el.value; });
+      onIn('esWmSize',  el => { if (editSettings) activeLayoutSettings().wm.size = Math.max(8, parseFloat(el.value) || 48); });
+      onIn('esWmAngle', el => { if (editSettings) activeLayoutSettings().wm.angle = parseFloat(el.value) || 0; });
       const wmColor = document.getElementById('esWmColor');
-      if (wmColor) wmColor.addEventListener('input', () => { if (editSettings) editSettings.wm.color = wmColor.value; scheduleLivePreview(); });
+      if (wmColor) wmColor.addEventListener('input', () => { if (editSettings) activeLayoutSettings().wm.color = wmColor.value; scheduleLivePreview(); });
       const wmOp = document.getElementById('esWmOpacity'), wmOpVal = document.getElementById('esWmOpacityVal');
       if (wmOp) wmOp.addEventListener('input', () => {
-        if (editSettings) editSettings.wm.opacity = parseInt(wmOp.value) || 30;
+        if (editSettings) activeLayoutSettings().wm.opacity = parseInt(wmOp.value) || 30;
         if (wmOpVal) wmOpVal.textContent = wmOp.value + '%';
         scheduleLivePreview();
       });
@@ -5513,8 +5594,9 @@
       const key = { esHfHL:'hL', esHfHC:'hC', esHfHR:'hR', esHfFL:'fL', esHfFC:'fC', esHfFR:'fR' }[id];
       const pos = (el.selectionStart != null) ? el.selectionStart : el.value.length;
       el.value = el.value.slice(0, pos) + '{n}' + el.value.slice(pos);
-      editSettings.hf[key] = el.value;
-      if (!editSettings.hf.enabled) { editSettings.hf.enabled = true; document.getElementById('esHfEnabled').checked = true; document.getElementById('esHfBody').classList.add('show'); }
+      const ls = activeLayoutSettings();
+      ls.hf[key] = el.value;
+      if (!ls.hf.enabled) { ls.hf.enabled = true; document.getElementById('esHfEnabled').checked = true; document.getElementById('esHfBody').classList.add('show'); }
       el.focus();
       scheduleLivePreview();
     }
@@ -5527,28 +5609,81 @@
         (es.wm && es.wm.enabled && es.wm.text.trim())
       );
     }
+    // 전역 설정이든, 챕터별 개별 설정이든 하나라도 활성 레이아웃이 있는지
+    function hasAnyActiveLayout() {
+      if (!editSettings) return false;
+      if (hasActiveLayout(editSettings)) return true;
+      const byChapter = editSettings.byChapter || {};
+      return Object.values(byChapter).some(o => hasActiveLayout(o));
+    }
+    // 현재 스코프 포커스(전체/선택/범위/챕터)에서 편집 중인 설정 객체.
+    // '챕터' 포커스면 그 챕터 전용 설정(byChapter[챕터명])을 반환(없으면 새로 생성) — 전역 설정과 별개로
+    // 저장되어, 나중에 다른 챕터로 포커스를 옮겨도 이 챕터의 설정은 그대로 남아있다.
+    function activeLayoutSettings() {
+      if (!editSettings) return null;
+      if (editSettings.scope.mode === 'chapter' && editSettings.scope.chapter) {
+        const ch = editSettings.scope.chapter;
+        if (!editSettings.byChapter) editSettings.byChapter = {};
+        if (!editSettings.byChapter[ch]) {
+          const def = newEditSettings();
+          editSettings.byChapter[ch] = { scaling: def.scaling, margins: def.margins, nUp: def.nUp, gutter: def.gutter, border: def.border, hf: def.hf, wm: def.wm };
+        }
+        return editSettings.byChapter[ch];
+      }
+      return editSettings;
+    }
+    // 실제 적용 시 사용할 (마스크, 설정) 그룹 목록. 챕터별 개별 설정이 있는 챕터는 그 설정으로
+    // 독립된 그룹이 되고, 나머지 페이지는 전역 설정 기준(적용 범위)으로 한 그룹이 된다.
+    function computeLayoutGroups() {
+      if (!editSettings) return [];
+      const valid = pageResults.filter(Boolean);
+      if (!valid.length) return [];
+      const byChapter = editSettings.byChapter || {};
+      const overriddenChapters = Object.keys(byChapter).filter(name => hasActiveLayout(byChapter[name]));
+      const groups = [];
+      overriddenChapters.forEach(name => {
+        const mask = valid.map(r => r.chapter === name);
+        if (mask.some(Boolean)) groups.push({ mask, es: byChapter[name] });
+      });
+      if (hasActiveLayout(editSettings)) {
+        const overriddenSet = new Set(overriddenChapters);
+        const baseMask = computeGlobalFallbackMask();
+        const mask = valid.map((r, i) => baseMask[i] && !(r.chapter && overriddenSet.has(r.chapter)));
+        if (mask.some(Boolean)) groups.push({ mask, es: editSettings });
+      }
+      return groups;
+    }
 
     // ── 레이아웃 변환 패스: 크기 규격화 + N-up + 테두리 (worker-assemble.js에서 실행) ──
-    // srcBytes: 순서·회전·흑백이 이미 반영된 base PDF. scopeMask: base 페이지 순서 기준.
+    // srcBytes: 순서·회전·흑백이 이미 반영된 base PDF. groups: [{mask, es}] — 마스크는 base 페이지
+    // 순서 기준이며 그룹끼리 겹치지 않는다(챕터별 개별 설정 + 전역 설정 나머지).
     // 폰트 파일 읽기(electronAPI.readFile)는 워커에서 접근 불가한 API라 여기서 미리 읽어 전달한다.
-    async function applyLayoutTransform(srcBytes, es, scopeMask) {
-      const hf = es.hf;
-      const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
-      let fontBytes = null;
-      if (hfOn) {
-        try {
-          const fontSel = (hf.font && hf.font.trim()) ? hf.font : DEFAULT_HF_FONT;
-          fontBytes = loadFontBytes(fontSel).slice(0);
-        } catch (e) { console.warn('머리글/바닥글 글꼴 로드 실패 → 이미지로 대체:', e); fontBytes = null; }
-      }
+    async function applyLayoutTransform(srcBytes, groups, baseSig) {
+      const sig = (baseSig || '') + '::' + JSON.stringify(groups);
+      if (_layoutCache.sig === sig) return _layoutCache.bytes;
       const fileName = (typeof originalFileName === 'string' ? originalFileName : '') || '';
+      const fontBytesMap = {}; // 폰트 경로 → Uint8Array (그룹 간 동일 폰트는 1회만 로드)
+      const workerGroups = groups.map(g => {
+        const hf = g.es.hf;
+        const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
+        if (!hfOn) return g;
+        const fontSel = (hf.font && hf.font.trim()) ? hf.font : DEFAULT_HF_FONT;
+        if (fontBytesMap[fontSel] === undefined) {
+          try { fontBytesMap[fontSel] = loadFontBytes(fontSel).slice(0); }
+          catch (e) { console.warn('머리글/바닥글 글꼴 로드 실패 → 이미지로 대체:', e); fontBytesMap[fontSel] = null; }
+        }
+        // 워커는 이미 해석된(빈값이면 기본값 대입된) 폰트 경로만 안다 — fontBytesMap의 키와 맞춰준다.
+        return { mask: g.mask, es: Object.assign({}, g.es, { hf: Object.assign({}, hf, { font: fontSel }) }) };
+      });
       const srcCopy = srcBytes.slice(0);
       const transfer = [srcCopy.buffer];
-      if (fontBytes) transfer.push(fontBytes.buffer);
+      Object.values(fontBytesMap).forEach(b => { if (b) transfer.push(b.buffer); });
       const resultBytes = await assembleWorkerPool.run(
-        'layout-transform', { srcBytes: srcCopy, es, scopeMask, fontBytes, fileName }, transfer
+        'layout-transform', { srcBytes: srcCopy, groups: workerGroups, fontBytesMap, fileName }, transfer
       );
-      return new Uint8Array(resultBytes);
+      const out = new Uint8Array(resultBytes);
+      _layoutCache = { sig, bytes: out };
+      return out;
     }
 
     // 렌더된 캔버스가 컬러를 포함하는지 샘플링 (출력 결과의 컬러/흑백 재집계용)
@@ -5568,24 +5703,34 @@
       } catch (e) { return false; }
     }
 
-    // 출력(미리보기) 페이지 → 원본 pageNum 배열 매핑 (조판 시 N:1). 흑백 선택에 사용.
+    // 출력(미리보기) 페이지 → 원본 pageNum 배열 매핑 (조판 시 N:1). 흑백 선택·컨텍스트메뉴에 사용.
+    // computeLayoutGroups()/워커의 그룹별 버킷 분할과 동일한 로직으로 계산해야 출력 페이지 수가 일치한다
+    // (챕터마다 N-up 등 설정이 다를 수 있으므로 전역 nUp 하나로는 계산할 수 없음).
     function computeOutputSourceMap() {
       const valid = pageResults.filter(Boolean);
-      const es = editSettings;
-      if (!hasActiveLayout(es)) return valid.map(r => [r.pageNum]);
-      const nUp = Math.max(1, es.nUp | 0);
-      const mask = computeScopeMask();
+      const groups = computeLayoutGroups();
+      if (!groups.length) return valid.map(r => [r.pageNum]);
+      const groupIds = new Array(valid.length).fill(-1);
+      groups.forEach((g, gi) => { g.mask.forEach((v, i) => { if (v) groupIds[i] = gi; }); });
       const map = [];
-      let bucket = [];
+      let bucket = [], bucketGid = -1;
       const flush = () => {
+        if (!bucket.length) return;
+        const nUp = Math.max(1, groups[bucketGid].es.nUp | 0);
         for (let g = 0; g < bucket.length; g += nUp) {
           map.push(bucket.slice(g, g + nUp).map(idx => valid[idx].pageNum));
         }
         bucket = [];
       };
       for (let i = 0; i < valid.length; i++) {
-        if (mask[i]) bucket.push(i);
-        else { flush(); map.push([valid[i].pageNum]); }
+        const gid = groupIds[i];
+        if (gid !== -1 && gid === bucketGid) { bucket.push(i); }
+        else {
+          flush();
+          if (gid === -1) map.push([valid[i].pageNum]);
+          else bucket.push(i);
+          bucketGid = gid;
+        }
       }
       flush();
       return map;
@@ -5624,6 +5769,10 @@
     // ── 적용 결과 미리보기 (적용 PDF를 pdf.js로 렌더해 메인·사이드바에 표시) ────
     let previewRenderToken = 0;
     let _origStats = null; // 미리보기 진입 전 분석 통계 스냅샷
+    // 출력 페이지 단위 캔버스 캐시 — 1페이지만 회전/편집해도 나머지 전체를 다시
+    // 렌더링하던 것을 방지(그 페이지만 다시 그림). N-up(원본 여러 장→1출력)은 대응이
+    // 모호해 캐시 대상에서 제외.
+    let _pvPageCache = new Map();
     function setStatCounts(total, color) {
       const gray = Math.max(0, total - color);
       totalPagesEl.textContent     = total;
@@ -5659,18 +5808,38 @@
         const canSelect = srcMap.length === total;
         const pvCells = [];
         let colorCount = 0;
+        // 1:1(비N-up) 페이지는 (해상도·레이아웃설정·원본페이지·회전·흑백선택)이 그대로면
+        // 이전 렌더의 캔버스를 재사용 — 한 페이지만 회전해도 나머지 전체를 다시 그리지 않는다.
+        const layoutSig = JSON.stringify(editSettings);
+        const pnMap = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r]));
+        const pvPageCacheNext = new Map();
         for (let i = 1; i <= total; i++) {
           if (myToken !== previewRenderToken) return;
-          const page = await pdf.getPage(i);
-          const vp1 = page.getViewport({ scale: 1 });
-          const vp = page.getViewport({ scale: pxW / vp1.width });
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-          await page.render({ canvasContext: canvas.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
-          if (myToken !== previewRenderToken) return;
-          const isColor = canvasIsColor(canvas);
-          if (isColor) colorCount++;
           const src = canSelect ? srcMap[i - 1] : null;
+          let sig = null;
+          if (src && src.length === 1) {
+            const r = pnMap.get(src[0]);
+            if (r) sig = [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0, selectedPages.has(src[0]) ? 1 : 0].join('|');
+          }
+          const cached = sig ? _pvPageCache.get(i) : null;
+          let canvas, isColor;
+          if (cached && cached.sig === sig) {
+            canvas = document.createElement('canvas');
+            canvas.width = cached.w; canvas.height = cached.h;
+            canvas.getContext('2d').drawImage(cached.canvas, 0, 0);
+            isColor = cached.isColor;
+          } else {
+            const page = await pdf.getPage(i);
+            const vp1 = page.getViewport({ scale: 1 });
+            const vp = page.getViewport({ scale: pxW / vp1.width });
+            canvas = document.createElement('canvas');
+            canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+            await page.render({ canvasContext: canvas.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
+            if (myToken !== previewRenderToken) return;
+            isColor = canvasIsColor(canvas);
+          }
+          if (sig) pvPageCacheNext.set(i, { sig, canvas, w: canvas.width, h: canvas.height, isColor });
+          if (isColor) colorCount++;
           const selected = !!(src && src.length && src.every(pn => selectedPages.has(pn)));
           // 메인 셀
           canvas.className = 'pv-canvas';
@@ -5697,10 +5866,23 @@
             sbItem.addEventListener('click', handler);
             pvCells.push({ cell, sbItem, src });
           }
+          // 우클릭 → 원본 페이지 1:1 매칭(N-up 미적용)일 때만 기존 컨텍스트 메뉴 재사용
+          // (회전·삭제·빈 페이지 삽입 — 조판 미리보기 중에도 편집 가능하도록)
+          if (src && src.length === 1) {
+            const pageNum = src[0];
+            const ctxHandler = e => {
+              e.preventDefault(); e.stopPropagation();
+              const idx = pageResults.findIndex(p => p && p.pageNum === pageNum);
+              if (idx >= 0) { ctxTargetIdx = idx; showCtxMenu(e, idx); }
+            };
+            cell.addEventListener('contextmenu', ctxHandler);
+            sbItem.addEventListener('contextmenu', ctxHandler);
+          }
           // 큰 문서에서도 UI가 멈추지 않게 가끔 양보
           if (opts.live && i % 8 === 0) await new Promise(r => setTimeout(r));
         }
         if (myToken !== previewRenderToken) return;
+        _pvPageCache = pvPageCacheNext;
         // ── 한 번에 교체 (깜빡임 없음) ──
         grid.replaceChildren(mainFrag);
         sidebar.querySelectorAll('.sb-item, .sb-chapter').forEach(el => el.remove());
@@ -6082,7 +6264,7 @@
     });
 
     // ── 공통 UI ──────────────────────────────────────────────────────────────
-    function showLoading(msg) { loadingMsg.textContent = msg || 'PDF를 분석하고 있습니다...'; loading.style.display = 'block'; }
+    function showLoading(msg) { loadingMsg.textContent = msg || 'PDF를 분석하고 있습니다...'; loading.style.display = 'flex'; }
     function hideLoading()    { loading.style.display = 'none'; }
     function showError(msg)   { errorEl.textContent = msg; errorEl.style.display = 'block'; successEl.style.display = 'none'; }
     function hideError()      { errorEl.style.display = 'none'; }
