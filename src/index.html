@@ -2573,11 +2573,24 @@
     // 레이아웃 변환(N-up·규격화·테두리·머리글바닥글·워터마크) 결과 캐시 — 실시간 미리보기가
     // 이미 계산한 결과를 '적용' 버튼이 그대로 재사용해 중복 워커 실행(딜레이)을 없앤다.
     let _layoutCache = { sig: null, bytes: null };
+    // 조립된 base 문서 캐시(회전 제외한 순서+흑백 기준). 회전만 바뀌면 이 문서를 그대로
+    // 재사용해 각 페이지 /Rotate만 다시 세팅→재저장한다(load·copyPages·흑백조립 생략).
+    // pages[i] = { page(PDFPage), baseAngle(원본 /Rotate) } — baseAngle 기준이라 회전이
+    // 누적되지 않고 항상 (원본각+요청각)으로 idempotent하게 반영된다.
+    let _baseAssembled = null; // { key, outDoc, pages:[{page,baseAngle}], stats, validCount }
     function clearProcessCaches() {
       _baseCache = { sig: null, bytes: null, stats: null };
       _bwCache = new Map();
       _layoutCache = { sig: null, bytes: null };
+      _baseAssembled = null;
       _pvPageCache = new Map();
+    }
+    // 회전을 뺀 base 키(페이지 순서 + 흑백선택). 회전만 바뀌면 이 키가 동일 → 조립본 재사용.
+    function baseOrderBwKey() {
+      const valid = pageResults.filter(Boolean);
+      const order = valid.map(r => r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx).join('|');
+      const bw = (processingOptions.bw && selectedPages.size) ? [...selectedPages].sort((a, b) => a - b).join(',') : '';
+      return order + '#' + bw;
     }
     function baseSignature() {
       const valid = pageResults.filter(Boolean);
@@ -2617,6 +2630,23 @@
       const sig = baseSignature();
       if (_baseCache.sig === sig && _baseCache.bytes) return _baseCache;
       const valid = pageResults.filter(Boolean);
+      // ── 회전 전용 빠른 경로 ──
+      // 순서·흑백이 그대로고 회전만 바뀐 경우: 이미 조립된 outDoc을 재사용해 각 페이지
+      // /Rotate만 다시 세팅하고 재저장한다(무거운 load·copyPages·흑백조립 전부 생략).
+      const key = baseOrderBwKey();
+      if (_baseAssembled && _baseAssembled.key === key && _baseAssembled.pages.length === valid.length) {
+        const asm = _baseAssembled;
+        if (onProgress) onProgress(20);
+        for (let i = 0; i < valid.length; i++) {
+          const r = valid[i], { page, baseAngle } = asm.pages[i];
+          page.setRotation(PDFLib.degrees((((baseAngle + (r.rotation || 0)) % 360) + 360) % 360));
+        }
+        if (onProgress) onProgress(80);
+        const bytes = await asm.outDoc.save({ useObjectStreams: false });
+        _baseCache = { sig, bytes, stats: asm.stats, validCount: valid.length };
+        if (onProgress) onProgress(94);
+        return _baseCache;
+      }
       const bwOn = processingOptions.bw && selectedPages.size > 0;
       const isBw = r => bwOn && !r.isBlank && selectedPages.has(r.pageNum);
       const stats = { errors: 0, errPages: [], converted: 0 };
@@ -2639,19 +2669,23 @@
         const conv = _bwCache.get(r.originalIdx);
         if (conv) { const [pg] = await outDoc.copyPages(conv, [0]); bwMap.set(r.originalIdx, pg); }
       }
-      // 순서대로 조립 + 회전
+      // 순서대로 조립 + 회전 (baseAngle=원본 /Rotate를 기록해 두면 이후 회전만 바뀔 때
+      // outDoc을 재사용해 setRotation→재저장만으로 처리 가능)
+      const asmPages = [];
       for (const r of valid) {
         let page;
         if (r.isBlank) page = outDoc.addPage(r.pageSize || [595.28, 841.89]);
         else if (isBw(r) && bwMap.has(r.originalIdx)) page = outDoc.addPage(bwMap.get(r.originalIdx));
         else page = outDoc.addPage(origMap.get(r.originalIdx));
+        const baseAngle = (page.getRotation && page.getRotation().angle) || 0;
         if (r.rotation) {
-          const existing = (page.getRotation && page.getRotation().angle) || 0;
-          page.setRotation(PDFLib.degrees((existing + r.rotation) % 360));
+          page.setRotation(PDFLib.degrees((((baseAngle + r.rotation) % 360) + 360) % 360));
         }
+        asmPages.push({ page, baseAngle });
       }
       if (onProgress) onProgress(94);
       const bytes = await outDoc.save({ useObjectStreams: false });
+      _baseAssembled = { key, outDoc, pages: asmPages, stats, validCount: valid.length };
       _baseCache = { sig, bytes, stats, validCount: valid.length };
       return _baseCache;
     }
