@@ -167,7 +167,9 @@ async function handleLayoutTransform(payload) {
     const nUp = Math.max(1, es.nUp | 0);
     const [cols, rows] = NUP_GRID[nUp] || [1, 1];
     const m = es.margins;
-    const mT = mm2pt(m.top), mB = mm2pt(m.bottom), mL = mm2pt(m.left), mR = mm2pt(m.right);
+    const mgOn = !!(m && m.enabled); // 여백 체크박스가 켜졌을 때만 적용
+    const mT = mgOn ? mm2pt(m.top) : 0, mB = mgOn ? mm2pt(m.bottom) : 0,
+          mL = mgOn ? mm2pt(m.left) : 0, mR = mgOn ? mm2pt(m.right) : 0;
     const fa = angOf(bucket[0]);
     const fsize = pages[bucket[0]].getSize();
     const refW = (fa === 90 || fa === 270) ? fsize.height : fsize.width;
@@ -177,13 +179,30 @@ async function handleLayoutTransform(payload) {
     if (nUp === 1) {
       const marginRect = { x: mL, y: mB, w: Math.max(10, sw - mL - mR), h: Math.max(10, sh - mT - mB) };
       const fullRect   = { x: 0,  y: 0,  w: sw, h: sh };
+      const noScale = es.scaling.mode === 'none';
+      // ── 빠른 경로: 규격화 없음 + 회전 0 페이지는 원본을 그대로 copyPages 하고 오버레이(머리글/바닥글·워터마크·
+      //    테두리)만 얹는다. embedPage(무거운 재-임베드)를 건너뛰어 머리글/바닥글만 켰을 때 대폭 빨라진다.
+      //    회전된 페이지는 좌표 정규화가 필요하므로 기존 embedPage 경로 유지.
+      const copyIdx = noScale ? bucket.filter(idx => angOf(idx) === 0) : [];
+      const copyMap = new Map();
+      if (copyIdx.length) {
+        const cps = await out.copyPages(src, copyIdx);
+        copyIdx.forEach((idx, j) => copyMap.set(idx, cps[j]));
+      }
       for (const idx of bucket) {
-        const p = out.addPage([sw, sh]);
-        const contentRect = (es.scaling.mode === 'none')
-          ? fullRect
-          : (es.scaling.fitMargins ? marginRect : fullRect);
-        drawFit(p, await emb(idx), angOf(idx), contentRect);
-        if (es.border !== 'none') drawBorder(es.border, p, marginRect.x, marginRect.y, marginRect.w, marginRect.h);
+        let p;
+        if (copyMap.has(idx)) {
+          p = out.addPage(copyMap.get(idx));
+          if (es.border !== 'none') {
+            const ps = p.getSize();
+            drawBorder(es.border, p, mL, mB, Math.max(10, ps.width - mL - mR), Math.max(10, ps.height - mT - mB));
+          }
+        } else {
+          p = out.addPage([sw, sh]);
+          const contentRect = noScale ? fullRect : (es.scaling.fitMargins ? marginRect : fullRect);
+          drawFit(p, await emb(idx), angOf(idx), contentRect);
+          if (es.border !== 'none') drawBorder(es.border, p, marginRect.x, marginRect.y, marginRect.w, marginRect.h);
+        }
         flags.push(true); flagEs.push(es);
       }
       return;
@@ -260,6 +279,14 @@ async function handleLayoutTransform(payload) {
     fontCache.set(fontSel, font);
     return font;
   }
+  // ASCII(숫자·영문·기호)만 있는 텍스트는 13MB 시스템 폰트를 파싱·서브셋할 필요 없이 내장 표준폰트(Helvetica)로
+  // 즉시 그린다 — 페이지번호 '1 / 10', 날짜, 영문 파일명 등 대부분의 머리글/바닥글이 여기 해당한다.
+  let stdFont = null;
+  const isAsciiText = s => /^[\x20-\x7E]*$/.test(s);
+  async function getStdFont() {
+    if (!stdFont) stdFont = await out.embedFont(PDFLib.StandardFonts.Helvetica);
+    return stdFont;
+  }
   for (let i = 0; i < total; i++) {
     const es = flagEs[i];
     if (!es) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
@@ -282,9 +309,9 @@ async function handleLayoutTransform(payload) {
       }
     }
     if (hfOn) {
-      const hfFont = await embedHfFont(hf.font);
       const ctx = { page: i + 1, total, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
-      const mL = mm2pt(es.margins.left), mR = mm2pt(es.margins.right);
+      const mgOn = !!(es.margins && es.margins.enabled);
+      const mL = mgOn ? mm2pt(es.margins.left) : 0, mR = mgOn ? mm2pt(es.margins.right) : 0;
       const segs = [
         ['hL', mL,      'left',   true],  ['hC', pw / 2,  'center', true],  ['hR', pw - mR, 'right', true],
         ['fL', mL,      'left',   false], ['fC', pw / 2,  'center', false], ['fR', pw - mR, 'right', false],
@@ -293,11 +320,13 @@ async function handleLayoutTransform(payload) {
       for (const [key, ax, align, isHeader] of segs) {
         const txt = resolveHF(hf[key], ctx);
         if (!txt || !txt.trim()) continue;
-        if (hfFont) {
-          const w = hfFont.widthOfTextAtSize(txt, hf.size);
+        // ASCII면 내장 표준폰트(임베드 불필요), 한글 등 포함 시에만 시스템 폰트 서브셋 임베드
+        const font = isAsciiText(txt) ? await getStdFont() : await embedHfFont(hf.font);
+        if (font) {
+          const w = font.widthOfTextAtSize(txt, hf.size);
           const x = align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w);
           const y = isHeader ? (ph - mHF - hf.size) : mHF;
-          p.drawText(txt, { x, y, size: hf.size, font: hfFont, color: hexToRgb(hf.color) });
+          p.drawText(txt, { x, y, size: hf.size, font, color: hexToRgb(hf.color) });
         } else {
           const im = await textToPngEmbed(out, txt, { size: hf.size, css: hf.color, angle: 0 }, cache);
           const x = align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w);

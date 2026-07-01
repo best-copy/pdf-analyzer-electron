@@ -831,6 +831,37 @@
     body.edit-open #editResizer { display: block; }
     #editResizer:hover, #editResizer.es-resizing { background: rgba(10,132,255,0.45); }
 
+    /* ── 전체화면 편집 작업공간 (같은 창 안에서 편집 UI를 넓게 펼침) ── */
+    #editBackdrop { position: fixed; inset: 0; background: #ececed; z-index: 480; display: none; }
+    body.edit-fullscreen #editBackdrop { display: block; }
+    #editWsBar {
+      position: fixed; top: 0; left: 0; right: 0; height: 52px; z-index: 610;
+      display: none; align-items: center; gap: 12px; padding: 0 16px;
+      background: #161617; color: #f5f5f7; border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    body.edit-fullscreen #editWsBar { display: flex; }
+    #editWsBar .ws-title { font-size: 15px; font-weight: 700; }
+    #editWsBar .ws-hint { font-size: 12px; color: #8e8e93; }
+    #editWsBar .ws-spacer { flex: 1; }
+    #editWsBar button { border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    #editWsBar .ws-save { background: #0a84ff; color: #fff; }
+    #editWsBar .ws-save:hover { background: #0071e3; }
+    #editWsBar .ws-cancel { background: #2c2c2e; color: #f5f5f7; }
+    #editWsBar .ws-cancel:hover { background: #3a3a3c; }
+    body.edit-fullscreen { padding-right: 0 !important; }
+    body.edit-fullscreen #editSidebar {
+      left: 0; right: auto; top: 52px; width: 400px; z-index: 600; display: flex;
+      border-left: none; border-right: 1px solid rgba(255,255,255,0.08);
+    }
+    body.edit-fullscreen #previewSection {
+      position: fixed; left: 400px; right: 0; top: 52px; bottom: 0;
+      overflow-y: auto; z-index: 590; background: #fff; margin: 0; padding: 20px 28px;
+    }
+    body.edit-fullscreen #editToggle, body.edit-fullscreen #editResizer { display: none; }
+    /* 작업공간에선 사이드바 헤더의 닫기·전체화면 아이콘, 미리보기의 '원본 보기' 버튼 숨김(상단 바가 대체) */
+    body.edit-fullscreen .es-head .es-close { display: none; }
+    body.edit-fullscreen #previewSection .preview-close { display: none; }
+
     .es-head {
       position: sticky; top: 0; z-index: 2;
       background: #161617; padding: 14px 16px;
@@ -1156,10 +1187,31 @@
 
   <!-- ═══ 오른쪽 편집 사이드바: 크기·회전·조판(N-up)·테두리 ═══ -->
   <button id="editToggle" title="편집 패널 열기/닫기 (E)" onclick="toggleEditSidebar()">✏ 편집</button>
+
+  <!-- 전체화면 편집 작업공간: 배경 가림막 + 상단 바 -->
+  <div id="editBackdrop" onclick="exitEditWorkspace(false)"></div>
+  <div id="editWsBar">
+    <span class="ws-title">✏️ 편집 작업공간</span>
+    <span class="ws-hint">왼쪽에서 편집하고 오른쪽에서 결과를 확인하세요</span>
+    <span class="ws-spacer"></span>
+    <button class="ws-cancel" onclick="exitEditWorkspace(false)" title="적용하지 않고 닫기 (Esc)">✕ 닫기</button>
+    <button class="ws-save" onclick="saveAndCloseWorkspace()" title="편집을 메인에 적용하고 닫기">💾 저장하고 닫기</button>
+  </div>
+
   <div id="editSidebar">
     <div class="es-head">
       <span class="es-head-title">✏️ 페이지 편집</span>
+      <button class="es-close es-fs-btn" onclick="enterEditWorkspace()" title="전체화면 편집 작업공간" style="font-size:16px;">⛶</button>
       <button class="es-close" onclick="toggleEditSidebar(false)" title="닫기">✕</button>
+    </div>
+
+    <!-- 편집 중 자동 반영 (끄면 '적용' 눌러야 반영 → 큰 문서에서 편집이 빨라짐) -->
+    <div class="es-section">
+      <label class="es-section-title" style="cursor:pointer; margin:0;">
+        <input type="checkbox" id="esAutoPreview" checked style="accent-color:#0a84ff; width:15px; height:15px;">
+        ⚡ 편집 중 자동 반영
+      </label>
+      <div class="es-hint" style="margin-top:4px;">끄면 편집 조작은 즉시 반응하고, 미리보기·다운로드는 <b>✅ 적용</b>을 눌러야 반영됩니다. 페이지가 많은 문서에서 편집이 훨씬 빨라집니다.</div>
     </div>
 
     <!-- 프리셋 -->
@@ -1301,14 +1353,17 @@
 
     <!-- 여백 -->
     <div class="es-section">
-      <div class="es-section-title">📏 여백 (mm)</div>
-      <div class="es-margins">
-        <label>위 <input type="number" id="esMgTop"    min="0" value="10"></label>
-        <label>아래 <input type="number" id="esMgBottom" min="0" value="10"></label>
-        <label>왼쪽 <input type="number" id="esMgLeft"   min="0" value="10"></label>
-        <label>오른쪽 <input type="number" id="esMgRight"  min="0" value="10"></label>
+      <label class="es-section-title" style="cursor:pointer;">
+        <input type="checkbox" id="esMgEnabled" style="accent-color:#0a84ff; width:15px; height:15px;">
+        📏 여백 (mm)
+      </label>
+      <div class="es-margins" id="esMgBody">
+        <label>상 <input type="number" id="esMgTop"    min="0" value="10"></label>
+        <label>하 <input type="number" id="esMgBottom" min="0" value="10"></label>
+        <label>좌 <input type="number" id="esMgLeft"   min="0" value="10"></label>
+        <label>우 <input type="number" id="esMgRight"  min="0" value="10"></label>
       </div>
-      <div class="es-hint">규격화·조판 시 페이지 가장자리 여백입니다.</div>
+      <div class="es-hint">체크하면 규격화·조판·테두리 시 페이지 가장자리 여백을 적용합니다.</div>
     </div>
 
     <!-- 4. 테두리 -->
@@ -1490,6 +1545,7 @@
     let originalThumbnails = new Map();
     let quoteItems         = [];
     let pageEdited         = false;
+    let liveAutoPreview    = localStorage.getItem('liveAutoPreview') !== '0'; // 편집 중 자동 반영 (기본 ON)
     let undoStack          = []; // 실행취소 히스토리 (페이지 상태 스냅샷)
     let redoStack          = []; // 다시실행 히스토리
     const HISTORY_LIMIT    = 1000; // 보관 스냅샷 최대 개수 (사실상 무제한)
@@ -1513,7 +1569,7 @@
       return {
         scope:   { mode: 'all', from: 1, to: 1, chapter: '' },
         scaling: { mode: 'none', paper: 'A4', orient: 'auto', customW: 210, customH: 297, fitMargins: true },
-        margins: { top: 10, bottom: 10, left: 10, right: 10 }, // mm
+        margins: { enabled: false, top: 10, bottom: 10, left: 10, right: 10 }, // mm — enabled일 때만 적용
         nUp: 1,
         gutter: 0,        // 조판 칸 사이 간격 (mm)
         border: 'none',
@@ -2426,6 +2482,10 @@
 
     // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)
     document.addEventListener('keydown', e => {
+      // Esc: 전체화면 편집 작업공간 닫기 (입력창 포커스 중에도 동작)
+      if (e.key === 'Escape' && document.body.classList.contains('edit-fullscreen')) {
+        e.preventDefault(); exitEditWorkspace(false); return;
+      }
       if (e.ctrlKey || e.altKey || e.metaKey) return;
       if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
       if (!pageResults.length) return;
@@ -2584,6 +2644,7 @@
       _layoutCache = { sig: null, bytes: null };
       _baseAssembled = null;
       _pvPageCache = new Map();
+      releasePreviewDoc();
     }
     // 회전을 뺀 base 키(페이지 순서 + 흑백선택). 회전만 바뀌면 이 키가 동일 → 조립본 재사용.
     function baseOrderBwKey() {
@@ -2779,7 +2840,15 @@
     }
     function scheduleLivePreview() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
-      if (!shouldPreview()) { closePreview(); return; }
+      if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }
+      // 자동 반영 꺼짐: 렌더하지 않고 '적용 필요' 상태로만 둔다(편집 조작 자체는 항상 즉시 반응).
+      if (!liveAutoPreview) {
+        invalidateProcessed(); // 직전 결과 무효화 → '적용' 다시 눌러야 다운로드 가능
+        const sec0 = document.getElementById('previewSection');
+        const note0 = document.getElementById('previewNote');
+        if (sec0 && sec0.style.display !== 'none' && note0) note0.textContent = "설정 변경됨 — '✅ 적용'을 눌러 반영";
+        return;
+      }
       // 편집 사이드바 설정만으로도 '수정사항'이 생긴 것 — 렌더 완료를 기다리지 않고
       // 메인/사이드바 '적용' 버튼을 편집창의 '편집 적용'과 즉시 같은 상태로 맞춘다.
       updateDownloadBtn();
@@ -2792,7 +2861,7 @@
     }
     async function runLivePreview() {
       if (applying || _liveRunning) { _liveQueued = true; return; }
-      if (!shouldPreview()) { closePreview(); return; }
+      if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }
       _liveRunning = true;
       // 캐시가 히트하는 짧은 갱신에선 깜빡이지 않도록, 200ms 넘게 걸릴 때만 '처리중' 상태창 표시
       let loadingShown = false;
@@ -5278,6 +5347,42 @@
         ? !document.body.classList.contains('edit-open') : !!force;
       document.body.classList.toggle('edit-open', open);
       if (open) { populateFontDropdown(); ensureFontList(); loadPresetList(); syncEditUI(); }
+      else if (document.body.classList.contains('edit-fullscreen')) exitEditWorkspace(false);
+    }
+
+    // ── 전체화면 편집 작업공간 ─────────────────────────────────────────────
+    // 사이드바를 넓은 작업공간으로 펼쳐 왼쪽=편집 컨트롤, 오른쪽=큰 미리보기로 보여준다.
+    // '💾 저장하고 닫기'로 편집을 메인에 적용하고 닫는다. 별도 OS 창이 아니라 같은 렌더러 안이므로
+    // 메모리 캐시(_baseCache·_pvDoc 등)·워커가 그대로 유지된다.
+    function enterEditWorkspace() {
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
+      if (!document.body.classList.contains('edit-open')) toggleEditSidebar(true);
+      document.body.classList.add('edit-fullscreen');
+      // 오른쪽 미리보기 채우기: 편집이 있으면 강제로 1회 렌더(자동반영 토글과 무관), 없으면 원본 페이지 표시.
+      if (shouldPreview()) runLivePreview();
+      else showWorkspaceBasePreview();
+    }
+    function exitEditWorkspace(applied) {
+      if (!document.body.classList.contains('edit-fullscreen')) return;
+      document.body.classList.remove('edit-fullscreen');
+      // 적용하지 않고 닫았고 적용 결과도 없으면 메인은 원본 페이지 그리드로 복귀
+      if (!applied && !processedPdfBytes) closePreview();
+    }
+    async function saveAndCloseWorkspace() {
+      if (processingOptions.bw && !selectedPages.size && !hasAnyActiveLayout()) {
+        showError('흑백변환할 페이지를 선택하거나 편집 옵션을 설정하세요.'); return;
+      }
+      try {
+        if (shouldPreview()) await applyChanges(); // 편집을 메인에 적용(processedPdfBytes 생성 + 결과 표시)
+        exitEditWorkspace(true);
+      } catch (e) {
+        console.error('작업공간 저장 오류:', e);
+        showError('편집 적용 중 오류: ' + (e && e.message ? e.message : String(e)));
+      }
+    }
+    // 편집이 하나도 없을 때 작업공간 오른쪽에 원본 페이지를 그대로 보여준다(빈 화면 방지).
+    function showWorkspaceBasePreview() {
+      if (originalPdfBytes) renderProcessedPreview(originalPdfBytes, { live: true });
     }
 
     // ── 편집 설정 프리셋 (localStorage) ──────────────────────────────────────
@@ -5524,10 +5629,14 @@
       document.getElementById('esCustomW').value = ls.scaling.customW;
       document.getElementById('esCustomH').value = ls.scaling.customH;
       document.getElementById('esFitMargins').checked = ls.scaling.fitMargins;
+      const mgOn = !!ls.margins.enabled;
+      document.getElementById('esMgEnabled').checked = mgOn;
       document.getElementById('esMgTop').value    = ls.margins.top;
       document.getElementById('esMgBottom').value = ls.margins.bottom;
       document.getElementById('esMgLeft').value   = ls.margins.left;
       document.getElementById('esMgRight').value  = ls.margins.right;
+      document.getElementById('esMgBody').style.opacity = mgOn ? '1' : '0.45';
+      ['esMgTop','esMgBottom','esMgLeft','esMgRight'].forEach(id => document.getElementById(id).disabled = !mgOn);
       activateChip('nup', ls.nUp);
       document.getElementById('esGutter').value = ls.gutter;
       activateChip('border', ls.border);
@@ -5567,6 +5676,22 @@
       onIn('esCustomH',   el => { if (editSettings) activeLayoutSettings().scaling.customH = parseFloat(el.value) || 0; });
       const mg = { esMgTop:'top', esMgBottom:'bottom', esMgLeft:'left', esMgRight:'right' };
       Object.entries(mg).forEach(([id, k]) => onIn(id, el => { if (editSettings) activeLayoutSettings().margins[k] = parseFloat(el.value) || 0; }));
+      const autoPv = document.getElementById('esAutoPreview');
+      if (autoPv) {
+        autoPv.checked = liveAutoPreview;
+        autoPv.addEventListener('change', () => {
+          liveAutoPreview = autoPv.checked;
+          localStorage.setItem('liveAutoPreview', liveAutoPreview ? '1' : '0');
+          if (liveAutoPreview) scheduleLivePreview(); // 다시 켜면 밀린 변경을 즉시 반영
+        });
+      }
+      const mgEn = document.getElementById('esMgEnabled');
+      if (mgEn) mgEn.addEventListener('change', () => {
+        if (editSettings) activeLayoutSettings().margins.enabled = mgEn.checked;
+        document.getElementById('esMgBody').style.opacity = mgEn.checked ? '1' : '0.45';
+        ['esMgTop','esMgBottom','esMgLeft','esMgRight'].forEach(id => document.getElementById(id).disabled = !mgEn.checked);
+        scheduleLivePreview();
+      });
       const ch = document.getElementById('esChapterSel');
       // 챕터를 바꾸면 그 챕터만의 설정으로 전환해야 하므로 syncEditUI()로 전체 입력을 다시 채운다.
       if (ch) ch.addEventListener('change', () => { if (editSettings) { editSettings.scope.chapter = ch.value; syncEditUI(); scheduleLivePreview(); } });
@@ -5696,11 +5821,18 @@
       const sig = (baseSig || '') + '::' + JSON.stringify(groups);
       if (_layoutCache.sig === sig) return _layoutCache.bytes;
       const fileName = (typeof originalFileName === 'string' ? originalFileName : '') || '';
+      // 머리글/바닥글이 ASCII(숫자·영문)만이면 워커가 내장 표준폰트로 그리므로 13MB 시스템 폰트를 읽지도 넘기지도 않는다.
+      // 한글 등이 들어가는 경우(템플릿 자체·한글 파일명의 {filename}·'1 페이지' 스타일의 {n})에만 폰트를 로드한다.
+      const asciiRe = /^[\x20-\x7E]*$/;
+      const hfNeedsEmbed = hf => [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(t =>
+        t && t.trim() && (!asciiRe.test(t)
+          || (/\{filename\}/.test(t) && !asciiRe.test(fileName))
+          || (/\{n\}/.test(t) && (hf.pnumStyle | 0) === 4)));
       const fontBytesMap = {}; // 폰트 경로 → Uint8Array (그룹 간 동일 폰트는 1회만 로드)
       const workerGroups = groups.map(g => {
         const hf = g.es.hf;
         const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
-        if (!hfOn) return g;
+        if (!hfOn || !hfNeedsEmbed(hf)) return g;
         const fontSel = (hf.font && hf.font.trim()) ? hf.font : DEFAULT_HF_FONT;
         if (fontBytesMap[fontSel] === undefined) {
           try { fontBytesMap[fontSel] = loadFontBytes(fontSel).slice(0); }
@@ -5807,6 +5939,20 @@
     // 렌더링하던 것을 방지(그 페이지만 다시 그림). N-up(원본 여러 장→1출력)은 대응이
     // 모호해 캐시 대상에서 제외.
     let _pvPageCache = new Map();
+    // 미리보기 pdf.js 문서 캐시 — 동일 출력 바이트면 재파싱을 건너뛴다. 메모리 누적을 막기 위해
+    // 딱 1개만 상주시키고, 새 문서로 교체할 때 이전 문서를 반드시 destroy() 한다.
+    let _pvDoc = { key: null, pdf: null };
+    // 바이트 지문(길이+표본) — 전체 비교 없이 동일 여부만 빠르게 판단
+    function bytesFingerprint(b) {
+      const n = b.length; let h = n >>> 0;
+      const step = Math.max(1, (n / 96) | 0);
+      for (let i = 0; i < n; i += step) h = (Math.imul(h, 31) + b[i]) >>> 0;
+      return n + ':' + h;
+    }
+    async function releasePreviewDoc() {
+      if (_pvDoc.pdf) { try { await _pvDoc.pdf.destroy(); } catch (e) {} }
+      _pvDoc = { key: null, pdf: null };
+    }
     function setStatCounts(total, color) {
       const gray = Math.max(0, total - color);
       totalPagesEl.textContent     = total;
@@ -5830,9 +5976,16 @@
         g: grayscalePagesEl.textContent, p: colorPercentEl.textContent,
       };
       let pdf = null;
+      const fp = bytesFingerprint(bytes);
+      const reused = _pvDoc.pdf && _pvDoc.key === fp;
+      let keepPdf = reused; // 재사용 문서는 여기서 해제하지 않음(캐시로 계속 상주)
       try {
-        pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
-        if (myToken !== previewRenderToken) return;
+        if (reused) {
+          pdf = _pvDoc.pdf; // 동일 출력 → 파싱 생략, 메모리에 상주한 문서 재사용
+        } else {
+          pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+          if (myToken !== previewRenderToken) { try { await pdf.destroy(); } catch (e) {} return; }
+        }
         const total = pdf.numPages;
         // 깜빡임 방지: 새 내용을 오프스크린(DocumentFragment)에 모두 그린 뒤 한 번에 교체.
         // 렌더 도중에는 기존 화면이 그대로 보이고, 더 새 갱신이 오면 교체 없이 중단(기존 유지).
@@ -5918,6 +6071,12 @@
         }
         if (myToken !== previewRenderToken) return;
         _pvPageCache = pvPageCacheNext;
+        // 이 렌더가 최종 승자 — 파싱한 문서를 1개만 메모리에 상주시킨다(이전 캐시는 해제).
+        if (!reused) {
+          if (_pvDoc.pdf && _pvDoc.pdf !== pdf) { try { await _pvDoc.pdf.destroy(); } catch (e) {} }
+          _pvDoc = { key: fp, pdf };
+        }
+        keepPdf = true;
         // ── 한 번에 교체 (깜빡임 없음) ──
         grid.replaceChildren(mainFrag);
         sidebar.querySelectorAll('.sb-item, .sb-chapter').forEach(el => el.remove());
@@ -5932,13 +6091,14 @@
       } catch (e) {
         console.error('미리보기 렌더 실패:', e);
       } finally {
-        // pdf.js 문서는 매 갱신마다 새로 파싱되므로 다 쓰면 반드시 해제
-        // (안 하면 편집을 반복할수록 pdf.js 워커 메모리가 쌓여 세션 전체가 느려짐)
-        if (pdf) { try { await pdf.destroy(); } catch (e) {} }
+        // 상주 캐시로 남긴 문서(keepPdf)만 유지하고, 그 외(중도 취소·교체된 새 문서)는 즉시 해제한다.
+        // 캐시는 항상 최대 1개만 남으므로 편집 반복 시 pdf.js 메모리가 누적되지 않는다.
+        if (pdf && !keepPdf) { try { await pdf.destroy(); } catch (e) {} }
       }
     }
     function closePreview() {
       previewRenderToken++; // 진행 중 렌더 취소
+      releasePreviewDoc();  // 상주 pdf.js 문서 해제(메모리 회수)
       _pvCells = [];
       const s = document.getElementById('previewSection');
       if (s) s.style.display = 'none';
