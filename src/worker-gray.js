@@ -596,6 +596,24 @@ self.onmessage = async function(e) {
       // Separation 틴트 LUT (메인 스레드에서 전달) — 픽셀값 t → 그레이 변환
       if (lut) { const tl = new Uint8Array(lut); for (let i = 0; i < gray.length; i++) gray[i] = tl[gray[i]]; }
       if (dotGain) { const dl = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = dl[gray[i]]; }
+
+      // ★ 용량 최적화: 원본이 JPEG(사진)이므로 흑백도 JPEG(DCTDecode)로 재인코딩.
+      // 픽셀을 Flate로 재압축하면 JPEG 압축이 사라져 원본보다 몇 배 커진다.
+      // gray → RGBA(R=G=B) → OffscreenCanvas → JPEG. (실패 시 아래 Flate로 폴백)
+      try {
+        const canvas = new OffscreenCanvas(iw, ih);
+        const cx = canvas.getContext('2d');
+        const imgd = cx.createImageData(iw, ih);
+        const dd = imgd.data;
+        for (let pi = 0; pi < gray.length; pi++) { const v = gray[pi]; dd[pi*4] = v; dd[pi*4+1] = v; dd[pi*4+2] = v; dd[pi*4+3] = 255; }
+        cx.putImageData(imgd, 0, 0);
+        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
+        const jb = new Uint8Array(await blob.arrayBuffer());
+        const jpegBuf = jb.buffer.slice(jb.byteOffset, jb.byteOffset + jb.length);
+        self.postMessage({ id, result: { jpeg: jpegBuf, w: iw, h: ih } }, [jpegBuf]);
+        return;
+      } catch (encErr) { /* JPEG 인코딩 실패 → Flate 폴백 */ }
+
       const predicted  = applyPNGPredictorGray(gray, iw, ih);
       const deflated   = pako.deflate(predicted, { level: 1 });
       // pako는 단일 청크일 때 내부 버퍼의 subarray를 반환할 수 있음

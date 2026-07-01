@@ -40,6 +40,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
 
+  // '저장 안 한 작업' 상태를 main에 보고 (종료 전 확인용)
+  setUnsaved: (dirty) => ipcRenderer.send('app:dirty', !!dirty),
+
+  // 사용 끝난 변환 임시 PDF 삭제 요청
+  cleanupTempFile: (filePath) => ipcRenderer.invoke('temp:cleanup', filePath),
+
+  // 설치된 시스템 폰트 목록 (머리글/바닥글 글꼴 선택용)
+  listFonts: () => ipcRenderer.invoke('fonts:list'),
+
   // PDF.js 워커 콘텐츠 — asar 안에서도 fs로 안전하게 읽어 blob URL 생성용으로 반환
   getWorkerContent: () => fs.readFileSync(
     path.join(__dirname, 'src', 'libs', 'pdf.worker.min.js'), 'utf8'
