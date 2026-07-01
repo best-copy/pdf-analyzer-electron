@@ -5679,7 +5679,7 @@
       const transfer = [srcCopy.buffer];
       Object.values(fontBytesMap).forEach(b => { if (b) transfer.push(b.buffer); });
       const resultBytes = await assembleWorkerPool.run(
-        'layout-transform', { srcBytes: srcCopy, groups: workerGroups, fontBytesMap, fileName }, transfer
+        'layout-transform', { srcBytes: srcCopy, groups: workerGroups, fontBytesMap, fileName, baseSig: baseSig || null }, transfer
       );
       const out = new Uint8Array(resultBytes);
       _layoutCache = { sig, bytes: out };
@@ -5795,8 +5795,9 @@
         t: totalPagesEl.textContent, c: colorPagesEl.textContent,
         g: grayscalePagesEl.textContent, p: colorPercentEl.textContent,
       };
+      let pdf = null;
       try {
-        const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+        pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
         if (myToken !== previewRenderToken) return;
         const total = pdf.numPages;
         // 깜빡임 방지: 새 내용을 오프스크린(DocumentFragment)에 모두 그린 뒤 한 번에 교체.
@@ -5896,6 +5897,10 @@
         setStatCounts(total, colorCount);
       } catch (e) {
         console.error('미리보기 렌더 실패:', e);
+      } finally {
+        // pdf.js 문서는 매 갱신마다 새로 파싱되므로 다 쓰면 반드시 해제
+        // (안 하면 편집을 반복할수록 pdf.js 워커 메모리가 쌓여 세션 전체가 느려짐)
+        if (pdf) { try { await pdf.destroy(); } catch (e) {} }
       }
     }
     function closePreview() {

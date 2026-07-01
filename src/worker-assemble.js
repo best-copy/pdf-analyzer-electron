@@ -90,8 +90,19 @@ async function textToPngEmbed(outDoc, text, opt, cache) {
 //   (합본 문서에서 챕터별로 다른 es를 쓸 수 있도록 전역 설정 + 챕터별 개별 설정을 그룹으로 분리해 전달).
 // fontBytesMap: 머리글/바닥글용 폰트 경로 → 바이트(메인 스레드에서 미리 읽어 전달, 없으면 이미지 폴백).
 async function handleLayoutTransform(payload) {
-  const { srcBytes, groups, fontBytesMap, fileName } = payload;
-  const src = await PDFLib.PDFDocument.load(srcBytes);
+  const { srcBytes, groups, fontBytesMap, fileName, baseSig } = payload;
+  // base(순서·회전·흑백)가 그대로면 파싱한 문서를 재사용 — 레이아웃 옵션(규격·N-up·테두리·
+  // 머리글바닥글·워터마크)만 바꾸는 실시간 편집에서 매번 전체 PDF를 다시 파싱하지 않는다.
+  // 라이브 미리보기는 직렬 실행되고 워커풀이 방금 반납된 워커를 다시 꺼내므로(LIFO) 같은
+  // 워커가 연속 처리 → 캐시가 거의 항상 적중. base가 바뀌면 sig가 달라져 새로 파싱한다.
+  // (src는 embedPage 대상으로만 읽고 변형하지 않으므로 여러 출력 문서가 공유해도 안전.)
+  let src;
+  if (baseSig && self.__srcCache && self.__srcCache.sig === baseSig && self.__srcCache.doc) {
+    src = self.__srcCache.doc;
+  } else {
+    src = await PDFLib.PDFDocument.load(srcBytes);
+    if (baseSig) self.__srcCache = { sig: baseSig, doc: src };
+  }
   const out = await PDFLib.PDFDocument.create();
   const pages = src.getPages();
   const N = pages.length;
