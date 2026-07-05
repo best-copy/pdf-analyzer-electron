@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 열기 다이얼로그 — 경로만 반환 (파일 내용은 readFile로 별도 요청)
@@ -53,4 +54,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWorkerContent: () => fs.readFileSync(
     path.join(__dirname, 'src', 'libs', 'pdf.worker.min.js'), 'utf8'
   ),
+
+  // ── 페이지 내부편집기 창 연동 ──────────────────────────────────────────────
+  // 큰 PDF 바이트는 IPC로 넘기지 않고 임시파일(디스크)로 주고받는다(50MB+ 직렬화 손상 방지).
+  // 임시 파일 쓰기 — tmpdir에 pdfedit_ 접두사로 저장, 경로 반환. (bytes=ArrayBuffer/TypedArray)
+  writeTempFile: (bytes, ext) => {
+    const name = `pdfedit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext === 'bin' ? 'bin' : 'pdf'}`;
+    const p = path.join(os.tmpdir(), name);
+    fs.writeFileSync(p, Buffer.from(bytes));
+    return p;
+  },
+  // 편집 임시파일 삭제 (tmpdir 내 pdfedit_ 파일만)
+  removeTempFile: (p) => {
+    try {
+      if (!p) return false;
+      const base = path.basename(p);
+      if (!/^pdfedit_.*\.(pdf|bin)$/i.test(base)) return false;
+      if (path.dirname(p) !== os.tmpdir()) return false;
+      fs.unlinkSync(p);
+      return true;
+    } catch (e) { return false; }
+  },
+  // 편집기 열기 (opener 렌더러 → main) — payload는 작은 JSON+경로만
+  openEditor: (payload) => ipcRenderer.invoke('editor:open', payload),
+  // 편집기 저장 결과 수신 (메인 창)
+  onEditorResult: (cb) => ipcRenderer.on('editor:result', (_, data) => cb(data)),
+  // 편집기 창이 자신의 페이로드를 당겨옴 (편집기 창)
+  pullEditorPayload: () => ipcRenderer.invoke('editor:pull'),
+  // 편집기 → 저장 결과를 main으로 (편집기 창)
+  sendEditorResult: (data) => ipcRenderer.send('editor:save', data),
+  // 편집기 → 취소로 닫기 (편집기 창)
+  closeEditorWindow: () => ipcRenderer.send('editor:close'),
 });

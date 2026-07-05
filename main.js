@@ -14,15 +14,31 @@ app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 let unsavedWork = false;
 let forceClose  = false;
 
-// 이전 세션에서 남은 변환 임시 PDF/HTML 정리 (누적 방지)
+// 이전 세션에서 남은 변환 임시 PDF/HTML/편집 임시파일 정리 (누적 방지)
 function sweepTempConversions() {
   try {
     const dir = os.tmpdir();
-    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$/i;
+    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin)$/i;
     for (const f of fs.readdirSync(dir)) {
       if (re.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} }
     }
   } catch (e) {}
+}
+
+// ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) — 메인·편집기 창 공통 ──────────────────
+function installZoomShortcuts(win) {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!input.control) return;
+    const wc = win.webContents;
+    if (input.type !== 'keyDown') return;
+    if (input.key === '=' || input.key === '+') {
+      wc.setZoomLevel(wc.getZoomLevel() + 0.5); event.preventDefault();
+    } else if (input.key === '-') {
+      wc.setZoomLevel(wc.getZoomLevel() - 0.5); event.preventDefault();
+    } else if (input.key === '0') {
+      wc.setZoomLevel(0); event.preventDefault();
+    }
+  });
 }
 
 function createWindow() {
@@ -31,7 +47,7 @@ function createWindow() {
     height: 900,
     minWidth:  900,
     minHeight: 600,
-    title: 'PDF 분석기 — 일청기획',
+    title: 'PDF Editor',
     icon: path.join(__dirname, 'src', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -63,23 +79,64 @@ function createWindow() {
   });
 
   // ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) ────────────────────────────────────
-  win.webContents.on('before-input-event', (event, input) => {
-    if (!input.control) return;
-    const wc = win.webContents;
-    if (input.type !== 'keyDown') return;
+  installZoomShortcuts(win);
+}
 
-    if (input.key === '=' || input.key === '+') {
-      wc.setZoomLevel(wc.getZoomLevel() + 0.5);
-      event.preventDefault();
-    } else if (input.key === '-') {
-      wc.setZoomLevel(wc.getZoomLevel() - 0.5);
-      event.preventDefault();
-    } else if (input.key === '0') {
-      wc.setZoomLevel(0);
-      event.preventDefault();
+// ── 페이지 내부편집기 창 ────────────────────────────────────────────────────
+// 큰 PDF는 IPC로 직렬화하지 않는다(50MB+ 손상 우려). 원본/편집 결과 PDF는 임시파일로
+// 주고받고(경로만 IPC), 편집기는 preload.readFile(fs)로 직접 읽는다.
+// pendingEditorPayload: 편집기 webContents.id → { payload(작은 JSON+경로), openerId }
+const pendingEditorPayload = new Map();
+
+function createEditorWindow(openerId, payload) {
+  const parent = BrowserWindow.getAllWindows().find(w => w.webContents.id === openerId);
+  const win = new BrowserWindow({
+    width: 1400, height: 950,
+    minWidth: 1000, minHeight: 640,
+    title: '내부 편집기 — PDF 분석기',
+    icon: path.join(__dirname, 'src', 'icon.ico'),
+    parent: parent || undefined,   // 부모 위에 표시(모달 아님 — 페이지 탐색 가능)
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
     }
   });
+  const wcId = win.webContents.id;   // 'closed' 후엔 win.webContents 접근 시 destroyed 예외 → 미리 캡처
+  pendingEditorPayload.set(wcId, { payload, openerId });
+  installZoomShortcuts(win);
+  win.loadFile(path.join(__dirname, 'src', 'editor.html'));
+  win.on('closed', () => { pendingEditorPayload.delete(wcId); });
+  return win;
 }
+
+// 편집기 열기 요청 (opener 렌더러 → main)
+ipcMain.handle('editor:open', (event, payload) => {
+  createEditorWindow(event.sender.id, payload || {});
+  return true;
+});
+// 편집기 창이 로드 후 자신의 페이로드를 당겨간다
+ipcMain.handle('editor:pull', (event) => {
+  const entry = pendingEditorPayload.get(event.sender.id);
+  return entry ? entry.payload : null;
+});
+// 편집기 저장 → opener 렌더러로 결과 전달 후 편집기 창 닫기
+ipcMain.on('editor:save', (event, result) => {
+  const entry = pendingEditorPayload.get(event.sender.id);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (entry) {
+    const opener = BrowserWindow.getAllWindows().find(w => w.webContents.id === entry.openerId);
+    if (opener && !opener.isDestroyed()) opener.webContents.send('editor:result', result || {});
+  }
+  if (win && !win.isDestroyed()) win.close();
+});
+// 편집기 취소로 닫기 (결과 전달 없음)
+ipcMain.on('editor:close', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.close();
+});
 
 app.whenReady().then(() => {
   sweepTempConversions(); // 시작 시 이전 세션 변환 임시파일 정리
