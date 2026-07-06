@@ -62,6 +62,9 @@
     .handle { position:absolute; width:10px; height:10px; background:#fff; border:1.5px solid var(--sel); border-radius:2px; }
     .handle.rot { border-radius:50%; background:var(--sel); cursor:grab; }
     .handle.crop { background:#f59e0b; border-color:#b45309; }
+    /* 모서리 바깥 회전존 — 보이지 않는 넓은 히트영역, 회전 커서 */
+    .handle.rotzone { width:20px; height:20px; background:transparent; border:none;
+      cursor:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 3a7 7 0 1 1-6.6 4.7" fill="none" stroke="black" stroke-width="2"/><path d="M2.2 3.2 3.6 8l4.6-1.6z" fill="black"/></svg>') 10 10, grab; }
 
     /* 우측 속성 패널 */
     #props { flex:0 0 232px; background:var(--panel); overflow-y:auto; padding:12px; font-size:12px; }
@@ -141,7 +144,8 @@
       </div>
     </div>
     <div id="props"><div class="hint"><b>PDF의 기존 글자를 클릭</b>하면 바로 수정할 수 있습니다(가림 후 재입력). 빈 곳을 클릭하면 새 오브젝트 선택이 해제됩니다.<br><br>
-      단축키: <b>V</b> 선택·<b>T</b> 텍스트삽입·<b>E</b> 기존텍스트·<b>I</b> 이미지·<b>R</b> 도형·<b>C</b> 자르기·<b>Ctrl+G</b> 그룹·<b>[</b> <b>]</b> 0.1° 회전·<b>Del</b> 삭제·<b>Ctrl+Z/Y</b> 취소/재실행·<b>Ctrl+S</b> 저장.
+      단축키: <b>V</b> 선택·<b>T</b> 텍스트삽입·<b>E</b> 기존텍스트·<b>I</b> 이미지·<b>R</b> 도형·<b>C</b> 자르기·<b>Ctrl+G</b> 그룹·<b>[</b> <b>]</b> 0.1° 회전·<b>Shift+[ ]</b> 1° 회전·<b>Del</b> 삭제·<b>Ctrl+Z/Y</b> 취소/재실행·<b>Ctrl+S</b> 저장.<br>
+      크기조절 시 <b>Shift</b>=비율 고정, 선택 오브젝트 <b>모서리 바깥</b>을 드래그하면 마우스 회전.
     </div></div>
   </div>
 </div>
@@ -453,14 +457,21 @@ function renderHandles() {
     positionHandle(h, box, box.left+box.w/2, box.top-26);
     h.addEventListener('pointerdown', ev => onRotHandleDown(ev,o));
     overlay.appendChild(h);
+    // 모서리 바깥 회전존: 선택 오브젝트 모서리 살짝 바깥에 마우스를 대고 드래그하면 회전
+    for (const [fx,fy] of [[0,0],[1,0],[1,1],[0,1]]) {
+      const rz = document.createElement('div'); rz.className = 'handle rotzone';
+      positionHandle(rz, box, box.left+fx*box.w+(fx?15:-15), box.top+fy*box.h+(fy?15:-15), 20);
+      rz.addEventListener('pointerdown', ev => onRotHandleDown(ev,o));
+      overlay.appendChild(rz);
+    }
   }
 }
 // 회전 반영해 핸들을 실제 화면 위치로 배치
-function positionHandle(h, box, px, py) {
+function positionHandle(h, box, px, py, size=10) {
   const a = (box.rot||0)*Math.PI/180, cos=Math.cos(a), sin=Math.sin(a);
   const dx=px-box.cx, dy=py-box.cy;
   const rx = box.cx + dx*cos - dy*sin, ry = box.cy + dx*sin + dy*cos;
-  h.style.left = (rx-5)+'px'; h.style.top = (ry-5)+'px';
+  h.style.left = (rx-size/2)+'px'; h.style.top = (ry-size/2)+'px';
 }
 
 // ── 좌표 헬퍼 ────────────────────────────────────────────────────────────────
@@ -661,16 +672,25 @@ function matchSysFont(name){
 }
 // 클릭한 기존 텍스트의 실제 폰트 해석: pdf.js commonObjs(원본 PS명) → styles.fontFamily 순
 function resolveDocFont(item){
-  let raw='';
-  try { const fo = curPage.commonObjs.get(item.fontName); raw = (fo && (fo.name || fo.loadedName)) || ''; } catch(e){}
+  let raw='', loaded='';
+  try { const fo = curPage.commonObjs.get(item.fontName);
+    raw = (fo && (fo.name || fo.loadedName)) || '';
+    loaded = (fo && fo.loadedName) || '';           // pdf.js가 document.fonts에 등록한 실제 임베드 폰트 패밀리명
+  } catch(e){}
   if(!raw) raw = item.styleFamily || '';
   // 서브셋 접두사(ABCDEF+) 제거, '-Bold' 등 스타일 접미 제거해 패밀리명만
   const clean = raw.replace(/^[A-Z]{6}\+/,'').replace(/[-,].*$/,'').trim();
   const m = matchSysFont(clean) || matchSysFont(raw);
   const cssName = clean || raw;
+  // 화면 표시: 원본 임베드 폰트(loadedName) 최우선 → 문서 폰트명 → 폴백.
+  // 이렇게 하면 클릭 즉시 맑은고딕으로 바뀌어 보이는 문제 없이 문서 폰트 그대로 편집된다.
+  const fams = [];
+  if (loaded) fams.push(`"${loaded}"`);
+  if (cssName) fams.push(`"${cssName}"`);
+  fams.push('Malgun Gothic','sans-serif');
   return {
     fontPath: m ? m.file : defaultFontPath(),   // 임베드용: 매칭 시스템폰트, 없으면 기본
-    fontFamily: (cssName ? `"${cssName}", ` : '') + 'Malgun Gothic, sans-serif',
+    fontFamily: fams.join(', '),
     matched: !!m
   };
 }
@@ -836,6 +856,15 @@ function onResizeHandleDown(ev, o, name) {
     if (name.includes('s')) h=o0.h+ly;
     if (name.includes('w')) { w=o0.w-lx; }
     if (name.includes('n')) { h=o0.h-ly; }
+    // Shift: 원본 가로세로 비율 고정
+    if (e.shiftKey && o0.w>0 && o0.h>0) {
+      const ratio = o0.w/o0.h;
+      if (name.length===2) {   // 모서리: 변화량이 큰 축 기준
+        if (Math.abs(w-o0.w) >= Math.abs(h-o0.h)*ratio) h = w/ratio; else w = h*ratio;
+      }
+      else if (name==='e'||name==='w') h = w/ratio;
+      else w = h*ratio;
+    }
     w=Math.max(6,w); h=Math.max(6,h);
     // 서쪽/북쪽 핸들은 반대편 고정 위해 중심 이동 보정(로컬축)
     let mx=0,my=0;
@@ -854,10 +883,15 @@ function onResizeHandleDown(ev, o, name) {
 function onRotHandleDown(ev, o) {
   ev.stopPropagation(); ev.preventDefault();
   const cx=(o.x+o.w/2)*scale, cy=(o.y+o.h/2)*scale; let undoPushed=false;
+  // 델타 방식: 잡은 지점 기준 상대 회전 — 상단 핸들뿐 아니라 모서리 회전존에서도 점프 없이 동작
+  const s0=stageXY(ev), a0=Math.atan2(s0.y-cy, s0.x-cx)*180/Math.PI, r0=o.rot||0;
   const move = e => {
-    const s = stageXY(e); const ang=Math.atan2(s.y-cy, s.x-cx)*180/Math.PI + 90;
+    const s = stageXY(e); const ang=Math.atan2(s.y-cy, s.x-cx)*180/Math.PI;
     if(!undoPushed){pushUndo();undoPushed=true;}
-    o.rot = e.shiftKey ? Math.round(ang/45)*45 : Math.round(ang*10)/10;   // Shift=45° 스냅, 기본 0.1°
+    let nr = r0 + (ang - a0);
+    nr = e.shiftKey ? Math.round(nr/45)*45 : Math.round(nr*10)/10;   // Shift=45° 스냅, 기본 0.1°
+    nr = ((nr+180)%360+360)%360-180;   // -180~180 정규화
+    o.rot = nr;
     renderObjects(); renderProps();
   };
   const up = () => { window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up); markDirty(); };
@@ -914,10 +948,10 @@ function ungroupSelection() {
 }
 
 // ── 정밀 회전 (선택/그룹 전체를 공통 중심으로 회전) ───────────────────────────
-function rotateSelection(deltaDeg) {
+function rotateSelection(deltaDeg, exact) {
   if (!selectedIds.size) { setStatus('회전할 대상을 선택하세요.'); return; }
   const step = parseFloat(document.getElementById('rotStep').value)||0.1;
-  const d = deltaDeg>0 ? step : -step;
+  const d = exact ? deltaDeg : (deltaDeg>0 ? step : -step);   // exact=true면 deltaDeg 그대로(예: Shift+[ ] 1°)
   pushUndo();
   const ids=[...selectedIds]; const objs=ids.map(findObj).filter(Boolean);
   if (objs.length===1) { const o=objs[0]; o.rot=Math.round(((o.rot||0)+d)*10)/10; }
@@ -948,7 +982,7 @@ function renderProps() {
       <div class="mini"><button onclick="groupSelection()">그룹 (Ctrl+G)</button><button onclick="ungroupSelection()">해제</button></div>
       <div class="sep"></div><div class="row"><label>정밀회전</label>
       <button onclick="rotateSelection(-0.1)">−</button><button onclick="rotateSelection(0.1)">＋</button></div>
-      <div class="hint">[ / ] 키로 0.1° 회전</div>`;
+      <div class="hint">[ / ] 키로 0.1° 회전 · Shift+[ / ] 1° 회전</div>`;
     return;
   }
   const o = findObj([...selectedIds][0]); if(!o) return;
@@ -1064,6 +1098,8 @@ window.addEventListener('keydown', e => {
     case 'c': case 'C': toggleCrop(); break;
     case '[': e.preventDefault(); rotateSelection(-0.1); break;
     case ']': e.preventDefault(); rotateSelection(+0.1); break;
+    case '{': e.preventDefault(); rotateSelection(-1, true); break;   // Shift+[ = 1°씩
+    case '}': e.preventDefault(); rotateSelection(+1, true); break;   // Shift+] = 1°씩
     case 'Delete': case 'Backspace': e.preventDefault(); deleteSelection(); break;
     case 'Escape': if (cropMode){ cropMode=false; document.getElementById('btn-crop').classList.remove('active'); renderHandles(); } else cancelClose(); break;
     case 'PageDown': gotoPage(curPos+1); break;
