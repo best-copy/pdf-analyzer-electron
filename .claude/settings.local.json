@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Process electron -ErrorAction SilentlyContinue)",
+      "Bash(cp \"/c/Users/ADMINI~1/AppData/Local/Temp/claude/D--claude-projects-pdf-analyzer-electron/482c53fb-8a11-44f0-8565-bcdfcc3c16b4/scratchpad/fix_rewrite.pdf\" \"/d/바탕화면/교재_LEAN 생산방식 완전 정복\\(0701-0702\\)_수정.pdf\")",
+      "Read(//d/바탕화면//**)",
+      "Bash(cp \"/c/Users/ADMINI~1/AppData/Local/Temp/claude/D--claude-projects-pdf-analyzer-electron/482c53fb-8a11-44f0-8565-bcdfcc3c16b4/scratchpad/bw_complete.pdf\" \"/d/바탕화면/교재_LEAN 생산방식 완전 정복\\(0701-0702\\)_흑백_수정완료.pdf\" && ls -la \"/d/바탕화면/교재_LEAN 생산방식 완전 정복\\(0701-0702\\)_흑백_수정완료.pdf\")"
+    ]
+  }
+}

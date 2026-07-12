@@ -7,6 +7,7 @@
  */
 
 importScripts('./libs/pako.min.js');
+importScripts('./libs/jpeg-decoder.js');   // jpeg-js: Adobe CMYK/YCCK JPEG 정밀 디코드용
 
 // ── JPEG SOF 마커 파싱: 이미지 컴포넌트 수 반환 ────────────────────────────────
 // 3 = YCbCr (일반 RGB JPEG), 4 = CMYK / YCCK (PowerPoint·InDesign 등), 1 = Grayscale
@@ -26,6 +27,28 @@ function getJpegComponentCount(data) {
     i += 2 + segLen;
   }
   return 3;
+}
+
+// ── Adobe APP14 마커 존재 여부 ──────────────────────────────────────────────
+// Adobe(Photoshop·InDesign) 계열 CMYK JPEG은 관례적으로 값이 '반전' 저장된다.
+// PDF 렌더러(GS·pdfium·pdf.js)는 APP14를 보고 반전 해석하지만, Chromium의
+// createImageBitmap은 반전을 적용하지 않고 디코드한다(Electron 31 실측 — 네거티브).
+// → 4컴포넌트 + APP14 'Adobe' JPEG은 그레이 변환 후 255-v 반전이 필요하다.
+function hasAdobeApp14(data) {
+  if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+  if (data.length < 4 || data[0] !== 0xFF || data[1] !== 0xD8) return false;
+  let i = 2;
+  while (i + 3 < data.length) {
+    if (data[i] !== 0xFF) { i++; continue; }
+    const marker = data[i + 1];
+    if (marker === 0xDA || marker === 0xD9) break; // SOS / EOI
+    const segLen = (data[i+2] << 8) | data[i+3];
+    if (marker === 0xEE && segLen >= 7 &&
+        data[i+4] === 0x41 && data[i+5] === 0x64 && data[i+6] === 0x6F &&
+        data[i+7] === 0x62 && data[i+8] === 0x65) return true;   // 'Adobe'
+    i += 2 + segLen;
+  }
+  return false;
 }
 
 // ── PNG 예측 필터 복원 ─────────────────────────────────────────────────────
@@ -542,39 +565,53 @@ self.onmessage = async function(e) {
       const jpegComps = getJpegComponentCount(jpegArr); // 3=YCbCr, 4=CMYK/YCCK
       let gray = null, iw, ih;
 
-      // 방법 1: ImageDecoder
-      try {
-        if (typeof ImageDecoder !== 'undefined') {
-          if (jpegComps === 3) {
-            // 표준 YCbCr JPEG: colorSpaceConversion:'none' → I420 Y-플레인 직접 추출
-            const decoder = new ImageDecoder({
-              data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
-              type: 'image/jpeg',
-              colorSpaceConversion: 'none',
-            });
-            const { image: frame } = await decoder.decode();
-            iw = frame.codedWidth; ih = frame.codedHeight;
-            const buf = new ArrayBuffer(Math.ceil(iw * ih * 3 / 2));
-            await frame.copyTo(buf, { format: 'I420' });
-            frame.close(); decoder.close();
-            gray = new Uint8Array(buf.slice(0, iw * ih));
-          } else {
-            // CMYK / YCCK (4ch, PowerPoint·InDesign): ICC 색상 보정 → RGBA 변환
-            const decoder = new ImageDecoder({
-              data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
-              type: 'image/jpeg',
-              colorSpaceConversion: 'default', // ICC 프로파일 적용하여 sRGB로 변환
-            });
-            const { image: frame } = await decoder.decode();
-            iw = frame.codedWidth; ih = frame.codedHeight;
-            const buf = new ArrayBuffer(iw * ih * 4);
-            await frame.copyTo(buf, { format: 'RGBA' });
-            frame.close(); decoder.close();
-            const rgba = new Uint8Array(buf);
-            gray = new Uint8Array(iw * ih);
-            for (let pi = 0; pi < gray.length; pi++)
-              gray[pi] = Math.round(0.299*rgba[pi*4] + 0.587*rgba[pi*4+1] + 0.114*rgba[pi*4+2]);
+      // 방법 0: CMYK/YCCK(4comp)는 jpeg-js JpegImage로 '정밀' 디코드.
+      // Chromium 네이티브 디코더는 Adobe CMYK를 잘못 변환해 계조가 깨지고(네거티브),
+      // jpeg-js 내장 CMYK→RGB(copyToImageData)도 관례와 어긋난다(GS 대비 오차 118/255).
+      // → getData의 raw 산출을 받아 GS 정답으로 캘리브레이션한 공식을 직접 적용(오차 8/255).
+      // 0.4.4 getData(4comp) 산출 semantics:
+      //   YCCK(transform=2):  [R_ycc, G_ycc, B_ycc, 255-K_raw]  (R_ycc = 보색휘도 = 255-C_true)
+      //   분리 CMYK(그 외):    [C_true, M_true, Y_true, 255-K_raw]
+      // data[3] = 255-K_raw = K의 밝기 계수(1-K). 검증식: gray = lum(보색채널) × data[3]/255
+      if (jpegComps === 4 && typeof JpegImage === 'function') {
+        try {
+          JpegImage.resetMaxMemoryUsage(4096 * 1024 * 1024);
+          const j = new JpegImage();
+          j.opts = { colorTransform: undefined, tolerantDecoding: true,
+                     maxResolutionInMP: 400, maxMemoryUsageInMB: 4096 };
+          j.parse(jpegArr);
+          iw = j.width; ih = j.height;
+          const d4 = j.getData(iw, ih);   // 4바이트/px
+          const ycck = !!(j.adobe && j.adobe.transformCode === 2);
+          gray = new Uint8Array(iw * ih);
+          for (let pi = 0; pi < gray.length; pi++) {
+            const o = pi * 4;
+            // 보색(밝기 방향) 채널: YCCK는 그대로, 분리 CMYK는 255-값
+            const r = ycck ? d4[o]     : 255 - d4[o];
+            const g = ycck ? d4[o + 1] : 255 - d4[o + 1];
+            const b = ycck ? d4[o + 2] : 255 - d4[o + 2];
+            const L = 0.299 * r + 0.587 * g + 0.114 * b;
+            gray[pi] = Math.round(L * d4[o + 3] / 255);
           }
+        } catch (e) { gray = null; }   // 실패 시 아래 근사 경로(방법 2 + 반전 보정) 폴백
+      }
+
+      // 방법 1: ImageDecoder — 표준 YCbCr(3comp)만. CMYK(4comp)는 환경별 반전 처리가
+      // 제각각이라(이중 반전 위험) 항상 방법 2 + 명시적 반전 보정으로 처리한다.
+      try {
+        if (!gray && typeof ImageDecoder !== 'undefined' && jpegComps === 3) {
+          // 표준 YCbCr JPEG: colorSpaceConversion:'none' → I420 Y-플레인 직접 추출
+          const decoder = new ImageDecoder({
+            data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
+            type: 'image/jpeg',
+            colorSpaceConversion: 'none',
+          });
+          const { image: frame } = await decoder.decode();
+          iw = frame.codedWidth; ih = frame.codedHeight;
+          const buf = new ArrayBuffer(Math.ceil(iw * ih * 3 / 2));
+          await frame.copyTo(buf, { format: 'I420' });
+          frame.close(); decoder.close();
+          gray = new Uint8Array(buf.slice(0, iw * ih));
         }
       } catch(e) { gray = null; }
 
@@ -591,6 +628,12 @@ self.onmessage = async function(e) {
         gray = new Uint8Array(iw * ih);
         for (let pi = 0; pi < gray.length; pi++)
           gray[pi] = Math.round(0.299*d[pi*4] + 0.587*d[pi*4+1] + 0.114*d[pi*4+2]);
+        // ★ Adobe 반전 CMYK 보정: Photoshop 계열 CMYK JPEG(APP14 'Adobe')은 값이
+        // 반전 저장되는데 Chromium 디코더는 반전을 적용하지 않아 네거티브로 나온다.
+        // (증상: 변환 결과 사진이 필름 음화처럼 반전 — 옥산서원 문서로 실측 확인)
+        if (jpegComps === 4 && hasAdobeApp14(jpegArr)) {
+          for (let pi = 0; pi < gray.length; pi++) gray[pi] = 255 - gray[pi];
+        }
       }
 
       // Separation 틴트 LUT (메인 스레드에서 전달) — 픽셀값 t → 그레이 변환

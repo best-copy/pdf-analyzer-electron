@@ -183,6 +183,57 @@ ipcMain.handle('fonts:list', () => {
   });
 });
 
+// ── IPC: Ghostscript inkcov — 페이지별 CMYK 잉크 커버리지 (프린터 기준 컬러 판정) ──
+// 렌더러가 임시파일(pdfedit_*.pdf)로 PDF를 넘기면 gswin64c inkcov로 페이지별
+// C/M/Y/K 비율을 파싱해 반환한다. CMY>0 이면 프린터가 컬러로 과금할 수 있는 페이지.
+// 반드시 '-o -'(stdout)로 받아야 함 — '-o nul'이면 커버리지 출력이 사라진다.
+// gswin64c 실행 파일 탐색 — PATH에 없으면 표준 설치 폴더(C:\Program Files\gs\gs*)에서 찾는다.
+let _gsPath = null;
+function findGhostscript() {
+  if (_gsPath) return _gsPath;
+  for (const pf of [process.env['ProgramFiles'], process.env['ProgramFiles(x86)']]) {
+    if (!pf) continue;
+    const gsRoot = path.join(pf, 'gs');
+    try {
+      const vers = fs.readdirSync(gsRoot).filter(d => /^gs[\d.]+$/i.test(d)).sort().reverse();
+      for (const v of vers) {
+        const exe = path.join(gsRoot, v, 'bin', 'gswin64c.exe');
+        if (fs.existsSync(exe)) { _gsPath = exe; return exe; }
+      }
+    } catch (e) {}
+  }
+  _gsPath = 'gswin64c';   // PATH 폴백
+  return _gsPath;
+}
+
+ipcMain.handle('ink:coverage', (_, pdfPath) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const base = path.basename(pdfPath || '');
+      if (!/^pdfedit_.*\.pdf$/i.test(base)) return reject(new Error('잘못된 임시파일 경로'));
+      if (path.dirname(pdfPath) !== os.tmpdir()) return reject(new Error('잘못된 임시파일 경로'));
+    } catch (e) { return reject(e); }
+    execFile(findGhostscript(),
+      ['-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=inkcov', '-o', '-', pdfPath],
+      { windowsHide: true, timeout: 300000, maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (err.code === 'ENOENT')
+            ? 'Ghostscript(gswin64c)가 설치되어 있지 않습니다. 프린터 잉크 판정에는 Ghostscript가 필요합니다.'
+            : ((stderr || err.message || '').toString().slice(0, 300) || 'Ghostscript 실행 실패');
+          return reject(new Error(msg));
+        }
+        const pages = [];
+        for (const line of String(stdout).split(/\r?\n/)) {
+          const m = line.match(/^\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+CMYK\s+OK/);
+          if (m) pages.push({ c: +m[1], m: +m[2], y: +m[3], k: +m[4] });
+        }
+        if (!pages.length) return reject(new Error('inkcov 출력을 해석하지 못했습니다.'));
+        resolve(pages);
+      });
+  });
+});
+
 // 렌더러 → 사용 끝난 변환 임시 PDF 삭제 (tmpdir 내 변환파일만)
 ipcMain.handle('temp:cleanup', (_, p) => {
   try {

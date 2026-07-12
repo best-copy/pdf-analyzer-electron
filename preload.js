@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 설치된 시스템 폰트 목록 (머리글/바닥글 글꼴 선택용)
   listFonts: () => ipcRenderer.invoke('fonts:list'),
 
+  // Ghostscript inkcov — 페이지별 CMYK 잉크 커버리지 (프린터 기준 컬러 판정)
+  inkCoverage: (pdfPath) => ipcRenderer.invoke('ink:coverage', pdfPath),
+
   // PDF.js 워커 콘텐츠 — asar 안에서도 fs로 안전하게 읽어 blob URL 생성용으로 반환
   getWorkerContent: () => fs.readFileSync(
     path.join(__dirname, 'src', 'libs', 'pdf.worker.min.js'), 'utf8'
