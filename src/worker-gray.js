@@ -7,6 +7,7 @@
  */
 
 importScripts('./libs/pako.min.js');
+importScripts('./libs/jpeg-decoder.js');   // jpeg-js: Adobe CMYK/YCCK JPEG 정밀 디코드용
 
 // ── JPEG SOF 마커 파싱: 이미지 컴포넌트 수 반환 ────────────────────────────────
 // 3 = YCbCr (일반 RGB JPEG), 4 = CMYK / YCCK (PowerPoint·InDesign 등), 1 = Grayscale
@@ -26,6 +27,28 @@ function getJpegComponentCount(data) {
     i += 2 + segLen;
   }
   return 3;
+}
+
+// ── Adobe APP14 마커 존재 여부 ──────────────────────────────────────────────
+// Adobe(Photoshop·InDesign) 계열 CMYK JPEG은 관례적으로 값이 '반전' 저장된다.
+// PDF 렌더러(GS·pdfium·pdf.js)는 APP14를 보고 반전 해석하지만, Chromium의
+// createImageBitmap은 반전을 적용하지 않고 디코드한다(Electron 31 실측 — 네거티브).
+// → 4컴포넌트 + APP14 'Adobe' JPEG은 그레이 변환 후 255-v 반전이 필요하다.
+function hasAdobeApp14(data) {
+  if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+  if (data.length < 4 || data[0] !== 0xFF || data[1] !== 0xD8) return false;
+  let i = 2;
+  while (i + 3 < data.length) {
+    if (data[i] !== 0xFF) { i++; continue; }
+    const marker = data[i + 1];
+    if (marker === 0xDA || marker === 0xD9) break; // SOS / EOI
+    const segLen = (data[i+2] << 8) | data[i+3];
+    if (marker === 0xEE && segLen >= 7 &&
+        data[i+4] === 0x41 && data[i+5] === 0x64 && data[i+6] === 0x6F &&
+        data[i+7] === 0x62 && data[i+8] === 0x65) return true;   // 'Adobe'
+    i += 2 + segLen;
+  }
+  return false;
 }
 
 // ── PNG 예측 필터 복원 ─────────────────────────────────────────────────────
@@ -246,23 +269,26 @@ function encodeLatin1(str) {
 }
 
 // applyOps용 정규식 pre-compile (매 호출 new RegExp 생성 방지 — 속도 최적화)
-const _NB = '(-?\\d*\\.?\\d+)', _WS = '\\s+', _TL = '(?=[\\s\\r\\n]|$)';
-const _RE_rg   = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}rg${_TL}`, 'gm');
-const _RE_RG   = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}RG${_TL}`, 'gm');
-const _RE_k    = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}k${_TL}`, 'gm');
-const _RE_K    = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}K${_TL}`, 'gm');
-const _RE_SCN4 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn4 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC4  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc4  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
-const _RE_SCN3 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn3 = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC3  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc3  = new RegExp(`${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
-const _RE_SCN1 = new RegExp(`${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn1 = new RegExp(`${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC1  = new RegExp(`${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc1  = new RegExp(`${_NB}${_WS}sc${_TL}`, 'gm');
+// _LB: 좌측 경계. 패턴 이름(/P8, /Meta682 등) 내부의 숫자를 색상 틴트로 오매칭하면
+//      '/P8 scn' → '/P-7.0000 g' 처럼 토큰이 깨져 Acrobat이 페이지 오류를 낸다.
+//      → 숫자 토큰 앞이 이름/숫자 구성문자가 아닐 때만(공백·연산자 경계) 매칭.
+const _NB = '(-?\\d*\\.?\\d+)', _WS = '\\s+', _TL = '(?=[\\s\\r\\n]|$)', _LB = '(?<![\\w/.#-])';
+const _RE_rg   = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}rg${_TL}`, 'gm');
+const _RE_RG   = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}RG${_TL}`, 'gm');
+const _RE_k    = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}k${_TL}`, 'gm');
+const _RE_K    = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}K${_TL}`, 'gm');
+const _RE_SCN4 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn4 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC4  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc4  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
+const _RE_SCN3 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn3 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC3  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc3  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
+const _RE_SCN1 = new RegExp(`${_LB}${_NB}${_WS}SCN${_TL}`, 'gm');
+const _RE_scn1 = new RegExp(`${_LB}${_NB}${_WS}scn${_TL}`, 'gm');
+const _RE_SC1  = new RegExp(`${_LB}${_NB}${_WS}SC${_TL}`, 'gm');
+const _RE_sc1  = new RegExp(`${_LB}${_NB}${_WS}sc${_TL}`, 'gm');
 
 function grayifyStream(bytes, csGrayMap, dotGain) {
   const s = decodeLatin1(bytes);
@@ -314,13 +340,15 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
       fillCS = '/' + name;
       // csGrayMap 키는 '/' 포함 형태 (예: '/CS2') → '/' + name 으로 조회
       const info = csGrayMap && csGrayMap['/' + name];
-      if (info && info.type === 'Pattern') return `/${name} cs`; // Pattern CS는 유지
+      // Pattern CS는 유지 — 제거하면 뒤따르는 '/Pn scn' 패턴 호출이 깨진다.
+      // 내장 '/Pattern' 은 csGrayMap에 없으므로 이름으로도 직접 판정.
+      if (name === 'Pattern' || (info && info.type === 'Pattern')) return `/${name} cs`;
       return '';
     });
     seg = seg.replace(/\/(\w+)\s+CS(?=[\s\r\n]|$)/gm, (_, name) => {
       strokeCS = '/' + name;
       const info = csGrayMap && csGrayMap['/' + name];
-      if (info && info.type === 'Pattern') return `/${name} CS`; // Pattern CS는 유지
+      if (name === 'Pattern' || (info && info.type === 'Pattern')) return `/${name} CS`;
       return '';
     });
     // rg/RG (RGB)
@@ -537,39 +565,53 @@ self.onmessage = async function(e) {
       const jpegComps = getJpegComponentCount(jpegArr); // 3=YCbCr, 4=CMYK/YCCK
       let gray = null, iw, ih;
 
-      // 방법 1: ImageDecoder
-      try {
-        if (typeof ImageDecoder !== 'undefined') {
-          if (jpegComps === 3) {
-            // 표준 YCbCr JPEG: colorSpaceConversion:'none' → I420 Y-플레인 직접 추출
-            const decoder = new ImageDecoder({
-              data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
-              type: 'image/jpeg',
-              colorSpaceConversion: 'none',
-            });
-            const { image: frame } = await decoder.decode();
-            iw = frame.codedWidth; ih = frame.codedHeight;
-            const buf = new ArrayBuffer(Math.ceil(iw * ih * 3 / 2));
-            await frame.copyTo(buf, { format: 'I420' });
-            frame.close(); decoder.close();
-            gray = new Uint8Array(buf.slice(0, iw * ih));
-          } else {
-            // CMYK / YCCK (4ch, PowerPoint·InDesign): ICC 색상 보정 → RGBA 변환
-            const decoder = new ImageDecoder({
-              data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
-              type: 'image/jpeg',
-              colorSpaceConversion: 'default', // ICC 프로파일 적용하여 sRGB로 변환
-            });
-            const { image: frame } = await decoder.decode();
-            iw = frame.codedWidth; ih = frame.codedHeight;
-            const buf = new ArrayBuffer(iw * ih * 4);
-            await frame.copyTo(buf, { format: 'RGBA' });
-            frame.close(); decoder.close();
-            const rgba = new Uint8Array(buf);
-            gray = new Uint8Array(iw * ih);
-            for (let pi = 0; pi < gray.length; pi++)
-              gray[pi] = Math.round(0.299*rgba[pi*4] + 0.587*rgba[pi*4+1] + 0.114*rgba[pi*4+2]);
+      // 방법 0: CMYK/YCCK(4comp)는 jpeg-js JpegImage로 '정밀' 디코드.
+      // Chromium 네이티브 디코더는 Adobe CMYK를 잘못 변환해 계조가 깨지고(네거티브),
+      // jpeg-js 내장 CMYK→RGB(copyToImageData)도 관례와 어긋난다(GS 대비 오차 118/255).
+      // → getData의 raw 산출을 받아 GS 정답으로 캘리브레이션한 공식을 직접 적용(오차 8/255).
+      // 0.4.4 getData(4comp) 산출 semantics:
+      //   YCCK(transform=2):  [R_ycc, G_ycc, B_ycc, 255-K_raw]  (R_ycc = 보색휘도 = 255-C_true)
+      //   분리 CMYK(그 외):    [C_true, M_true, Y_true, 255-K_raw]
+      // data[3] = 255-K_raw = K의 밝기 계수(1-K). 검증식: gray = lum(보색채널) × data[3]/255
+      if (jpegComps === 4 && typeof JpegImage === 'function') {
+        try {
+          JpegImage.resetMaxMemoryUsage(4096 * 1024 * 1024);
+          const j = new JpegImage();
+          j.opts = { colorTransform: undefined, tolerantDecoding: true,
+                     maxResolutionInMP: 400, maxMemoryUsageInMB: 4096 };
+          j.parse(jpegArr);
+          iw = j.width; ih = j.height;
+          const d4 = j.getData(iw, ih);   // 4바이트/px
+          const ycck = !!(j.adobe && j.adobe.transformCode === 2);
+          gray = new Uint8Array(iw * ih);
+          for (let pi = 0; pi < gray.length; pi++) {
+            const o = pi * 4;
+            // 보색(밝기 방향) 채널: YCCK는 그대로, 분리 CMYK는 255-값
+            const r = ycck ? d4[o]     : 255 - d4[o];
+            const g = ycck ? d4[o + 1] : 255 - d4[o + 1];
+            const b = ycck ? d4[o + 2] : 255 - d4[o + 2];
+            const L = 0.299 * r + 0.587 * g + 0.114 * b;
+            gray[pi] = Math.round(L * d4[o + 3] / 255);
           }
+        } catch (e) { gray = null; }   // 실패 시 아래 근사 경로(방법 2 + 반전 보정) 폴백
+      }
+
+      // 방법 1: ImageDecoder — 표준 YCbCr(3comp)만. CMYK(4comp)는 환경별 반전 처리가
+      // 제각각이라(이중 반전 위험) 항상 방법 2 + 명시적 반전 보정으로 처리한다.
+      try {
+        if (!gray && typeof ImageDecoder !== 'undefined' && jpegComps === 3) {
+          // 표준 YCbCr JPEG: colorSpaceConversion:'none' → I420 Y-플레인 직접 추출
+          const decoder = new ImageDecoder({
+            data: new ReadableStream({ start(ctrl) { ctrl.enqueue(jpegArr); ctrl.close(); } }),
+            type: 'image/jpeg',
+            colorSpaceConversion: 'none',
+          });
+          const { image: frame } = await decoder.decode();
+          iw = frame.codedWidth; ih = frame.codedHeight;
+          const buf = new ArrayBuffer(Math.ceil(iw * ih * 3 / 2));
+          await frame.copyTo(buf, { format: 'I420' });
+          frame.close(); decoder.close();
+          gray = new Uint8Array(buf.slice(0, iw * ih));
         }
       } catch(e) { gray = null; }
 
@@ -586,11 +628,35 @@ self.onmessage = async function(e) {
         gray = new Uint8Array(iw * ih);
         for (let pi = 0; pi < gray.length; pi++)
           gray[pi] = Math.round(0.299*d[pi*4] + 0.587*d[pi*4+1] + 0.114*d[pi*4+2]);
+        // ★ Adobe 반전 CMYK 보정: Photoshop 계열 CMYK JPEG(APP14 'Adobe')은 값이
+        // 반전 저장되는데 Chromium 디코더는 반전을 적용하지 않아 네거티브로 나온다.
+        // (증상: 변환 결과 사진이 필름 음화처럼 반전 — 옥산서원 문서로 실측 확인)
+        if (jpegComps === 4 && hasAdobeApp14(jpegArr)) {
+          for (let pi = 0; pi < gray.length; pi++) gray[pi] = 255 - gray[pi];
+        }
       }
 
       // Separation 틴트 LUT (메인 스레드에서 전달) — 픽셀값 t → 그레이 변환
       if (lut) { const tl = new Uint8Array(lut); for (let i = 0; i < gray.length; i++) gray[i] = tl[gray[i]]; }
       if (dotGain) { const dl = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = dl[gray[i]]; }
+
+      // ★ 용량 최적화: 원본이 JPEG(사진)이므로 흑백도 JPEG(DCTDecode)로 재인코딩.
+      // 픽셀을 Flate로 재압축하면 JPEG 압축이 사라져 원본보다 몇 배 커진다.
+      // gray → RGBA(R=G=B) → OffscreenCanvas → JPEG. (실패 시 아래 Flate로 폴백)
+      try {
+        const canvas = new OffscreenCanvas(iw, ih);
+        const cx = canvas.getContext('2d');
+        const imgd = cx.createImageData(iw, ih);
+        const dd = imgd.data;
+        for (let pi = 0; pi < gray.length; pi++) { const v = gray[pi]; dd[pi*4] = v; dd[pi*4+1] = v; dd[pi*4+2] = v; dd[pi*4+3] = 255; }
+        cx.putImageData(imgd, 0, 0);
+        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
+        const jb = new Uint8Array(await blob.arrayBuffer());
+        const jpegBuf = jb.buffer.slice(jb.byteOffset, jb.byteOffset + jb.length);
+        self.postMessage({ id, result: { jpeg: jpegBuf, w: iw, h: ih } }, [jpegBuf]);
+        return;
+      } catch (encErr) { /* JPEG 인코딩 실패 → Flate 폴백 */ }
+
       const predicted  = applyPNGPredictorGray(gray, iw, ih);
       const deflated   = pako.deflate(predicted, { level: 1 });
       // pako는 단일 청크일 때 내부 버퍼의 subarray를 반환할 수 있음

@@ -4,49 +4,246 @@ const fs   = require('fs');
 const os   = require('os');
 const { execFile } = require('child_process');
 
+// ── 성능: GPU 가속·래스터화 활성화 (캔버스·PDF 렌더링 가속) ──────────────────
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
+
+// 렌더러가 보고하는 '저장 안 한 작업' 여부 + 강제 종료 플래그
+let unsavedWork = false;
+let forceClose  = false;
+
+// 이전 세션에서 남은 변환 임시 PDF/HTML/편집 임시파일 정리 (누적 방지)
+function sweepTempConversions() {
+  try {
+    const dir = os.tmpdir();
+    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin)$/i;
+    for (const f of fs.readdirSync(dir)) {
+      if (re.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} }
+    }
+  } catch (e) {}
+}
+
+// ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) — 메인·편집기 창 공통 ──────────────────
+function installZoomShortcuts(win) {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!input.control) return;
+    const wc = win.webContents;
+    if (input.type !== 'keyDown') return;
+    if (input.key === '=' || input.key === '+') {
+      wc.setZoomLevel(wc.getZoomLevel() + 0.5); event.preventDefault();
+    } else if (input.key === '-') {
+      wc.setZoomLevel(wc.getZoomLevel() - 0.5); event.preventDefault();
+    } else if (input.key === '0') {
+      wc.setZoomLevel(0); event.preventDefault();
+    }
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width:  1280,
     height: 900,
     minWidth:  900,
     minHeight: 600,
-    title: 'PDF 분석기 — 일청기획',
+    title: 'PDF Editor',
     icon: path.join(__dirname, 'src', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,   // preload에서 fs/path 등 Node.js 내장 모듈 사용 허용
+      backgroundThrottling: false, // 창이 비활성일 때도 렌더링 속도 유지
     }
   });
 
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   // win.webContents.openDevTools(); // 디버그 시 주석 해제
 
-  // ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) ────────────────────────────────────
-  win.webContents.on('before-input-event', (event, input) => {
-    if (!input.control) return;
-    const wc = win.webContents;
-    if (input.type !== 'keyDown') return;
-
-    if (input.key === '=' || input.key === '+') {
-      wc.setZoomLevel(wc.getZoomLevel() + 0.5);
-      event.preventDefault();
-    } else if (input.key === '-') {
-      wc.setZoomLevel(wc.getZoomLevel() - 0.5);
-      event.preventDefault();
-    } else if (input.key === '0') {
-      wc.setZoomLevel(0);
-      event.preventDefault();
-    }
+  // ── 종료 전 저장 여부 확인 ──────────────────────────────────────────────
+  win.on('close', (e) => {
+    if (forceClose || !unsavedWork) return;
+    e.preventDefault();
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['취소', '저장 안 하고 종료'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: '종료 확인',
+      message: '저장하지 않은 편집·적용 결과가 있습니다.',
+      detail: "저장하려면 '취소'를 누른 뒤 ‘📥 다운로드’로 저장하세요.\n그래도 종료하시겠습니까?",
+    });
+    if (choice === 1) { forceClose = true; win.destroy(); }
   });
+
+  // ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) ────────────────────────────────────
+  installZoomShortcuts(win);
 }
 
+// ── 페이지 내부편집기 창 ────────────────────────────────────────────────────
+// 큰 PDF는 IPC로 직렬화하지 않는다(50MB+ 손상 우려). 원본/편집 결과 PDF는 임시파일로
+// 주고받고(경로만 IPC), 편집기는 preload.readFile(fs)로 직접 읽는다.
+// pendingEditorPayload: 편집기 webContents.id → { payload(작은 JSON+경로), openerId }
+const pendingEditorPayload = new Map();
+
+function createEditorWindow(openerId, payload) {
+  const parent = BrowserWindow.getAllWindows().find(w => w.webContents.id === openerId);
+  const win = new BrowserWindow({
+    width: 1400, height: 950,
+    minWidth: 1000, minHeight: 640,
+    title: '내부 편집기 — PDF 분석기',
+    icon: path.join(__dirname, 'src', 'icon.ico'),
+    parent: parent || undefined,   // 부모 위에 표시(모달 아님 — 페이지 탐색 가능)
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+    }
+  });
+  const wcId = win.webContents.id;   // 'closed' 후엔 win.webContents 접근 시 destroyed 예외 → 미리 캡처
+  pendingEditorPayload.set(wcId, { payload, openerId });
+  installZoomShortcuts(win);
+  win.loadFile(path.join(__dirname, 'src', 'editor.html'));
+  win.on('closed', () => { pendingEditorPayload.delete(wcId); });
+  return win;
+}
+
+// 편집기 열기 요청 (opener 렌더러 → main)
+ipcMain.handle('editor:open', (event, payload) => {
+  createEditorWindow(event.sender.id, payload || {});
+  return true;
+});
+// 편집기 창이 로드 후 자신의 페이로드를 당겨간다
+ipcMain.handle('editor:pull', (event) => {
+  const entry = pendingEditorPayload.get(event.sender.id);
+  return entry ? entry.payload : null;
+});
+// 편집기 저장 → opener 렌더러로 결과 전달 후 편집기 창 닫기
+ipcMain.on('editor:save', (event, result) => {
+  const entry = pendingEditorPayload.get(event.sender.id);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (entry) {
+    const opener = BrowserWindow.getAllWindows().find(w => w.webContents.id === entry.openerId);
+    if (opener && !opener.isDestroyed()) opener.webContents.send('editor:result', result || {});
+  }
+  if (win && !win.isDestroyed()) win.close();
+});
+// 편집기 취소로 닫기 (결과 전달 없음)
+ipcMain.on('editor:close', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.close();
+});
+
 app.whenReady().then(() => {
+  sweepTempConversions(); // 시작 시 이전 세션 변환 임시파일 정리
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('will-quit', sweepTempConversions); // 종료 시에도 한 번 더 정리
+
+// 렌더러 → '저장 안 한 작업' 상태 보고
+ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });
+
+// 렌더러 → 설치된 시스템 폰트 목록 (이름·경로). 임베드 가능한 TTF/OTF만.
+// 폰트 레지스트리(HKLM/HKCU)에서 표시 이름→파일을 읽어 반환. TTC는 pdf-lib 임베드 불가라 제외.
+ipcMain.handle('fonts:list', () => {
+  return new Promise((resolve) => {
+    const psScript = [
+      // 한글 폰트명이 깨지지 않도록 stdout 인코딩을 UTF-8로 (Node는 utf8로 디코드)
+      '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8',
+      '$ErrorActionPreference="SilentlyContinue"',
+      '$out=@()',
+      "$hives=@('HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts','HKCU:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts')",
+      'foreach($h in $hives){ if(Test-Path $h){ foreach($p in (Get-ItemProperty $h).PSObject.Properties){',
+      '  $v=$p.Value',
+      "  if($v -is [string] -and $v -match '\\.(ttf|otf)$'){",
+      "    if($v -match '[\\\\/]'){ $path=$v } else { $path=Join-Path $env:WINDIR ('Fonts\\'+$v) }",
+      "    if(Test-Path $path){ $name=$p.Name -replace ' \\((TrueType|OpenType)\\)',''; $out+=[pscustomobject]@{name=$name;file=$path} }",
+      '  } } } }',
+      '$out | Sort-Object name -Unique | ConvertTo-Json -Compress',
+    ].join('; ');
+    const enc = Buffer.from(psScript, 'utf16le').toString('base64');
+    execFile('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
+      { windowsHide: true, timeout: 20000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err || !stdout) { resolve([]); return; }
+        try {
+          const j = JSON.parse(stdout.trim());
+          resolve(Array.isArray(j) ? j : [j]);
+        } catch (e) { resolve([]); }
+      });
+  });
+});
+
+// ── IPC: Ghostscript inkcov — 페이지별 CMYK 잉크 커버리지 (프린터 기준 컬러 판정) ──
+// 렌더러가 임시파일(pdfedit_*.pdf)로 PDF를 넘기면 gswin64c inkcov로 페이지별
+// C/M/Y/K 비율을 파싱해 반환한다. CMY>0 이면 프린터가 컬러로 과금할 수 있는 페이지.
+// 반드시 '-o -'(stdout)로 받아야 함 — '-o nul'이면 커버리지 출력이 사라진다.
+// gswin64c 실행 파일 탐색 — PATH에 없으면 표준 설치 폴더(C:\Program Files\gs\gs*)에서 찾는다.
+let _gsPath = null;
+function findGhostscript() {
+  if (_gsPath) return _gsPath;
+  for (const pf of [process.env['ProgramFiles'], process.env['ProgramFiles(x86)']]) {
+    if (!pf) continue;
+    const gsRoot = path.join(pf, 'gs');
+    try {
+      const vers = fs.readdirSync(gsRoot).filter(d => /^gs[\d.]+$/i.test(d)).sort().reverse();
+      for (const v of vers) {
+        const exe = path.join(gsRoot, v, 'bin', 'gswin64c.exe');
+        if (fs.existsSync(exe)) { _gsPath = exe; return exe; }
+      }
+    } catch (e) {}
+  }
+  _gsPath = 'gswin64c';   // PATH 폴백
+  return _gsPath;
+}
+
+ipcMain.handle('ink:coverage', (_, pdfPath) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const base = path.basename(pdfPath || '');
+      if (!/^pdfedit_.*\.pdf$/i.test(base)) return reject(new Error('잘못된 임시파일 경로'));
+      if (path.dirname(pdfPath) !== os.tmpdir()) return reject(new Error('잘못된 임시파일 경로'));
+    } catch (e) { return reject(e); }
+    execFile(findGhostscript(),
+      ['-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=inkcov', '-o', '-', pdfPath],
+      { windowsHide: true, timeout: 300000, maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (err.code === 'ENOENT')
+            ? 'Ghostscript(gswin64c)가 설치되어 있지 않습니다. 프린터 잉크 판정에는 Ghostscript가 필요합니다.'
+            : ((stderr || err.message || '').toString().slice(0, 300) || 'Ghostscript 실행 실패');
+          return reject(new Error(msg));
+        }
+        const pages = [];
+        for (const line of String(stdout).split(/\r?\n/)) {
+          const m = line.match(/^\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+CMYK\s+OK/);
+          if (m) pages.push({ c: +m[1], m: +m[2], y: +m[3], k: +m[4] });
+        }
+        if (!pages.length) return reject(new Error('inkcov 출력을 해석하지 못했습니다.'));
+        resolve(pages);
+      });
+  });
+});
+
+// 렌더러 → 사용 끝난 변환 임시 PDF 삭제 (tmpdir 내 변환파일만)
+ipcMain.handle('temp:cleanup', (_, p) => {
+  try {
+    if (!p) return false;
+    const base = path.basename(p);
+    if (!/^(hwpconv|officeconv|adobeconv)_.*\.pdf$/i.test(base)) return false;
+    if (path.dirname(p) !== os.tmpdir()) return false;
+    fs.unlinkSync(p);
+    return true;
+  } catch (e) { return false; }
 });
 
 app.on('window-all-closed', () => {
@@ -56,15 +253,16 @@ app.on('window-all-closed', () => {
 // ── IPC: 파일 열기 다이얼로그 ──────────────────────────────────────────────
 ipcMain.handle('dialog:openFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
-    title: '파일 선택 (PDF · HWP · HWPX · MS Office)',
+    title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe)',
     filters: [
-      { name: '문서 전체 (PDF·HWP·Office)',
-        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'] },
+      { name: '문서 전체 (PDF·HWP·Office·Adobe)',
+        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'ai', 'psd', 'indd'] },
       { name: 'PDF',  extensions: ['pdf'] },
       { name: '한글 (HWP·HWPX)', extensions: ['hwp', 'hwpx'] },
       { name: 'Word (DOC·DOCX)', extensions: ['doc', 'docx'] },
       { name: 'Excel (XLS·XLSX)', extensions: ['xls', 'xlsx'] },
       { name: 'PowerPoint (PPT·PPTX)', extensions: ['ppt', 'pptx'] },
+      { name: 'Adobe (AI·PSD·INDD)', extensions: ['ai', 'psd', 'indd'] },
     ],
     properties: ['openFile', 'multiSelections'],
   });
@@ -197,5 +395,43 @@ ipcMain.handle('office:convertToPdf', (_, srcPath) => {
   const run = () => convertOfficeToPdf(srcPath);
   const result = officeQueue.then(run, run);
   officeQueue = result.catch(() => {});
+  return result;
+});
+
+// ── IPC: Adobe(Photoshop·InDesign·Illustrator) → PDF 변환 (Adobe COM 자동화) ──
+// 각 Adobe 앱은 단일 인스턴스로만 안전하고 첫 실행이 느리므로(수십 초) 큐로 순차 처리.
+// PDF 호환 .ai는 렌더러에서 직접 처리하므로 여기로 오지 않는다(비호환 .ai만 폴백).
+let adobeQueue = Promise.resolve();
+
+function convertAdobeToPdf(srcPath) {
+  return new Promise((resolve, reject) => {
+    const outPath = path.join(
+      os.tmpdir(),
+      `adobeconv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.pdf`
+    );
+    const script = path.join(__dirname, 'src', 'convert_adobe.ps1');
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+       '-InPath', srcPath, '-OutPath', outPath],
+      { windowsHide: true, timeout: 300000 },   // Adobe 앱 실행이 느려 5분 여유
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr || err.message || '').toString().trim();
+          return reject(new Error('Adobe 파일 변환 실패: ' + (msg || '알 수 없는 오류')));
+        }
+        if (!fs.existsSync(outPath)) {
+          return reject(new Error('Adobe 파일 변환 실패: PDF가 생성되지 않았습니다.'));
+        }
+        resolve(outPath);
+      }
+    );
+  });
+}
+
+ipcMain.handle('adobe:convertToPdf', (_, srcPath) => {
+  const run = () => convertAdobeToPdf(srcPath);
+  const result = adobeQueue.then(run, run);
+  adobeQueue = result.catch(() => {});
   return result;
 });
