@@ -314,6 +314,36 @@
       });
     })();
 
+    // 전체화면 작업공간: 좌(편집 사이드바)/우(미리보기) 경계 드래그로 폭 조절
+    const WS_MIN = 320, WS_MAX_MARGIN = 360;   // 오른쪽 미리보기 최소폭 확보
+    function applyWsWidth(w) {
+      const max = Math.max(WS_MIN, window.innerWidth - WS_MAX_MARGIN);
+      const width = Math.min(max, Math.max(WS_MIN, Math.round(w)));
+      document.documentElement.style.setProperty('--edit-ws-width', width + 'px');
+      try { localStorage.setItem('editWsWidth', width); } catch (e) {}
+    }
+    (function initWsResizer() {
+      const saved = parseInt(localStorage.getItem('editWsWidth'));
+      if (saved) document.documentElement.style.setProperty('--edit-ws-width', saved + 'px');
+      const handle = document.getElementById('editWsResizer');
+      if (!handle) return;
+      let resizing = false;
+      handle.addEventListener('mousedown', e => {
+        e.preventDefault(); resizing = true;
+        handle.classList.add('es-resizing');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      });
+      document.addEventListener('mousemove', e => { if (resizing) applyWsWidth(e.clientX); });  // 사이드바가 왼쪽 → 폭 = clientX
+      document.addEventListener('mouseup', () => {
+        if (!resizing) return;
+        resizing = false;
+        handle.classList.remove('es-resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      });
+    })();
+
     // 사이드바 위에서 스크롤 시 메인 페이지가 함께 움직이지 않도록 격리
     // (내용이 다 보여 스크롤할 게 없으면 본문 스크롤도 차단, 끝에 닿으면 전파 차단)
     (function isolateSidebarScroll() {
@@ -844,12 +874,17 @@
         const sbFrag = document.createDocumentFragment();
         // 출력→원본 페이지 매핑 (흑백 선택 클릭용). 길이 불일치 시 클릭 비활성.
         const srcMap = computeOutputSourceMap();
-        const canSelect = srcMap.length === total;
+        // computeOutputSourceMap은 임포징을 모른다(원본 페이지 1:1 기준). 복제 2부·반복처럼
+        // 시트 수가 원본 페이지 수와 우연히 같아지면 매핑이 맞는 것처럼 통과해 엉뚱한 페이지가
+        // 흑백 선택된다 → 임포징 포함 상태에서는 1:1 매핑 자체를 쓰지 않는다.
+        const canSelect = srcMap.length === total && !impIncluded();
         const pvCells = [];
         let colorCount = 0;
         // 1:1(비N-up) 페이지는 (해상도·레이아웃설정·원본페이지·회전·흑백선택)이 그대로면
         // 이전 렌더의 캔버스를 재사용 — 한 페이지만 회전해도 나머지 전체를 다시 그리지 않는다.
-        const layoutSig = JSON.stringify(editSettings);
+        // 캔버스 캐시 키에 임포징 상태(impSignature)를 포함 — editSettings에는 임포징 옵션이
+        // 없어서, 이게 빠지면 임포징을 바꿔도 이전 캔버스를 재사용해 옛 모양이 남는다.
+        const layoutSig = JSON.stringify(editSettings) + impSignature();
         const pnMap = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r]));
         const pvPageCacheNext = new Map();
         for (let i = 1; i <= total; i++) {
@@ -1107,11 +1142,16 @@
       g('sb-opt-bw').classList.toggle('active', !!processingOptions.bw);
       const sbInk = g('sb-opt-inkNorm');
       if (sbInk) sbInk.classList.toggle('active', !!processingOptions.inkNorm);
-      const ab = g('applyBtn'), db = g('downloadBtn'), cb = g('clearOptsBtn');
-      g('sb-applyBtn').disabled    = ab ? ab.disabled : true;
-      g('sb-downloadBtn').disabled = db ? db.disabled : true;
+      // 좌측 패널 적용/다운로드 버튼 상태는 직접 계산 (상단 툴바 버튼은 제거됨 — 여기와 오른쪽 편집 패널로 통합)
+      const anyActive = Object.values(processingOptions).some(v => v);
+      const hasMod = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0
+                     || (typeof hasAnyActiveLayout === 'function' && hasAnyActiveLayout())
+                     || (typeof hasContentEdits === 'function' && hasContentEdits()));
+      const upToDate = !!processedPdfBytes;
+      g('sb-applyBtn').disabled    = applying || !hasMod || upToDate;
+      g('sb-downloadBtn').disabled = applying || !originalPdfBytes;
       g('sb-downloadBtn').classList.toggle('btn-dim', !processedPdfBytes);
-      g('sb-clearOptsBtn').style.display = (cb && cb.style.display !== 'none') ? '' : 'none';
+      g('sb-clearOptsBtn').style.display = anyActive ? '' : 'none';
       g('sb-refreshBtn').style.display = '';
     }
 

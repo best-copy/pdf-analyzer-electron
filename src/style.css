@@ -115,7 +115,7 @@
     .sbp-opt:not(.active), .sbp-clear,
     .chapter-name, .drop-hint,
     #pageCtxMenu .ctx-item > span:first-child,
-    .es-head-title, .es-section-title,
+    .es-head-title,
     .q-print-btn, .q-pdf-btn,
     .merge-title, .tab-name, .ws-title, #editToggle,
     .ic { filter: grayscale(1); }
@@ -137,13 +137,29 @@
       margin-top: 14px; justify-content: center;
     }
     .recent-label { font-size: 0.78em; color: #a1a1a6; font-weight: 600; filter: grayscale(1); }
+    .recent-item {
+      display: inline-flex; align-items: stretch; border-radius: 14px; overflow: hidden;
+      border: 1px solid #e8e8ed; background: #f5f5f7; transition: all 0.15s;
+    }
+    .recent-item:hover { background: #fff8db; border-color: #ffd60a; }
     .recent-chip {
       max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      padding: 5px 12px; border-radius: 14px; cursor: pointer;
-      border: 1px solid #e8e8ed; background: #f5f5f7; color: #48484a;
-      font-size: 0.78em; transition: all 0.15s;
+      padding: 5px 6px 5px 12px; cursor: pointer;
+      border: none; background: transparent; color: #48484a;
+      font-size: 0.78em;
     }
-    .recent-chip:hover { background: #fff8db; border-color: #ffd60a; color: #1d1d1f; }
+    .recent-item:hover .recent-chip { color: #1d1d1f; }
+    .recent-del {
+      border: none; background: transparent; cursor: pointer;
+      color: #a1a1a6; font-size: 0.95em; line-height: 1; padding: 0 9px 0 4px;
+    }
+    .recent-del:hover { color: #dc3545; }
+    .recent-clear {
+      padding: 5px 12px; border-radius: 14px; cursor: pointer;
+      border: 1px dashed #d0d0d5; background: transparent; color: #8e8e93;
+      font-size: 0.76em; transition: all 0.15s;
+    }
+    .recent-clear:hover { background: #fdecec; border-color: #dc3545; color: #c0392b; }
 
     /* ---- 탭 바 ---- */
     .tab-bar {
@@ -912,6 +928,17 @@
     .sbp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     /* 적용 전이라 적용본은 없지만, 우클릭으로 원본 저장이 가능한 상태 표시 */
     .btn-dim:not(:disabled) { opacity: 0.55; cursor: pointer; }
+    /* '적용 필요' 강조 — 자동 반영이 꺼져 있어 설정만 바뀌고 화면은 그대로인 상태.
+       버튼 둘레를 이중 링으로 감싼다: 안쪽 검정 테두리(밝은 메인 바에서 보임) +
+       바깥으로 퍼지는 노랑 파동(어두운 편집 사이드바에서 보임) → 두 배경 모두에서 눈에 띈다. */
+    @keyframes needsApplyRing {
+      0%   { box-shadow: 0 0 0 2px #1d1d1f, 0 0 0 2px  rgba(255,214,10,0.85); }
+      70%  { box-shadow: 0 0 0 2px #1d1d1f, 0 0 0 10px rgba(255,214,10,0.00); }
+      100% { box-shadow: 0 0 0 2px #1d1d1f, 0 0 0 10px rgba(255,214,10,0.00); }
+    }
+    .needs-apply:not(:disabled) {
+      animation: needsApplyRing 1.5s ease-out infinite;
+    }
     body.sidebar-open { padding-left: calc(var(--sb-width) + 12px); }
     @keyframes appleNav {
       0%   { transform: scale(1);     box-shadow: 0 2px  8px rgba(0,0,0,0.08);  }
@@ -1000,18 +1027,30 @@
     #editWsBar .ws-cancel { background: #2c2c2e; color: #f5f5f7; }
     #editWsBar .ws-cancel:hover { background: #3a3a3c; }
     body.edit-fullscreen { padding-right: 0 !important; }
+    :root { --edit-ws-width: 400px; }
     body.edit-fullscreen #editSidebar {
-      left: 0; right: auto; top: 52px; width: 400px; z-index: 600; display: flex;
+      left: 0; right: auto; top: 52px; width: var(--edit-ws-width); z-index: 600; display: flex;
       border-left: none; border-right: 1px solid rgba(255,255,255,0.08);
     }
     body.edit-fullscreen #previewSection {
-      position: fixed; left: 400px; right: 0; top: 52px; bottom: 0;
+      position: fixed; left: var(--edit-ws-width); right: 0; top: 52px; bottom: 0;
       overflow-y: auto; z-index: 590; background: #fff; margin: 0; padding: 20px 28px;
     }
     body.edit-fullscreen #editToggle, body.edit-fullscreen #editResizer { display: none; }
+    /* 전체화면 작업공간 좌/우 폭 조절 핸들 (사이드바-미리보기 경계) */
+    #editWsResizer {
+      position: fixed; top: 52px; bottom: 0; width: 8px;
+      left: calc(var(--edit-ws-width) - 4px);
+      cursor: col-resize; z-index: 605; display: none;
+    }
+    body.edit-fullscreen #editWsResizer { display: block; }
+    #editWsResizer:hover, #editWsResizer.es-resizing { background: rgba(255,214,10,0.5); }
     /* 작업공간에선 사이드바 헤더의 닫기·전체화면 아이콘, 미리보기의 '원본 보기' 버튼 숨김(상단 바가 대체) */
     body.edit-fullscreen .es-head .es-close { display: none; }
     body.edit-fullscreen #previewSection .preview-close { display: none; }
+    /* 작업공간 왼쪽(페이지 편집) 패널: 적용/다운로드 버튼 생략(상단 바의 '저장하고 닫기'가 대체).
+       편집 설정 초기화는 헤더 우측(es-head-reset)에 남아 항상 보인다. */
+    body.edit-fullscreen .es-actions { display: none; }
 
     .es-head {
       position: sticky; top: 0; z-index: 2;
@@ -1020,6 +1059,13 @@
       display: flex; align-items: center; justify-content: space-between;
     }
     .es-head-title { font-size: 15px; font-weight: 700; }
+    .es-head-actions { display: flex; align-items: center; gap: 4px; }
+    .es-head-reset {
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.14); color: #d1d1d6;
+      padding: 4px 9px; border-radius: 7px; cursor: pointer; font-size: 11.5px; font-family: inherit;
+      white-space: nowrap;
+    }
+    .es-head-reset:hover { background: #3a3a3c; color: #fff; }
     .es-close {
       background: none; border: none; color: #8e8e93; cursor: pointer;
       font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px;
@@ -1028,7 +1074,7 @@
 
     .es-section { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
     .es-section-title {
-      font-size: 12px; font-weight: 700; color: #48484a; text-transform: uppercase;
+      font-size: 12px; font-weight: 700; color: #ffd60a; text-transform: uppercase;
       letter-spacing: 0.4px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
     }
     .es-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -1109,6 +1155,38 @@
       padding: 8px; border-radius: 8px; cursor: pointer; font-size: 12px; font-family: inherit;
     }
     .es-reset-btn:hover { background: #3a3a3c; }
+
+    /* ── 임포징 프로파일 목록 관리 (전체 목록 인라인 편집) ── */
+    .imp-prof-list {
+      max-height: 280px; overflow-y: auto; margin-top: 6px;
+      background: #242426; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
+    }
+    .imp-prof-list::-webkit-scrollbar { width: 10px; }
+    .imp-prof-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.28); border-radius: 5px; }
+    .imp-prof-row {
+      display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px;
+    }
+    .imp-prof-row:last-child { border-bottom: none; }
+    .imp-prof-row.sel { background: rgba(255,214,10,0.14); }
+    .imp-prof-row.dragging { opacity: 0.45; }
+    .imp-prof-row.drop-above { box-shadow: inset 0 2px 0 0 #ffd60a; }
+    .imp-prof-row.drop-below { box-shadow: inset 0 -2px 0 0 #ffd60a; }
+    .imp-prof-drag { color: #6e6e73; cursor: grab; flex: 0 0 auto; font-size: 13px; user-select: none; }
+    .imp-prof-drag:active { cursor: grabbing; }
+    .imp-prof-ord { color: #8e8e93; min-width: 20px; text-align: right; flex: 0 0 auto; }
+    .imp-prof-name {
+      flex: 1; min-width: 0; color: #f5f5f7; cursor: pointer;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .imp-prof-name:hover { color: #ffd60a; }
+    .imp-prof-meta { color: #8e8e93; font-size: 10.5px; flex: 0 0 auto; }
+    .imp-prof-b {
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.14); color: #f5f5f7;
+      border-radius: 6px; padding: 2px 6px; font-size: 11px; cursor: pointer; flex: 0 0 auto;
+    }
+    .imp-prof-b:hover { background: #48484a; }
+    .imp-prof-b:disabled { opacity: 0.3; cursor: default; }
 
     /* ── 적용 결과(메인 영역에 그대로 표시) ── */
     .preview-section { margin: 30px 0 8px; }

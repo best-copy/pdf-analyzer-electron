@@ -2,7 +2,7 @@
     let _livePvTimer = null, _liveRunning = false, _liveQueued = false;
     // 미리보기가 필요한 상태: 편집 레이아웃이 있거나, 흑백변환+선택이 있음
     function shouldPreview() {
-      return !!originalPdfBytes && (hasAnyActiveLayout() || (processingOptions.bw && selectedPages.size > 0));
+      return !!originalPdfBytes && (hasAnyActiveLayout() || _impEnabled || (processingOptions.bw && selectedPages.size > 0));
     }
     function previewVisible() {
       const s = document.getElementById('previewSection');
@@ -41,6 +41,7 @@
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
         if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
+        if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
         processedPdfBytes = pdfBytes;
         processedFileName = defaultProcessedName();
         setDirty(true);
@@ -130,10 +131,28 @@
     // 다운로드용 최종 바이트 (용량 최적화 base + 레이아웃 변환)
     // 결과를 상태 시그니처로 캐시 — 적용 직후 백그라운드 프리웜(prewarmOptimizedOutput)이
     // 채워 두면 다운로드 버튼을 눌렀을 때 재생성 없이 즉시 저장된다.
-    function optSignature() { return baseSignature() + '|' + JSON.stringify(editSettings); }
+    // 임포징 포함 상태를 캐시 시그니처에 반영 — 임포징 옵션이 바뀌면 최적화본 캐시가 무효화된다.
+    // (currentImpOptions는 아래에서 선언되지만 런타임 호출이라 전방참조 OK)
+    function impSignature() {
+      if (!_impEnabled) return '';
+      try { return '|imp:' + _impMode + JSON.stringify(currentImpOptions()); }
+      catch (e) { return '|imp:' + _impMode; }
+    }
+    function optSignature() { return baseSignature() + '|' + JSON.stringify(editSettings) + impSignature(); }
     // 같은 시그니처의 빌드가 이미 진행 중이면(예: 프리웜 도중 다운로드 클릭) 그 결과를
     // 공유한다. 늦게 합류한 쪽(다운로드)의 onProgress를 진행 중 빌드의 리스너에 등록해
     // 실제 진행률을 그대로 이어받는다 — '90%에서 멈춘 듯한' 구간이 사라진다.
+    // 임포징 이전(조립+레이아웃) 최적화 바이트 — 임포징 생성기의 소스이자
+    // buildOptimizedOutput의 전단계. 임포징을 여기 넣지 않으므로 생성기가 이 결과를
+    // 소스로 삼아 한 번만 임포징한다(포함 모드에서의 이중 임포징 방지).
+    async function buildOptimizedBase(onProgress) {
+      const base = await buildBaseOptimized(p => onProgress && onProgress(Math.round(p * 0.9)));
+      let bytes = base.bytes;
+      const groups = computeLayoutGroups();
+      if (groups.length) { if (onProgress) onProgress(95); bytes = await applyLayoutTransform(bytes, groups); }
+      if (onProgress) onProgress(100);
+      return bytes;
+    }
     let _optInflight = null; // { sig, promise, cbs:Set }
     async function buildOptimizedOutput(onProgress) {
       const sig = optSignature();
@@ -148,12 +167,11 @@
       if (onProgress) cbs.add(onProgress);
       const report = p => cbs.forEach(cb => { try { cb(p); } catch (e) {} });
       const promise = (async () => {
-        const base = await buildBaseOptimized(p => report(Math.round(p * 0.9)));
-        let bytes = base.bytes;
-        const groups = computeLayoutGroups();
-        if (groups.length) {
-          report(95);
-          bytes = await applyLayoutTransform(bytes, groups);
+        let bytes = await buildOptimizedBase(p => report(_impEnabled ? Math.round(p * 0.85) : p));
+        // 임포징 포함 모드: 조립·레이아웃까지 마친 결과를 최종적으로 시트로 임포징한다.
+        if (_impEnabled) {
+          report(85);
+          bytes = await buildImposedBytes(bytes, p => report(85 + Math.round(p * 0.15)));
         }
         report(100);
         // 생성 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않음
@@ -223,44 +241,98 @@
     // 현재 편집·적용 상태(buildOptimizedOutput)를 소스로 제본용 시트 PDF를 생성한다.
     // 중철: 시트 k(바깥→안) 앞면 [N-2k | 2k+1], 뒷면 [2k+2 | N-2k-1] (좌철, 1-based)
     // 정합: 슬롯별 연속 구간(chunk) 배분 → 인쇄 후 재단해 묶음을 순서대로 겹치면 완성
-    let _impMode = 'booklet';
+    let _impMode = '';   // 기본: 임포징 방식 미선택 (사용자가 칩을 눌러 선택)
     let _bkBind = 'left';
     let _cutN = 2;       // 정합 분할 수 (2 = 2-up, 4 = 2×2)
     let _cutSides = 2;   // 정합 인쇄면 (2 = 양면, 1 = 단면)
+    let _impEnabled = false;   // 임포징을 메인 '✔ 적용'·'⇩ 다운로드' 결과에 포함 (섹션 체크박스)
+    let _impScale = 'fit';     // 슬롯 배치 크기: 'fit' = 칸에 맞춤 / 'orig' = 100% 원본 / 'fixed' = 지정 배율
+    let _impProfile = null;    // 불러온 프로파일의 정규화 옵션(그대로 재현). UI를 만지면 null(→UI 기준).
+    let _loadingProfile = false;
+
+
+    // 임포징 포함 토글 — 켜면 적용·다운로드·실시간 미리보기가 임포징 시트를 최종 단계로 얹는다.
+    // ('임포징 PDF 생성' 버튼을 누르면 자동으로 켜져 화면 결과와 메인 다운로드가 일치)
+    function toggleImpEnabled(on) {
+      const want = on === undefined ? !_impEnabled : !!on;
+      // 방식 미선택 상태에서 포함을 켜려 하면 막고 안내 (기본은 미선택)
+      if (want && !_impMode && !_impProfile) {
+        _impEnabled = false;
+        const chk0 = document.getElementById('impEnabled'); if (chk0) chk0.checked = false;
+        showError('임포징 방식(중철·모아찍기·정합·반복·복제)을 먼저 선택하거나 프로파일을 불러오세요.');
+        return;
+      }
+      _impEnabled = want;
+      const chk = document.getElementById('impEnabled');
+      if (chk && chk.checked !== _impEnabled) chk.checked = _impEnabled;
+      invalidateProcessed();   // 직전 적용 결과 무효화 → 다시 적용해야 반영
+      // 포함을 '켜는' 순간은 사용자가 명시적으로 요구한 행동이므로, 자동 반영(liveAutoPreview)이
+      // 꺼져 있어도 전체화면 진입(enterEditWorkspace)과 똑같이 한 번은 강제로 그려 준다.
+      // 이게 없으면 사이드바 상태에서는 화면이 그대로라 "임포징이 안 먹는다"로 보인다.
+      // (이후 세부 옵션 변경은 기존 규칙대로 '적용 필요' 표시만 — 대용량 문서 재조립 비용 회피)
+      if (want) runLivePreview();
+      else scheduleLivePreview();
+    }
+    // 임포징 옵션 변경 — UI를 만지면 불러온 프로파일 재현을 해제(이후 UI 기준).
+    // 포함 모드일 때 적용 결과 무효화 + 미리보기 갱신.
+    function impSettingsChanged() {
+      if (_loadingProfile) return;            // 프로파일 불러오는 중 UI 세팅은 무시
+      _impProfile = null;                     // 사용자가 손대면 UI 기준으로 전환
+      if (typeof updateImpSheetReadout === 'function') updateImpSheetReadout();
+      if (!_impEnabled) return;
+      invalidateProcessed();
+      scheduleLivePreview();
+    }
+    function setImpScale(mode) {
+      _impScale = mode;
+      document.querySelectorAll('#impScaleGroup .es-chip').forEach(b =>
+        b.classList.toggle('active', b.dataset.scale === mode));
+      impSettingsChanged();
+    }
 
     function setImpMode(mode) {
       _impMode = mode;
       document.querySelectorAll('#impModeGroup .es-chip').forEach(b =>
         b.classList.toggle('active', b.dataset.imp === mode));
-      const bk = mode === 'booklet', cs = mode === 'cutstack', rp = mode === 'repeat';
+      const bk = mode === 'booklet', cs = mode === 'cutstack', rp = mode === 'repeat', nu = mode === 'nup';
       const g = id => document.getElementById(id);
       if (g('impBookletRow')) g('impBookletRow').style.display = bk ? '' : 'none';
-      if (g('impCutRow1'))    g('impCutRow1').style.display    = cs ? '' : 'none';
-      if (g('impCutRow2'))    g('impCutRow2').style.display    = cs ? '' : 'none';
+      if (g('impBookletRow2')) g('impBookletRow2').style.display = bk ? '' : 'none';   // 표지 분리는 중철 전용
+      if (g('impCutRow2'))    g('impCutRow2').style.display    = (cs || nu || mode === 'dup') ? '' : 'none';   // 단면/양면
+      if (g('impGridRow'))    g('impGridRow').style.display    = (cs || nu) ? '' : 'none';   // 열×행 그리드
+      if (g('impStackWrap'))  g('impStackWrap').style.display  = cs ? '' : 'none';   // 묶음번호는 정합 전용
       if (g('impRepRow'))     g('impRepRow').style.display     = rp ? '' : 'none';
       if (g('bkCreepWrap'))   g('bkCreepWrap').style.display   = bk ? 'flex' : 'none';   // 밀림보정은 중철 전용
       if (g('impHint')) g('impHint').innerHTML = bk
-        ? '현재 편집·적용 상태 그대로 <b>중철 제본용 2-up 시트</b>(앞/뒤 교대)로 재배열해 별도 PDF로 저장합니다. 페이지 수는 4의 배수가 되도록 빈 면이 채워집니다.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 반 접어 중철.'
+        ? '현재 편집·적용 상태 그대로 <b>중철 제본용 2-up 시트</b>(앞/뒤 교대)로 재배열합니다. 페이지 수는 4의 배수가 되도록 빈 면이 채워집니다.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 반 접어 중철. <b>📕 표지 분리</b>를 켜면 표지 시트(두꺼운 용지용)와 내지가 별도 PDF 2개로 저장됩니다.'
+        : nu
+        ? '<b>모아찍기(N-up)</b> — 연속 페이지를 한 시트에 <b>열×행</b> 그리드로 앉힙니다(슬라이드 유인물·대지 앉히기 등). 배치 크기(칸맞춤/100%/지정배율)·정렬·여백·거터·프레임을 조합하세요. 양면 선택 시 뒷면은 좌우 미러됩니다.'
         : cs
-        ? '연속 구간을 칸별로 배분해 <b>인쇄 후 재단하면 묶음이 페이지 순서대로 겹쳐지는</b> 정합(Cut&amp;Stack) 시트를 생성합니다.<br>인쇄: 양면 시 <b>2분할=가로용지·짧은 쪽 넘김 / 4분할=세로용지·긴 쪽 넘김</b> → 재단 → 왼쪽(위) 묶음부터 차례로 겹치기.'
+        ? '연속 구간을 칸별로 배분해 <b>인쇄 후 재단하면 묶음이 페이지 순서대로 겹쳐지는</b> 정합(Cut&amp;Stack) 시트를 <b>열×행</b> 그리드로 생성합니다.<br>인쇄 후 재단 → 왼쪽(위) 묶음부터 차례로 겹치기.'
         : rp
-        ? '명함·쿠폰·전단용 <b>같은 원고 반복 배치</b>. 각 페이지를 한 시트에 여러 벌 깔아 별도 PDF로 저장합니다.<br>배치를 비우면 <b>원고 실제 크기</b>로 최대 배치(용지 방향 자동 선택), 칸수를 지정하면 칸에 맞춰 확대/축소됩니다. 블리드·재단선과 함께 쓰세요.'
-        : '한 시트에 같은 페이지 <b>2벌(오른쪽 벌 180° 회전)</b>을 양면으로 앉힙니다 — Quite Imposing의 <b>1 1* 2* 2</b> 방식.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 세로 재단 → 같은 문서 <b>2部</b> 완성.';
+        ? '명함·쿠폰·전단용 <b>같은 원고 반복 배치</b>. 각 페이지를 한 시트에 여러 벌 깔아 별도 PDF로 저장합니다.<br>배치를 비우면 <b>원고 실제 크기</b>로 최대 배치(용지 방향 자동 선택), 칸수를 지정하면 칸에 맞춰 확대/축소됩니다.'
+        : mode === 'dup'
+        ? '한 시트에 같은 페이지 <b>2벌(오른쪽 벌 180° 회전)</b>을 양면으로 앉힙니다 — Quite Imposing의 <b>1 1* 2* 2</b> 방식.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 세로 재단 → 같은 문서 <b>2部</b> 완성.'
+        : '임포징 방식을 <b>선택하지 않은 기본 상태</b>입니다. 위에서 방식(중철·모아찍기·정합·반복·복제)을 고르거나 프로파일을 불러오면 옵션이 나타납니다.';
+      impSettingsChanged();
     }
     function setBookletBind(dir) {
       _bkBind = dir;
       document.querySelectorAll('#bkBindGroup .es-chip').forEach(b =>
         b.classList.toggle('active', b.dataset.bind === dir));
+      impSettingsChanged();
     }
     function setCutN(n) {
       _cutN = n;
       document.querySelectorAll('#cutNGroup .es-chip').forEach(b =>
         b.classList.toggle('active', +b.dataset.cutn === n));
+      impSettingsChanged();
     }
     function setCutSides(s) {
       _cutSides = s;
       document.querySelectorAll('#cutSidesGroup .es-chip').forEach(b =>
         b.classList.toggle('active', +b.dataset.sides === s));
+      impSettingsChanged();
     }
 
     // ── 사용자 정의(비규격) 용지 레지스트리 (localStorage 'customPapers', mm) ──
@@ -276,7 +348,8 @@
       const sel = document.getElementById('bkPaper');
       if (!sel) return;
       const cur = keep !== undefined ? keep : sel.value;
-      let html = '<option value="auto">자동 (원본 크기 기준)</option>';
+      let html = '<option value="auto">자동 (원본 크기 기준)</option>'
+               + '<option value="__custom__">사용자 지정 (직접 W×H 입력)</option>';
       ['A4', 'A3', 'B4', 'B5'].forEach(k => { html += `<option value="${k}">${k}</option>`; });
       const customs = loadCustomPapers();
       if (customs.length) {
@@ -290,20 +363,7 @@
       sel.innerHTML = html;
       sel.value = cur && [...sel.options].some(o => o.value === cur) ? cur : 'auto';
     }
-    function addCustomPaper() {
-      const name = (document.getElementById('cpName')?.value || '').trim();
-      const w = parseFloat(document.getElementById('cpW')?.value);
-      const h = parseFloat(document.getElementById('cpH')?.value);
-      if (!name) { showError('용지 이름을 입력해 주세요.'); return; }
-      if (!(w > 0) || !(h > 0)) { showError('용지 폭×높이(mm)를 입력해 주세요.'); return; }
-      const list = loadCustomPapers().filter(p => p.name !== name);   // 같은 이름은 덮어쓰기
-      list.push({ name, w, h });
-      saveCustomPapers(list);
-      populatePaperSelect('custom:' + name);
-      document.getElementById('cpName').value = '';
-      document.getElementById('cpW').value = ''; document.getElementById('cpH').value = '';
-      showSuccess(`사용자 정의 용지 '${name}' (${w}×${h}mm)를 등록했습니다.`);
-    }
+    // (사용자 정의 용지 등록은 임포징 섹션의 '사용자 지정' 직접입력 → saveImpCustomAsNamed로 통합)
     function deleteCustomPaper() {
       const sel = document.getElementById('bkPaper');
       if (!sel || !sel.value.startsWith('custom:')) { showError('삭제하려면 사용자 정의 용지를 먼저 선택하세요.'); return; }
@@ -313,13 +373,24 @@
       showSuccess(`사용자 정의 용지 '${name}'를 삭제했습니다.`);
     }
     populatePaperSelect('auto');   // 초기 드롭다운 구성 (등록된 사용자 용지 복원)
+    // 프로파일 시드(IMP_PROFILE_SEED const)는 파일 뒤쪽에 선언되므로 setTimeout으로 초기화 지연(TDZ 회피)
+    setTimeout(() => {
+      try { setImpMode(''); } catch (e) {}   // 기본: 방식 미선택(모든 모드행 숨김)
+      try { populateImpProfiles(''); updateImpSheetReadout(); } catch (e) { console.warn('임포징 프로파일 초기화 실패:', e); }
+    }, 0);
 
     // 용지 선택값 → 시트 크기 [w,h](pt) 해석. orient: 'landscape'|'portrait' 강제.
     // 'auto'는 null 반환(빌더가 원본 크기로 계산).
     function resolveImpPaper(value, orient) {
       if (!value || value === 'auto') return null;
       let wpt, hpt;
-      if (value.startsWith('custom:')) {
+      if (value === '__custom__') {
+        // 사용자 지정 직접 입력 (impCustomW × impCustomH mm)
+        const w = parseFloat(document.getElementById('impCustomW')?.value);
+        const h = parseFloat(document.getElementById('impCustomH')?.value);
+        if (!(w > 0) || !(h > 0)) return null;
+        wpt = w * 72 / 25.4; hpt = h * 72 / 25.4;
+      } else if (value.startsWith('custom:')) {
         const p = loadCustomPapers().find(x => x.name === value.slice(7));
         if (!p) return null;
         wpt = p.w * 72 / 25.4; hpt = p.h * 72 / 25.4;
@@ -382,6 +453,185 @@
         });
     }
 
+    // 임포징 공용: 슬롯 내 배치 계산 (순수 함수 — 노드 단독 검증 가능)
+    // slot {x,y,w,h}(pt) · pg {w,h}(pt) · place { scale:'fit'(칸 맞춤)|'orig'(100% 원본),
+    //   align: 수직(t/c/b)+수평(l/c/r) 2글자('cc'=중앙), offX/offY: 추가 이동 mm(+X=오른쪽, +Y=아래) }
+    function placeInSlot(slot, pg, place) {
+      const MM = 72 / 25.4;
+      const p = place || {};
+      const s = p.scale === 'orig' ? 1
+              : p.scale === 'fixed' ? (p.fixedScale || 1)
+              : Math.min(slot.w / pg.w, slot.h / pg.h);
+      const dw = pg.w * s, dh = pg.h * s;
+      const a = p.align || 'cc';
+      const x = slot.x + (a[1] === 'l' ? 0 : a[1] === 'r' ? slot.w - dw : (slot.w - dw) / 2) + (p.offX || 0) * MM;
+      const y = slot.y + (a[0] === 't' ? slot.h - dh : a[0] === 'b' ? 0 : (slot.h - dh) / 2) - (p.offY || 0) * MM;
+      return { x, y, w: dw, h: dh, s };
+    }
+    // 임포징 공용: 슬롯에 페이지 그리기(배치 + 블리드) → 트림 사각형 {x,y,w,h} 반환.
+    // shiftX: 배치 후 수평 이동(중철 밀림보정). 모든 임포징 빌더가 이 함수로 그린다.
+    function drawPlaced(page, emb, slot, opts, shiftX) {
+      const t = placeInSlot(slot, emb, opts.place);
+      const x = t.x + (shiftX || 0), y = t.y;
+      const bPt = (opts.bleed || 0) * 72 / 25.4;
+      if (bPt > 0) {
+        // 블리드: 트림보다 크게(면당 bPt) 확대해 중앙 정렬 — 재단 밀림 대비
+        const k = Math.max((t.w + 2 * bPt) / t.w, (t.h + 2 * bPt) / t.h);
+        const s2 = t.s * k;
+        page.drawPage(emb.e, { x: x + t.w / 2 - emb.w * s2 / 2, y: y + t.h / 2 - emb.h * s2 / 2, xScale: s2, yScale: s2 });
+      } else {
+        page.drawPage(emb.e, { x, y, xScale: t.s, yScale: t.s });
+      }
+      return { x, y, w: t.w, h: t.h };
+    }
+    // 임포징 공용: 여백(mm)을 pt 4방으로 해석. opts.margin이 숫자면 4방 동일, 객체면 {l,t,r,b}.
+    function impMargins(opts) {
+      const MM = 72 / 25.4, m = opts.margin;
+      if (m && typeof m === 'object') return { l: (m.l || 0) * MM, t: (m.t || 0) * MM, r: (m.r || 0) * MM, b: (m.b || 0) * MM };
+      const v = (m || 0) * MM; return { l: v, t: v, r: v, b: v };
+    }
+    // 임포징 공용: 칸 사이 간격(거터) — 수평/수직 개별(hgap/vgap) 우선, 없으면 gutter 공용.
+    function impGaps(opts) {
+      const MM = 72 / 25.4;
+      const h = (opts.hgap != null ? opts.hgap : (opts.gutter || 0)) * MM;
+      const v = (opts.vgap != null ? opts.vgap : (opts.gutter || 0)) * MM;
+      return { h, v };
+    }
+    // 임포징 공용: 각 페이지 주위 얇은 테두리(프레임) — trim 사각형에 그림
+    function drawFrame(page, t) {
+      if (!t) return;
+      page.drawRectangle({ x: t.x, y: t.y, width: t.w, height: t.h, borderColor: PDFLib.rgb(0, 0, 0), borderWidth: 0.3 });
+    }
+    // ── 임포징 공용: 슬러그(시트 작업정보) + 정합 묶음번호 ──────────────────────
+    // opts.slug = { text: '파일명 · 날짜', fontBytes: TTF ArrayBuffer|null } — 한글은 fontBytes가
+    // 있어야 인쇄되고(맑은 고딕 등), 없으면 ASCII만 남긴다(독립 도구 폴백).
+    // opts.stackNum = true — 정합(cutstack) 앞면 각 묶음의 트림 바깥에 순서 번호 인쇄.
+    async function prepSlug(out, opts) {
+      if (!opts.slug && !opts.stackNum) return null;
+      const ascii = await out.embedFont(PDFLib.StandardFonts.Helvetica);
+      let font = null, unicode = false;
+      if (opts.slug && opts.slug.fontBytes) {
+        try {
+          const fk = (typeof fontkit !== 'undefined') ? fontkit
+                   : (typeof self !== 'undefined' && self.fontkit) ? self.fontkit : null;
+          if (fk) {
+            out.registerFontkit(fk);
+            font = await out.embedFont(opts.slug.fontBytes, { subset: true });
+            unicode = true;
+          }
+        } catch (e) { console.warn('슬러그 폰트 임베드 실패 — 기본 폰트로 대체:', e); }
+      }
+      return { font: font || ascii, ascii, unicode, enabled: !!opts.slug, base: opts.slug ? (opts.slug.text || '') : '' };
+    }
+    // 시트 하단 왼쪽에 한 줄: "파일명 · 날짜 · 시트 i/n 앞|뒤" (재단 여백 영역, 6.5pt)
+    function drawSlug(page, slug, i, n, side) {
+      if (!slug || !slug.enabled) return;
+      const MM = 72 / 25.4;
+      let text;
+      if (slug.unicode) text = (slug.base ? slug.base + ' · ' : '') + `시트 ${i}/${n} ${side === 'B' ? '뒤' : '앞'}`;
+      else {
+        text = ((slug.base ? slug.base + ' · ' : '') + `sheet ${i}/${n} ${side === 'B' ? 'B' : 'F'}`)
+          .replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim();
+      }
+      try { page.drawText(text, { x: 4 * MM, y: 1.2 * MM, size: 6.5, font: slug.font, color: PDFLib.rgb(0, 0, 0) }); } catch (e) {}
+    }
+    // 정합 묶음번호 — 흰 원+검정 번호를 트림 '왼쪽 바깥'에(공간 없으면 위 바깥 → 최후 트림 안 좌상단).
+    // 재단선 밖이라 재단 시 잘려나감 — 전지 상태에서 묶음 겹치기 순서 안내용.
+    function drawStackNum(page, t, num, font, sw, sh) {
+      if (!t || !font) return;
+      const MM = 72 / 25.4, r = 2 * MM;
+      let cx = t.x - r - 0.8 * MM, cy = t.y + t.h - r;
+      if (cx - r < 0.5 * MM) { cx = t.x + r; cy = t.y + t.h + r + 0.8 * MM; }        // 왼쪽 공간 없음 → 위 바깥
+      if (cy + r > sh - 0.5 * MM || cy - r < 0.5 * MM) { cx = t.x + r + 0.8 * MM; cy = t.y + t.h - r - 0.8 * MM; } // 최후: 트림 안 좌상
+      const s = String(num);
+      try {
+        page.drawCircle({ x: cx, y: cy, size: r, color: PDFLib.rgb(1, 1, 1), borderColor: PDFLib.rgb(0, 0, 0), borderWidth: 0.6 });
+        const w = font.widthOfTextAtSize(s, 7);
+        page.drawText(s, { x: cx - w / 2, y: cy - 2.4, size: 7, font, color: PDFLib.rgb(0, 0, 0) });
+      } catch (e) {}
+    }
+
+    // ── 일반 N-up(모아찍기) 빌더 — 임의 열×행 그리드 ────────────────────────────
+    // opts: across, down, sides(1|2), order('sequential'|'cutstack'), sheet[w,h]pt|null(auto),
+    //   margin{l,t,r,b}|숫자, hgap/vgap|gutter, bleed, crop, frame, place{scale,align,...}.
+    // sequential: 연속 페이지를 좌→우·상→하로 채움. cutstack: 슬롯별 연속 묶음(재단 후 겹치기).
+    // 양면(sides=2): 뒷면은 열을 좌우 미러('짧은 쪽 넘김' 기준).
+    async function buildNupBytes(srcBytes, opts, onProgress) {
+      const src = await PDFLib.PDFDocument.load(srcBytes.slice ? srcBytes.slice(0) : srcBytes);
+      const n0 = src.getPageCount();
+      if (!n0) throw new Error('페이지가 없습니다.');
+      const across = Math.max(1, opts.across | 0), down = Math.max(1, opts.down | 0);
+      const per = across * down, sides = opts.sides === 2 ? 2 : 1;
+      const out = await PDFLib.PDFDocument.create();
+      const embedded = await embedAllPages(out, src, onProgress);
+
+      // 시트 크기 — opts.sheet 우선, 없으면 원본 1페이지 기준 그리드 자동
+      let sw, sh;
+      if (opts.sheet) { [sw, sh] = opts.sheet; }
+      else { sw = embedded[0].w * across; sh = embedded[0].h * down; }
+      const mg = impMargins(opts), gp = impGaps(opts);
+      const slotW = (sw - mg.l - mg.r - (across - 1) * gp.h) / across;
+      const slotH = (sh - mg.t - mg.b - (down - 1) * gp.v) / down;
+      if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
+
+      // 슬롯 s(0=좌상, 좌→우·상→하)의 사각형
+      const slotRect = s => {
+        const col = s % across, row = (s / across) | 0;
+        return { x: mg.l + col * (slotW + gp.h), y: sh - mg.t - (row + 1) * slotH - row * gp.v, w: slotW, h: slotH };
+      };
+      const mirror = s => { const col = s % across, row = (s / across) | 0; return row * across + (across - 1 - col); };
+
+      // 시트별 논리 페이지 배열 구성
+      const sheetCnt = Math.ceil(n0 / (per * sides));
+      const sheets = [];
+      if (opts.order === 'cutstack') {
+        const chunk = sheetCnt * sides;   // 슬롯당 연속 묶음 크기
+        for (let i = 0; i < sheetCnt; i++) {
+          const front = [], back = sides === 2 ? [] : null;
+          for (let s = 0; s < per; s++) front.push(s * chunk + i * sides + 1);
+          if (back) for (let s = 0; s < per; s++) back.push(mirror(s) * chunk + i * sides + 2);
+          sheets.push({ front, back });
+        }
+      } else {   // sequential
+        let pg = 1;
+        for (let i = 0; i < sheetCnt; i++) {
+          const front = []; for (let s = 0; s < per; s++) front.push(pg++);
+          let back = null;
+          if (sides === 2) { back = new Array(per); for (let s = 0; s < per; s++) back[mirror(s)] = pg++; }
+          sheets.push({ front, back });
+        }
+      }
+
+      const drawInto = (page, logical, s) => {
+        if (!logical || logical > n0) return null;
+        const t = drawPlaced(page, embedded[logical - 1], slotRect(s), opts);
+        if (opts.frame) drawFrame(page, t);
+        return t;
+      };
+      const slug = await prepSlug(out, opts);
+      let sheetsMade = 0;
+      sheets.forEach(({ front, back }, i) => {
+        const fp = out.addPage([sw, sh]);
+        const ft = front.map((lg, s) => drawInto(fp, lg, s));
+        if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
+        if (opts.stackNum && opts.order === 'cutstack' && slug)
+          ft.forEach((t, s) => drawStackNum(fp, t, s + 1, slug.ascii, sw, sh));
+        drawSlug(fp, slug, i + 1, sheets.length, 'F');
+        sheetsMade++;
+        if (back) {
+          const bp = out.addPage([sw, sh]);
+          const bt = back.map((lg, s) => drawInto(bp, lg, s));
+          if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+          drawSlug(bp, slug, i + 1, sheets.length, 'B');
+          sheetsMade++;
+        }
+        if (onProgress) onProgress(40 + Math.round((i + 1) / sheets.length * 55));
+      });
+      if (onProgress) onProgress(98);
+      const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      return { bytes, n0, per, across, down, sides, sheets: sheetsMade };
+    }
+
     async function buildBookletBytes(srcBytes, opts, onProgress) {
       const src = await PDFLib.PDFDocument.load(srcBytes.slice ? srcBytes.slice(0) : srcBytes);
       const n0 = src.getPageCount();
@@ -396,35 +646,22 @@
       else if (!opts.paper || opts.paper === 'auto') { sw = embedded[0].w * 2; sh = embedded[0].h; }
       else                           { [sw, sh] = IMP_PAPERS[opts.paper] || IMP_PAPERS.A4; }
       const MM = 72 / 25.4;
-      const gutterPt = (opts.gutter || 0) * MM;
       const creepPt  = (opts.creep  || 0) * MM;
-      const mPt      = (opts.margin || 0) * MM;   // 시트 가장자리 여백
-      const bPt      = (opts.bleed  || 0) * MM;   // 재단 여유(블리드, 면당)
-      const slotW = (sw - 2 * mPt - gutterPt) / 2, slotH = sh - 2 * mPt;
+      const mg = impMargins(opts), gp = impGaps(opts);
+      const slotW = (sw - mg.l - mg.r - gp.h) / 2, slotH = sh - mg.t - mg.b;
       if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
 
       // 한 칸 그리기 — shift: 책등(중앙) 쪽으로 콘텐츠 이동량(밀림 보정)
       // 반환: 트림(재단) 사각형 {x,y,w,h} (재단선용) 또는 null(빈 면)
       const drawSlot = (page, logical, side, shift) => {
         if (logical > n0) return null;   // 4의 배수 채움용 빈 면
-        const { e, w, h } = embedded[logical - 1];
-        const s = Math.min(slotW / w, slotH / h);
-        const dw = w * s, dh = h * s;   // 트림 크기
-        const x0 = side === 'L' ? mPt : mPt + slotW + gutterPt;
-        const x = x0 + (slotW - dw) / 2 + (side === 'L' ? shift : -shift);
-        const y = mPt + (slotH - dh) / 2;
-        if (bPt > 0) {
-          // 블리드: 트림보다 크게(면당 bPt) 확대해 중앙 정렬 — 재단 밀림 대비
-          const k = Math.max((dw + 2 * bPt) / dw, (dh + 2 * bPt) / dh);
-          const s2 = s * k;
-          page.drawPage(e, { x: x + dw / 2 - w * s2 / 2, y: y + dh / 2 - h * s2 / 2, xScale: s2, yScale: s2 });
-        } else {
-          page.drawPage(e, { x, y, xScale: s, yScale: s });
-        }
-        return { x, y, w: dw, h: dh };
+        const x0 = side === 'L' ? mg.l : mg.l + slotW + gp.h;
+        return drawPlaced(page, embedded[logical - 1], { x: x0, y: mg.b, w: slotW, h: slotH },
+                          opts, side === 'L' ? shift : -shift);
       };
 
       const order = bookletSheetOrder(n, opts.binding);
+      const slug = await prepSlug(out, opts);
       order.forEach(({ front, back }, i) => {
         const shift = creepPt * i;   // 바깥 시트 0 → 안쪽으로 갈수록 책등 쪽 이동
         const fp = out.addPage([sw, sh]);
@@ -435,6 +672,8 @@
           ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
           bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
         }
+        drawSlug(fp, slug, i + 1, order.length, 'F');
+        drawSlug(bp, slug, i + 1, order.length, 'B');
         if (onProgress) onProgress(40 + Math.round((i + 1) / order.length * 55));
       });
       if (onProgress) onProgress(98);
@@ -483,33 +722,19 @@
         if (nup === 4) { sw = ph; sh = pw; }   // 4분할은 세로 용지
         else           { sw = pw; sh = ph; }   // 2분할은 가로 용지
       }
-      const MM = 72 / 25.4;
-      const gutterPt = (opts.gutter || 0) * MM;
-      const mPt      = (opts.margin || 0) * MM;
-      const bPt      = (opts.bleed  || 0) * MM;
       const rows = nup / 2;
-      const slotW = (sw - 2 * mPt - gutterPt) / 2;
-      const slotH = (sh - 2 * mPt - (rows - 1) * gutterPt) / rows;
+      const mg = impMargins(opts), gp = impGaps(opts);
+      const slotW = (sw - mg.l - mg.r - gp.h) / 2;
+      const slotH = (sh - mg.t - mg.b - (rows - 1) * gp.v) / rows;
       if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
 
       // 슬롯 s(0=좌상 → 좌→우, 상→하)에 논리 페이지 배치. 반환: 트림 사각형 또는 null
       const drawCell = (page, logical, s) => {
         if (logical > n0) return null;   // 패딩 빈 면
-        const { e, w, h } = embedded[logical - 1];
-        const sc = Math.min(slotW / w, slotH / h);
-        const dw = w * sc, dh = h * sc;   // 트림 크기
         const col = s % 2, row = (s / 2) | 0;
-        const x0 = mPt + col * (slotW + gutterPt);
-        const y0 = sh - mPt - (row + 1) * slotH - row * gutterPt;
-        const x = x0 + (slotW - dw) / 2, y = y0 + (slotH - dh) / 2;
-        if (bPt > 0) {
-          const k = Math.max((dw + 2 * bPt) / dw, (dh + 2 * bPt) / dh);
-          const s2 = sc * k;
-          page.drawPage(e, { x: x + dw / 2 - w * s2 / 2, y: y + dh / 2 - h * s2 / 2, xScale: s2, yScale: s2 });
-        } else {
-          page.drawPage(e, { x, y, xScale: sc, yScale: sc });
-        }
-        return { x, y, w: dw, h: dh };
+        const x0 = mg.l + col * (slotW + gp.h);
+        const y0 = sh - mg.t - (row + 1) * slotH - row * gp.v;
+        return drawPlaced(page, embedded[logical - 1], { x: x0, y: y0, w: slotW, h: slotH }, opts);
       };
 
       const { sheets, n, chunk } = cutStackOrder(n0, nup, sides);
@@ -540,13 +765,14 @@
       const out = await PDFLib.PDFDocument.create();
       const embedded = await embedAllPages(out, src, onProgress);
       const MM = 72 / 25.4;
-      const gutterPt = (opts.gutter || 0) * MM;
-      const mPt      = (opts.margin || 0) * MM;
-      const bPt      = (opts.bleed  || 0) * MM;
+      const _g = impGaps(opts), _m = impMargins(opts);
+      const gutterPt = _g.h;
+      const mPt      = Math.max(_m.l, _m.r, _m.t, _m.b);   // 반복 배치는 대칭 여백
       const baseSheet = opts.sheet || IMP_PAPERS.A4;
       const cands = [[baseSheet[0], baseSheet[1]], [baseSheet[1], baseSheet[0]]];   // 가로/세로 두 방향 시도
       const wantC = opts.cols | 0, wantR = opts.rows | 0;
 
+      const slug = await prepSlug(out, opts);
       let total = 0, firstGrid = null;
       for (let pi = 0; pi < n0; pi++) {
         const { e, w, h } = embedded[pi];
@@ -573,8 +799,7 @@
             ? '칸 수가 너무 많거나 여백·거터가 커서 배치할 수 없습니다.'
             : `원고(${Math.round(w / MM)}×${Math.round(h / MM)}mm)가 용지보다 큽니다 — 더 큰 용지를 선택하세요.`);
         }
-        const { sw, sh, cols, rows, cellW, cellH, s } = best;
-        const dw = w * s, dh = h * s;
+        const { sw, sh, cols, rows, cellW, cellH } = best;
         // 배치 블록 전체를 시트 중앙 정렬 (여백 안쪽 보장: blockW ≤ W)
         const blockW = cols * cellW + (cols - 1) * gutterPt;
         const blockH = rows * cellH + (rows - 1) * gutterPt;
@@ -582,18 +807,11 @@
         const page = out.addPage([sw, sh]);
         const trims = [];
         for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-          const x = ox + c * (cellW + gutterPt) + (cellW - dw) / 2;
-          const y = oy + (rows - 1 - r) * (cellH + gutterPt) + (cellH - dh) / 2;
-          if (bPt > 0) {
-            const k = Math.max((dw + 2 * bPt) / dw, (dh + 2 * bPt) / dh);
-            const s2 = s * k;
-            page.drawPage(e, { x: x + dw / 2 - w * s2 / 2, y: y + dh / 2 - h * s2 / 2, xScale: s2, yScale: s2 });
-          } else {
-            page.drawPage(e, { x, y, xScale: s, yScale: s });
-          }
-          trims.push({ x, y, w: dw, h: dh });
+          const slot = { x: ox + c * (cellW + gutterPt), y: oy + (rows - 1 - r) * (cellH + gutterPt), w: cellW, h: cellH };
+          trims.push(drawPlaced(page, embedded[pi], slot, opts));
         }
         if (opts.crop) trims.forEach(t => drawCropMarks(page, t.x, t.y, t.w, t.h));
+        drawSlug(page, slug, pi + 1, n0, 'F');
         total += cols * rows;
         if (!firstGrid) firstGrid = { cols, rows };
         if (onProgress) onProgress(40 + Math.round((pi + 1) / n0 * 55));
@@ -610,32 +828,21 @@
       try {
         showLoading('반복 배치 — 최신 편집 상태 준비 중…');
         progressBar.style.display = 'block'; updateProgress(0);
-        const srcBytes = await buildOptimizedOutput(p => updateProgress(Math.round(p * 0.45)));
+        const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading('반복 배치 — Step&Repeat 시트 조립 중…');
-        const paperVal = document.getElementById('bkPaper')?.value || 'auto';
-        const opts = {
-          sheet:  resolveImpPaper(paperVal, null),   // 방향은 빌더가 최적 선택 (auto=A4)
-          gutter: parseFloat(document.getElementById('bkGutter')?.value) || 0,
-          margin: parseFloat(document.getElementById('impMargin')?.value) || 0,
-          bleed:  parseFloat(document.getElementById('impBleed')?.value) || 0,
-          crop:   !!document.getElementById('impCrop')?.checked,
-          cols:   parseInt(document.getElementById('repCols')?.value) || 0,
-          rows:   parseInt(document.getElementById('repRows')?.value) || 0,
-        };
+        const opts = currentImpOptions();
         const res = await buildStepRepeatBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
         const g = res.grid || { cols: 0, rows: 0 };
-        const saved = await window.electronAPI.saveFile({
-          defaultName: `${base}_반복${g.cols}x${g.rows}.pdf`, buffer: res.bytes });
-        if (saved) {
-          let msg = `📖 반복 배치(Step&Repeat) PDF 저장 완료 — 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${g.cols * g.rows}벌 (총 ${res.total}벌)`
-            + `\n결과가 화면에 표시 중입니다 — '✕ 원본 페이지 보기'로 복귀`;
-          if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
-            msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃과 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
-          showSuccess(msg);
-        }
+        const outName = `${base}_반복${g.cols}x${g.rows}.pdf`;
+        adoptImposedResult(res.bytes, outName);
+        let msg = `📖 반복 배치(Step&Repeat) 생성 완료 — 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${g.cols * g.rows}벌 (총 ${res.total}벌)`
+          + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
+        if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
+          msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃과 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
+        showSuccess(msg);
       } catch (e) {
         console.error('반복 배치 생성 오류:', e);
         showError('반복 배치 생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -644,13 +851,18 @@
       }
     }
 
-    // ── 복제 2-up (양면 2부, Quite Imposing 'Shuffle 1 1* 2* 2' + 2up 방식) ────
-    // 각 페이지를 한 시트에 2벌(오른쪽 벌은 180° 회전) 배치하고 양면으로 이어서,
-    // 인쇄 후 세로로 재단하면 같은 문서가 2部 나온다(한 部는 180° — 돌리면 정방향).
-    // 시트 s: 앞면 [p(2s+1) | p(2s+1)@180], 뒷면 [p(2s+2)@180 | p(2s+2)]
-    function dup2upOrder(n0) {
-      const n = Math.ceil(n0 / 2) * 2;
+    // ── 복제 2-up (2부, Quite Imposing 'Shuffle 1 1* 2* 2' + 2up 방식) ──────────
+    // 각 페이지를 한 시트에 2벌(오른쪽 벌은 180° 회전) 배치. 재단하면 같은 문서 2部.
+    // 양면(sides=2): 앞뒤로 2쪽씩 태워 종이 절약 — 앞 [p(2s+1)|p(2s+1)@180], 뒤 [p(2s+2)@180|p(2s+2)].
+    // 단면(sides=1): 한 페이지당 한 시트(앞면만) — [p(i)|p(i)@180], 뒷면 없음.
+    function dup2upOrder(n0, sides) {
       const sheets = [];
+      if (sides === 1) {
+        for (let i = 1; i <= n0; i++)
+          sheets.push({ front: [{ p: i, r: 0 }, { p: i, r: 180 }], back: null });
+        return { sheets, n: n0 };
+      }
+      const n = Math.ceil(n0 / 2) * 2;
       for (let s = 0; s < n / 2; s++) {
         const f = 2 * s + 1, b = 2 * s + 2;
         sheets.push({
@@ -674,43 +886,36 @@
       if (opts.sheet)                { [sw, sh] = opts.sheet; }
       else if (!opts.paper || opts.paper === 'auto') { sw = emb0[0].w * 2; sh = emb0[0].h; }
       else                           { [sw, sh] = IMP_PAPERS[opts.paper] || IMP_PAPERS.A4; }
-      const MM = 72 / 25.4;
-      const gutterPt = (opts.gutter || 0) * MM;
-      const mPt      = (opts.margin || 0) * MM;
-      const bPt      = (opts.bleed  || 0) * MM;
-      const slotW = (sw - 2 * mPt - gutterPt) / 2, slotH = sh - 2 * mPt;
+      const mg = impMargins(opts), gp = impGaps(opts);
+      const slotW = (sw - mg.l - mg.r - gp.h) / 2, slotH = sh - mg.t - mg.b;
       if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
 
       const drawCell = (page, cell, side) => {
         if (cell.p > n0) return null;   // 홀수 패딩 빈 면
-        const { e, w, h } = (cell.r === 180 ? emb180 : emb0)[cell.p - 1];
-        const s = Math.min(slotW / w, slotH / h);
-        const dw = w * s, dh = h * s;
-        const x0 = side === 'L' ? mPt : mPt + slotW + gutterPt;
-        const x = x0 + (slotW - dw) / 2, y = mPt + (slotH - dh) / 2;
-        if (bPt > 0) {
-          const k = Math.max((dw + 2 * bPt) / dw, (dh + 2 * bPt) / dh);
-          const s2 = s * k;
-          page.drawPage(e, { x: x + dw / 2 - w * s2 / 2, y: y + dh / 2 - h * s2 / 2, xScale: s2, yScale: s2 });
-        } else {
-          page.drawPage(e, { x, y, xScale: s, yScale: s });
-        }
-        return { x, y, w: dw, h: dh };
+        const emb = (cell.r === 180 ? emb180 : emb0)[cell.p - 1];
+        const x0 = side === 'L' ? mg.l : mg.l + slotW + gp.h;
+        return drawPlaced(page, emb, { x: x0, y: mg.b, w: slotW, h: slotH }, opts);
       };
 
-      const { sheets, n } = dup2upOrder(n0);
+      const sides = opts.sides === 1 ? 1 : 2;
+      const { sheets, n } = dup2upOrder(n0, sides);
+      const slug = await prepSlug(out, opts);
       sheets.forEach(({ front, back }, i) => {
         const fp = out.addPage([sw, sh]);
         const ft = [drawCell(fp, front[0], 'L'), drawCell(fp, front[1], 'R')];
         if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
-        const bp = out.addPage([sw, sh]);
-        const bt = [drawCell(bp, back[0], 'L'), drawCell(bp, back[1], 'R')];
-        if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+        drawSlug(fp, slug, i + 1, sheets.length, 'F');
+        if (back) {   // 단면은 뒷면 없음
+          const bp = out.addPage([sw, sh]);
+          const bt = [drawCell(bp, back[0], 'L'), drawCell(bp, back[1], 'R')];
+          if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+          drawSlug(bp, slug, i + 1, sheets.length, 'B');
+        }
         if (onProgress) onProgress(45 + Math.round((i + 1) / sheets.length * 50));
       });
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
-      return { bytes, n0, n, sheets: sheets.length };
+      return { bytes, n0, n, sheets: sheets.length, sides };
     }
 
     async function generateDup2up() {
@@ -720,31 +925,27 @@
       try {
         showLoading('복제 2-up — 최신 편집 상태 준비 중…');
         progressBar.style.display = 'block'; updateProgress(0);
-        const srcBytes = await buildOptimizedOutput(p => updateProgress(Math.round(p * 0.45)));
+        const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading('복제 2-up — 양면 2부 시트 조립 중…');
-        const paperVal = document.getElementById('bkPaper')?.value || 'auto';
-        const opts = {
-          paper:  paperVal,
-          sheet:  resolveImpPaper(paperVal, 'landscape'),
-          gutter: parseFloat(document.getElementById('bkGutter')?.value) || 0,
-          margin: parseFloat(document.getElementById('impMargin')?.value) || 0,
-          bleed:  parseFloat(document.getElementById('impBleed')?.value) || 0,
-          crop:   !!document.getElementById('impCrop')?.checked,
-        };
+        const opts = currentImpOptions();
         const res = await buildDup2upBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         // 결과를 화면에 바로 표시 (저장 다이얼로그 뒤에서 확인 가능)
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
-        const saved = await window.electronAPI.saveFile({ defaultName: `${base}_복제2부.pdf`, buffer: res.bytes });
-        if (saved) {
-          let msg = `📖 복제 2-up(양면 2부) PDF 저장 완료 — 시트 ${res.sheets}장 (양면 ${res.n}면, 본문 ${res.n0}쪽${res.n - res.n0 ? ` + 빈 면 ${res.n - res.n0}쪽` : ''})`
+        const single = res.sides === 1;
+        const outName = `${base}_복제2부${single ? '단면' : '양면'}.pdf`;
+        adoptImposedResult(res.bytes, outName);
+        let msg = single
+          ? `📖 복제 2-up(단면 2부) 생성 완료 — 시트 ${res.sheets}장 (페이지당 1시트, 본문 ${res.n0}쪽)`
+            + `\n인쇄: 가로 용지 · 단면 → 세로 재단 → 2部 완성 (오른쪽 部는 180° — 돌리면 정방향)`
+            + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`
+          : `📖 복제 2-up(양면 2부) 생성 완료 — 시트 ${res.sheets}장 (양면 ${res.n}면, 본문 ${res.n0}쪽${res.n - res.n0 ? ` + 빈 면 ${res.n - res.n0}쪽` : ''})`
             + `\n인쇄: 가로 용지 · 양면 · '짧은 쪽 넘김' → 세로 재단 → 2部 완성 (오른쪽 部는 180° — 돌리면 정방향)`
-            + `\n결과가 화면에 표시 중입니다 — '✕ 원본 페이지 보기'로 복귀`;
-          if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
-            msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 거터를 ${opts.bleed * 2}mm 이상 권장`;
-          showSuccess(msg);
-        }
+            + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
+        if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
+          msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 거터를 ${opts.bleed * 2}mm 이상 권장`;
+        showSuccess(msg);
       } catch (e) {
         console.error('복제 2-up 생성 오류:', e);
         showError('복제 2-up 생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -762,32 +963,30 @@
         showLoading('북클릿 임포징 — 최신 편집 상태 준비 중…');
         progressBar.style.display = 'block'; updateProgress(0);
         // 소스 = 최종 출력 파이프라인 결과 → 흑백·잉크 정규화·머리글/쪽번호까지 반영된 상태로 임포징
-        const srcBytes = await buildOptimizedOutput(p => updateProgress(Math.round(p * 0.45)));
+        const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading('북클릿 임포징 — 중철 시트 조립 중…');
-        const paperVal = document.getElementById('bkPaper')?.value || 'auto';
-        const opts = {
-          paper:   paperVal,
-          sheet:   resolveImpPaper(paperVal, 'landscape'),   // 사용자 정의 용지 포함 해석 (중철=가로)
-          gutter:  parseFloat(document.getElementById('bkGutter')?.value) || 0,
-          creep:   parseFloat(document.getElementById('bkCreep')?.value) || 0,
-          margin:  parseFloat(document.getElementById('impMargin')?.value) || 0,
-          bleed:   parseFloat(document.getElementById('impBleed')?.value) || 0,
-          crop:    !!document.getElementById('impCrop')?.checked,
-          binding: _bkBind,
-        };
+        const opts = currentImpOptions();
         const res = await buildBookletBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
-        const saved = await window.electronAPI.saveFile({ defaultName: `${base}_중철북클릿.pdf`, buffer: res.bytes });
-        if (saved) {
-          let msg = `📖 북클릿 PDF 저장 완료 — 시트 ${res.sheets}장 (양면 ${res.n / 2}면, 본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
-            + `\n인쇄 설정: 가로 용지 · 양면 인쇄 · '짧은 쪽 넘김'(short-edge) → 반 접어 중철 제본`
-            + `\n결과가 화면에 표시 중입니다 — '✕ 원본 페이지 보기'로 복귀`;
-          if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
-            msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃 페이지와 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
-          showSuccess(msg);
+        // 표지 분리: 맨 바깥 시트(표지 4면)와 내지를 별도 PDF 두 개로 저장 (표지 = 두꺼운 용지)
+        if (document.getElementById('bkCoverSplit')?.checked) {
+          if (res.sheets < 2) {
+            showError('표지 분리는 시트가 2장 이상(본문 5쪽 이상)일 때 가능합니다 — 지금은 전체가 표지 1시트입니다.');
+            return;
+          }
+          await saveBookletCoverSplit(res, base, opts);
+          return;
         }
+        const outName = `${base}_중철북클릿.pdf`;
+        adoptImposedResult(res.bytes, outName);
+        let msg = `📖 북클릿(중철) 생성 완료 — 시트 ${res.sheets}장 (양면 ${res.n / 2}면, 본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
+          + `\n인쇄 설정: 가로 용지 · 양면 인쇄 · '짧은 쪽 넘김'(short-edge) → 반 접어 중철 제본`
+          + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
+        if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
+          msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃 페이지와 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
+        showSuccess(msg);
       } catch (e) {
         console.error('북클릿 생성 오류:', e);
         showError('북클릿 생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -796,55 +995,562 @@
       }
     }
 
-    async function generateCutStack() {
+    // ── 중철 표지 분리 저장 ─────────────────────────────────────────────────────
+    // 북클릿 결과에서 맨 바깥 시트(= 출력 1~2면: 겉표지 [뒤표지|앞표지] / 안쪽 [표2|표3])를
+    // 표지 PDF로, 나머지 시트를 내지 PDF로 나눠 각각 저장한다.
+    // 표지는 두꺼운 용지에 1장 양면, 내지는 본문 용지에 인쇄한 뒤 내지를 표지로 감싸 중철.
+    async function splitBookletCover(bytes) {
+      const src = await PDFLib.PDFDocument.load(bytes.slice ? bytes.slice(0) : bytes);
+      const total = src.getPageCount();   // 시트당 앞/뒤 2면
+      const make = async idxs => {
+        const d = await PDFLib.PDFDocument.create();
+        (await d.copyPages(src, idxs)).forEach(p => d.addPage(p));
+        return d.save({ useObjectStreams: false, updateFieldAppearances: false });
+      };
+      const cover = await make([0, 1]);
+      const inner = await make(Array.from({ length: total - 2 }, (_, i) => i + 2));
+      return { cover, inner };
+    }
+    async function saveBookletCoverSplit(res, base, opts) {
+      showLoading('표지/내지 분리 중…');
+      const { cover, inner } = await splitBookletCover(res.bytes);
+      hideLoading();
+      const savedCover = await window.electronAPI.saveFile({ defaultName: `${base}_중철_표지.pdf`, buffer: cover });
+      const savedInner = await window.electronAPI.saveFile({ defaultName: `${base}_중철_내지.pdf`, buffer: inner });
+      if (!savedCover && !savedInner) return;   // 둘 다 취소
+      let msg = `📕 중철 표지 분리 저장 완료 — 표지 1시트(양면 2면: 겉면 [뒤표지|앞표지] / 안쪽 [표2|표3])`
+        + ` + 내지 ${res.sheets - 1}시트 (본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
+        + `\n인쇄: 표지 = 두꺼운 표지 용지 1장 · 양면 · 짧은 쪽 넘김 / 내지 = 본문 용지 · 양면 · 짧은 쪽 넘김`
+        + `\n제작: 내지를 반 접어 순서대로 겹치고 → 표지로 감싸 → 중철(스테이플) → 삼면 재단`;
+      if (!savedCover) msg += `\n⚠ 표지 저장은 취소되었습니다 — 내지만 저장됨`;
+      if (!savedInner) msg += `\n⚠ 내지 저장은 취소되었습니다 — 표지만 저장됨`;
+      if (opts.creep > 0) msg += `\n밀림보정 ${opts.creep}mm/장이 내지 안쪽 시트에 반영되어 있습니다.`;
+      if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
+        msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 거터를 ${opts.bleed * 2}mm 이상 권장`;
+      showSuccess(msg);
+    }
+
+    // 모아찍기(nup)·정합(cutstack) 공통 생성 — buildNupBytes 사용(메인 파이프라인과 동일 빌더)
+    async function generateNup() {
       if (_bkBusy) return;
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
       _bkBusy = true;
       try {
-        showLoading('정합 임포징 — 최신 편집 상태 준비 중…');
+        const opts = currentImpOptions();
+        const isCut = opts.mode === 'cutstack';
+        showLoading(`${isCut ? '정합(Cut&Stack)' : '모아찍기(N-up)'} — 최신 편집 상태 준비 중…`);
         progressBar.style.display = 'block'; updateProgress(0);
-        const srcBytes = await buildOptimizedOutput(p => updateProgress(Math.round(p * 0.45)));
-        showLoading('정합 임포징 — Cut&Stack 시트 조립 중…');
-        const paperVal = document.getElementById('bkPaper')?.value || 'auto';
-        const opts = {
-          paper:  paperVal,
-          sheet:  resolveImpPaper(paperVal, _cutN === 4 ? 'portrait' : 'landscape'),   // 4분할=세로
-          gutter: parseFloat(document.getElementById('bkGutter')?.value) || 0,
-          margin: parseFloat(document.getElementById('impMargin')?.value) || 0,
-          bleed:  parseFloat(document.getElementById('impBleed')?.value) || 0,
-          crop:   !!document.getElementById('impCrop')?.checked,
-          nup:    _cutN,
-          sides:  _cutSides,
-        };
-        const res = await buildCutStackBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
+        const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
+        showLoading(`${isCut ? '정합' : '모아찍기'} — 시트 조립 중…`);
+        const res = await buildNupBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
-        const saved = await window.electronAPI.saveFile({
-          defaultName: `${base}_정합${res.nup}업${res.sides === 2 ? '양면' : '단면'}.pdf`, buffer: res.bytes });
-        if (saved) {
-          const printHint = res.sides === 2
-            ? (res.nup === 2 ? "양면 인쇄 · 가로 용지 · '짧은 쪽 넘김'" : "양면 인쇄 · 세로 용지 · '긴 쪽 넘김'")
-            : '단면 인쇄';
-          const stackHint = res.nup === 2 ? '왼쪽 묶음을 오른쪽 묶음 위에' : '좌상→우상→좌하→우하 순서로 위에서부터';
-          let msg = `📖 정합(Cut&Stack) PDF 저장 완료 — 시트 ${res.sheets}장 · ${res.nup}분할 · 묶음당 ${res.chunk}쪽 (본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
-            + `\n인쇄: ${printHint} → 재단 → ${stackHint} 겹치면 페이지 순서 완성`
-            + `\n결과가 화면에 표시 중입니다 — '✕ 원본 페이지 보기'로 복귀`;
-          if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
-            msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃 페이지와 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
-          showSuccess(msg);
-        }
+        const grid = `${res.across}x${res.down}`;
+        const outName = `${base}_${isCut ? '정합' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}.pdf`;
+        adoptImposedResult(res.bytes, outName);
+        let msg = `📖 ${isCut ? '정합(Cut&Stack)' : '모아찍기(N-up)'} 생성 완료 — 시트 ${res.sheets}장 · ${grid} 배치(칸당 ${res.per}쪽) · ${res.sides === 2 ? '양면' : '단면'} (본문 ${res.n0}쪽)`
+          + (isCut ? `\n인쇄 → 재단 → 좌상 묶음부터 차례로 겹치면 페이지 순서 완성` : `\n연속 페이지가 좌→우·상→하로 배치됩니다`)
+          + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
+        showSuccess(msg);
       } catch (e) {
-        console.error('정합 생성 오류:', e);
-        showError('정합 생성 실패: ' + (e && e.message ? e.message : String(e)));
+        console.error('모아찍기/정합 생성 오류:', e);
+        showError('생성 실패: ' + (e && e.message ? e.message : String(e)));
       } finally {
         _bkBusy = false; hideLoading(); progressBar.style.display = 'none';
       }
     }
 
-    // 임포징 실행 — 모드에 따라 중철/정합/반복/복제 분기
+    // ── 임포징 프로파일 시드 (Quite Imposing Plus 5 sequences.xml에서 추출한 71종) ──
+    // 최초 실행 시 localStorage 'impProfiles'로 복사되며, 이후 사용자가 수정·삭제·추가한다.
+    const IMP_PROFILE_SEED = [{"n":"A4_단면_2up_312-438_좌우끝단","m":"dup","sd":1,"ax":2,"dn":1,"sw":438,"sh":312,"ml":0,"mt":0,"mr":0,"mb":0,"hg":16,"vg":16,"sc":"fit","al":"cc","cr":1},{"n":"16:9_3슬1페_A4","m":"nup","ax":1,"dn":3,"sw":210,"sh":297,"ml":10,"mt":10,"mr":10,"mb":10,"sc":"fit","al":"cc","fr":1},{"n":"A4_양면_2up","m":"dup","sd":2,"ax":2,"dn":1,"sw":297,"sh":420,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"8K_양면_2up","m":"dup","sd":2,"ax":2,"dn":1,"sw":388,"sh":267,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"8K_단면_2up","m":"dup","sd":1,"ax":2,"dn":1,"sw":388,"sh":267,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"A4_단면_1up","m":"cutstack","sd":1,"ax":2,"dn":1,"sc":"fit","al":"cc"},{"n":"8K_양면_1up","m":"cutstack","sd":2,"ax":2,"dn":1,"sw":388,"sh":267,"sc":"fit","al":"cc"},{"n":"16k_2슬1페","m":"nup","ax":1,"dn":2,"sw":194,"sh":267,"ml":12,"mt":12,"mr":12,"mb":12,"sc":"fit","al":"cc","fr":1},{"n":"270-390_양면_1up_컷앤스택_중앙정렬","m":"cutstack","sd":2,"ax":2,"dn":1,"sc":"fit","al":"cc","pw":270,"ph":390},{"n":"A4_양면_중철_312-438","m":"booklet","sd":2,"mg":3,"sc":"fit","al":"cc","cr":1,"pw":438,"ph":312},{"n":"A4_단면_2up","m":"dup","sd":1,"ax":2,"dn":1,"sw":297,"sh":420,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"16:9_2슬1페_A4","m":"nup","ax":1,"dn":2,"sw":210,"sh":297,"ml":12,"mt":12,"mr":12,"mb":12,"hg":40,"vg":40,"sc":"fit","al":"cc","fr":1},{"n":"4:3_2슬1페_A4","m":"nup","ax":1,"dn":2,"sw":210,"sh":297,"ml":16,"mt":16,"mr":16,"mb":16,"sc":"fit","al":"cc","fr":1},{"n":"A4_양면_2up_312-438_중앙정렬","m":"dup","sd":2,"ax":2,"dn":1,"sw":438,"sh":312,"ml":4.5,"mt":4.5,"mr":4.5,"mb":4.5,"hg":8,"vg":8,"sc":"fit","al":"cc","cr":1},{"n":"A4_단면_2up_312-438_중앙정렬","m":"dup","sd":1,"ax":2,"dn":1,"sw":438,"sh":312,"ml":4.5,"mt":4.5,"mr":4.5,"mb":4.5,"hg":8,"vg":8,"sc":"fit","al":"cc","cr":1},{"n":"270-390_양면_2up_가운데 여백90(A5용 책자)","m":"dup","sd":2,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"hg":90,"vg":90,"sc":"fit","al":"cc","cr":1},{"n":"양면_1up_컷앤스택_100%","m":"cutstack","sd":2,"ax":2,"dn":1,"sc":"fit","al":"cc"},{"n":"표지_앞뒤연결_Impose","m":"nup","ax":1,"dn":1,"sw":465,"sh":315,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","cr":1},{"n":"270-390_양면_1up_컷앤스택","m":"cutstack","sd":2,"ax":2,"dn":1,"sw":390,"sh":270,"sc":"orig","al":"cc"},{"n":"8K_양면_3up","m":"cutstack","sd":2,"ax":3,"dn":1,"sw":388,"sh":267,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"270-390_양면_2up","m":"dup","sd":2,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"A4_확대100.5_블리드0.4_재단선_컷앤스택_311-438","m":"cutstack","sd":2,"ax":2,"dn":1,"sw":438,"sh":311,"bl":0.4,"cr":1,"sc":"fit","al":"cc","pw":218,"ph":312},{"n":"A4_확대100.5_블리드0.4_재단선_중철_311-438","m":"booklet","sd":2,"sw":438,"sh":311,"bl":0.4,"cr":1,"sc":"fit","al":"cc","pw":218,"ph":312},{"n":"270-390_단면_2up","m":"dup","sd":1,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"270-390_양면_2up_가운데 여백4","m":"dup","sd":2,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"hg":4,"sc":"fit","al":"cc"},{"n":"230-315 to A4(center position)","m":"nup","ax":1,"dn":1,"sw":230,"sh":315,"ml":5,"mt":5,"mr":5,"mb":5,"sc":"fit","al":"cc","cr":1},{"n":"218-312_양면_1up_센터_컷앤스택_100%","m":"cutstack","sd":2,"ax":2,"dn":1,"sc":"fit","al":"cc","pw":218,"ph":312},{"n":"218-312_단면_2up_센터정렬","m":"dup","sd":1,"ax":2,"dn":1,"sw":438,"sh":312,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","pw":218,"ph":312},{"n":"218-312_양면_2up_센터","m":"dup","sd":2,"ax":2,"dn":1,"sw":297,"sh":420,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","pw":218,"ph":312},{"n":"A4_양면_2up_312-438_좌우끝단맞춤","m":"dup","sd":2,"ax":2,"dn":1,"sw":438,"sh":312,"ml":0,"mt":0,"mr":0,"mb":0,"hg":16,"vg":16,"sc":"fit","al":"cc"},{"n":"포스터_315-465","m":"nup","ax":1,"dn":1,"sw":315,"sh":465,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","cr":1,"pw":305,"ph":455},{"n":"포스터_A1+(609-914)","m":"nup","ax":2,"dn":2,"sw":609,"sh":914,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","cr":1,"pw":420,"ph":594},{"n":"A4_단면_2up_312-438","m":"dup","sd":1,"ax":2,"dn":1,"sw":438,"sh":312,"ml":0,"mt":0,"mr":0,"mb":0,"hg":18,"vg":18,"sc":"fit","al":"cc","cr":1},{"n":"A4_단면_1up_312-438","m":"cutstack","sd":1,"ax":2,"dn":1,"sw":438,"sh":312,"sc":"orig","al":"cc","cr":1},{"n":"포스터_A3_(315-465 센터)","m":"nup","ax":1,"dn":1,"sw":315,"sh":465,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","cr":1,"pw":305,"ph":455},{"n":"270-390_양면_2up_가운데 여백8","m":"dup","sd":2,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"hg":8,"vg":8,"sc":"fit","al":"cc"},{"n":"270-390_단면_2up_중앙여백8","m":"dup","sd":1,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"hg":8,"vg":8,"sc":"fit","al":"cc"},{"n":"PEER OFF","m":"nup","sc":"fit","al":"cc"},{"n":"포스터_A2_430-610_센터_재단선","m":"nup","ax":1,"dn":1,"sw":430,"sh":610,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","fr":1},{"n":"PEER PAGE","m":"nup","sc":"fit","al":"cc"},{"n":"미싱티켓","m":"cutstack","ax":3,"dn":4,"sw":315,"sh":468,"ml":3,"mt":9.5,"mr":3,"mb":9.5,"sc":"fit","al":"tl"},{"n":"미싱티켓_194-74","m":"cutstack","ax":2,"dn":4,"sw":315,"sh":390,"ml":3,"mt":9.5,"mr":3,"mb":9.5,"sc":"fit","al":"tl"},{"n":"미싱티켓_184-64","m":"cutstack","ax":2,"dn":4,"sw":315,"sh":390,"ml":2,"mt":2,"mr":2,"mb":2,"hg":2,"vg":2,"sc":"fit","al":"cc","cr":1},{"n":"A2_2up_914-608","m":"nup","ax":3,"dn":3,"sw":609,"sh":914,"ml":5,"mt":5,"mr":5,"mb":5,"hg":3,"vg":3,"sc":"fit","al":"cc","fr":1},{"n":"포스터_A1+(609-914)_A2 2up","m":"nup","ax":2,"dn":2,"sw":609,"sh":914,"ml":0,"mt":0,"mr":0,"mb":0,"hg":10,"vg":10,"sc":"fit","al":"cc","fr":1,"pw":420,"ph":594},{"n":"A4_양면_2up_311-438_좌우끝단맞춤","m":"dup","sd":2,"ax":2,"dn":1,"sw":438,"sh":311,"ml":0,"mt":0,"mr":0,"mb":0,"hg":16,"vg":16,"sc":"fit","al":"cc"},{"n":"90-75_양면_2up_대지_A4","m":"dup","sd":2,"ax":1,"dn":2,"sw":210,"sh":297,"ml":10,"mt":10,"mr":10,"mb":10,"hg":10,"vg":10,"sc":"fit","al":"cc"},{"n":"A5_양면_2up_대지_A4","m":"cutstack","sd":2,"ax":1,"dn":2,"sw":210,"sh":297,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"8K_양면_1up_Cut&Stack","m":"cutstack","sd":2,"ax":2,"dn":1,"sc":"fit","al":"cc"},{"n":"A5_양면_1up_Cut&Stack","m":"cutstack","sd":2,"ax":2,"dn":1,"sc":"fit","al":"cc"},{"n":"315-390_양면_2up 상하","m":"cutstack","sd":2,"ax":1,"dn":2,"sw":315,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"A4_양면_2up_315-465_좌우끝단맞춤","m":"dup","sd":2,"ax":2,"dn":1,"sw":465,"sh":315,"ml":0,"mt":0,"mr":0,"mb":0,"hg":41,"vg":41,"sc":"fit","al":"cc"},{"n":"270-390_양면_2up_가운데 여백26(B5좌우끝단)","m":"dup","sd":2,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"hg":24,"vg":24,"sc":"fit","al":"cc"},{"n":"257-364(B4)_양면_2up","m":"dup","sd":2,"ax":2,"dn":1,"sw":257,"sh":364,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"16:9_2슬1페_A4_여백15","m":"nup","ax":1,"dn":2,"sw":210,"sh":297,"ml":15,"mt":0,"mr":15,"mb":0,"hg":40,"vg":40,"sc":"fit","al":"cc","fr":1},{"n":"16:9_2슬1페_A4_여백15_슬라이드 붙여서","m":"nup","ax":1,"dn":2,"sw":210,"sh":297,"ml":15,"mt":0,"mr":15,"mb":0,"sc":"fit","al":"cc","fr":1,"pw":152,"ph":210},{"n":"A4_3s-1p","m":"nup","ax":1,"dn":3,"sw":210,"sh":297,"ml":12,"mt":12,"mr":12,"mb":12,"sc":"fit","al":"cc","fr":1},{"n":"A4_2s-1p","m":"nup","ax":1,"dn":2,"sw":210,"sh":297,"ml":12,"mt":12,"mr":12,"mb":12,"sc":"fit","al":"cc","fr":1},{"n":"8K_단면_1up","m":"cutstack","sd":1,"ax":2,"dn":1,"sw":388,"sh":267,"sc":"orig","al":"cc"},{"n":"A4_양면_2up_315-465","m":"dup","sd":2,"ax":2,"dn":1,"sw":315,"sh":465,"ml":5,"mt":5,"mr":5,"mb":5,"sc":"fit","al":"cc","cr":1},{"n":"A4_단면_1up_315-465","m":"cutstack","sd":1,"ax":2,"dn":1,"sw":465,"sh":315,"sc":"orig","al":"cc","cr":1},{"n":"A4_4s-1p","m":"nup","ax":2,"dn":2,"sw":210,"sh":297,"ml":10,"mt":10,"mr":10,"mb":10,"hg":5,"vg":5,"sc":"fit","al":"cc","fr":1},{"n":"두페이지 붙이기","m":"nup","sc":"fit","al":"cc"},{"n":"앞뒤표지_Impose","m":"nup","ax":1,"dn":1,"sw":465,"sh":315,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","cr":1},{"n":"A5양면_2up","m":"dup","sd":2,"ax":2,"dn":1,"sw":230,"sh":315,"ml":3,"mt":3,"mr":3,"mb":3,"hg":3,"vg":3,"sc":"fit","al":"cc","cr":1},{"n":"포스터_A1+_센터_테두리(604-851)","m":"nup","ax":1,"dn":1,"sw":604,"sh":851,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc","fr":1},{"n":"A4_여백없는 원고 여백 늘리기(축소후 센터 앉히기)","m":"nup","sc":"fit","al":"cc"},{"n":"A4_양면_2up_315-465_좌우끝단_4미리씩 여백줌","m":"dup","sd":2,"ax":2,"dn":1,"sw":465,"sh":315,"ml":0,"mt":0,"mr":0,"mb":0,"hg":33,"vg":33,"sc":"fit","al":"cc"},{"n":"A4_단면_2up_315-465_좌우끝단","m":"dup","sd":1,"ax":2,"dn":1,"sw":465,"sh":315,"ml":0,"mt":0,"mr":0,"mb":0,"hg":40,"vg":40,"sc":"fit","al":"cc","cr":1},{"n":"270-390_양면_2up_논문","m":"dup","sd":2,"ax":2,"dn":1,"sw":270,"sh":390,"ml":0,"mt":0,"mr":0,"mb":0,"sc":"fit","al":"cc"},{"n":"8K_양면_1up_Cut&Stack_A5원고 2판","m":"cutstack","sd":2,"ax":2,"dn":1,"sw":390,"sh":270,"sc":"orig","al":"cc","cr":1}];
+    // ── 임포징 프로파일 저장소 (localStorage 'impProfiles') ──────────────────────
+    // 최초 실행 시 IMP_PROFILE_SEED(첨부 sequences.xml에서 추출)로 초기화. 이후 CRUD.
+    // QI 원본(qiplusmemory5.xml) 대조로 매핑을 바로잡은 이름들 — SimpleBooklet(Paginate=CutStacks)
+    // 시퀀스가 중철(booklet)로 잘못 저장돼 있던 항목. 기존 localStorage에 옛 매핑이 남아 있으면
+    // 1회에 한해 새 시드 값으로 교체한다(사용자가 추가한 다른 프로파일은 건드리지 않음).
+    const IMP_QI_FIX_NAMES = ['A4_단면_1up', '8K_양면_1up', '270-390_양면_1up_컷앤스택_중앙정렬',
+      '양면_1up_컷앤스택_100%', '270-390_양면_1up_컷앤스택',
+      'A4_확대100.5_블리드0.4_재단선_컷앤스택_311-438', 'A4_확대100.5_블리드0.4_재단선_중철_311-438',
+      '218-312_양면_1up_센터_컷앤스택_100%', 'A4_단면_1up_312-438', '8K_양면_1up_Cut&Stack',
+      'A5_양면_1up_Cut&Stack', '8K_단면_1up', 'A4_단면_1up_315-465', '8K_양면_1up_Cut&Stack_A5원고 2판'];
+    function migrateImpProfiles(list) {
+      try {
+        if (localStorage.getItem('impProfilesFixQI1')) return list;
+        const byName = new Map(IMP_PROFILE_SEED.map(p => [p.n, p]));
+        IMP_QI_FIX_NAMES.forEach(n => {
+          const at = list.findIndex(x => x && x.n === n);
+          if (at >= 0 && byName.has(n)) list[at] = Object.assign({}, byName.get(n));
+        });
+        localStorage.setItem('impProfiles', JSON.stringify(list));
+        localStorage.setItem('impProfilesFixQI1', '1');
+      } catch (e) {}
+      return list;
+    }
+    function loadImpProfiles() {
+      try { const a = JSON.parse(localStorage.getItem('impProfiles')); if (Array.isArray(a)) return migrateImpProfiles(a); } catch (e) {}
+      const seed = IMP_PROFILE_SEED.map(p => Object.assign({}, p));
+      try { localStorage.setItem('impProfiles', JSON.stringify(seed)); localStorage.setItem('impProfilesFixQI1', '1'); } catch (e) {}
+      return seed;
+    }
+    function saveImpProfiles(list) { try { localStorage.setItem('impProfiles', JSON.stringify(list)); } catch (e) {} }
+    // 시드 프로파일(p) → 빌더가 그대로 소비하는 정규화 옵션. 저장값은 mm, 시트는 pt로 변환.
+    function profileToOpts(p) {
+      const MM = 72 / 25.4;
+      const margin = p.mg != null ? p.mg : { l: p.ml || 0, t: p.mt || 0, r: p.mr || 0, b: p.mb || 0 };
+      return {
+        mode: p.m, sides: p.sd,
+        across: p.ax || 1, down: p.dn || 1,
+        sheet: (p.sw && p.sh) ? [p.sw * MM, p.sh * MM] : null,
+        margin, hgap: p.hg || 0, vgap: p.vg || 0, gutter: p.hg || 0,
+        bleed: p.bl || 0, crop: !!p.cr, frame: !!p.fr,
+        creep: 0, binding: p.bd === 'right' ? 'right' : 'left',
+        order: p.m === 'cutstack' ? 'cutstack' : 'sequential',
+        cols: p.ax || 0, rows: p.dn || 0,
+        place: { scale: p.sc || 'fit', fixedScale: p.fx, align: p.al || 'cc', offX: p.ox || 0, offY: p.oy || 0 },
+        paper: (p.sw && p.sh) ? `${p.sw}×${p.sh}mm` : 'auto',
+        _profName: p.n,
+      };
+    }
+    // 프로파일 드롭다운 채우기 (keep = 유지할 선택값)
+    function populateImpProfiles(keep) {
+      const sel = document.getElementById('impProfile');
+      if (!sel) return;
+      const cur = keep !== undefined ? keep : sel.value;
+      const list = loadImpProfiles();
+      sel.innerHTML = '<option value="">— 프로파일 선택 —</option>'
+        + list.map((p, i) => `<option value="${i}">${String(p.n).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}</option>`).join('');
+      if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+      if (typeof impProfileListVisible === 'function' && impProfileListVisible()) renderImpProfileList();
+    }
+    // 프로파일(p) → 임포징 UI 컨트롤 전부 반영 (모드·용지·그리드·여백·정렬 등).
+    // 시트가 있으면 '사용자 지정'으로 W×H를 채워 편집·표시 가능하게 한다. (_loadingProfile 가드)
+    function applyProfileToUI(p) {
+      _loadingProfile = true;
+      try {
+        const g = id => document.getElementById(id);
+        setImpMode(p.m);                       // 모드 칩 + 행 표시 갱신
+        _impScale = p.sc || 'fit';
+        document.querySelectorAll('#impScaleGroup .es-chip').forEach(b => b.classList.toggle('active', b.dataset.scale === _impScale));
+        // 용지: 시트 크기가 있으면 '사용자 지정' 직접입력으로 펼쳐 편집 가능
+        if (p.sw && p.sh) {
+          if (g('bkPaper')) g('bkPaper').value = '__custom__';
+          if (g('impCustomW')) g('impCustomW').value = p.sw;
+          if (g('impCustomH')) g('impCustomH').value = p.sh;
+          if (g('impCustomRow')) g('impCustomRow').style.display = '';
+        } else {
+          if (g('bkPaper')) g('bkPaper').value = 'auto';
+          if (g('impCustomRow')) g('impCustomRow').style.display = 'none';
+        }
+        if (g('impAcross')) g('impAcross').value = p.ax || 1;
+        if (g('impDown'))   g('impDown').value   = p.dn || 1;
+        if (g('impAlign'))  g('impAlign').value  = p.al || 'cc';
+        if (g('impOffX'))   g('impOffX').value   = p.ox || 0;
+        if (g('impOffY'))   g('impOffY').value   = p.oy || 0;
+        if (g('impFixed'))  g('impFixed').value  = p.fx != null ? (p.fx * 100).toFixed(1) : 100;
+        if (g('impMargin')) g('impMargin').value = p.mg != null ? p.mg : (p.ml || 0);
+        if (g('bkGutter'))  g('bkGutter').value  = p.hg || 0;
+        if (g('impBleed'))  g('impBleed').value  = p.bl || 0;
+        if (g('impCrop'))   g('impCrop').checked = !!p.cr;
+        if (g('impFrame'))  g('impFrame').checked = !!p.fr;
+        if (g('impSlug'))   g('impSlug').checked = !!p.sl;
+        if (g('impStackNum')) g('impStackNum').checked = !!p.sn;
+        if (p.sd) { _cutSides = p.sd; document.querySelectorAll('#cutSidesGroup .es-chip').forEach(b => b.classList.toggle('active', +b.dataset.sides === p.sd)); }
+        if (p.m === 'booklet') { _bkBind = p.bd === 'right' ? 'right' : 'left'; document.querySelectorAll('#bkBindGroup .es-chip').forEach(b => b.classList.toggle('active', b.dataset.bind === _bkBind)); }
+        updateImpSheetReadout();
+      } finally { _loadingProfile = false; }
+    }
+    // 드롭다운에서 프로파일을 선택하는 즉시 자동 적용 (빈 '— 프로파일 선택 —'은 무시)
+    function onImpProfileChange() {
+      const sel = document.getElementById('impProfile');
+      if (!sel || sel.value === '') return;
+      loadImpProfile();
+      if (typeof impProfileListVisible === 'function' && impProfileListVisible()) renderImpProfileList();   // 목록 하이라이트 동기화
+    }
+    // 프로파일 불러오기 — 정규화 옵션을 _impProfile에 담아 그대로 재현 + UI 반영, 임포징 포함 ON.
+    function loadImpProfile() {
+      const sel = document.getElementById('impProfile');
+      const idx = sel && sel.value !== '' ? parseInt(sel.value) : -1;
+      const list = loadImpProfiles();
+      if (idx < 0 || !list[idx]) { showError('불러올 프로파일을 선택하세요.'); return; }
+      const p = list[idx];
+      applyProfileToUI(p);
+      _impProfile = profileToOpts(p);          // 정확 재현 (UI를 만지기 전까지)
+      if (!_impEnabled) toggleImpEnabled(true); else { invalidateProcessed(); scheduleLivePreview(); }
+      showSuccess(`프로파일 '${p.n}' 불러옴 — 용지 ${_impProfile.paper}, ${p.m}${p.sd ? (p.sd === 2 ? ' 양면' : ' 단면') : ''}. '📖 임포징 PDF 생성' 또는 메인 '✔ 적용'으로 반영됩니다.`);
+    }
+    // 프로파일 수정 — 선택 프로파일의 내부 항목을 UI 컨트롤에 펼쳐 직접 편집.
+    // 이름칸에 이름을 채워두고 _impProfile은 비워 UI 기준으로 전환(편집 후 '💾 저장'으로 반영).
+    function impProfileEdit() {
+      const sel = document.getElementById('impProfile');
+      const idx = sel && sel.value !== '' ? parseInt(sel.value) : -1;
+      const list = loadImpProfiles();
+      if (idx < 0 || !list[idx]) { showError('수정할 프로파일을 목록에서 선택하세요.'); return; }
+      const p = list[idx];
+      applyProfileToUI(p);
+      _impProfile = null;                      // UI 기준 편집 모드
+      const nm = document.getElementById('impProfName'); if (nm) nm.value = p.n;
+      if (!_impEnabled) toggleImpEnabled(true); else { invalidateProcessed(); scheduleLivePreview(); }
+      showSuccess(`프로파일 '${p.n}' 편집 모드 — 모드·용지·그리드·여백·정렬 등을 아래에서 수정한 뒤 '💾 저장'을 누르면 같은 이름으로 덮어써집니다.`);
+    }
+    // ── 프로파일 내보내기 / 가져오기 (독립 임포징 도구와 JSON으로 동기화) ──────
+    function impProfileExport() {
+      const list = loadImpProfiles();
+      if (!list.length) { showError('내보낼 프로파일이 없습니다.'); return; }
+      const json = JSON.stringify(list, null, 2);
+      (async () => {
+        try {
+          const saved = await window.electronAPI.saveFile({ defaultName: 'imposition-profiles.json', buffer: new TextEncoder().encode(json) });
+          if (saved) showSuccess(`프로파일 ${list.length}개를 내보냈습니다 (imposition-profiles.json). 독립 임포징 도구(dist/임포징도구.html)의 '⬇ 가져오기'로 불러오면 동기화됩니다.`);
+        } catch (e) { showError('내보내기 실패: ' + (e && e.message ? e.message : String(e))); }
+      })();
+    }
+    function impProfileImportClick() {
+      const inp = document.getElementById('impProfImportFile');
+      if (inp) { inp.value = ''; inp.click(); }
+    }
+    // 가져온 프로파일 배열을 병합(같은 이름 덮어쓰기, 새 이름 추가)
+    function impProfileImportFile(input) {
+      const f = input && input.files && input.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => {
+        try {
+          const arr = JSON.parse(rd.result);
+          if (!Array.isArray(arr)) throw new Error('프로파일 JSON(배열) 형식이 아닙니다.');
+          const valid = arr.filter(p => p && typeof p.n === 'string' && typeof p.m === 'string');
+          if (!valid.length) throw new Error('유효한 프로파일이 없습니다.');
+          const list = loadImpProfiles();
+          let added = 0, updated = 0;
+          valid.forEach(p => {
+            const at = list.findIndex(x => x.n === p.n);
+            if (at >= 0) { list[at] = p; updated++; } else { list.push(p); added++; }
+          });
+          saveImpProfiles(list);
+          populateImpProfiles('');
+          if (typeof impProfileListVisible === 'function' && impProfileListVisible()) renderImpProfileList();
+          showSuccess(`프로파일 가져오기 완료 — 추가 ${added}개 · 갱신 ${updated}개 (현재 총 ${list.length}개).`);
+        } catch (e) { showError('가져오기 실패: ' + (e && e.message ? e.message : String(e))); }
+      };
+      rd.onerror = () => showError('파일을 읽지 못했습니다.');
+      rd.readAsText(f);
+    }
+    // 현재 UI 설정 → 시드 객체 (저장용)
+    function captureImpSeed(name) {
+      const g = id => document.getElementById(id);
+      const paperVal = g('bkPaper')?.value || 'auto';
+      const sheet = resolveImpPaper(paperVal, null);
+      const MM = 72 / 25.4;
+      const s = { n: name, m: _impMode, sc: _impScale, al: g('impAlign')?.value || 'cc' };
+      if (sheet) { s.sw = +(sheet[0] / MM).toFixed(1); s.sh = +(sheet[1] / MM).toFixed(1); }   // pt → mm
+      const mg = parseFloat(g('impMargin')?.value) || 0; if (mg) s.mg = mg;
+      const hg = parseFloat(g('bkGutter')?.value) || 0; if (hg) { s.hg = hg; s.vg = hg; }
+      const bl = parseFloat(g('impBleed')?.value) || 0; if (bl) s.bl = bl;
+      if (g('impCrop')?.checked) s.cr = 1;
+      if (g('impFrame')?.checked) s.fr = 1;
+      if (g('impSlug')?.checked) s.sl = 1;
+      if (_impMode === 'cutstack' && g('impStackNum')?.checked) s.sn = 1;
+      if (_impScale === 'fixed') s.fx = (parseFloat(g('impFixed')?.value) || 100) / 100;
+      if (_impMode === 'nup' || _impMode === 'cutstack') { s.ax = parseInt(g('impAcross')?.value) || 1; s.dn = parseInt(g('impDown')?.value) || 1; }
+      if (_impMode === 'nup' || _impMode === 'cutstack' || _impMode === 'dup' || _impMode === 'booklet') s.sd = _cutSides;
+      const ox = parseFloat(g('impOffX')?.value) || 0; if (ox) s.ox = ox;
+      const oy = parseFloat(g('impOffY')?.value) || 0; if (oy) s.oy = oy;
+      if (_impMode === 'booklet' && _bkBind === 'right') s.bd = 'right';
+      return s;
+    }
+    // 저장 — 이름칸 기준 업서트: 같은 이름이 있으면 덮어쓰기(수정), 없으면 신규 추가.
+    function impProfileSave() {
+      const name = (document.getElementById('impProfName')?.value || '').trim();
+      if (!name) { showError('저장할 프로파일 이름을 입력하세요.'); return; }
+      const list = loadImpProfiles();
+      const at = list.findIndex(p => p.n === name);
+      if (at >= 0) {
+        if (!confirm(`같은 이름의 프로파일 '${name}'이(가) 있습니다 — 현재 설정으로 덮어쓸까요?`)) return;
+        list[at] = captureImpSeed(name);
+        saveImpProfiles(list); populateImpProfiles(String(at));
+        showSuccess(`프로파일 '${name}'을(를) 현재 설정으로 수정(덮어쓰기)했습니다.`);
+      } else {
+        list.push(captureImpSeed(name));
+        saveImpProfiles(list); populateImpProfiles(String(list.length - 1));
+        showSuccess(`프로파일 '${name}'을(를) 새로 저장했습니다. 프로파일 목록에서 불러올 수 있습니다.`);
+      }
+    }
+    // 프로파일 목록 순서 변경 — dir: -1(위로) / +1(아래로). 선택 유지.
+    // ── 프로파일 목록 관리 (전체 목록을 한눈에 — 순서변경·이름변경·삭제·선택) ──────
+    const _impModeLabel = m => ({ booklet: '중철', nup: '모아찍기', cutstack: '정합', repeat: '반복', dup: '복제2부' }[m] || m || '?');
+    function impProfileListVisible() {
+      const box = document.getElementById('impProfileList');
+      return box && box.style.display !== 'none';
+    }
+    function toggleImpProfileList() {
+      const box = document.getElementById('impProfileList');
+      if (!box) return;
+      const show = box.style.display === 'none' || !box.style.display;
+      box.style.display = show ? '' : 'none';
+      const btn = document.getElementById('impListToggleBtn');
+      if (btn) btn.classList.toggle('active', show);
+      if (show) renderImpProfileList();
+    }
+    function renderImpProfileList() {
+      const box = document.getElementById('impProfileList');
+      if (!box) return;
+      const list = loadImpProfiles();
+      const sel = document.getElementById('impProfile');
+      const curIdx = sel && sel.value !== '' ? parseInt(sel.value) : -1;
+      const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      box.innerHTML = list.length ? list.map((p, i) => {
+        const size = (p.sw && p.sh) ? `${p.sw}×${p.sh}` : '자동';
+        const meta = `${_impModeLabel(p.m)}${p.sd ? (p.sd === 2 ? '·양면' : '·단면') : ''} · ${size}`;
+        return `<div class="imp-prof-row${i === curIdx ? ' sel' : ''}" data-idx="${i}" draggable="true">
+          <span class="imp-prof-drag" title="드래그하여 순서 이동">⠿</span>
+          <span class="imp-prof-ord">${i + 1}</span>
+          <span class="imp-prof-name" title="클릭: 즉시 적용 · 더블클릭: 이름변경" onclick="impListSelect(${i})" ondblclick="impListRename(${i})">${esc(p.n)}</span>
+          <span class="imp-prof-meta">${esc(meta)}</span>
+          <button class="imp-prof-b" onclick="impListMove(${i},-1)" title="위로"${i === 0 ? ' disabled' : ''}>▲</button>
+          <button class="imp-prof-b" onclick="impListMove(${i},1)" title="아래로"${i === list.length - 1 ? ' disabled' : ''}>▼</button>
+          <button class="imp-prof-b" onclick="impListRename(${i})" title="이름 변경">✎</button>
+          <button class="imp-prof-b" onclick="impListDelete(${i})" title="삭제">🗑</button>
+        </div>`;
+      }).join('') : '<div class="es-hint" style="padding:10px;">저장된 프로파일이 없습니다. 아래에서 설정 후 이름을 넣고 💾 저장하세요.</div>';
+      _bindImpListDnD(box);
+    }
+    // ── 프로파일 목록 마우스 드래그 순서변경 (HTML5 DnD, 컨테이너 위임 1회 바인딩) ──
+    let _impDragIdx = -1;
+    function _bindImpListDnD(box) {
+      if (!box || box._dndBound) return;
+      box._dndBound = true;
+      const clearMarks = () => box.querySelectorAll('.imp-prof-row').forEach(r => r.classList.remove('drop-above', 'drop-below', 'dragging'));
+      box.addEventListener('dragstart', e => {
+        const row = e.target.closest && e.target.closest('.imp-prof-row');
+        if (!row) return;
+        _impDragIdx = parseInt(row.dataset.idx);
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(_impDragIdx)); } catch (x) {}
+        row.classList.add('dragging');
+      });
+      box.addEventListener('dragover', e => {
+        const row = e.target.closest && e.target.closest('.imp-prof-row');
+        if (!row || _impDragIdx < 0) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+        const rect = row.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        box.querySelectorAll('.imp-prof-row').forEach(r => r.classList.remove('drop-above', 'drop-below'));
+        row.classList.add(after ? 'drop-below' : 'drop-above');
+      });
+      box.addEventListener('drop', e => {
+        const row = e.target.closest && e.target.closest('.imp-prof-row');
+        if (!row || _impDragIdx < 0) { clearMarks(); return; }
+        e.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        let to = parseInt(row.dataset.idx) + (after ? 1 : 0);
+        const from = _impDragIdx; _impDragIdx = -1;
+        clearMarks();
+        const listL = loadImpProfiles();
+        if (from < 0 || from >= listL.length) return;
+        const [item] = listL.splice(from, 1);
+        if (to > from) to--;                    // 제거로 인덱스 앞당김 보정
+        to = Math.max(0, Math.min(listL.length, to));
+        if (to === from) { renderImpProfileList(); return; }
+        listL.splice(to, 0, item);
+        saveImpProfiles(listL);
+        populateImpProfiles(String(to));
+        renderImpProfileList();
+      });
+      box.addEventListener('dragend', () => { _impDragIdx = -1; clearMarks(); });
+    }
+    function impListSelect(i) {
+      const sel = document.getElementById('impProfile');
+      if (sel) sel.value = String(i);
+      loadImpProfile();         // 목록 클릭 = 즉시 적용
+      renderImpProfileList();   // 하이라이트 갱신
+    }
+    function impListMove(i, dir) {
+      const list = loadImpProfiles();
+      const to = i + dir;
+      if (to < 0 || to >= list.length) return;
+      const [item] = list.splice(i, 1);
+      list.splice(to, 0, item);
+      saveImpProfiles(list);
+      populateImpProfiles(String(to));   // 드롭다운도 이동 항목으로 선택 유지
+      renderImpProfileList();
+    }
+    function impListDelete(i) {
+      const list = loadImpProfiles();
+      if (!list[i]) return;
+      const name = list[i].n;
+      if (!confirm(`프로파일 '${name}'을(를) 삭제할까요?`)) return;
+      list.splice(i, 1);
+      saveImpProfiles(list);
+      populateImpProfiles('');
+      renderImpProfileList();
+      showSuccess(`프로파일 '${name}'을(를) 삭제했습니다.`);
+    }
+    // 인라인 이름 변경 — 이름 칸을 입력창으로 바꿔 Enter/포커스아웃 시 저장, Esc 취소
+    function impListRename(i) {
+      const box = document.getElementById('impProfileList');
+      if (!box) return;
+      const row = box.querySelector(`.imp-prof-row[data-idx="${i}"]`);
+      if (!row) return;
+      const nameEl = row.querySelector('.imp-prof-name');
+      if (!nameEl || row.querySelector('input')) return;
+      const cur = (loadImpProfiles()[i] || {}).n || '';
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.value = cur; inp.className = 'es-input';
+      inp.style.cssText = 'flex:1; min-width:0; font-size:12px; padding:3px 6px;';
+      let done = false;
+      const commit = () => {
+        if (done) return; done = true;
+        const nn = inp.value.trim();
+        const l = loadImpProfiles();
+        if (nn && nn !== cur && l[i]) {
+          if (l.some((q, qi) => qi !== i && q.n === nn)) { showError(`'${nn}' 이름이 이미 있습니다.`); }
+          else { l[i].n = nn; saveImpProfiles(l); populateImpProfiles(String(i)); }
+        }
+        renderImpProfileList();
+      };
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { inp.blur(); }
+        else if (e.key === 'Escape') { done = true; renderImpProfileList(); }
+      });
+      inp.addEventListener('blur', commit);
+      nameEl.replaceWith(inp); inp.focus(); inp.select();
+    }
+    // 시트 크기 읽기 표시 (프로파일/용지 선택 반영)
+    function updateImpSheetReadout() {
+      const el = document.getElementById('impSheetReadout');
+      if (!el) return;
+      let sheet = _impProfile && _impProfile.sheet ? _impProfile.sheet : resolveImpPaper(document.getElementById('bkPaper')?.value || 'auto', null);
+      const MM = 72 / 25.4;
+      el.textContent = sheet ? `시트: ${Math.round(sheet[0] / MM)}×${Math.round(sheet[1] / MM)}mm` : '시트: 자동(원본 기준)';
+    }
+    // 용지 드롭다운 변경 — '사용자 지정' 선택 시 W×H 직접입력 행을 표시
+    function onImpPaperChange() {
+      const row = document.getElementById('impCustomRow');
+      if (row) row.style.display = (document.getElementById('bkPaper')?.value === '__custom__') ? '' : 'none';
+      impSettingsChanged();
+    }
+    // 사용자 지정 시트 크기를 이름 붙여 재사용 목록(customPapers)에 등록
+    function saveImpCustomAsNamed() {
+      const name = (document.getElementById('impCustomName')?.value || '').trim();
+      const w = parseFloat(document.getElementById('impCustomW')?.value);
+      const h = parseFloat(document.getElementById('impCustomH')?.value);
+      if (!name) { showError('저장할 용지 이름을 입력하세요.'); return; }
+      if (!(w > 0) || !(h > 0)) { showError('폭×높이(mm)를 입력하세요.'); return; }
+      const list = loadCustomPapers().filter(p => p.name !== name);
+      list.push({ name, w, h });
+      saveCustomPapers(list);
+      populatePaperSelect('custom:' + name);
+      document.getElementById('impCustomName').value = '';
+      const row = document.getElementById('impCustomRow'); if (row) row.style.display = 'none';
+      updateImpSheetReadout(); impSettingsChanged();
+      showSuccess(`사용자 정의 용지 '${name}' (${w}×${h}mm) 등록 — 용지 목록에서 재사용할 수 있습니다.`);
+    }
+
+    // 슬러그용 한글 폰트(맑은 고딕) 1회 로드 캐시 — 실패 시 null(ASCII 폴백)
+    let _slugFontBytes;   // undefined = 미시도
+    function getSlugFontBytes() {
+      if (_slugFontBytes !== undefined) return _slugFontBytes;
+      try { _slugFontBytes = window.electronAPI.readFile('C:\\Windows\\Fonts\\malgun.ttf'); }
+      catch (e) { console.warn('슬러그 폰트(malgun.ttf) 로드 실패 — ASCII만 인쇄됩니다:', e); _slugFontBytes = null; }
+      return _slugFontBytes;
+    }
+    // 슬러그 옵션 — "파일명 · YYYY-MM-DD" (시각은 시그니처 안정성을 위해 날짜까지만)
+    function currentSlugOpt() {
+      if (!document.getElementById('impSlug')?.checked) return null;
+      const d = new Date(), p2 = v => String(v).padStart(2, '0');
+      const name = (originalFileName || '문서').replace(/\.pdf$/i, '');
+      return { text: `${name} · ${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, fontBytes: getSlugFontBytes() };
+    }
+    // 현재 임포징 UI 상태 → 빌더 옵션 (모드별). '임포징 PDF 생성' 버튼과 메인
+    // 적용/다운로드 파이프라인이 반드시 이 함수를 공유한다 — 결과 불일치 방지.
+    // 프로파일을 불러온 직후(UI 미수정)면 그 정규화 옵션을 그대로 재현한다.
+    // 슬러그·묶음번호는 프로파일과 무관한 인쇄 보조 표식이라 항상 체크박스에서 읽는다.
+    function currentImpOptions() {
+      if (_impProfile) {
+        const o = JSON.parse(JSON.stringify(_impProfile));
+        o.slug = currentSlugOpt();
+        o.stackNum = !!document.getElementById('impStackNum')?.checked;
+        return o;
+      }
+      const g = id => document.getElementById(id);
+      const paperVal = g('bkPaper')?.value || 'auto';
+      const common = {
+        mode:   _impMode,
+        paper:  paperVal,
+        gutter: parseFloat(g('bkGutter')?.value) || 0,
+        margin: parseFloat(g('impMargin')?.value) || 0,
+        bleed:  parseFloat(g('impBleed')?.value) || 0,
+        crop:   !!g('impCrop')?.checked,
+        frame:  !!g('impFrame')?.checked,
+        slug:   currentSlugOpt(),
+        stackNum: !!g('impStackNum')?.checked,
+        place:  {
+          scale: _impScale,
+          fixedScale: _impScale === 'fixed' ? (parseFloat(g('impFixed')?.value) || 100) / 100 : undefined,
+          align: g('impAlign')?.value || 'cc',
+          offX:  parseFloat(g('impOffX')?.value) || 0,
+          offY:  parseFloat(g('impOffY')?.value) || 0,
+        },
+      };
+      const across = parseInt(g('impAcross')?.value) || 1, down = parseInt(g('impDown')?.value) || 1;
+      // 표준 용지(A4 등)만 그리드 모양에 맞는 방향 자동 (가로칸>세로칸=가로, 그 외 세로).
+      // 사용자 지정/등록 용지는 입력한 W×H 그대로 존중.
+      const nupOrient = (paperVal === '__custom__' || paperVal.startsWith('custom:')) ? null
+                      : (across > down ? 'landscape' : 'portrait');
+      if (_impMode === 'nup')
+        return Object.assign(common, { sheet: resolveImpPaper(paperVal, nupOrient), across, down, sides: _cutSides, order: 'sequential' });
+      if (_impMode === 'cutstack')
+        return Object.assign(common, { sheet: resolveImpPaper(paperVal, down > 1 ? 'portrait' : 'landscape'), across, down, sides: _cutSides, order: 'cutstack' });
+      if (_impMode === 'repeat')
+        return Object.assign(common, { sheet: resolveImpPaper(paperVal, null), cols: parseInt(g('repCols')?.value) || 0, rows: parseInt(g('repRows')?.value) || 0 });
+      if (_impMode === 'dup')
+        return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), sides: _cutSides });
+      return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), creep: parseFloat(g('bkCreep')?.value) || 0, binding: _bkBind, sides: _cutSides });
+    }
+    // 임포징 최종 단계 — srcBytes(적용/최적화 결과)를 현재 모드의 시트로 조립.
+    // 적용(applyChanges)·다운로드(downloadProcessed)·실시간 미리보기가 공유한다.
+    async function buildImposedBytes(srcBytes, onProgress) {
+      const opts = currentImpOptions();
+      const build = opts.mode === 'nup' || opts.mode === 'cutstack' ? buildNupBytes
+                  : opts.mode === 'repeat'   ? buildStepRepeatBytes
+                  : opts.mode === 'dup'      ? buildDup2upBytes
+                  : buildBookletBytes;
+      return (await build(srcBytes, opts, onProgress)).bytes;
+    }
+    // 적용 완료 메시지용 임포징 설명
+    function impositionNoteOf() {
+      if (!_impEnabled) return '';
+      if (_impProfile && _impProfile._profName) return ` · 임포징 프로파일: ${_impProfile._profName}`;
+      const g = id => document.getElementById(id);
+      const grid = `${parseInt(g('impAcross')?.value) || 1}x${parseInt(g('impDown')?.value) || 1}`;
+      const name = _impMode === 'nup'      ? `모아찍기 ${grid}·${_cutSides === 2 ? '양면' : '단면'}`
+                 : _impMode === 'cutstack' ? `정합 ${grid}·${_cutSides === 2 ? '양면' : '단면'}`
+                 : _impMode === 'repeat'   ? '반복(Step&Repeat)'
+                 : _impMode === 'dup'      ? '복제 2부'
+                 : `중철(북클릿)·${_bkBind === 'right' ? '우철' : '좌철'}`;
+      const paper = g('bkPaper')?.value || 'auto';
+      const paperName = paper === 'auto' ? '자동 용지' : paper.startsWith('custom:') ? paper.slice(7) : paper;
+      return ` · 임포징: ${name} · ${paperName}${_impScale === 'orig' ? ' · 100% 배치' : _impScale === 'fixed' ? ' · 지정배율' : ''}`;
+    }
+    // '임포징 PDF 생성' 결과를 메인 적용 상태로 채택 + 포함 모드 자동 ON —
+    // 이후 메인 '⇩ 다운로드'도 같은 임포징 반영본을 저장한다(화면·파일 불일치 버그 방지).
+    function adoptImposedResult(bytes, name) {
+      if (!_impEnabled) {
+        _impEnabled = true;
+        const chk = document.getElementById('impEnabled');
+        if (chk) chk.checked = true;
+      }
+      processedPdfBytes = bytes;
+      processedFileName = name;
+      setDirty(true);
+      updateDownloadBtn();
+    }
+
+    // 임포징 실행 — 모드에 따라 모아찍기/정합/반복/복제/중철 분기 (화면 생성만; 저장은 메인 다운로드)
     function generateImposition() {
-      if (_impMode === 'cutstack') return generateCutStack();
+      if (!_impMode) { showError('임포징 방식(중철·모아찍기·정합·반복·복제)을 먼저 선택하거나 프로파일을 불러오세요.'); return; }
+      if (_impMode === 'nup' || _impMode === 'cutstack') return generateNup();
       if (_impMode === 'repeat')   return generateStepRepeat();
       if (_impMode === 'dup')      return generateDup2up();
       return generateBooklet();

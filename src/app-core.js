@@ -38,7 +38,7 @@
     let originalThumbnails = new Map();
     let quoteItems         = [];
     let pageEdited         = false;
-    let liveAutoPreview    = localStorage.getItem('liveAutoPreview') !== '0'; // 편집 중 자동 반영 (기본 ON)
+    let liveAutoPreview    = localStorage.getItem('liveAutoPreview') === '1'; // 편집 중 자동 반영 (기본 OFF)
     let undoStack          = []; // 실행취소 히스토리 (페이지 상태 스냅샷)
     let redoStack          = []; // 다시실행 히스토리
     const HISTORY_LIMIT    = 1000; // 보관 스냅샷 최대 개수 (사실상 무제한)
@@ -473,6 +473,12 @@
         renderRecentFiles();
       } catch (e) {}
     }
+    function clearRecentFiles() {
+      if (!loadRecentFiles().length) return;
+      if (!confirm('최근 파일 기록을 모두 삭제할까요?')) return;
+      try { localStorage.removeItem('recentFiles'); } catch (e) {}
+      renderRecentFiles();
+    }
     function renderRecentFiles() {
       const box = document.getElementById('recentFiles');
       if (!box) return;
@@ -483,11 +489,23 @@
       const lbl = document.createElement('span'); lbl.className = 'recent-label'; lbl.textContent = '🕘 최근 파일:';
       box.appendChild(lbl);
       list.forEach(r => {
+        // 칩(파일명 클릭=열기) + × 삭제 버튼
+        const item = document.createElement('span');
+        item.className = 'recent-item'; item.title = r.path;
         const chip = document.createElement('button');
-        chip.className = 'recent-chip'; chip.title = r.path; chip.textContent = r.name;
+        chip.className = 'recent-chip'; chip.textContent = r.name;
         chip.onclick = (e) => { e.stopPropagation(); openRecentFile(r); };
-        box.appendChild(chip);
+        const del = document.createElement('button');
+        del.className = 'recent-del'; del.textContent = '×'; del.title = '이 항목을 최근 목록에서 삭제';
+        del.onclick = (e) => { e.stopPropagation(); removeRecentFile(r.path); };
+        item.appendChild(chip); item.appendChild(del);
+        box.appendChild(item);
       });
+      // 전체 삭제
+      const clear = document.createElement('button');
+      clear.className = 'recent-clear'; clear.textContent = '🗑 기록 전체삭제'; clear.title = '최근 파일 기록을 모두 삭제';
+      clear.onclick = (e) => { e.stopPropagation(); clearRecentFiles(); };
+      box.appendChild(clear);
     }
     async function openRecentFile(r) {
       hideError(); hideSuccess();
@@ -1309,6 +1327,11 @@
     }
 
     // ── 처리 옵션 / 버튼 상태 ────────────────────────────────────────────────
+    // 임포징 포함 여부를 app-core에서 안전하게 읽는다. _impEnabled는 뒤에 로드되는
+    // app-process.js의 최상위 let이라 이 파일 실행 시점엔 TDZ — typeof도 던지므로 try로 감싼다.
+    function impIncluded() {
+      try { return !!_impEnabled; } catch (e) { return false; }
+    }
     // 적용 버튼: 수정사항(흑백옵션·페이지편집·페이지선택)이 있으면 활성화
     // 다운로드 버튼: '적용'으로 결과가 만들어진 뒤에만 활성화, 적용 진행 중엔 비활성화
     function updateDownloadBtn() {
@@ -1316,7 +1339,9 @@
       // 편집 사이드바(크기·N-up·테두리·머리글바닥글·워터마크, 챕터별 개별 설정 포함)만
       // 설정한 경우도 '수정사항'으로 인정해야 메인/사이드바의 '적용' 버튼이 편집창의
       // '편집 적용'과 같은 조건으로 활성화된다.
-      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout() || hasContentEdits());
+      // 임포징 포함(_impEnabled)도 단독으로 '수정사항' — 빠져 있으면 임포징만 켠 상태에서
+      // 메인/사이드바 '적용'이 비활성이라 전체화면으로 펼쳐야만 반영되는 비대칭이 생긴다.
+      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout() || hasContentEdits() || impIncluded());
       const applyBtn    = document.getElementById('applyBtn');
       const downloadBtn = document.getElementById('downloadBtn');
       // 적용 결과가 이미 최신이면(processedPdfBytes 존재 — 어떤 수정이든 생기면
@@ -1335,6 +1360,20 @@
       const esDownload = document.getElementById('esDownloadBtn');
       if (esApply) esApply.disabled = applying || !originalPdfBytes || upToDate;
       if (esDownload) esDownload.disabled = applying || !processedPdfBytes;
+      // '적용 필요' 강조 — 자동 반영(liveAutoPreview)이 꺼져 있으면 설정을 바꿔도 화면이
+      // 그대로라 반영이 안 된 것으로 오해하기 쉽다. 미리보기가 떠 있지 않아도 보이도록
+      // 적용 버튼 자체에 표시한다.
+      // 단, 버튼 활성 조건(hasMod)을 그대로 쓰면 안 된다 — inkNorm이 기본 ON이라 PDF를
+      // 열자마자 hasMod가 참이 되어, 사용자가 아무것도 건드리지 않았는데 계속 깜빡인다.
+      // 강조는 '사용자가 실제로 바꾼 것'이 있을 때만: 기본값과 달라진 옵션 + 실제 편집.
+      const optsChanged = processingOptions.bw || processingOptions.inkNorm !== true;
+      const userMod = !!originalPdfBytes && (optsChanged || pageEdited || selectedPages.size > 0
+                      || hasAnyActiveLayout() || hasContentEdits() || impIncluded());
+      const needsApply = userMod && !upToDate && !applying;
+      ['applyBtn', 'sb-applyBtn', 'esApplyBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.classList.toggle('needs-apply', needsApply && !b.disabled);
+      });
       syncSidebarPanel();
     }
 
@@ -1608,14 +1647,19 @@
                   : 'PDF 생성 중...');
         progressBar.style.display = 'block'; updateProgress(0);
 
-        const base = await buildBaseProcessed(p => updateProgress(p));
+        const base = await buildBaseProcessed(p => updateProgress(typeof _impEnabled !== 'undefined' && _impEnabled ? Math.round(p * 0.85) : p));
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
         if (groups.length) {
-          updateProgress(96);
+          updateProgress((typeof _impEnabled !== 'undefined' && _impEnabled) ? 82 : 96);
           pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         }
-        const layoutNote = layoutNoteOf();
+        // 임포징 포함 모드: 조립·레이아웃 결과를 시트로 임포징 (메인 다운로드와 동일 경로)
+        if (typeof _impEnabled !== 'undefined' && _impEnabled) {
+          updateProgress(88);
+          pdfBytes = await buildImposedBytes(pdfBytes, p => updateProgress(88 + Math.round(p * 0.12)));
+        }
+        const layoutNote = layoutNoteOf() + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '');
 
         processedPdfBytes = pdfBytes;
         processedFileName = defaultProcessedName();

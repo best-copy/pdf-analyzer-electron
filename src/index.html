@@ -241,7 +241,7 @@
   <div id="editBackdrop" onclick="exitEditWorkspace(false)"></div>
   <div id="editWsBar">
     <span class="ws-title">✏️ 편집 작업공간</span>
-    <span class="ws-hint">왼쪽에서 편집하고 오른쪽에서 결과를 확인하세요</span>
+    <span class="ws-hint">왼쪽에서 편집하고 오른쪽에서 결과를 확인하세요 · 가운데 경계를 드래그해 좌우 크기 조절</span>
     <span class="ws-spacer"></span>
     <button class="ws-cancel" onclick="exitEditWorkspace(false)" title="적용하지 않고 닫기 (Esc)">✕ 닫기</button>
     <button class="ws-save" onclick="saveAndCloseWorkspace()" title="편집을 메인에 적용하고 닫기"><span class="ic">💾</span> 저장하고 닫기</button>
@@ -250,13 +250,16 @@
   <div id="editSidebar">
     <div class="es-head">
       <span class="es-head-title">✏️ 페이지 편집</span>
-      <button class="es-close es-fs-btn" onclick="enterEditWorkspace()" title="전체화면 편집 작업공간" style="font-size:16px;">⛶</button>
-      <button class="es-close" onclick="toggleEditSidebar(false)" title="닫기">✕</button>
+      <span class="es-head-actions">
+        <button class="es-head-reset" onclick="resetEditSettings()" title="편집 설정 초기화 — 크기·회전·조판·테두리 등 편집 옵션을 기본값으로">↺ 초기화</button>
+        <button class="es-close es-fs-btn" onclick="enterEditWorkspace()" title="전체화면 편집 작업공간" style="font-size:16px;">⛶</button>
+        <button class="es-close" onclick="toggleEditSidebar(false)" title="닫기">✕</button>
+      </span>
     </div>
 
     <!-- 페이지 내부(텍스트·요소) 편집기 -->
     <div class="es-section">
-      <div class="es-section-title">🖊 내부 내용 편집</div>
+      <div class="es-section-title"><span class="ic">🖊</span> 내부 내용 편집</div>
       <button class="es-apply-btn" style="width:100%;" onclick="openContentEditor(ctxTargetIdx>=0?ctxTargetIdx:null)">🖊 내부 편집기 열기 (T)</button>
       <div class="es-hint" style="margin-top:4px;">별도 창에서 페이지 내부의 <b>텍스트 수정·삽입, 이미지·도형, 이동·회전·자르기, 그룹·정밀회전</b>을 편집합니다. 저장하면 즉시 반영됩니다. (페이지를 우클릭해 열면 그 페이지로 시작)</div>
     </div>
@@ -264,15 +267,15 @@
     <!-- 편집 중 자동 반영 (끄면 '적용' 눌러야 반영 → 큰 문서에서 편집이 빨라짐) -->
     <div class="es-section">
       <label class="es-section-title" style="cursor:pointer; margin:0;">
-        <input type="checkbox" id="esAutoPreview" checked style="accent-color:#48484a; width:15px; height:15px;">
-        ⚡ 편집 중 자동 반영
+        <input type="checkbox" id="esAutoPreview" style="accent-color:#48484a; width:15px; height:15px;">
+        <span class="ic">⚡</span> 편집 중 자동 반영
       </label>
       <div class="es-hint" style="margin-top:4px;">끄면 편집 조작은 즉시 반응하고, 미리보기·다운로드는 <b>✔ 적용</b>을 눌러야 반영됩니다. 페이지가 많은 문서에서 편집이 훨씬 빨라집니다.</div>
     </div>
 
     <!-- 프리셋 -->
     <div class="es-section">
-      <div class="es-section-title">💾 설정 프리셋</div>
+      <div class="es-section-title"><span class="ic">💾</span> 설정 프리셋</div>
       <div class="es-row" style="gap:6px;">
         <select class="es-select" id="esPresetSel" style="flex:1;" onchange="loadPreset(this.value)">
           <option value="">프리셋 선택…</option>
@@ -288,7 +291,7 @@
 
     <!-- 적용 범위 -->
     <div class="es-section">
-      <div class="es-section-title">🎯 적용 범위</div>
+      <div class="es-section-title"><span class="ic">🎯</span> 적용 범위</div>
       <div class="es-btngroup" id="esScopeGroup">
         <button class="es-chip active" data-scope="all"      onclick="setEditScope('all')">전체</button>
         <button class="es-chip"        data-scope="selected" onclick="setEditScope('selected')">선택 페이지</button>
@@ -314,7 +317,7 @@
 
     <!-- 1. 크기 / 배율 -->
     <div class="es-section">
-      <div class="es-section-title">📐 크기 · 배율</div>
+      <div class="es-section-title"><span class="ic">📐</span> 크기 · 배율</div>
       <div class="es-btngroup">
         <button class="es-chip active" data-scale="none"     onclick="setScaleMode('none')">원본 유지</button>
         <button class="es-chip"        data-scale="standard" onclick="setScaleMode('standard')">규격 용지</button>
@@ -378,7 +381,7 @@
 
     <!-- 2. 회전 -->
     <div class="es-section">
-      <div class="es-section-title">🔄 회전</div>
+      <div class="es-section-title"><span class="ic">🔄</span> 회전</div>
       <div class="es-rotate-row">
         <button class="es-chip" onclick="rotateScope(-90)">↺ 왼쪽 90°</button>
         <button class="es-chip" onclick="rotateScope(90)">↻ 오른쪽 90°</button>
@@ -387,10 +390,12 @@
       <div class="es-hint">적용 범위의 모든 페이지를 동시에 회전합니다. (즉시 반영 · 실행취소 가능)</div>
     </div>
 
-    <!-- 3. 조판 (N-up) -->
+    <!-- 3. 조판(모아찍기)는 아래 '📖 임포징 → 모아찍기(N-up)'로 통합되었습니다.
+         (기존 레이아웃 N-up 요소는 app-ui.js가 참조하므로 숨겨서 유지) -->
     <div class="es-section">
-      <div class="es-section-title">🔲 조판 (모아찍기)</div>
-      <div class="es-nup-grid" id="esNupGroup">
+      <div class="es-section-title"><span class="ic">🔲</span> 조판 (모아찍기)</div>
+      <div class="es-hint">모아찍기는 아래 <b>📖 임포징</b> 섹션의 <b>모아찍기 (N-up)</b> 모드로 통합되었습니다. 열×행 그리드·배율·정렬·프레임을 그곳에서 지정하세요.</div>
+      <div id="esNupGroup" style="display:none;">
         <button class="es-chip active" data-nup="1"  onclick="setNup(1)">1</button>
         <button class="es-chip" data-nup="2"  onclick="setNup(2)">2</button>
         <button class="es-chip" data-nup="4"  onclick="setNup(4)">4</button>
@@ -399,37 +404,61 @@
         <button class="es-chip" data-nup="9"  onclick="setNup(9)">9</button>
         <button class="es-chip" data-nup="16" onclick="setNup(16)">16</button>
       </div>
-      <div class="es-row" style="margin-top:10px;">
-        <span class="es-label">거터(mm)</span>
-        <input type="number" class="es-input" id="esGutter" min="0" step="1" value="0" style="flex:0 0 80px;">
-        <span class="es-hint" style="margin:0;">칸 사이 간격</span>
-      </div>
-      <div class="es-hint" style="margin-top:8px;">한 장에 모아찍을 페이지 수. (1 = 끄기)</div>
+      <input type="number" id="esGutter" min="0" step="1" value="0" style="display:none;">
     </div>
 
     <!-- 3-1. 임포징 (제본용 조판) — 중철(북클릿) / 정합(Cut&Stack) -->
     <div class="es-section">
-      <div class="es-section-title">📖 임포징 (제본 조판)</div>
-      <div class="es-btngroup" id="impModeGroup">
-        <button class="es-chip active" data-imp="booklet"  onclick="setImpMode('booklet')">중철 (북클릿)</button>
+      <label class="es-section-title" style="cursor:pointer; display:flex; align-items:center; gap:6px;" title="켜면 메인 '✔ 적용'·'⇩ 다운로드'·미리보기가 아래 임포징 시트를 최종 단계로 반영합니다">
+        <input type="checkbox" id="impEnabled" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="toggleImpEnabled(this.checked)">
+        <span class="ic">📖</span> 임포징 (제본 조판)
+      </label>
+      <div class="es-hint" style="margin:2px 0 8px;">체크하면 적용·다운로드 결과에 임포징이 포함됩니다. (아래 '📖 임포징 PDF 생성'을 누르면 자동으로 켜집니다)</div>
+      <!-- 프로파일 목록 (Quite Imposing sequences 71종 시드 + 사용자 추가) -->
+      <div class="es-row">
+        <span class="es-label">프로파일</span>
+        <select class="es-select" id="impProfile" style="flex:1; min-width:0;" onchange="onImpProfileChange()" title="선택하면 즉시 프로파일 설정이 적용됩니다"></select>
+        <button class="es-chip" style="flex:0 0 auto;" onclick="loadImpProfile()" title="선택한 프로파일 설정을 다시 적용(재적용)">📂 불러오기</button>
+        <button class="es-chip" style="flex:0 0 auto;" onclick="impProfileEdit()" title="선택된 프로파일의 내부 항목(모드·용지·그리드·여백 등)을 아래 설정에 펼쳐 편집">✎ 수정</button>
+      </div>
+      <div class="es-row" style="margin-top:6px;">
+        <input type="text" class="es-input" id="impProfName" placeholder="프로파일 이름" style="flex:1; min-width:0;" title="'💾 저장'에 쓸 이름 — 같은 이름이 있으면 덮어쓰기(수정 저장), 없으면 신규 추가">
+        <button class="es-chip" style="flex:0 0 auto;" onclick="impProfileSave()" title="현재 설정을 이 이름으로 저장 (같은 이름=덮어쓰기, 새 이름=신규)">💾 저장</button>
+        <button class="es-chip" id="impListToggleBtn" style="flex:0 0 auto;" onclick="toggleImpProfileList()" title="전체 프로파일 목록을 펼쳐 순서변경·이름변경·삭제">▤ 목록 관리</button>
+      </div>
+      <!-- 동기화: JSON 내보내기/가져오기 (독립 임포징 도구 dist/임포징도구.html 과 프로파일 공유) -->
+      <div class="es-row" style="margin-top:6px;">
+        <span class="es-label" style="font-size:11px;">동기화</span>
+        <button class="es-chip" style="flex:1;" onclick="impProfileExport()" title="현재 프로파일 전체를 JSON 파일로 저장 — 독립 도구로 옮길 수 있습니다">⬆ 내보내기</button>
+        <button class="es-chip" style="flex:1;" onclick="impProfileImportClick()" title="JSON 파일에서 프로파일을 가져와 병합(같은 이름 덮어쓰기)">⬇ 가져오기</button>
+        <input type="file" id="impProfImportFile" accept="application/json,.json" style="display:none;" onchange="impProfileImportFile(this)">
+      </div>
+      <!-- 전체 목록: 순서·이름을 한눈에 보고 인라인으로 편집 -->
+      <div class="imp-prof-list" id="impProfileList" style="display:none;"></div>
+      <div class="es-btngroup" id="impModeGroup" style="margin-top:8px;">
+        <button class="es-chip"        data-imp="booklet"  onclick="setImpMode('booklet')">중철 (북클릿)</button>
+        <button class="es-chip"        data-imp="nup"      onclick="setImpMode('nup')" title="연속 페이지를 열×행 그리드로 모아찍기 (조판 통합)">모아찍기 (N-up)</button>
         <button class="es-chip"        data-imp="cutstack" onclick="setImpMode('cutstack')">정합 (Cut&amp;Stack)</button>
         <button class="es-chip"        data-imp="repeat"   onclick="setImpMode('repeat')">반복 (Step&amp;Repeat)</button>
         <button class="es-chip"        data-imp="dup"      onclick="setImpMode('dup')" title="같은 페이지 2벌(180° 정렬) 양면 — 재단하면 2부">복제 2부 (1 1* 2* 2)</button>
       </div>
       <div class="es-row" style="margin-top:8px;">
         <span class="es-label">용지</span>
-        <select class="es-select" id="bkPaper" style="flex:1;"></select>
+        <select class="es-select" id="bkPaper" style="flex:1;" onchange="onImpPaperChange()"></select>
+        <span class="es-hint" id="impSheetReadout" style="margin:0; flex:0 0 auto; font-size:11px;">시트: 자동</span>
         <button class="es-chip" style="flex:0 0 auto;" onclick="deleteCustomPaper()" title="선택한 사용자 정의 용지 삭제">🗑</button>
       </div>
-      <!-- 비규격 용지 등록 (mm) — 등록하면 위 드롭다운의 '사용자 정의' 그룹에 저장·재사용 -->
-      <div class="es-row" style="margin-top:6px;">
-        <input type="text" class="es-input" id="cpName" placeholder="용지 이름 (예: 국배판)" style="flex:1; min-width:0;">
-        <input type="number" class="es-input" id="cpW" min="1" placeholder="폭" style="flex:0 0 56px;" title="폭 (mm)">
+      <!-- 사용자 지정: 문서(시트) 크기를 직접 입력. 이름 지정 시 용지 목록에 저장·재사용 -->
+      <div class="es-row" id="impCustomRow" style="margin-top:6px; display:none;">
+        <span class="es-label">직접크기</span>
+        <input type="number" class="es-input" id="impCustomW" min="1" placeholder="폭" style="flex:0 0 52px;" title="시트 폭 (mm)" oninput="updateImpSheetReadout(); impSettingsChanged()">
         <span style="color:#8e8e93;">×</span>
-        <input type="number" class="es-input" id="cpH" min="1" placeholder="높이" style="flex:0 0 56px;" title="높이 (mm)">
-        <button class="es-chip" style="flex:0 0 auto;" onclick="addCustomPaper()" title="비규격 용지를 등록해 재사용">＋ 등록</button>
+        <input type="number" class="es-input" id="impCustomH" min="1" placeholder="높이" style="flex:0 0 52px;" title="시트 높이 (mm)" oninput="updateImpSheetReadout(); impSettingsChanged()">
+        <span class="es-hint" style="margin:0;">mm</span>
+        <input type="text" class="es-input" id="impCustomName" placeholder="이름(선택)" style="flex:1; min-width:0;" title="이름을 넣고 저장하면 용지 목록에 등록됩니다">
+        <button class="es-chip" style="flex:0 0 auto;" onclick="saveImpCustomAsNamed()" title="이 크기를 이름 붙여 용지 목록에 저장">＋ 저장</button>
       </div>
-      <!-- 중철 전용: 제본 방향 -->
+      <!-- 중철 전용: 제본 방향 + 표지 분리 -->
       <div class="es-row" id="impBookletRow" style="margin-top:6px;">
         <span class="es-label">제본</span>
         <div class="es-btngroup" id="bkBindGroup" style="flex:1;">
@@ -437,14 +466,21 @@
           <button class="es-chip"        data-bind="right" onclick="setBookletBind('right')">우철 (세로쓰기)</button>
         </div>
       </div>
-      <!-- 정합 전용: 분할 수 + 단면/양면 -->
-      <div class="es-row" id="impCutRow1" style="margin-top:6px; display:none;">
-        <span class="es-label">분할</span>
-        <div class="es-btngroup" id="cutNGroup" style="flex:1;">
-          <button class="es-chip active" data-cutn="2" onclick="setCutN(2)">2분할 (2-up)</button>
-          <button class="es-chip"        data-cutn="4" onclick="setCutN(4)">4분할 (2×2)</button>
-        </div>
+      <div class="es-row" id="impBookletRow2" style="margin-top:6px;">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="표지 4면(겉표지 앞·뒤 + 안쪽 2면)이 실리는 맨 바깥 시트를 별도 PDF로 분리 저장 — 두꺼운 표지 용지에 따로 인쇄한 뒤 내지를 감싸 중철">
+          <input type="checkbox" id="bkCoverSplit" style="accent-color:#ffd60a; width:14px; height:14px;">
+          📕 표지 분리 (표지 1시트 + 내지 별도 PDF)
+        </label>
       </div>
+      <!-- 모아찍기/정합 전용: 열×행 그리드 -->
+      <div class="es-row" id="impGridRow" style="margin-top:6px; display:none;">
+        <span class="es-label">그리드</span>
+        <input type="number" class="es-input" id="impAcross" min="1" value="2" style="flex:0 0 56px;" title="열 수 (가로로 몇 칸)" oninput="impSettingsChanged()">
+        <span style="color:#8e8e93;">열 ×</span>
+        <input type="number" class="es-input" id="impDown" min="1" value="1" style="flex:0 0 56px;" title="행 수 (세로로 몇 칸)" oninput="impSettingsChanged()">
+        <span class="es-hint" style="margin:0; flex:1;">행 (열×행 = 칸당 페이지)</span>
+      </div>
+      <!-- 모아찍기/정합/복제 전용: 단면/양면 -->
       <div class="es-row" id="impCutRow2" style="margin-top:6px; display:none;">
         <span class="es-label">인쇄</span>
         <div class="es-btngroup" id="cutSidesGroup" style="flex:1;">
@@ -455,30 +491,70 @@
       <!-- 반복(Step&Repeat) 전용: 배치 칸수 — 비우면 실제 크기 그대로 자동 최대 배치 -->
       <div class="es-row" id="impRepRow" style="margin-top:6px; display:none;">
         <span class="es-label">배치</span>
-        <input type="number" class="es-input" id="repCols" min="1" placeholder="가로" style="flex:0 0 56px;" title="가로 칸 수 — 비우면 원고 실제 크기로 자동 최대 배치">
+        <input type="number" class="es-input" id="repCols" min="1" placeholder="가로" style="flex:0 0 56px;" title="가로 칸 수 — 비우면 원고 실제 크기로 자동 최대 배치" oninput="impSettingsChanged()">
         <span style="color:#8e8e93;">×</span>
-        <input type="number" class="es-input" id="repRows" min="1" placeholder="세로" style="flex:0 0 56px;" title="세로 칸 수 — 비우면 원고 실제 크기로 자동 최대 배치">
+        <input type="number" class="es-input" id="repRows" min="1" placeholder="세로" style="flex:0 0 56px;" title="세로 칸 수 — 비우면 원고 실제 크기로 자동 최대 배치" oninput="impSettingsChanged()">
         <span class="es-hint" style="margin:0; flex:1;">비우면 실제 크기 자동 최대</span>
       </div>
       <div class="es-row" style="margin-top:6px;">
         <span class="es-label">거터(mm)</span>
-        <input type="number" class="es-input" id="bkGutter" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="칸 사이 간격 (중철=책등 여백 / 정합=재단 여유). 블리드 사용 시 블리드×2 이상 권장">
+        <input type="number" class="es-input" id="bkGutter" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="칸 사이 간격 (중철=책등 여백 / 정합=재단 여유). 블리드 사용 시 블리드×2 이상 권장" oninput="impSettingsChanged()">
         <span id="bkCreepWrap" style="display:flex; align-items:center; gap:6px;">
           <span class="es-label" style="flex:0 0 auto;" title="두꺼운 책자에서 안쪽 낱장이 바깥으로 밀려나오는 현상 보정 — 안쪽 시트일수록 내용을 책등 쪽으로 이동 (장당 mm)">밀림보정</span>
-          <input type="number" class="es-input" id="bkCreep" min="0" step="0.05" value="0" style="flex:0 0 64px;" title="장당 mm (보통 0.1~0.3, 두께에 따라)">
+          <input type="number" class="es-input" id="bkCreep" min="0" step="0.05" value="0" style="flex:0 0 64px;" title="장당 mm (보통 0.1~0.3, 두께에 따라)" oninput="impSettingsChanged()">
         </span>
       </div>
       <div class="es-row" style="margin-top:6px;">
         <span class="es-label">여백(mm)</span>
-        <input type="number" class="es-input" id="impMargin" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="시트 가장자리 여백 — 그리퍼(급지 물림)·재단 여유 공간">
+        <input type="number" class="es-input" id="impMargin" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="시트 가장자리 여백 — 그리퍼(급지 물림)·재단 여유 공간" oninput="impSettingsChanged()">
         <span class="es-label" style="flex:0 0 auto;" title="재단 밀림에 대비해 페이지를 재단선 밖으로 살짝 키워 채웁니다 (면당 mm, 보통 3). 거터를 블리드×2 이상으로 두세요">블리드</span>
-        <input type="number" class="es-input" id="impBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="면당 mm (보통 3)">
+        <input type="number" class="es-input" id="impBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="면당 mm (보통 3)" oninput="impSettingsChanged()">
+      </div>
+      <div class="es-row" style="margin-top:6px; gap:12px; flex-wrap:wrap;">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;">
+          <input type="checkbox" id="impCrop" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="impSettingsChanged()">
+          ✂ 재단선
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="각 페이지 둘레에 얇은 테두리(프레임)를 그립니다">
+          <input type="checkbox" id="impFrame" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="impSettingsChanged()">
+          ▢ 프레임(테두리)
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="시트 하단 여백에 파일명·날짜·시트번호(앞/뒤)를 작게 인쇄 — 여러 작업 동시 인쇄 시 재단 전 섞임 방지">
+          <input type="checkbox" id="impSlug" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="impSettingsChanged()">
+          <span class="ic">🏷</span> 슬러그(시트 정보)
+        </label>
+        <span id="impStackWrap" style="display:none;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="정합 전용 — 각 묶음 앞면 트림 왼쪽 바깥에 겹치기 순서 번호(원문자)를 인쇄합니다. 재단 시 잘려나가므로 여백·거터를 3mm 이상 두세요">
+            <input type="checkbox" id="impStackNum" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="impSettingsChanged()">
+            ① 묶음번호
+          </label>
+        </span>
+      </div>
+      <!-- 배치 크기/위치: 칸 맞춤(비율 유지) / 100% 원본 / 지정 배율, 위치 지정 -->
+      <div class="es-row" style="margin-top:8px;">
+        <span class="es-label">배치</span>
+        <div class="es-btngroup" id="impScaleGroup" style="flex:1;">
+          <button class="es-chip active" data-scale="fit"  onclick="setImpScale('fit')" title="칸(슬롯)에 맞춰 비율 유지 축소·확대">칸 맞춤</button>
+          <button class="es-chip"        data-scale="orig" onclick="setImpScale('orig')" title="배율 100% — 원본 실제 크기 그대로 칸 안에 배치">100% 원본</button>
+          <button class="es-chip"        data-scale="fixed" onclick="setImpScale('fixed')" title="지정한 배율(%)로 배치">지정%</button>
+        </div>
+        <input type="number" class="es-input" id="impFixed" min="1" step="0.5" value="100" style="flex:0 0 64px;" title="배율 % (지정% 선택 시)" oninput="impSettingsChanged()">
       </div>
       <div class="es-row" style="margin-top:6px;">
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;">
-          <input type="checkbox" id="impCrop" style="accent-color:#ffd60a; width:14px; height:14px;">
-          ✂ 재단선 표시 (각 페이지 모서리에 재단 마크)
-        </label>
+        <span class="es-label">위치</span>
+        <select class="es-select" id="impAlign" style="flex:1;" onchange="impSettingsChanged()" title="칸 안에서의 정렬 기준 위치">
+          <option value="tl">좌상</option><option value="tc">상단 중앙</option><option value="tr">우상</option>
+          <option value="cl">좌측 중앙</option><option value="cc" selected>정중앙</option><option value="cr">우측 중앙</option>
+          <option value="bl">좌하</option><option value="bc">하단 중앙</option><option value="br">우하</option>
+        </select>
+      </div>
+      <div class="es-row" style="margin-top:6px;">
+        <span class="es-label">미세이동</span>
+        <span class="es-hint" style="margin:0;">X</span>
+        <input type="number" class="es-input" id="impOffX" step="0.5" value="0" style="flex:0 0 60px;" onchange="impSettingsChanged()" title="오른쪽(+)/왼쪽(−) 이동 mm">
+        <span class="es-hint" style="margin:0;">Y</span>
+        <input type="number" class="es-input" id="impOffY" step="0.5" value="0" style="flex:0 0 60px;" onchange="impSettingsChanged()" title="아래(+)/위(−) 이동 mm">
+        <span class="es-hint" style="margin:0; flex:1;">mm (기준 위치에서)</span>
       </div>
       <button class="es-apply-btn" style="width:100%; margin-top:10px;" onclick="generateImposition()">📖 임포징 PDF 생성</button>
       <div class="es-hint" style="margin-top:6px;" id="impHint">현재 편집·적용 상태 그대로 <b>중철 제본용 2-up 시트</b>(앞/뒤 교대)로 재배열해 별도 PDF로 저장합니다. 페이지 수는 4의 배수가 되도록 빈 면이 채워집니다.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 반 접어 중철.</div>
@@ -488,7 +564,7 @@
     <div class="es-section">
       <label class="es-section-title" style="cursor:pointer;">
         <input type="checkbox" id="esMgEnabled" style="accent-color:#48484a; width:15px; height:15px;">
-        📏 여백 (mm)
+        <span class="ic">📏</span> 여백 (mm)
       </label>
       <div class="es-margins" id="esMgBody">
         <label>상 <input type="number" id="esMgTop"    min="0" value="10"></label>
@@ -501,7 +577,7 @@
 
     <!-- 4. 테두리 -->
     <div class="es-section">
-      <div class="es-section-title">🔳 테두리</div>
+      <div class="es-section-title"><span class="ic">🔳</span> 테두리</div>
       <div class="es-btngroup" id="esBorderGroup">
         <button class="es-chip active" data-border="none"   onclick="setBorder('none')">없음</button>
         <button class="es-chip" data-border="thin"   onclick="setBorder('thin')">얇은 실선</button>
@@ -516,7 +592,7 @@
     <div class="es-section">
       <label class="es-section-title" style="cursor:pointer;">
         <input type="checkbox" id="esHfEnabled" style="accent-color:#48484a; width:15px; height:15px;">
-        🔖 머리글 · 바닥글
+        <span class="ic">🔖</span> 머리글 · 바닥글
       </label>
       <div class="es-sub" id="esHfBody">
         <div class="es-hf-grid" style="grid-template-columns:34px 1fr 1fr 1fr;">
@@ -560,7 +636,7 @@
     <div class="es-section">
       <label class="es-section-title" style="cursor:pointer;">
         <input type="checkbox" id="esWmEnabled" style="accent-color:#48484a; width:15px; height:15px;">
-        💧 워터마크
+        <span class="ic">💧</span> 워터마크
       </label>
       <div class="es-sub" id="esWmBody">
         <div class="es-row" style="margin-top:6px;">
@@ -595,11 +671,11 @@
         <button class="es-apply-btn" id="esApplyBtn" onclick="applyChanges()">✔ 편집 적용</button>
         <button class="es-dl-btn" id="esDownloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 저장 · 우클릭: 원본 저장" disabled>⇩ 다운로드</button>
       </div>
-      <button class="es-reset-btn" onclick="resetEditSettings()">↺ 편집 설정 초기화</button>
       <div class="es-hint" style="margin-top:2px;">옵션을 바꾸면 미리보기가 실시간 반영됩니다. <b>⇩ 다운로드</b>로 저장하세요.</div>
     </div>
   </div>
   <div id="editResizer" title="드래그하여 편집창 폭 조절"></div>
+  <div id="editWsResizer" title="드래그하여 좌우 창 크기 조절"></div>
 
   <!-- 썸네일 우클릭 컨텍스트 메뉴 -->
   <div id="pageCtxMenu">
