@@ -7,6 +7,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 열기 다이얼로그 — 경로만 반환 (파일 내용은 readFile로 별도 요청)
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
 
+  // 외부(실행 인자·목차 검증기 연동)에서 넘어온 문서 열기 알림
+  // cb([{path, name}]) — main이 검증한 실제 존재 문서만 온다
+  onExternalOpen: (cb) => ipcRenderer.on('external:open', (_e, items) => cb(items)),
+
   // 파일을 직접 읽어 ArrayBuffer 반환 (Node.js fs → asar/실제파일 모두 처리)
   readFile: (filePath) => {
     const buf = fs.readFileSync(filePath);

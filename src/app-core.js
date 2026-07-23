@@ -633,6 +633,25 @@
       }
     }
 
+    // ── 외부에서 넘어온 문서 열기 (실행 인자 · 목차 검증기 '이어서 작업') ────
+    // 다이얼로그 경로와 같은 파이프라인(prepareFiles → startLoad)을 탄다.
+    if (window.electronAPI.onExternalOpen) {
+      window.electronAPI.onExternalOpen(async (items) => {
+        try {
+          if (!items || !items.length) return;
+          hideError(); hideSuccess();
+          const needConvert = items.some(r => CONVERT_RE.test(r.name));
+          if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
+          const fakeFiles = await prepareFiles(items);
+          if (needConvert) hideLoading();
+          if (fakeFiles.length) startLoad(fakeFiles);
+        } catch (e) {
+          hideLoading();
+          showError('외부 파일 열기 오류: ' + (e && e.message ? e.message : String(e)));
+        }
+      });
+    }
+
     // 분석이 끝나 챕터로 합칠 수 있는 상태인지
     function isTabReady(t) {
       return t && t.status === 'ready' && t.originalPdfBytes && t.pageResults.filter(Boolean).length;

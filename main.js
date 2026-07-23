@@ -14,6 +14,18 @@ app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 let unsavedWork = false;
 let forceClose  = false;
 
+// ── 외부 실행 인자로 받은 문서 열기 (목차 검증기 '이어서 작업' 연동) ─────────
+// 실행: "PDF 분석기.exe 문서.pdf" — 시작 시 인자의 문서를 바로 연다.
+const OPEN_DOC_RE = /\.(pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i;
+
+function docPathsFrom(argv) {
+  return argv
+    .slice(1)
+    .filter((a) => a && !a.startsWith('-') && OPEN_DOC_RE.test(a) && fs.existsSync(a));
+}
+
+let pendingOpenPaths = docPathsFrom(process.argv);
+
 // 이전 세션에서 남은 변환 임시 PDF/HTML/편집 임시파일 정리 (누적 방지)
 function sweepTempConversions() {
   try {
@@ -60,6 +72,17 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   // win.webContents.openDevTools(); // 디버그 시 주석 해제
+
+  // 실행 인자로 받은 문서를 렌더러 준비 후 전달 (목차 검증기 연동)
+  win.webContents.on('did-finish-load', () => {
+    if (pendingOpenPaths.length) {
+      win.webContents.send(
+        'external:open',
+        pendingOpenPaths.map((p) => ({ path: p, name: path.basename(p) }))
+      );
+      pendingOpenPaths = [];
+    }
+  });
 
   // ── 종료 전 저장 여부 확인 ──────────────────────────────────────────────
   win.on('close', (e) => {
