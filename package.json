@@ -18,7 +18,9 @@
       "target": [
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -36,7 +38,8 @@
   },
   "devDependencies": {
     "electron": "^31.7.7",
-    "electron-builder": "^24.0.0"
+    "electron-builder": "^24.0.0",
+    "qrcode-generator": "^2.0.4"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1"

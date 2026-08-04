@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PDF 분석기</string>
+    <string name="title_activity_main">PDF 분석기</string>
+    <string name="package_name">kr.co.ilchung.pdfanalyzer</string>
+    <string name="custom_url_scheme">kr.co.ilchung.pdfanalyzer</string>
+</resources>

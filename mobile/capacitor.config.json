@@ -1,0 +1,12 @@
+{
+  "appId": "kr.co.ilchung.pdfanalyzer",
+  "appName": "PDF 분석기",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  }
+}

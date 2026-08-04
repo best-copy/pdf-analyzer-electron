@@ -135,11 +135,15 @@ async function handleLayoutTransform(payload) {
     const scale = Math.min(rect.w / cw, rect.h / ch);
     const dw = cw * scale, dh = ch * scale;
     const cx = rect.x + (rect.w - dw) / 2, cy = rect.y + (rect.h - dh) / 2;
+    // /Rotate N = 뷰어가 '시계방향' N도 회전 표시. embedPage는 /Rotate를 무시하므로
+    // 같은 시계방향으로 그려야 한다 — pdf-lib rotate는 반시계(+)라서 90↔270을 바꿔 쓴다.
+    // (이전 코드는 반시계로 그려 회전 페이지가 기대와 180° 어긋났음 — 임포징 embedAllPages의
+    //  시계방향 행렬과 동일 규약으로 통일)
     const o = { xScale: scale, yScale: scale };
     if (ang === 0)        { o.x = cx;      o.y = cy; }
-    else if (ang === 90)  { o.x = cx + dw; o.y = cy;      o.rotate = PDFLib.degrees(90); }
+    else if (ang === 90)  { o.x = cx;      o.y = cy + dh; o.rotate = PDFLib.degrees(-90); }
     else if (ang === 180) { o.x = cx + dw; o.y = cy + dh; o.rotate = PDFLib.degrees(180); }
-    else                  { o.x = cx;      o.y = cy + dh; o.rotate = PDFLib.degrees(270); }
+    else                  { o.x = cx + dw; o.y = cy;      o.rotate = PDFLib.degrees(90); }
     outPage.drawPage(e, o);
   }
 
@@ -309,6 +313,10 @@ async function handleLayoutTransform(payload) {
       }
     }
     if (hfOn) {
+      // 홀짝 좌우 교대(책 바깥쪽): 짝수 페이지는 좌/우 칸 내용을 맞바꿔 찍는다
+      const hfEff = (hf.alt && ((i + 1) % 2 === 0))
+        ? Object.assign({}, hf, { hL: hf.hR, hR: hf.hL, fL: hf.fR, fR: hf.fL })
+        : hf;
       const ctx = { page: i + 1, total, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
       const mgOn = !!(es.margins && es.margins.enabled);
       const mL = mgOn ? mm2pt(es.margins.left) : 0, mR = mgOn ? mm2pt(es.margins.right) : 0;
@@ -318,7 +326,7 @@ async function handleLayoutTransform(payload) {
       ];
       const mHF = mm2pt(hf.margin || 0);
       for (const [key, ax, align, isHeader] of segs) {
-        const txt = resolveHF(hf[key], ctx);
+        const txt = resolveHF(hfEff[key], ctx);
         if (!txt || !txt.trim()) continue;
         // ASCII면 내장 표준폰트(임베드 불필요), 한글 등 포함 시에만 시스템 폰트 서브셋 임베드
         const font = isAsciiText(txt) ? await getStdFont() : await embedHfFont(hf.font);

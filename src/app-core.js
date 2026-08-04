@@ -44,6 +44,10 @@
     const HISTORY_LIMIT    = 1000; // 보관 스냅샷 최대 개수 (사실상 무제한)
     let processedPdfBytes  = null; // '적용'으로 생성된 결과 PDF (다운로드 대기)
     let processedFileName  = '';
+    // 아웃라인·블리드 등 외부 변환 결과를 '그대로' 저장해야 하는 경우의 바이트.
+    // 세팅되어 있으면 다운로드가 파이프라인 재조립(buildOptimizedOutput)을 건너뛴다 —
+    // 재조립하면 gs 아웃라인 등 파이프라인 밖 변환이 사라지는 화면·파일 불일치가 생김.
+    let directOutputBytes  = null;
     let applying           = false; // 적용(수정) 진행 중 여부
     // inkNorm(잉크 정규화): 분석기가 '흑백'으로 판정한 페이지도 DeviceGray 색공간으로 강제
     // 변환한다. 화면은 흑백처럼 보여도 내부가 RGB/CMYK 회색(리치블랙)이면 프린터 과금기가
@@ -72,7 +76,8 @@
         border: 'none',
         // 머리글/바닥글 — 좌/중/우 6칸, 자리표시자 {page}{total}{date}{filename}{n}
         hf: { enabled: false, hL: '', hC: '', hR: '', fL: '', fC: '', fR: '',
-              size: 9, color: '#333333', margin: 10, pnumStyle: 1, font: 'C:\\Windows\\Fonts\\malgun.ttf' },
+              size: 9, color: '#333333', margin: 10, pnumStyle: 1, alt: false,   // alt = 짝수쪽 좌우 교대(책 바깥쪽)
+              font: 'C:\\Windows\\Fonts\\malgun.ttf' },
         // 워터마크
         wm: { enabled: false, text: '', size: 48, color: '#cccccc',
               opacity: 30, angle: 45, mode: 'center' },
@@ -635,22 +640,76 @@
 
     // ── 외부에서 넘어온 문서 열기 (실행 인자 · 목차 검증기 '이어서 작업') ────
     // 다이얼로그 경로와 같은 파이프라인(prepareFiles → startLoad)을 탄다.
+    async function openExternalItems(items) {
+      try {
+        hideError(); hideSuccess();
+        const needConvert = items.some(r => CONVERT_RE.test(r.name));
+        if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
+        const fakeFiles = await prepareFiles(items);
+        if (needConvert) hideLoading();
+        if (fakeFiles.length) startLoad(fakeFiles);
+      } catch (e) {
+        hideLoading();
+        showError('외부 파일 열기 오류: ' + (e && e.message ? e.message : String(e)));
+      }
+    }
     if (window.electronAPI.onExternalOpen) {
       window.electronAPI.onExternalOpen(async (items) => {
-        try {
-          if (!items || !items.length) return;
-          hideError(); hideSuccess();
-          const needConvert = items.some(r => CONVERT_RE.test(r.name));
-          if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
-          const fakeFiles = await prepareFiles(items);
-          if (needConvert) hideLoading();
-          if (fakeFiles.length) startLoad(fakeFiles);
-        } catch (e) {
-          hideLoading();
-          showError('외부 파일 열기 오류: ' + (e && e.message ? e.message : String(e)));
-        }
+        if (!items || !items.length) return;
+        // 여러 문서를 '보내기'로 받으면 순서 지정 다이얼로그를 먼저 — 정한 순서대로
+        // 챕터로 이어져 한 문서로 열린다 (탐색기의 전달 순서는 신뢰할 수 없음)
+        if (items.length > 1) { showOpenOrderDialog(items); return; }
+        await openExternalItems(items);
       });
     }
+
+    // ── 📚 여러 문서 열 순서 지정 (보내기·다중 전달용) ──────────────────────
+    let _orderItems = [];
+    function showOpenOrderDialog(items) {
+      _orderItems = items.slice();
+      renderOrderRows();
+      document.getElementById('orderModal').style.display = 'block';
+    }
+    function renderOrderRows() {
+      const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+      document.getElementById('orderRows').innerHTML = _orderItems.map((it, i) => `
+        <div class="ord-row" draggable="true" data-i="${i}" style="display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #e8e8ed; border-radius:8px; margin-bottom:6px; background:#fff; cursor:grab;">
+          <span style="font-weight:700; color:#ffd60a; background:#1d1d1f; border-radius:6px; min-width:26px; text-align:center; padding:2px 0; font-size:12px;">${i + 1}</span>
+          <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;" title="${esc(it.path || '')}">${esc(it.name)}</span>
+          <button onclick="moveOrderItem(${i},-1)" ${i === 0 ? 'disabled' : ''} style="border:1px solid #d2d2d7; background:#fff; border-radius:6px; cursor:pointer; padding:2px 8px;">▲</button>
+          <button onclick="moveOrderItem(${i},1)" ${i === _orderItems.length - 1 ? 'disabled' : ''} style="border:1px solid #d2d2d7; background:#fff; border-radius:6px; cursor:pointer; padding:2px 8px;">▼</button>
+        </div>`).join('');
+    }
+    function moveOrderItem(i, d) {
+      const j = i + d;
+      if (j < 0 || j >= _orderItems.length) return;
+      [_orderItems[i], _orderItems[j]] = [_orderItems[j], _orderItems[i]];
+      renderOrderRows();
+    }
+    function sortOrderItems() {
+      _orderItems.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true, sensitivity: 'base' }));
+      renderOrderRows();
+    }
+    function confirmOpenOrder() {
+      document.getElementById('orderModal').style.display = 'none';
+      openExternalItems(_orderItems.slice());
+    }
+    // 행 드래그로 순서 변경 (컨테이너 위임 1회 바인딩 — 임포징 프로파일 목록과 같은 패턴)
+    (function bindOrderDnD() {
+      const box = document.getElementById('orderRows');
+      if (!box) return;
+      let from = -1;
+      box.addEventListener('dragstart', e => { const r = e.target.closest('.ord-row'); if (!r) return; from = +r.dataset.i; e.dataTransfer.effectAllowed = 'move'; });
+      box.addEventListener('dragover', e => e.preventDefault());
+      box.addEventListener('drop', e => {
+        e.preventDefault();
+        const r = e.target.closest('.ord-row');
+        if (!r || from < 0) return;
+        const to = +r.dataset.i;
+        if (to !== from) { const it = _orderItems.splice(from, 1)[0]; _orderItems.splice(to, 0, it); renderOrderRows(); }
+        from = -1;
+      });
+    })();
 
     // 분석이 끝나 챕터로 합칠 수 있는 상태인지
     function isTabReady(t) {
@@ -779,9 +838,12 @@
         // 직렬화된다(동시성만 올려도 실병렬 X). 같은 바이트로 보조 문서를 2~3개 더
         // 열면 각자 워커를 가져 페이지 렌더가 실제로 병렬화된다(코어 활용 극대화).
         // 메모리 보호: 대용량 파일(>96MB)이나 짧은 문서(<8p)는 보조 문서 생략.
-        const CONCURRENCY = Math.max(2, Math.min(navigator.hardwareConcurrency || 4, 8));
+        // 모바일(WebView)은 메모리가 훨씬 빡빡 — 보조 문서 상한 32MB·동시성 4로 제한.
+        const isMobile = !!window.__MOBILE__;
+        const CONCURRENCY = Math.max(2, Math.min(navigator.hardwareConcurrency || 4, isMobile ? 4 : 8));
         const extraDocs = [];
-        if (totalPages >= 8 && tabState.originalPdfBytes.byteLength < 96 * 1024 * 1024) {
+        const auxLimit = (isMobile ? 32 : 96) * 1024 * 1024;
+        if (totalPages >= 8 && tabState.originalPdfBytes.byteLength < auxLimit) {
           const want = Math.min(3, Math.max(0, Math.floor(CONCURRENCY / 2) - 1));
           for (let e = 0; e < want; e++) {
             try {
@@ -927,6 +989,9 @@
     }
 
     function applyGrayscaleToEl(el, pageNum, sbEl) {
+      // 흑백 미리보기는 '⬛ 흑백변환' 옵션이 켜져 있을 때만 — 옵션이 꺼져 있으면
+      // 선택은 회전·복제·목차 지정용이므로 썸네일 색을 건드리지 않는다(선택 테두리만).
+      if (!processingOptions.bw) return;
       const img = el.querySelector('.page-thumbnail');
       if (img) img.style.filter = 'grayscale(1)';
       const span = el.querySelector('.page-type-inline');
@@ -935,6 +1000,15 @@
       // 사이드바 동기 (sbEl 미전달 시 DOM 탐색)
       const sb = sbEl ?? sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
       if (sb) { const sbImg = sb.querySelector('img'); if (sbImg) sbImg.style.filter = 'grayscale(1)'; }
+    }
+    // 흑백변환 옵션 토글 시 현재 선택 페이지들의 흑백 미리보기를 일괄 갱신
+    function syncSelectionVisuals() {
+      selectedPages.forEach(pn => {
+        const el = document.querySelector(`[data-page="${pn}"]`);
+        if (!el) return;
+        if (processingOptions.bw) applyGrayscaleToEl(el, pn);
+        else restoreThumbnailEl(el, pn);
+      });
     }
 
     function restoreThumbnailEl(el, pageNum, sbEl) {
@@ -1067,7 +1141,8 @@
       const colorPages = [], grayPages = [];
       pageResults.forEach(r => {
         if (!r) return;
-        if (r.isColor && !selectedPages.has(r.pageNum)) { newColor++; colorPages.push(r.pageNum); }
+        // 선택 페이지를 흑백으로 세는 것은 '흑백변환' 옵션이 켜진 경우만
+        if (r.isColor && !(processingOptions.bw && selectedPages.has(r.pageNum))) { newColor++; colorPages.push(r.pageNum); }
         else { newGray++; grayPages.push(r.pageNum); }
       });
       colorPagesEl.textContent = newColor;
@@ -1360,7 +1435,8 @@
       // '편집 적용'과 같은 조건으로 활성화된다.
       // 임포징 포함(_impEnabled)도 단독으로 '수정사항' — 빠져 있으면 임포징만 켠 상태에서
       // 메인/사이드바 '적용'이 비활성이라 전체화면으로 펼쳐야만 반영되는 비대칭이 생긴다.
-      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout() || hasContentEdits() || impIncluded());
+      const outlineOn = (typeof _outlineEnabled !== 'undefined') && _outlineEnabled;   // ✒ 아웃라인 옵션도 단독 수정사항
+      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout() || hasContentEdits() || impIncluded() || outlineOn);
       const applyBtn    = document.getElementById('applyBtn');
       const downloadBtn = document.getElementById('downloadBtn');
       // 적용 결과가 이미 최신이면(processedPdfBytes 존재 — 어떤 수정이든 생기면
@@ -1397,14 +1473,26 @@
     }
 
     // 새 수정이 생기면 직전 '적용' 결과는 무효화 (다시 적용해야 다운로드 가능)
+    // 장시간 작업 버튼 진행효과 — 실행 중 노란 스윕 + 클릭 잠금 (style.css .btn-busy)
+    function setBtnBusy(id, on) {
+      const b = document.getElementById(id);
+      if (b) b.classList.toggle('btn-busy', !!on);
+    }
+
     function invalidateProcessed() {
-      if (!applying) { processedPdfBytes = null; processedFileName = ''; }
+      if (!applying) {
+        processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
+      }
       updateDownloadBtn();
     }
 
     function toggleOption(key) {
       processingOptions[key] = !processingOptions[key];
       document.getElementById(`opt-${key}`).classList.toggle('active', processingOptions[key]);
+      // 사이드바 미러 버튼도 즉시 동기 — 상태·표시 불일치로 인한 오인 방지
+      const sb = document.getElementById(`sb-opt-${key}`);
+      if (sb) sb.classList.toggle('active', processingOptions[key]);
+      if (key === 'bw') { syncSelectionVisuals(); if (typeof refreshResults === 'function') refreshResults(); }
       invalidateProcessed();
       if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
       // 잉크 정규화를 켜면 유휴 시간에 미리 변환 시작
@@ -1657,7 +1745,7 @@
       if (processingOptions.bw && !selectedPages.size) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
       try {
         applying = true;
-        processedPdfBytes = null; processedFileName = '';
+        processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
         updateDownloadBtn();
         const bwMode = processingOptions.bw && selectedPages.size > 0;
         const inkCnt = processingOptions.inkNorm ? pageResults.filter(r => r && !r.isBlank && !r.isColor).length : 0;
@@ -1678,9 +1766,18 @@
           updateProgress(88);
           pdfBytes = await buildImposedBytes(pdfBytes, p => updateProgress(88 + Math.round(p * 0.12)));
         }
-        const layoutNote = layoutNoteOf() + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '');
+        // 폰트 아웃라인화 옵션: 최종 단계로 gs 변환 (다운로드는 이 결과를 그대로 저장)
+        let outlined = false;
+        if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled) {
+          showLoading('폰트 → 곡선 변환 중… (Ghostscript, 문서 크기에 따라 수십 초)');
+          pdfBytes = await buildOutlinedBytes(pdfBytes);
+          outlined = true;
+        }
+        const layoutNote = layoutNoteOf() + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '')
+          + (outlined ? ' · ✒ 폰트 아웃라인화(텍스트→곡선)' : '');
 
         processedPdfBytes = pdfBytes;
+        if (outlined) directOutputBytes = pdfBytes;   // 재조립하면 아웃라인이 사라짐 — 그대로 저장
         processedFileName = defaultProcessedName();
         setDirty(true);
         updateProgress(100);

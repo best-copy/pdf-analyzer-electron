@@ -200,7 +200,9 @@
     function captureExtraPreset() {
       const g = id => document.getElementById(id);
       return {
-        proc: { bw: !!processingOptions.bw, inkNorm: !!processingOptions.inkNorm },
+        proc: { bw: !!processingOptions.bw, inkNorm: !!processingOptions.inkNorm,
+                outline: (typeof _outlineEnabled !== 'undefined') && _outlineEnabled,
+                outlineFlatten: !!g('outlineFlatten')?.checked },
         imp: {
           mode: _impMode, bind: _bkBind, cutN: _cutN, cutSides: _cutSides,
           paper:  g('bkPaper') ? g('bkPaper').value : 'auto',
@@ -220,6 +222,9 @@
         ['bw', 'inkNorm'].forEach(k => {
           if (typeof c.proc[k] === 'boolean' && !!processingOptions[k] !== c.proc[k]) toggleOption(k);
         });
+        // ✒ 폰트 아웃라인화 옵션 복원 (체크박스 + 상태 동기)
+        if (typeof c.proc.outline === 'boolean' && typeof setOutlineEnabled === 'function') setOutlineEnabled(c.proc.outline);
+        if (typeof c.proc.outlineFlatten === 'boolean' && g('outlineFlatten')) g('outlineFlatten').checked = c.proc.outlineFlatten;
       }
       if (c.imp) {
         const im = c.imp;
@@ -531,6 +536,7 @@
       document.getElementById('esHfMargin').value = ls.hf.margin;
       setFontSelectValue(ls.hf.font || DEFAULT_HF_FONT);
       document.getElementById('esHfPnumStyle').value = ls.hf.pnumStyle != null ? ls.hf.pnumStyle : 1;
+      const hfAltChk = document.getElementById('esHfAlt'); if (hfAltChk) hfAltChk.checked = !!ls.hf.alt;
       // 워터마크
       document.getElementById('esWmEnabled').checked = ls.wm.enabled;
       document.getElementById('esWmBody').classList.toggle('show', ls.wm.enabled);
@@ -593,6 +599,8 @@
       if (hfColor) hfColor.addEventListener('input', () => { if (editSettings) activeLayoutSettings().hf.color = hfColor.value; scheduleLivePreview(); });
       const pnSel = document.getElementById('esHfPnumStyle');
       if (pnSel) pnSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.pnumStyle = parseInt(pnSel.value) || 0; scheduleLivePreview(); });
+      const hfAlt = document.getElementById('esHfAlt');
+      if (hfAlt) hfAlt.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.alt = hfAlt.checked; scheduleLivePreview(); });
       const fontSel = document.getElementById('esHfFont');
       if (fontSel) fontSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.font = fontSel.value; scheduleLivePreview(); });
 
@@ -783,12 +791,8 @@
       return map;
     }
 
-    // 흑백변환 옵션 자동 ON (미리보기에서 페이지 선택 시)
-    function ensureBwOn() {
-      if (processingOptions.bw) return;
-      processingOptions.bw = true;
-      const b = document.getElementById('opt-bw'); if (b) b.classList.add('active');
-    }
+    // (구) ensureBwOn — 미리보기 선택 시 흑백변환을 몰래 켜던 코드는 제거됨.
+    // 정책: 선택은 순수 선택(회전·복제·목차 등)이며, 흑백 지정은 '⬛ 흑백변환' 버튼을 명시적으로 켰을 때만.
 
     // 미리보기 셀들의 선택 표시(파랑 테두리+흑백)를 selectedPages 기준으로 갱신
     let _pvCells = []; // [{cell, sbItem, src:[pageNum,...]}]
@@ -808,7 +812,7 @@
         if (el) { allSel ? deselectPageEl(pn, el) : selectPageEl(pn, el); }
         else { allSel ? selectedPages.delete(pn) : selectedPages.add(pn); }
       });
-      if (!allSel) ensureBwOn();          // 선택하면 흑백변환 자동 ON
+      // (흑백변환 자동 ON 제거 — 선택은 흑백 지정이 아님. 옵션 버튼을 명시적으로 켜야 흑백 대상이 된다)
       updateSelectedCount();              // invalidateProcessed 포함
       refreshPreviewMarks();
     }
@@ -1114,7 +1118,7 @@
         if (!sbEl) return;
         sbEl.classList.add('sb-selected');
         const sbImg = sbEl.querySelector('img');
-        if (sbImg) sbImg.style.filter = 'grayscale(1)';
+        if (sbImg && processingOptions.bw) sbImg.style.filter = 'grayscale(1)';   // 흑백 미리보기는 옵션 ON일 때만
       });
       syncSidebarPanel();
     }
@@ -1215,7 +1219,7 @@
       if (selectedPages.has(pageNum)) {
         el.classList.add('selected');
         const img = el.querySelector('.page-thumbnail');
-        if (img && !isBlank) img.style.filter = 'grayscale(1)';
+        if (img && !isBlank && processingOptions.bw) img.style.filter = 'grayscale(1)';   // 흑백 미리보기는 옵션 ON일 때만
       }
       el.addEventListener('click', e => {
         if (e.target.closest('button')) return;
@@ -1309,12 +1313,22 @@
 
     // 90/270도 회전 시 이미지가 wrapper 안에 완전히 들어오도록 scale 보정
     function applyRotationStyle(img, rotation, thumbW, thumbH) {
-      if (!rotation) { img.style.transform = ''; return; }
       const isSide = rotation === 90 || rotation === 270;
+      // 대지(판형) 스왑: 90/270°면 썸네일 칸의 가로세로를 실제 출력 판형대로 바꾼다
+      // (기존엔 세로 칸 안에서 그림만 돌아가 레터박스로 보였음)
+      const wrap = img.closest ? img.closest('.page-thumb-wrap') : null;
+      if (wrap) {
+        if (isSide && thumbW && thumbH) {
+          wrap.style.aspectRatio = `${thumbH} / ${thumbW}`;
+          wrap.style.display = 'flex'; wrap.style.alignItems = 'center'; wrap.style.justifyContent = 'center';
+        } else {
+          wrap.style.aspectRatio = ''; wrap.style.display = ''; wrap.style.alignItems = ''; wrap.style.justifyContent = '';
+        }
+      }
+      if (!rotation) { img.style.transform = ''; return; }
       if (isSide && thumbW && thumbH) {
-        // 90도 회전 후 이미지 너비(= 원래 높이)가 wrapper 너비를 넘지 않도록 축소
-        const scale = thumbW / thumbH;
-        img.style.transform = `rotate(${rotation}deg) scale(${scale})`;
+        // 스왑된 칸을 꽉 채우는 배율 (칸 있음) / 칸 폭을 넘지 않는 축소 (사이드바 등 칸 없음)
+        img.style.transform = `rotate(${rotation}deg) scale(${thumbW / thumbH})`;
       } else {
         img.style.transform = `rotate(${rotation}deg)`;
       }
@@ -1324,21 +1338,29 @@
       const r = pageResults[idx];
       if (!r) return;
       pushHistory();
-      r.rotation = ((r.rotation || 0) + deg + 360) % 360;
-      // 메인 그리드 업데이트
-      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
-      if (el) {
-        const img = el.querySelector('.page-thumbnail');
-        if (img) applyRotationStyle(img, r.rotation, r.thumbW, r.thumbH);
-      }
-      // 사이드바 업데이트
-      const sbEl = sidebar.querySelector(`[data-sb-page="${r.pageNum}"]`);
-      if (sbEl) {
-        const sbImg = sbEl.querySelector('img');
-        if (sbImg) applyRotationStyle(sbImg, r.rotation, r.thumbW, r.thumbH);
+      // 복제(D)와 같은 규칙: 클릭한 페이지가 선택(Shift/Ctrl 다중선택)에 포함되고
+      // 2개 이상 선택이면 선택 전체를 함께 회전 — 아니면 그 페이지만.
+      const targets = (selectedPages.size > 1 && selectedPages.has(r.pageNum))
+        ? pageResults.filter(x => x && selectedPages.has(x.pageNum))
+        : [r];
+      for (const t of targets) {
+        t.rotation = ((t.rotation || 0) + deg + 360) % 360;
+        // 썸네일 즉시 반영 (메인 그리드 + 사이드바)
+        const el = document.querySelector(`[data-page="${t.pageNum}"]`);
+        if (el) {
+          const img = el.querySelector('.page-thumbnail');
+          if (img) applyRotationStyle(img, t.rotation, t.thumbW, t.thumbH);
+        }
+        const sbEl = sidebar.querySelector(`[data-sb-page="${t.pageNum}"]`);
+        if (sbEl) {
+          const sbImg = sbEl.querySelector('img');
+          if (sbImg) applyRotationStyle(sbImg, t.rotation, t.thumbW, t.thumbH);
+        }
       }
       setPageEdited();
       updateUndoBtn();
+      if (targets.length > 1)
+        showSuccess(`선택한 ${targets.length}쪽을 ${deg > 0 ? '시계 ↻' : '반시계 ↺'} 90° 회전했습니다. (되돌리기 Ctrl+Z)`);
     }
 
     // ── 드래그&드롭 ──────────────────────────────────────────────────────────
@@ -1400,6 +1422,22 @@
       document.querySelectorAll('.peer-hover').forEach(el => el.classList.remove('peer-hover'));
     }
 
+    // 빈 곳 클릭 → 선택 전체 해제 — 문서 어디든(그리드 여백·본문 배경·통계 영역 등).
+    // 제외: 페이지 카드·챕터 헤더·버튼/입력류·양쪽 사이드바·미리보기·모달·툴바 등 상호작용 영역.
+    // Ctrl/Shift 누른 채 빗나간 클릭은 범위선택 중 실수로 간주해 유지.
+    const KEEP_SELECTION_SEL = [
+      '.page-item', '.chapter-divider', 'button', 'input', 'select', 'textarea', 'label', 'a',
+      '#sidebar', '#sbToggle', '#sbResizer', '#editSidebar', '#editToggle',
+      '#previewSection', '#pageCtxMenu', '#tabBar', '#mainTabBar', '.sticky-panel',
+      '#preflightModal', '#tocModal', '#orderModal', '#loading', '.imp-prof-list',
+    ].join(', ');
+    document.addEventListener('click', e => {
+      if (!selectedPages.size) return;
+      if (e.ctrlKey || e.shiftKey) return;
+      if (e.target.closest(KEEP_SELECTION_SEL)) return;
+      deselectAll();
+    });
+
     // 메인 그리드 → 사이드바
     pagesGrid.addEventListener('mouseover', e => {
       const item = e.target.closest('.page-item[data-page]');
@@ -1424,3 +1462,64 @@
       if (mainEl) mainEl.classList.add('peer-hover');
     });
     sidebar.addEventListener('mouseleave', clearAllPeerHover);
+
+    // ── 📱 모바일 연동 서버 (remote-server.js) — 좌측 사이드바 설정 섹션 ──────
+    // 폰이 같은 WiFi에서 이 PC로 HWP/Office/Adobe 변환·잉크판정을 위임한다.
+    // QR = 접속 URL(토큰·MAC 포함) — 폰 카메라 스캔으로 테스트 페이지 접속.
+    async function toggleRemoteServer(on) {
+      const chk = document.getElementById('remoteSrvChk');
+      try {
+        const st = await window.electronAPI.remoteSetEnabled(on);
+        renderRemoteServerUI(st);
+        if (on && st.running) {
+          const addr = st.lan.length ? `${st.lan[0].ip}:${st.port}` : `포트 ${st.port}`;
+          showSuccess(`📱 모바일 연동 서버 켜짐 — ${addr}\n폰 카메라로 QR을 스캔해 접속하세요 (같은 WiFi 필요). 변환은 PC의 한글·Office·Adobe로 처리됩니다.`);
+        } else if (on && !st.running) {
+          showError('서버 시작 실패: ' + (st.lastError || '알 수 없는 오류'));
+          if (chk) chk.checked = false;
+        }
+      } catch (e) {
+        showError('모바일 연동 서버 오류: ' + (e && e.message ? e.message : String(e)));
+        if (chk) chk.checked = false;
+      }
+    }
+    function renderRemoteServerUI(st) {
+      const body = document.getElementById('remoteSrvBody');
+      const err  = document.getElementById('remoteSrvErr');
+      const chk  = document.getElementById('remoteSrvChk');
+      if (!body) return;
+      if (chk) chk.checked = !!st.running;
+      body.style.display = st.running ? '' : 'none';
+      err.style.display = st.lastError ? '' : 'none';
+      err.textContent = st.lastError || '';
+      if (!st.running) return;
+      // QR: 첫 번째 LAN 주소 (보통 유선/무선 1개). 나머지는 텍스트로 병기.
+      const qrBox = document.getElementById('remoteSrvQr');
+      const addrBox = document.getElementById('remoteSrvAddr');
+      if (st.urls.length && typeof qrcode === 'function') {
+        try {
+          const qr = qrcode(0, 'M');
+          qr.addData(st.urls[0]);
+          qr.make();
+          qrBox.innerHTML = qr.createSvgTag({ cellSize: 3, margin: 2 });
+          qrBox.style.display = 'flex';
+        } catch (e) { qrBox.style.display = 'none'; }
+      } else qrBox.style.display = 'none';
+      addrBox.innerHTML = st.lan.map(l =>
+        `${l.ip}:${st.port} <span style="color:#636366;">(${l.iface} · MAC ${l.mac})</span>`).join('<br>')
+        + `<br>토큰: <b style="color:#ffd60a;">${st.token}</b>`;
+    }
+    // 시작 시 저장된 상태 복원 (켜짐 설정이면 main이 이미 서버를 구동해 둠)
+    (function initRemoteServerUI() {
+      if (!window.electronAPI || !window.electronAPI.remoteStatus) return;
+      window.electronAPI.remoteStatus().then(renderRemoteServerUI).catch(() => {});
+    })();
+
+    // 가상 프린터 설치 버튼 — 미설치일 때만 표시 (설치돼 있으면 숨김 유지)
+    (function initPrinterSetupBtn() {
+      if (!window.electronAPI || !window.electronAPI.printerStatus) return;
+      window.electronAPI.printerStatus().then(st => {
+        const b = document.getElementById('printerSetupBtn');
+        if (b && !(st && st.installed)) b.style.display = '';
+      }).catch(() => {});
+    })();

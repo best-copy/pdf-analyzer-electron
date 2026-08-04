@@ -408,39 +408,38 @@
     }
     .sel-btn:hover { background: #f5f5f7; border-color: #a1a1a6; }
     .sel-count { color: #6e6e73; font-size: 0.85em; font-weight: 600; }
-    .opt-btn {
-      padding: 8px 15px; border: 1.5px solid #d2d2d7; background: white;
-      border-radius: 8px; cursor: pointer; font-size: 0.88em; font-weight: 600;
-      color: #1d1d1f; transition: all 0.15s;
+    /* 처리 옵션 줄 버튼 — 규격 통일: 높이 38px · radius 10px · 동일 폰트 (테마 B&Y) */
+    .opt-btn, .clear-opts-btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 38px; padding: 0 16px; box-sizing: border-box;
+      border: 1.5px solid #d2d2d7; background: white;
+      border-radius: 10px; cursor: pointer; font-size: 0.88em; font-weight: 600;
+      color: #1d1d1f; transition: all 0.15s; font-family: inherit;
     }
-    .opt-btn:hover { background: #f5f5f7; border-color: #a1a1a6; }
+    .opt-btn:hover, .clear-opts-btn:hover { background: #fff8db; border-color: #ffd60a; }
     .opt-btn.active {
       background: #1d1d1f; border-color: #1d1d1f; color: #ffd60a;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
+    .apply-btn, .download-btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 38px; padding: 0 20px; box-sizing: border-box;
+      border: none; border-radius: 10px; cursor: pointer;
+      font-size: 0.88em; font-weight: 700; transition: all 0.2s; font-family: inherit;
+    }
     .apply-btn {
-      margin-left: auto; padding: 9px 20px;
-      background: #ffd60a;
-      color: #1d1d1f; border: none; border-radius: 8px;
-      cursor: pointer; font-size: 0.9em; font-weight: 700;
-      transition: all 0.2s; box-shadow: 0 2px 8px rgba(255,214,10,0.4);
+      margin-left: auto; background: #ffd60a; color: #1d1d1f;
+      box-shadow: 0 2px 8px rgba(255,214,10,0.4);
     }
     .apply-btn:hover { background: #ffdf3a; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(255,214,10,0.55); }
     .apply-btn:disabled { background: #a1a1a6; color: #f5f5f7; cursor: not-allowed; transform: none; box-shadow: none; }
     .download-btn {
-      padding: 9px 20px; background: #1d1d1f; color: #ffd60a; border: none; border-radius: 8px;
-      cursor: pointer; font-size: 0.9em; font-weight: 700; transition: all 0.2s;
+      background: #1d1d1f; color: #ffd60a;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
     .download-btn:hover { background: #333336; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
-    .download-btn:disabled { background: #a1a1a6; cursor: not-allowed; transform: none; box-shadow: none; }
+    .download-btn:disabled { background: #a1a1a6; color: #f5f5f7; cursor: not-allowed; transform: none; box-shadow: none; }
     .action-btn-group { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-    .clear-opts-btn {
-      padding: 8px 13px; border: 1.5px solid #d2d2d7; background: white;
-      border-radius: 8px; cursor: pointer; font-size: 0.82em; font-weight: 700;
-      color: #1d1d1f; transition: all 0.15s;
-    }
-    .clear-opts-btn:hover { background: #fff8db; border-color: #ffd60a; }
     .quality-select {
       padding: 7px 10px; border: 1px solid #d2d2d7; border-radius: 8px;
       background: white; font-size: 0.85em; color: #1d1d1f; font-weight: 500;
@@ -1206,3 +1205,15 @@
       box-shadow: 0 2px 10px rgba(0,0,0,0.14); background: #fff; border: 1px solid #e0e0e6;
     }
     .pv-num { font-size: 0.78em; color: #6e6e73; margin-top: 6px; font-weight: 600; }
+
+/* ── 버튼 진행효과: 장시간 작업 중 노란 스윕 애니메이션 + 클릭 잠금 ─────────── */
+.btn-busy { position: relative; overflow: hidden; pointer-events: none; opacity: .75; }
+.btn-busy::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: linear-gradient(90deg, transparent 20%, rgba(255, 214, 10, .45) 50%, transparent 80%);
+  animation: btnSweep 1.1s linear infinite;
+}
+@keyframes btnSweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* es-chip 비활성 상태 (아웃라인화 1회 완료 등) */
+.es-chip:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; background: #f5f5f7; }

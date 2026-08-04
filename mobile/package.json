@@ -1,0 +1,21 @@
+{
+  "name": "pdf-analyzer-mobile",
+  "version": "0.1.0",
+  "description": "PDF 분석기 안드로이드판 — 분석·흑백변환·임포징은 폰 단독, HWP/Office/Adobe 변환은 PC 서버 위임",
+  "private": true,
+  "scripts": {
+    "build-www": "node scripts/build-www.js",
+    "sync": "node scripts/build-www.js && npx cap sync android",
+    "apk": "node scripts/build-www.js && npx cap sync android && cd android && gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/filesystem": "^6.0.1",
+    "@capacitor/share": "^6.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}

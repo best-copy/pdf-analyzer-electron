@@ -57,6 +57,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Ghostscript inkcov — 페이지별 CMYK 잉크 커버리지 (프린터 기준 컬러 판정)
   inkCoverage: (pdfPath) => ipcRenderer.invoke('ink:coverage', pdfPath),
 
+  // 폰트 아웃라인화 (gs pdfwrite -dNoOutputFonts) — 변환된 임시 PDF 경로 반환
+  // opts.flatten = 투명도 평탄화(PDF 1.4, 구형 RIP 대응)
+  outlineFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:outlineFonts', pdfPath, opts || {}),
+
+  // 가상 프린터 'PDF Editor' 설치 (UAC 승격) — 어떤 앱에서든 인쇄로 문서 전달
+  setupPrinter: () => ipcRenderer.invoke('printer:setup'),
+  printerStatus: () => ipcRenderer.invoke('printer:status'),
+
+  // ── 모바일 연동 LAN 변환 서버 (remote-server.js) ──────────────────────────
+  remoteStatus:     ()   => ipcRenderer.invoke('remote:status'),
+  remoteSetEnabled: (on) => ipcRenderer.invoke('remote:setEnabled', !!on),
+
   // PDF.js 워커 콘텐츠 — asar 안에서도 fs로 안전하게 읽어 blob URL 생성용으로 반환
   getWorkerContent: () => fs.readFileSync(
     path.join(__dirname, 'src', 'libs', 'pdf.worker.min.js'), 'utf8'

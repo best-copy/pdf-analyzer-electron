@@ -96,6 +96,7 @@
       <button class="tbtn" id="tool-shape"  title="사각형·도형 팔레트 (R/S)" onclick="toggleShapePalette(event)">⬠</button>
       <button class="tbtn" id="tool-mosaic" title="모자이크(민감정보 가림) (M)" onclick="setTool('mosaic')">▦</button>
       <button class="tbtn" id="tool-region" title="원본 그림·로고·도표 편집: 클릭 또는 드래그로 추출 (G)" onclick="setTool('region')">◲</button>
+      <button class="tbtn" id="btn-findrep" title="찾기·바꾸기 — 원본 폰트 유지 일괄 치환 (Ctrl+F)" onclick="toggleFindPanel()">🔍</button>
     </div>
     <div class="grp">
       <button class="tbtn" id="btn-group"   title="그룹 (Ctrl+G)" onclick="groupSelection()">⧉</button>
@@ -121,8 +122,10 @@
     </div>
     <div class="grp">
       <button class="tbtn" title="축소" onclick="zoomBy(-1)">－</button>
-      <span id="zoomLabel" style="font-size:12px;min-width:42px;text-align:center">100%</span>
+      <span id="zoomLabel" style="font-size:12px;min-width:42px;text-align:center" title="실제 인쇄 크기 대비 배율 (100% = 실치수)">100%</span>
       <button class="tbtn" title="확대" onclick="zoomBy(1)">＋</button>
+      <button class="tbtn" title="실제 크기 (100% = 인쇄 실치수)" onclick="zoomActual()">1:1</button>
+      <button class="tbtn" title="창에 맞춤" onclick="zoomFit()">⤢</button>
     </div>
     <div class="grp">
       <button class="tbtn" title="이전 페이지" onclick="gotoPage(curPos-1)">◀</button>
@@ -137,6 +140,17 @@
 
   <div id="body">
     <div id="pagesPane"></div>
+    <!-- 찾기·바꾸기 패널 — 콘텐츠 스트림 치환(원본 폰트 유지) 일괄 적용 -->
+    <div id="frPanel" style="position:fixed; top:56px; right:16px; z-index:70; display:none; background:#2c2c2e; border:1px solid #48484a; border-radius:10px; padding:12px; width:270px; box-shadow:0 8px 24px rgba(0,0,0,.5);">
+      <div style="font-size:13px; font-weight:700; color:#ffd60a; margin-bottom:8px;">🔍 찾기·바꾸기 <span style="font-weight:400; color:#98989d;">(원본 폰트 유지)</span></div>
+      <input id="frFind" placeholder="찾을 내용" style="width:100%; box-sizing:border-box; background:#1d1d1f; color:#f5f5f7; border:1px solid #48484a; border-radius:6px; padding:8px; font-size:12.5px; margin-bottom:6px;">
+      <input id="frRepl" placeholder="바꿀 내용" onkeydown="if(event.key==='Enter')runFindReplace(false)" style="width:100%; box-sizing:border-box; background:#1d1d1f; color:#f5f5f7; border:1px solid #48484a; border-radius:6px; padding:8px; font-size:12.5px; margin-bottom:8px;">
+      <div style="display:flex; gap:6px; margin-bottom:6px;">
+        <button class="tbtn" style="flex:1;" onclick="runFindReplace(false)">현재 페이지</button>
+        <button class="tbtn" style="flex:1;" onclick="runFindReplace(true)">모든 페이지</button>
+      </div>
+      <div id="frResult" style="font-size:11.5px; color:#98989d; line-height:1.5;">같은 서식 조각 안의 글자만 치환됩니다. 원본 폰트 서브셋에 없는 글자로는 바꿀 수 없습니다(스킵). 되돌리기 = Ctrl+Z(페이지별).</div>
+    </div>
     <div id="stageWrap">
       <div id="stage">
         <canvas id="pageCanvas"></canvas>
@@ -194,6 +208,7 @@ let nextId = 1;
 let fontList = [];             // [{name,file}]
 let undoStack = [], redoStack = [];
 let bgCanvasCtx = null;        // 배경 캔버스(배경색 샘플링용)
+let canvasDpr = 1;             // 캔버스 실픽셀/CSS픽셀 비 (HiDPI 렌더 — 픽셀 판독 시 곱해야 함)
 
 const stage = document.getElementById('stage');
 const overlay = document.getElementById('overlay');
@@ -273,7 +288,10 @@ function refreshThumbState() {
 // ── 현재 페이지 렌더 ─────────────────────────────────────────────────────────
 async function renderPage() {
   const p = pages[curPos];
-  curPage = await pdfjsDoc.getPage(p.originalIdx + 1);
+  // 스트림 치환(원본 폰트 유지 글자수정)이 있는 페이지는 수정본으로 렌더 — 캔버스·텍스트bbox 모두
+  try { await syncStreamDoc(p.originalIdx, false); } catch(e){ console.warn('스트림 수정본 동기화 실패:', e); }
+  const _sd = _streamDocs.get(p.originalIdx);
+  curPage = _sd ? await _sd.pjsDoc.getPage(1) : await pdfjsDoc.getPage(p.originalIdx + 1);
   curVp1 = curPage.getViewport({ scale: 1, rotation: 0 });   // 좌표변환 기준(원본 방향)
   // fit 배율: stageWrap 크기에 맞춤
   const wrap = document.getElementById('stageWrap');
@@ -282,9 +300,14 @@ async function renderPage() {
   if (!isFinite(baseScale) || baseScale <= 0) baseScale = 1;
   if (!renderPage._userZoom) scale = baseScale;
   const vp = curPage.getViewport({ scale, rotation: 0 });
-  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-  stage.style.width = canvas.width + 'px'; stage.style.height = canvas.height + 'px';
-  await curPage.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  // HiDPI: 캔버스는 devicePixelRatio 배로 렌더하고 CSS로 축소 표시 — 페이지·선이 선명해진다.
+  // 주의: 캔버스 픽셀을 읽는 곳(sampleBg·extractRegion·모자이크)은 반드시 canvasDpr을 곱할 것.
+  canvasDpr = Math.min(window.devicePixelRatio || 1, 2);
+  const vpR = curPage.getViewport({ scale: scale*canvasDpr, rotation: 0 });
+  canvas.width = Math.ceil(vpR.width); canvas.height = Math.ceil(vpR.height);
+  canvas.style.width = Math.ceil(vp.width) + 'px'; canvas.style.height = Math.ceil(vp.height) + 'px';
+  stage.style.width = Math.ceil(vp.width) + 'px'; stage.style.height = Math.ceil(vp.height) + 'px';
+  await curPage.render({ canvasContext: canvas.getContext('2d'), viewport: vpR }).promise;
   bgCanvasCtx = canvas.getContext('2d', { willReadFrequently: true });
   // 텍스트 아이템 bbox (기존 텍스트 편집용) — view-units
   curTextItems = [];
@@ -328,8 +351,13 @@ async function renderPage() {
   renderObjects(); refreshThumbState(); renderProps();
 }
 
-function updateZoomLabel(){ document.getElementById('zoomLabel').textContent = Math.round(scale/baseScale*100) + '%'; }
+// 줌 표시는 '실제 인쇄 크기' 기준 — CSS 표준 96dpi에서 1pt = 4/3px 이므로 scale 4/3 = 실치수 100%.
+// (기존엔 '창에 맞춤'을 100%로 표시해, 실제보다 확대된 상태를 100%로 오인 → 선굵기가 두꺼워 보였음)
+const ACTUAL_SCALE = 96/72;
+function updateZoomLabel(){ document.getElementById('zoomLabel').textContent = Math.round(scale/ACTUAL_SCALE*100) + '%'; }
 function zoomBy(dir){ renderPage._userZoom = true; scale = Math.max(baseScale*0.25, Math.min(baseScale*4, scale*(dir>0?1.15:1/1.15))); renderPage(); }
+function zoomActual(){ renderPage._userZoom = true; scale = ACTUAL_SCALE; renderPage(); }
+function zoomFit(){ renderPage._userZoom = false; renderPage(); }
 function gotoPage(pos){ if(pos<0||pos>=pages.length) return; commitContentEditing(); curPos=pos; renderPage._userZoom=false; renderPage(); }
 
 // ── 오브젝트 렌더 ────────────────────────────────────────────────────────────
@@ -359,9 +387,32 @@ function buildObjEl(o) {
     el.textContent = o.text || '';
   } else if (o.type === 'rect') {
     el.classList.add('obj-rect');
-    el.style.background = o.fill && o.fill!=='none' ? o.fill : 'transparent';
-    el.style.border = (o.strokeW>0 && o.stroke) ? `${o.strokeW*scale}px solid ${o.stroke}` : 'none';
-    if (o.isLine) renderLineCaps(el, o);
+    if (o.isLine) {
+      // 선은 DIV 배경(하드엣지) 대신 SVG stroke로 — 안티앨리어싱이 PDF 뷰어 표현과 일치해
+      // 실시간 두께가 실제(굽기 결과)와 같아 보인다. 굽기와 동일하게 butt 캡.
+      el.style.background = 'transparent';
+      const ns='http://www.w3.org/2000/svg';
+      const svg=document.createElementNS(ns,'svg');
+      const wpx=o.w*scale, hpx=o.h*scale;
+      svg.setAttribute('width', Math.max(1,wpx)); svg.setAttribute('height', Math.max(1,hpx));
+      svg.style.cssText='position:absolute;left:0;top:0;overflow:visible;display:block;pointer-events:none;';
+      const ln=document.createElementNS(ns,'line');
+      ln.setAttribute('x1',0); ln.setAttribute('y1',hpx/2); ln.setAttribute('x2',wpx); ln.setAttribute('y2',hpx/2);
+      ln.setAttribute('stroke', o.fill||'#111111'); ln.setAttribute('stroke-width', hpx);
+      ln.setAttribute('stroke-linecap','butt');
+      svg.appendChild(ln); el.appendChild(svg);
+      // 얇은 선(1pt≈1~2px)도 쉽게 잡히도록 투명 히트 영역을 최소 8px로 확장
+      const pad = Math.max(0, (8 - hpx) / 2);
+      if (pad > 0) {
+        const hit = document.createElement('div');
+        hit.style.cssText = `position:absolute;left:0;right:0;top:${-pad}px;bottom:${-pad}px;cursor:move;`;
+        el.appendChild(hit);
+      }
+      renderLineCaps(el, o);
+    } else {
+      el.style.background = o.fill && o.fill!=='none' ? o.fill : 'transparent';
+      el.style.border = (o.strokeW>0 && o.stroke) ? `${o.strokeW*scale}px solid ${o.stroke}` : 'none';
+    }
   } else if (o.type === 'mosaic') {
     el.classList.add('obj-mosaic');
     buildMosaicPreview(el, o);
@@ -377,6 +428,10 @@ function buildObjEl(o) {
     path.setAttribute('stroke-width', (o.strokeW||0)*scale);
     path.setAttribute('stroke-linejoin','round');
     svg.appendChild(path); el.appendChild(svg);
+  } else if (o.type === 'streamEdit') {
+    // 원본 폰트 유지 글자수정 — 결과는 페이지 캔버스에 직접 렌더되므로 투명 선택 박스만
+    el.classList.add('obj-stream');
+    el.style.background = 'transparent';
   } else if (o.type === 'image') {
     el.classList.add('obj-image');
     const img = document.createElement('img');
@@ -390,7 +445,17 @@ function buildObjEl(o) {
   }
   // 상호작용
   el.addEventListener('pointerdown', ev => onObjPointerDown(ev, o));
-  el.addEventListener('dblclick', ev => { if (o.type==='text'||o.type==='redactText') startContentEditing(el, o, ev); });
+  el.addEventListener('dblclick', ev => {
+    if (o.type==='text'||o.type==='redactText') startContentEditing(el, o, ev);
+    else if (o.type==='streamEdit') {   // 재수정: 임시로 문서폰트 표시를 얹어 인라인 편집
+      el.style.background = o.bg || '#ffffff';
+      el.style.color = '#111111';
+      el.style.fontSize = (o.fontSize*scale)+'px';
+      el.style.fontFamily = o.fontFamily || 'Malgun Gothic, sans-serif';
+      el.textContent = o.newText || '';
+      startContentEditing(el, o, ev);
+    }
+  });
   return el;
 }
 
@@ -432,7 +497,7 @@ function buildMosaicPreview(el, o) {
     const cell=Math.max(2,(o.cell||8))*scale;
     const bw=Math.max(1,Math.round(cvW/cell)), bh=Math.max(1,Math.round(cvH/cell));
     const tmp=document.createElement('canvas'); tmp.width=bw; tmp.height=bh;
-    tmp.getContext('2d').drawImage(canvas, Math.round(o.x*scale), Math.round(o.y*scale), cvW, cvH, 0,0,bw,bh);
+    tmp.getContext('2d').drawImage(canvas, Math.round(o.x*scale*canvasDpr), Math.round(o.y*scale*canvasDpr), cvW*canvasDpr, cvH*canvasDpr, 0,0,bw,bh);
     const dctx=disp.getContext('2d'); dctx.imageSmoothingEnabled=false;
     dctx.drawImage(tmp, 0,0,bw,bh, 0,0,cvW,cvH);
   } catch(e){ const d=disp.getContext('2d'); d.fillStyle='#999'; d.fillRect(0,0,cvW,cvH); }
@@ -487,6 +552,7 @@ setTool('select');
 // ── 스테이지 포인터 (생성 / 마퀴 선택) ──────────────────────────────────────
 overlay.addEventListener('pointerdown', onStagePointerDown);
 function onStagePointerDown(ev) {
+  if (_eyedrop) { sampleEyedrop(ev); ev.stopPropagation(); return; }   // 스포이드 픽 모드
   if (ev.target.classList.contains('handle')) return;
   if (ev.target.closest('.obj')) return;      // 오브젝트는 자기 핸들러
   commitContentEditing();
@@ -495,18 +561,32 @@ function onStagePointerDown(ev) {
   if (tool === 'edit')  { editExistingAt(s.x, s.y, true); setTool('select'); return; }
   if (tool === 'rect' || tool === 'line' || tool === 'mosaic' || tool === 'shape') { startDrawShape(ev, tool); return; }
   if (tool === 'region') { startRegionEdit(ev); return; }
-  // select 모드: 기존 글자 위 클릭 → 편집 오브젝트 선택 / 네이티브 그림 위 클릭 → 추출·편집
+  // select 모드: 기존 글자 위 '한 번 클릭'은 아무것도 바꾸지 않는다(원본 보존) — 더블클릭이 편집.
+  // 네이티브 그림 위 클릭 → 추출·편집 (기존 동작 유지)
   if (tool === 'select' && !ev.shiftKey) {
     const vx = s.x/scale, vy = s.y/scale;
     const hit = curTextItems.find(t => vx>=t.x-1 && vx<=t.x+t.w+1 && vy>=t.y-1 && vy<=t.y+t.h+2);
-    if (hit) { editExistingAt(s.x, s.y, false); return; }
-    // 텍스트가 아니면: PDF 원본 이미지(그림·로고) 영역을 클릭했는지 확인 → 추출·편집
+    if (hit) { setStatus('기존 텍스트 — 더블클릭하면 원본 폰트 그대로 수정합니다.'); return; }
+    // 원본 이미지(그림·로고)도 텍스트와 동일하게 '한 번 클릭=안내만' — 더블클릭이 추출·편집
     const reg = curImageRegions.find(r => vx>=r.x-2 && vx<=r.x+r.w+2 && vy>=r.y-2 && vy<=r.y+r.h+2);
-    if (reg) { extractRegion(reg.x*scale, reg.y*scale, reg.w*scale, reg.h*scale); return; }
+    if (reg) { setStatus('원본 이미지 — 더블클릭하면 편집 가능한 이미지로 추출합니다(원본은 가려짐).'); return; }
   }
   // 빈 곳: 마퀴 선택
   startMarquee(ev);
 }
+
+// select 모드 더블클릭: 기존 텍스트 → 편집 / 원본 이미지 → 추출 (한 번 클릭은 원본 무해)
+overlay.addEventListener('dblclick', ev => {
+  if (tool !== 'select') return;
+  if (ev.target.closest('.obj') || ev.target.classList.contains('handle')) return;   // 오브젝트는 자체 dblclick
+  const s = stageXY(ev);
+  const vx = s.x/scale, vy = s.y/scale;
+  if (curTextItems.some(t => vx>=t.x-1 && vx<=t.x+t.w+1 && vy>=t.y-1 && vy<=t.y+t.h+2)) {
+    editExistingAt(s.x, s.y, true); return;
+  }
+  const reg = curImageRegions.find(r => vx>=r.x-2 && vx<=r.x+r.w+2 && vy>=r.y-2 && vy<=r.y+r.h+2);
+  if (reg) extractRegion(reg.x*scale, reg.y*scale, reg.w*scale, reg.h*scale);
+});
 
 function startMarquee(ev) {
   if (!ev.shiftKey) { selectedIds.clear(); renderObjects(); renderProps(); }
@@ -625,7 +705,7 @@ function startDrawShape(ev, kind) {
   const start = stageXY(ev);
   pushUndo();
   let o;
-  if (kind==='line') o = { id:nextId++, type:'rect', isLine:true, x:toView(start.x), y:toView(start.y), w:1, h:2, rot:0, fill:'#111111', stroke:null, strokeW:0, startCap:'none', endCap:'none' };
+  if (kind==='line') o = { id:nextId++, type:'rect', isLine:true, x:toView(start.x), y:toView(start.y), w:1, h:1, rot:0, fill:'#111111', stroke:null, strokeW:0, startCap:'none', endCap:'none' };
   else if (kind==='mosaic') o = { id:nextId++, type:'mosaic', x:toView(start.x), y:toView(start.y), w:1, h:1, rot:0, cell:8 };
   else if (kind==='shape') o = { id:nextId++, type:'shape', shape:currentShape, x:toView(start.x), y:toView(start.y), w:1, h:1, rot:0, fill:'none', stroke:'#1d1d1f', strokeW:1.5 };
   else o = { id:nextId++, type:'rect', x:toView(start.x), y:toView(start.y), w:1, h:1, rot:0, fill:'none', stroke:'#111111', strokeW:1 };
@@ -639,7 +719,7 @@ function startDrawShape(ev, kind) {
       const len=Math.hypot(ex-sx, ey-sy); let ang=Math.atan2(ey-sy, ex-sx);
       // Shift: 45° 간격으로 각도 스냅 (시작점 고정, 길이 유지)
       if (e.shiftKey) { ang = Math.round(ang/(Math.PI/4))*(Math.PI/4); ex=sx+len*Math.cos(ang); ey=sy+len*Math.sin(ang); }
-      o.w = Math.max(1,len); o.h = o.strokeW || o.h || 2; o.rot = ang*180/Math.PI;
+      o.w = Math.max(1,len); o.h = o.h || 1; o.rot = ang*180/Math.PI;
       o.x = (sx+ex)/2 - o.w/2; o.y = (sy+ey)/2 - o.h/2;
     } else {
       o.x = Math.min(toView(start.x),toView(s.x)); o.y = Math.min(toView(start.y),toView(s.y));
@@ -673,11 +753,18 @@ function matchSysFont(name){
   return best;
 }
 // 클릭한 기존 텍스트의 실제 폰트 해석: pdf.js commonObjs(원본 PS명) → styles.fontFamily 순
+// 임베드 폰트의 '원본 바이트'(pdf.js가 정리한 폰트 프로그램)도 보관 — 저장 시 그대로 재임베드해
+// 시스템 폰트 대체 없이 문서 폰트를 유지한다 (_docFontData: fontName → Uint8Array, 세션 한정)
+const _docFontData = new Map();
 function resolveDocFont(item){
-  let raw='', loaded='';
+  let raw='', loaded='', dataKey=null;
   try { const fo = curPage.commonObjs.get(item.fontName);
     raw = (fo && (fo.name || fo.loadedName)) || '';
     loaded = (fo && fo.loadedName) || '';           // pdf.js가 document.fonts에 등록한 실제 임베드 폰트 패밀리명
+    if (fo && fo.data && fo.data.length) {          // 임베드 폰트 프로그램 바이트 (비임베드 표준폰트는 없음)
+      dataKey = item.fontName;
+      if (!_docFontData.has(dataKey)) _docFontData.set(dataKey, fo.data instanceof Uint8Array ? fo.data : new Uint8Array(fo.data));
+    }
   } catch(e){}
   if(!raw) raw = item.styleFamily || '';
   // 서브셋 접두사(ABCDEF+) 제거, '-Bold' 등 스타일 접미 제거해 패밀리명만
@@ -691,10 +778,39 @@ function resolveDocFont(item){
   if (cssName) fams.push(`"${cssName}"`);
   fams.push('Malgun Gothic','sans-serif');
   return {
-    fontPath: m ? m.file : defaultFontPath(),   // 임베드용: 매칭 시스템폰트, 없으면 기본
+    fontPath: m ? m.file : defaultFontPath(),   // 임베드용 폴백: 매칭 시스템폰트, 없으면 기본
     fontFamily: fams.join(', '),
-    matched: !!m
+    matched: !!m,
+    dataKey,                                     // 원본 임베드 폰트 바이트 키 (저장 시 최우선 사용)
+    rawName: raw                                 // 원본 PS 폰트명 — 재편집 세션에서 폰트 재해석용
   };
+}
+// 재편집 세션: 모델의 docFontKey는 이전 세션 키라 _docFontData에 없다 —
+// 저장된 docFontName(PS명)으로 현재 문서의 폰트를 다시 찾아 바이트를 복원한다.
+async function ensureDocFonts(pjs, model) {
+  const need = model.filter(o => o.type==='redactText' && o.docFontName
+    && !(o.docFontKey && _docFontData.has(o.docFontKey)));
+  if (!need.length) return;
+  const norm = n => String(n||'').replace(/^[A-Z]{6}\+/,'');
+  try {
+    const tc = await pjs.getTextContent();   // 폰트 로드 유도 (commonObjs 채움)
+    const seen = new Set();
+    for (const it of tc.items) {
+      if (!it.fontName || seen.has(it.fontName)) continue;
+      seen.add(it.fontName);
+      let fo = null;
+      try { fo = pjs.commonObjs.get(it.fontName); } catch(e){ continue; }
+      if (!fo || !fo.data || !fo.data.length) continue;
+      const nm = fo.name || fo.loadedName || '';
+      for (const o of need) {
+        if (nm === o.docFontName || norm(nm) === norm(o.docFontName)) {
+          o.docFontKey = it.fontName;
+          if (!_docFontData.has(it.fontName))
+            _docFontData.set(it.fontName, fo.data instanceof Uint8Array ? fo.data : new Uint8Array(fo.data));
+        }
+      }
+    }
+  } catch(e){ console.warn('재편집 폰트 재해석 실패(시스템 폰트 폴백):', e); }
 }
 function editExistingAt(px, py, enterEdit) {
   // 클릭 지점의 텍스트 아이템 찾기 (view-units)
@@ -705,13 +821,15 @@ function editExistingAt(px, py, enterEdit) {
   pushUndo();
   const bg = sampleBg(hit);
   const df = resolveDocFont(hit);   // 실제 문서 폰트로 (Malgun 강제 안 함)
+  // 스트림 치환용: 같은 문자열을 가진 아이템들 중 몇 번째인지 (콘텐츠 스트림 op 순서와 일치)
+  let occurrence = 0;
+  for (const t of curTextItems) { if (t === hit) break; if (t.str === hit.str) occurrence++; }
   const o = { id:nextId++, type:'redactText', x:hit.x, y:hit.y-hit.h*0.1, w:Math.max(hit.w,12), h:hit.h*1.25, rot:0,
     text:hit.str, fontSize:hit.h, color:'#111111', bg, fontFamily:df.fontFamily,
-    fontPath:df.fontPath, bold:false, align:'left' };
+    fontPath:df.fontPath, docFontKey:df.dataKey, docFontName:df.rawName, _origText:hit.str,
+    _streamCand:{ origText:hit.str, occurrence }, bold:false, align:'left' };
   curModel().push(o); markDirty(); selectedIds=new Set([o.id]); renderObjects(); renderProps();
-  // 클릭만으로는 '바로 편집'하지 않고 선택만(원본 폰트 유지). 실제 편집은 더블클릭.
-  if (enterEdit) { const el = overlay.querySelector(`.obj[data-id="${o.id}"]`); if (el) startContentEditing(el, o); }
-  else setStatus('기존 텍스트를 선택했습니다 — 더블클릭하면 편집, 오른쪽에서 글꼴 변경');
+  const el = overlay.querySelector(`.obj[data-id="${o.id}"]`); if (el) startContentEditing(el, o);
 }
 function sampleBg(bbox) {
   try {
@@ -719,7 +837,7 @@ function sampleBg(bbox) {
     const pts=[[bbox.x*scale-3, (bbox.y-2)*scale],[bbox.x*scale, (bbox.y+bbox.h+3)*scale],[(bbox.x+bbox.w)*scale, (bbox.y-2)*scale]];
     let best=[255,255,255], bestL=-1;
     for (const [x,y] of pts) {
-      const cx=Math.max(0,Math.min(canvas.width-1,x|0)), cy=Math.max(0,Math.min(canvas.height-1,y|0));
+      const cx=Math.max(0,Math.min(canvas.width-1,(x*canvasDpr)|0)), cy=Math.max(0,Math.min(canvas.height-1,(y*canvasDpr)|0));
       const d=bgCanvasCtx.getImageData(cx,cy,1,1).data; const l=d[0]+d[1]+d[2];
       if (l>bestL){ bestL=l; best=[d[0],d[1],d[2]]; }
     }
@@ -732,7 +850,7 @@ function sampleBgRect(px,py,pw,ph) {
     const pts=[[px-4,py+ph/2],[px+pw+4,py+ph/2],[px+pw/2,py-4],[px+pw/2,py+ph+4]];
     let best=[255,255,255], bl=-1;
     for (const [x,y] of pts) {
-      const cx=Math.max(0,Math.min(canvas.width-1,x|0)), cy=Math.max(0,Math.min(canvas.height-1,y|0));
+      const cx=Math.max(0,Math.min(canvas.width-1,(x*canvasDpr)|0)), cy=Math.max(0,Math.min(canvas.height-1,(y*canvasDpr)|0));
       const d=bgCanvasCtx.getImageData(cx,cy,1,1).data; const l=d[0]+d[1]+d[2];
       if (l>bl){ bl=l; best=[d[0],d[1],d[2]]; }
     }
@@ -746,7 +864,9 @@ function extractRegion(px,py,pw,ph) {
   const vx=px/scale, vy=py/scale, vw=pw/scale, vh=ph/scale;
   let dataUrl=null;
   try {
-    const sx=Math.round(px), sy=Math.round(py), sw=Math.max(1,Math.round(pw)), sh=Math.max(1,Math.round(ph));
+    // HiDPI 캔버스에서 실픽셀 좌표로 읽고, 추출 해상도도 실픽셀 그대로(선명한 추출본)
+    const sx=Math.round(px*canvasDpr), sy=Math.round(py*canvasDpr);
+    const sw=Math.max(1,Math.round(pw*canvasDpr)), sh=Math.max(1,Math.round(ph*canvasDpr));
     const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh;
     tmp.getContext('2d').drawImage(canvas, sx,sy,sw,sh, 0,0,sw,sh);
     dataUrl=tmp.toDataURL('image/png');
@@ -757,7 +877,7 @@ function extractRegion(px,py,pw,ph) {
   curModel().push(cover);
   let sel=cover.id;
   if (dataUrl) {
-    const img={ id:nextId++, type:'image', x:vx,y:vy,w:vw,h:vh, rot:0, dataUrl, natW:Math.round(pw), natH:Math.round(ph), crop:{l:0,t:0,r:0,b:0} };
+    const img={ id:nextId++, type:'image', x:vx,y:vy,w:vw,h:vh, rot:0, dataUrl, natW:Math.max(1,Math.round(pw*canvasDpr)), natH:Math.max(1,Math.round(ph*canvasDpr)), crop:{l:0,t:0,r:0,b:0} };
     curModel().push(img); sel=img.id;
   }
   markDirty(); selectedIds=new Set([sel]); renderObjects(); renderProps();
@@ -816,12 +936,35 @@ function commitContentEditing() {
   const el=_editingEl, o=_editingObj; _editingEl=null; _editingObj=null;
   const txt = el.innerText.replace(/\n$/,'');
   el.removeAttribute('contenteditable'); el.style.cursor='move';
-  if (o && o.text !== txt) { pushUndo(); o.text = txt; markDirty(); }
+  // 기존 텍스트 편집인데 내용이 그대로면 편집 오브젝트를 제거 — 원본(레이아웃·폰트) 완전 보존
+  if (o && o.type==='redactText' && o._origText!==undefined && txt===o._origText) {
+    const m=curModel(); const i=m.indexOf(o);
+    if (i>=0) { m.splice(i,1); selectedIds.delete(o.id); markDirty(); renderObjects(); renderProps();
+      setStatus('변경 없음 — 원본 텍스트가 그대로 유지됩니다.'); return; }
+  }
+  // 스트림 치환 오브젝트 재편집: newText 갱신 → 수정본 재구축
+  if (o && o.type==='streamEdit') {
+    if (o.newText !== txt) {
+      pushUndo(); o.newText = txt; markDirty();
+      const idx = pages[curPos].originalIdx;
+      syncStreamDoc(idx, true).then(r => {
+        if (r.failed.includes(o.id)) setStatus('⚠ 이 글자 조합은 원본 폰트 서브셋에 없습니다 — 이전 내용으로 되돌리려면 Ctrl+Z.', 5000);
+      });
+    } else renderObjects();   // 편집용 임시 표시 제거
+    renderProps(); return;
+  }
+  if (o && o.text !== txt) {
+    pushUndo(); o.text = txt; markDirty();
+    // 기존 텍스트 편집이면: 원본 폰트 100% 유지되는 스트림 치환으로 승격 시도 (비동기)
+    if (o.type==='redactText' && o._streamCand)
+      tryStreamPromote(o, pages[curPos].originalIdx);
+  }
   renderProps();
 }
 
 // ── 오브젝트 이동 ────────────────────────────────────────────────────────────
 function onObjPointerDown(ev, o) {
+  if (_eyedrop) { sampleEyedrop(ev); ev.stopPropagation(); return; }   // 오브젝트 위에서도 스포이드 우선
   if (_editingObj === o) return;      // 편집 중이면 통과
   ev.stopPropagation();
   commitContentEditing();
@@ -832,16 +975,60 @@ function onObjPointerDown(ev, o) {
   const ids = [...selectedIds];
   const startPos = ids.map(id => { const t=findObj(id); return { id, x:t.x, y:t.y }; });
   const move = e => {
-    const s = stageXY(e); const dx=(s.x-start.x)/scale, dy=(s.y-start.y)/scale;
+    const s = stageXY(e); let dx=(s.x-start.x)/scale, dy=(s.y-start.y)/scale;
     if (!moved && (Math.abs(dx)>0.5||Math.abs(dy)>0.5)) { moved=true; if(!undoPushed){pushUndo();undoPushed=true;} }
     if (!moved) return;
+    // 스냅 정렬 (Alt 누르면 해제): 기준 오브젝트(첫 선택)의 좌/중/우·상/중/하를
+    // 페이지 중앙·가장자리·다른 오브젝트 라인에 자석처럼 맞추고 노란 가이드선 표시
+    hideGuides();
+    if (!e.altKey) {
+      const t0 = findObj(startPos[0].id);
+      if (t0) {
+        const thr = 6/scale;
+        const tg = snapTargets(new Set(ids));
+        const nx = startPos[0].x+dx, ny = startPos[0].y+dy;
+        let bx=null, by=null;
+        for (const cand of [nx, nx+t0.w/2, nx+t0.w])
+          for (const x of tg.xs) { const d=x-cand; if (Math.abs(d)<thr && (bx===null||Math.abs(d)<Math.abs(bx.d))) bx={d, at:x}; }
+        for (const cand of [ny, ny+t0.h/2, ny+t0.h])
+          for (const y of tg.ys) { const d=y-cand; if (Math.abs(d)<thr && (by===null||Math.abs(d)<Math.abs(by.d))) by={d, at:y}; }
+        if (bx) { dx += bx.d; showGuide('v', bx.at); }
+        if (by) { dy += by.d; showGuide('h', by.at); }
+      }
+    }
     startPos.forEach(sp => { const t=findObj(sp.id); if(t){ t.x=sp.x+dx; t.y=sp.y+dy; } });
     renderObjects();
   };
   const up = () => { window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up);
+    hideGuides();
     if (moved) { markDirty(); } renderProps(); };
   window.addEventListener('pointermove',move); window.addEventListener('pointerup',up);
 }
+
+// ── 스냅 대상·가이드선 ───────────────────────────────────────────────────────
+// 대상: 페이지 가장자리·중앙 + (이동 중이 아닌) 다른 오브젝트의 가장자리·중앙 (view-units)
+function snapTargets(excludeIds) {
+  const xs=[0, curVp1.width/2, curVp1.width], ys=[0, curVp1.height/2, curVp1.height];
+  for (const t of curModel()) {
+    if (excludeIds.has(t.id)) continue;
+    xs.push(t.x, t.x+t.w/2, t.x+t.w);
+    ys.push(t.y, t.y+t.h/2, t.y+t.h);
+  }
+  return { xs, ys };
+}
+function showGuide(axis, viewCoord) {
+  let g = document.getElementById('snapGuide-'+axis);
+  if (!g) {
+    g = document.createElement('div');
+    g.id = 'snapGuide-'+axis;
+    g.style.cssText = 'position:absolute;pointer-events:none;z-index:60;background:#ffd60a;box-shadow:0 0 0 0.5px rgba(0,0,0,.35);';
+    overlay.appendChild(g);
+  }
+  if (axis==='v') { g.style.left=(viewCoord*scale)+'px'; g.style.top='0'; g.style.width='1px'; g.style.height='100%'; }
+  else           { g.style.top=(viewCoord*scale)+'px'; g.style.left='0'; g.style.height='1px'; g.style.width='100%'; }
+  g.style.display='block';
+}
+function hideGuides(){ ['v','h'].forEach(a=>{ const g=document.getElementById('snapGuide-'+a); if(g) g.style.display='none'; }); }
 
 // ── 리사이즈 ─────────────────────────────────────────────────────────────────
 function onResizeHandleDown(ev, o, name) {
@@ -974,11 +1161,12 @@ function deleteSelection() {
   if (!selectedIds.size) return; pushUndo();
   const m = curModel().filter(o=>!selectedIds.has(o.id));
   models.set(pages[curPos].originalIdx, m); selectedIds.clear(); markDirty(); renderObjects(); renderProps();
+  syncStreamDoc(pages[curPos].originalIdx, true);   // 스트림 치환 삭제 시 원본 글자 복원
 }
 
 // ── 속성 패널 ────────────────────────────────────────────────────────────────
 function renderProps() {
-  if (selectedIds.size===0) { propsEl.innerHTML = '<div class="hint"><b>PDF의 기존 글자를 클릭</b>하면 바로 수정됩니다.<br>새 텍스트=<b>T</b>, 이미지=<b>I</b>, 도형=<b>R</b>.</div>'; return; }
+  if (selectedIds.size===0) { propsEl.innerHTML = '<div class="hint"><b>PDF의 기존 글자를 더블클릭</b>하면 원본 폰트 그대로 수정됩니다.<br>한 번 클릭은 원본을 건드리지 않습니다. 새 텍스트=<b>T</b>, 이미지=<b>I</b>, 도형=<b>R</b>.</div>'; return; }
   if (selectedIds.size>1) {
     propsEl.innerHTML = `<h3>${selectedIds.size}개 선택됨</h3>
       <div class="mini"><button onclick="groupSelection()">그룹 (Ctrl+G)</button><button onclick="ungroupSelection()">해제</button></div>
@@ -995,11 +1183,15 @@ function renderProps() {
   html += `<div class="row"><label>가로</label><input type="number" value="${Math.round(o.w)}" oninput="setProp('w',this.value)"></div>`;
   html += `<div class="row"><label>세로</label><input type="number" value="${Math.round(o.h)}" oninput="setProp('h',this.value)"></div>`;
   html += `<div class="row"><label>회전°</label><input type="number" step="0.1" value="${Math.round((o.rot||0)*10)/10}" oninput="setProp('rot',this.value)"></div>`;
+  if (o.type==='streamEdit') {
+    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    html += `<div class="sep"></div><div class="hint">✔ <b>원본 폰트 유지 글자수정</b> — 폰트·위치·자간 무변경<br>"${esc(o.origText)}" → "<b>${esc(o.newText)}</b>"<br>더블클릭 = 다시 수정 · Del = 원래 글자로 복원</div>`;
+  }
   if (o.type==='text'||o.type==='redactText') {
     html += `<div class="sep"></div>`;
     html += `<div class="row"><label>글꼴크기</label><input type="number" value="${Math.round(o.fontSize)}" oninput="setProp('fontSize',this.value)"></div>`;
-    html += `<div class="row"><label>글자색</label><input type="color" value="${o.color||'#111111'}" oninput="setProp('color',this.value)"></div>`;
-    if (o.type==='redactText') html += `<div class="row"><label>가림색</label><input type="color" value="${o.bg||'#ffffff'}" oninput="setProp('bg',this.value)"></div>`;
+    html += `<div class="row"><label>글자색</label><input type="color" value="${o.color||'#111111'}" oninput="setProp('color',this.value)">${eyeBtn('color')}</div>`;
+    if (o.type==='redactText') html += `<div class="row"><label>가림색</label><input type="color" value="${o.bg||'#ffffff'}" oninput="setProp('bg',this.value)">${eyeBtn('bg')}</div>`;
     html += `<div class="row"><label>굵게</label><input type="checkbox" ${o.bold?'checked':''} onchange="setProp('bold',this.checked)"></div>`;
     html += `<div class="row"><label>정렬</label><select onchange="setProp('align',this.value)">
       <option value="left" ${o.align==='left'?'selected':''}>왼쪽</option>
@@ -1009,13 +1201,13 @@ function renderProps() {
   }
   if (o.type==='rect' && !o.isLine) {
     html += `<div class="sep"></div>`;
-    html += `<div class="row"><label>채움</label><input type="color" value="${o.fill&&o.fill!=='none'?o.fill:'#ffffff'}" oninput="setProp('fill',this.value)"> <button onclick="setProp('fill','none')">없음</button></div>`;
-    html += `<div class="row"><label>선색</label><input type="color" value="${o.stroke||'#111111'}" oninput="setProp('stroke',this.value)"></div>`;
+    html += `<div class="row"><label>채움</label><input type="color" value="${o.fill&&o.fill!=='none'?o.fill:'#ffffff'}" oninput="setProp('fill',this.value)">${eyeBtn('fill')} <button onclick="setProp('fill','none')">없음</button></div>`;
+    html += `<div class="row"><label>선색</label><input type="color" value="${o.stroke||'#111111'}" oninput="setProp('stroke',this.value)">${eyeBtn('stroke')}</div>`;
     html += `<div class="row"><label>선두께</label><input type="number" value="${o.strokeW||0}" oninput="setProp('strokeW',this.value)"></div>`;
   }
   if (o.type==='rect' && o.isLine) {
-    html += `<div class="sep"></div><div class="row"><label>선색</label><input type="color" value="${o.fill||'#111111'}" oninput="setProp('fill',this.value)"></div>`;
-    html += `<div class="row"><label>두께</label><input type="number" value="${Math.round(o.h)}" oninput="setProp('h',this.value)"></div>`;
+    html += `<div class="sep"></div><div class="row"><label>선색</label><input type="color" value="${o.fill||'#111111'}" oninput="setProp('fill',this.value)">${eyeBtn('fill')}</div>`;
+    html += `<div class="row"><label>두께</label><input type="number" value="${+(+o.h).toFixed(2)}" step="0.25" min="0.25" oninput="setProp('h',this.value)"> <span style="color:#98989d;font-size:11px;">pt = ${(o.h*0.3528).toFixed(2)}mm</span></div>`;
     html += `<div class="row"><label>시작모양</label><select onchange="setProp('startCap',this.value)">${capOptions(o.startCap)}</select></div>`;
     html += `<div class="row"><label>끝모양</label><select onchange="setProp('endCap',this.value)">${capOptions(o.endCap)}</select></div>`;
   }
@@ -1026,8 +1218,8 @@ function renderProps() {
   if (o.type==='shape') {
     html += `<div class="sep"></div>`;
     html += `<div class="row"><label>도형</label><select onchange="setShape(this.value)">${shapeOptions(o.shape)}</select></div>`;
-    html += `<div class="row"><label>채움</label><input type="color" value="${o.fill&&o.fill!=='none'?o.fill:'#cccccc'}" oninput="setProp('fill',this.value)"> <button onclick="setProp('fill','none')">없음</button></div>`;
-    html += `<div class="row"><label>선색</label><input type="color" value="${o.stroke||'#1d1d1f'}" oninput="setProp('stroke',this.value)"></div>`;
+    html += `<div class="row"><label>채움</label><input type="color" value="${o.fill&&o.fill!=='none'?o.fill:'#cccccc'}" oninput="setProp('fill',this.value)">${eyeBtn('fill')} <button onclick="setProp('fill','none')">없음</button></div>`;
+    html += `<div class="row"><label>선색</label><input type="color" value="${o.stroke||'#1d1d1f'}" oninput="setProp('stroke',this.value)">${eyeBtn('stroke')}</div>`;
     html += `<div class="row"><label>선두께</label><input type="number" value="${o.strokeW||0}" oninput="setProp('strokeW',this.value)"></div>`;
   }
   if (o.type==='image') {
@@ -1038,7 +1230,7 @@ function renderProps() {
   html += `<div class="sep"></div><div class="mini"><button onclick="deleteSelection()">삭제 (Del)</button></div>`;
   propsEl.innerHTML = html;
 }
-function typeName(o){ return o.type==='text'?'삽입 텍스트':o.type==='redactText'?'기존 텍스트 편집':o.type==='image'?'이미지':o.type==='mosaic'?'모자이크':o.type==='shape'?('도형 · '+((SHAPES[o.shape]||{}).name||'')):o.isLine?'선':'사각형'; }
+function typeName(o){ return o.type==='text'?'삽입 텍스트':o.type==='redactText'?'기존 텍스트 편집':o.type==='streamEdit'?'글자수정(원본폰트)':o.type==='image'?'이미지':o.type==='mosaic'?'모자이크':o.type==='shape'?('도형 · '+((SHAPES[o.shape]||{}).name||'')):o.isLine?'선':'사각형'; }
 function capOptions(cur){
   const opts=[['none','없음'],['arrow','화살표(선)'],['filledArrow','화살표(채움)'],['circle','원'],['square','사각']];
   return opts.map(([v,l])=>`<option value="${v}" ${v===(cur||'none')?'selected':''}>${l}</option>`).join('');
@@ -1053,6 +1245,21 @@ function fontOptions(cur){
   }
   return list.map(f=>`<option value="${f.file}" ${f.file===cur?'selected':''}>${f.name}</option>`).join('');
 }
+// ── 색상 스포이드 — 문서(캔버스)에서 색을 찍어 선택 오브젝트 속성에 적용 ─────
+let _eyedrop = null;   // 추출 대상 속성명 ('color'|'fill'|'stroke'|'bg')
+function eyeBtn(prop){ return `<button title="문서에서 색 추출 — 누른 뒤 페이지에서 원하는 색을 클릭" onclick="startEyedrop('${prop}')">💧</button>`; }
+function startEyedrop(prop){ _eyedrop=prop; overlay.style.cursor='crosshair'; setStatus('스포이드 — 페이지에서 추출할 색을 클릭하세요 (Esc 취소)'); }
+function cancelEyedrop(){ _eyedrop=null; overlay.style.cursor=''; }
+function sampleEyedrop(ev){
+  const s = stageXY(ev);
+  const cx=Math.max(0,Math.min(canvas.width-1,(s.x*canvasDpr)|0)), cy=Math.max(0,Math.min(canvas.height-1,(s.y*canvasDpr)|0));
+  let hex='#111111';
+  try { const d=bgCanvasCtx.getImageData(cx,cy,1,1).data; hex='#'+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,'0')).join(''); } catch(e){}
+  const prop=_eyedrop; cancelEyedrop();
+  setProp(prop, hex); renderProps();
+  setStatus('색 추출: '+hex+' → '+prop);
+}
+
 function setProp(k,v){ const o=findObj([...selectedIds][0]); if(!o) return;
   if (['x','y','w','h','rot','fontSize','strokeW','cell'].includes(k)) v=parseFloat(v)||0;
   o[k]=v; markDirty(); renderObjects(); if(k==='rot'||k==='w'||k==='h') renderHandles(); }
@@ -1067,21 +1274,35 @@ function pushUndo(){ undoStack.push({ idx:pages[curPos].originalIdx, data:snapsh
 function undo(){ const s=undoStack.pop(); if(!s) return; if(s.idx!==pages[curPos].originalIdx){ /* 다른 페이지 */ }
   redoStack.push({ idx:s.idx, data:JSON.stringify(models.get(s.idx)||[]) });
   models.set(s.idx, JSON.parse(s.data).map(o=>({...o}))); dirtyPages.add(s.idx);
-  if(s.idx===pages[curPos].originalIdx){ selectedIds.clear(); renderObjects(); renderProps(); } refreshThumbState(); }
+  if(s.idx===pages[curPos].originalIdx){ selectedIds.clear(); renderObjects(); renderProps(); } refreshThumbState();
+  syncStreamDoc(s.idx, true); }
 function redo(){ const s=redoStack.pop(); if(!s) return;
   undoStack.push({ idx:s.idx, data:JSON.stringify(models.get(s.idx)||[]) });
   models.set(s.idx, JSON.parse(s.data).map(o=>({...o}))); dirtyPages.add(s.idx);
-  if(s.idx===pages[curPos].originalIdx){ selectedIds.clear(); renderObjects(); renderProps(); } refreshThumbState(); }
+  if(s.idx===pages[curPos].originalIdx){ selectedIds.clear(); renderObjects(); renderProps(); } refreshThumbState();
+  syncStreamDoc(s.idx, true); }
 
 // ── 단축키 ───────────────────────────────────────────────────────────────────
 window.addEventListener('keydown', e => {
-  if (_editingEl) {   // 텍스트 편집 중엔 Esc/Ctrl+Enter만
+  if (_editingEl) {   // 텍스트 편집 중: Enter=저장(확정) · Ctrl+Enter=줄바꿈 · Esc=저장
+    if (e.key==='Enter') {
+      e.preventDefault();
+      if (e.ctrlKey) {
+        // 줄바꿈 삽입 (contenteditable — pre-wrap이라 \n 그대로 반영)
+        try { document.execCommand('insertText', false, '\n'); }
+        catch(err) { try { document.execCommand('insertLineBreak'); } catch(e2){} }
+      } else {
+        commitContentEditing();
+      }
+      return;
+    }
     if (e.key==='Escape'){ commitContentEditing(); e.preventDefault(); }
     return;
   }
   const inField = ['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName);
   if (e.ctrlKey || e.metaKey) {
     if (e.key==='s'||e.key==='S'){ e.preventDefault(); saveAndClose(); }
+    else if (e.key==='f'||e.key==='F'){ e.preventDefault(); toggleFindPanel(true); }
     else if (e.key==='z'||e.key==='Z'){ e.preventDefault(); e.shiftKey?redo():undo(); }
     else if (e.key==='y'||e.key==='Y'){ e.preventDefault(); redo(); }
     else if (e.key==='g'||e.key==='G'){ e.preventDefault(); e.shiftKey?ungroupSelection():groupSelection(); }
@@ -1103,7 +1324,7 @@ window.addEventListener('keydown', e => {
     case '{': e.preventDefault(); rotateSelection(-1, true); break;   // Shift+[ = 1°씩
     case '}': e.preventDefault(); rotateSelection(+1, true); break;   // Shift+] = 1°씩
     case 'Delete': case 'Backspace': e.preventDefault(); deleteSelection(); break;
-    case 'Escape': if (cropMode){ cropMode=false; document.getElementById('btn-crop').classList.remove('active'); renderHandles(); } else cancelClose(); break;
+    case 'Escape': if (document.getElementById('frPanel').style.display!=='none'){ toggleFindPanel(false); } else if (_eyedrop){ cancelEyedrop(); setStatus('스포이드 취소'); } else if (cropMode){ cropMode=false; document.getElementById('btn-crop').classList.remove('active'); renderHandles(); } else cancelClose(); break;
     case 'PageDown': gotoPage(curPos+1); break;
     case 'PageUp': gotoPage(curPos-1); break;
   }
@@ -1142,6 +1363,356 @@ async function cancelClose() {
   window.electronAPI.closeEditorWindow();
 }
 
+// ── 원본 폰트 유지 글자 치환 (콘텐츠 스트림 직접 수정) ───────────────────────
+// 기존 텍스트 수정 시 폰트 재임베드 대신, 페이지 콘텐츠 스트림의 글자 코드 바이트만
+// 교체한다 — 폰트 리소스·위치·크기·자간 원본 그대로 유지(진짜 "글자만 수정").
+// 제약: 새 글자가 그 폰트의 ToUnicode 맵에 있어야(=문서에서 그 폰트로 쓰인 글리프) 함.
+// 불가능하면 false 반환 → 기존 오버레이(redactText) 방식으로 폴백.
+
+// -- 콘텐츠 스트림 토큰 스캐너: show 연산자(Tj·'·"·TJ) 목록 + 각 시점 폰트 추적 --
+function scanShowOps(u8) {
+  const n = u8.length, ops = [];
+  const isWS = c => c===0x20||c===0x0a||c===0x0d||c===0x09||c===0x0c||c===0x00;
+  const DELIM = '()<>[]{}/%';
+  const isDelim = c => DELIM.indexOf(String.fromCharCode(c)) >= 0;
+  const lat = (s,e) => { let t=''; for(let k=s;k<e;k++) t+=String.fromCharCode(u8[k]); return t; };
+  let i = 0, font = null;
+  let lastStr = null;             // 직전 문자열/hex 토큰
+  let arr = null;                 // 진행 중 [ ... ] (TJ용): {start, strs:[]}
+  let lastArr = null;             // 닫힌 직전 배열
+  let lastName = null;            // 직전 이름 토큰 (Tf 추적)
+  while (i < n) {
+    const c = u8[i];
+    if (isWS(c)) { i++; continue; }
+    if (c === 0x25) { while (i<n && u8[i]!==0x0a && u8[i]!==0x0d) i++; continue; }   // % 주석
+    if (c === 0x28) {             // ( 리터럴 문자열
+      const s = i; i++; let depth = 1;
+      while (i<n && depth>0) { const b=u8[i]; if (b===0x5c) i+=2; else { if (b===0x28) depth++; else if (b===0x29) depth--; i++; } }
+      lastStr = { start:s, end:i, hex:false };
+      if (arr) arr.strs.push(lastStr);
+      continue;
+    }
+    if (c === 0x3c) {
+      if (u8[i+1] === 0x3c) { i += 2; continue; }   // << 사전
+      const s = i; i++; while (i<n && u8[i]!==0x3e) i++; i++;
+      lastStr = { start:s, end:i, hex:true };
+      if (arr) arr.strs.push(lastStr);
+      continue;
+    }
+    if (c === 0x3e && u8[i+1] === 0x3e) { i += 2; continue; }   // >>
+    if (c === 0x5b) { arr = { start:i, strs:[] }; i++; continue; }   // [
+    if (c === 0x5d) { if (arr) { arr.end = i+1; lastArr = arr; arr = null; } i++; continue; }   // ]
+    if (c === 0x2f) {             // /이름
+      const s = i; i++; while (i<n && !isWS(u8[i]) && !isDelim(u8[i])) i++;
+      lastName = lat(s+1, i);
+      continue;
+    }
+    // 숫자·연산자
+    const s = i; i++;
+    while (i<n && !isWS(u8[i]) && !isDelim(u8[i])) i++;
+    const t = lat(s, i);
+    if (/^[-+.\d]/.test(t)) continue;   // 숫자
+    if (t === 'Tf') { font = lastName; }
+    else if (t === 'BI') {          // 인라인 이미지: EI까지 바이너리 스킵
+      while (i < n) { if (u8[i]===0x45 && u8[i+1]===0x49 && (i+2>=n || isWS(u8[i+2])) && isWS(u8[i-1])) { i+=2; break; } i++; }
+    }
+    else if (t==='Tj' || t==="'" || t==='"') {
+      if (lastStr) ops.push({ kind:t, font, parts:[lastStr], start:lastStr.start, end:lastStr.end });
+    }
+    else if (t === 'TJ') {
+      if (lastArr) ops.push({ kind:'TJ', font, parts:lastArr.strs.slice(), start:lastArr.start, end:lastArr.end });
+    }
+  }
+  return ops;
+}
+// -- 문자열 토큰 → 바이트 (리터럴 이스케이프·hex 해석) --
+function strTokenBytes(u8, tok) {
+  const out = [];
+  if (tok.hex) {
+    let hx = '';
+    for (let k=tok.start+1; k<tok.end-1; k++) { const ch=String.fromCharCode(u8[k]); if (/[0-9A-Fa-f]/.test(ch)) hx += ch; }
+    if (hx.length % 2) hx += '0';
+    for (let k=0; k<hx.length; k+=2) out.push(parseInt(hx.substr(k,2),16));
+    return out;
+  }
+  let k = tok.start+1;
+  const e = tok.end-1;
+  while (k < e) {
+    let b = u8[k];
+    if (b === 0x5c) {   // 백슬래시 이스케이프
+      k++; const c2 = u8[k];
+      if (c2>=0x30 && c2<=0x37) {   // 8진수 최대 3자리
+        let oct=0, cnt=0;
+        while (cnt<3 && k<e && u8[k]>=0x30 && u8[k]<=0x37) { oct=oct*8+(u8[k]-0x30); k++; cnt++; }
+        out.push(oct & 255); continue;
+      }
+      k++;
+      const m = { 0x6e:10, 0x72:13, 0x74:9, 0x62:8, 0x66:12 }[c2];
+      if (m !== undefined) out.push(m);
+      else if (c2===0x0a || c2===0x0d) { if (c2===0x0d && u8[k]===0x0a) k++; }   // 줄 연속
+      else out.push(c2);
+      continue;
+    }
+    out.push(b); k++;
+  }
+  return out;
+}
+// -- ToUnicode CMap 파서 → { srcLen, code2uni:Map(hex→str), uni2code:Map(str→hex) } --
+function parseToUnicodeCMap(txt) {
+  const code2uni = new Map();
+  let srcLen = 0;
+  const hex2str = hx => { let s=''; for (let k=0;k<hx.length;k+=4) s += String.fromCharCode(parseInt(hx.substr(k,4),16)); return s; };
+  const norm = hx => hx.toUpperCase();
+  for (const m of txt.matchAll(/beginbfchar([\s\S]*?)endbfchar/g))
+    for (const p of m[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g)) {
+      srcLen = Math.max(srcLen, p[1].length/2);
+      code2uni.set(norm(p[1]), hex2str(p[2]));
+    }
+  for (const m of txt.matchAll(/beginbfrange([\s\S]*?)endbfrange/g))
+    for (const p of m[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(?:<([0-9A-Fa-f]+)>|\[([\s\S]*?)\])/g)) {
+      const lo = parseInt(p[1],16), hi = parseInt(p[2],16), digits = p[1].length;
+      srcLen = Math.max(srcLen, digits/2);
+      if (hi - lo > 65535) continue;
+      if (p[3] !== undefined) {
+        const baseHex = p[3];
+        const basePrefix = baseHex.slice(0, -4), baseLast = parseInt(baseHex.slice(-4),16);
+        for (let cdd=lo; cdd<=hi; cdd++)
+          code2uni.set(norm(cdd.toString(16).padStart(digits,'0')), hex2str(basePrefix + (baseLast + (cdd-lo)).toString(16).padStart(4,'0')));
+      } else if (p[4] !== undefined) {
+        const items = [...p[4].matchAll(/<([0-9A-Fa-f]+)>/g)].map(x=>x[1]);
+        for (let cdd=lo; cdd<=hi && (cdd-lo)<items.length; cdd++)
+          code2uni.set(norm(cdd.toString(16).padStart(digits,'0')), hex2str(items[cdd-lo]));
+      }
+    }
+  if (!code2uni.size || !srcLen) return null;
+  const uni2code = new Map();
+  for (const [code, uni] of code2uni)
+    if (!uni2code.has(uni)) uni2code.set(uni, code);
+  return { srcLen, code2uni, uni2code };
+}
+// -- show op의 바이트 → 유니코드 문자열 (검증·위치 매칭용). 매핑 없는 코드는 null --
+function decodeOpText(u8, op, fm) {
+  let hx = '';
+  for (const part of op.parts)
+    for (const b of strTokenBytes(u8, part)) hx += b.toString(16).padStart(2,'0');
+  hx = hx.toUpperCase();
+  const step = fm.srcLen*2;
+  if (hx.length % step) return null;
+  let out = '';
+  for (let k=0; k<hx.length; k+=step) {
+    const uni = fm.code2uni.get(hx.substr(k, step));
+    if (uni === undefined) return null;
+    out += uni;
+  }
+  return out;
+}
+// -- 새 텍스트 → 폰트 코드 hex (서브셋에 없는 글자가 있으면 null) --
+function encodeTextForFont(text, fm) {
+  let hx = '';
+  for (const ch of text) {           // for..of = 코드포인트 단위(서로게이트 쌍 유지)
+    if (ch === '\n') return null;    // 줄바꿈은 위치 연산자 필요 — 단일 조각만 지원
+    const code = fm.uni2code.get(ch);
+    if (code === undefined) return null;
+    hx += code;
+  }
+  return hx;
+}
+// -- 페이지 콘텐츠 취득/치환 (pdf-lib 저수준) --
+function getPageContentBytes(sp, page) {
+  const ctx = sp.context;
+  const c = ctx.lookup(page.node.get(PDFLib.PDFName.of('Contents')));
+  const streams = [];
+  if (c instanceof PDFLib.PDFArray) { for (let k=0;k<c.size();k++) streams.push(ctx.lookup(c.get(k))); }
+  else if (c) streams.push(c);
+  const parts = streams.map(st => {
+    try { return PDFLib.decodePDFRawStream(st).decode(); }
+    catch(e){ return st.contents || new Uint8Array(0); }
+  });
+  let total = parts.reduce((s,p)=>s+p.length+1, 0);
+  const out = new Uint8Array(total); let off=0;
+  for (const p of parts) { out.set(p, off); off += p.length; out[off++] = 0x0a; }
+  return out;
+}
+function setPageContentBytes(sp, page, bytes) {
+  const stream = sp.context.stream(bytes);
+  page.node.set(PDFLib.PDFName.of('Contents'), sp.context.register(stream));
+}
+// -- 페이지 폰트 리소스 → ToUnicode 맵들 (res명 → fm) --
+function getPageFontMaps(sp, page) {
+  const ctx = sp.context, PDFName = PDFLib.PDFName;
+  const maps = new Map();
+  try {
+    const res = ctx.lookup(page.node.get(PDFName.of('Resources'))) || page.node.Resources();
+    const fdict = res ? ctx.lookup(res.get(PDFName.of('Font'))) : null;
+    if (!fdict || !fdict.entries) return maps;
+    for (const [key, val] of fdict.entries()) {
+      const name = String(key).replace(/^\//,'');
+      try {
+        const fd = ctx.lookup(val);
+        const tou = fd ? ctx.lookup(fd.get(PDFName.of('ToUnicode'))) : null;
+        if (!tou) continue;
+        let bytes;
+        try { bytes = PDFLib.decodePDFRawStream(tou).decode(); } catch(e){ bytes = tou.contents; }
+        let txt=''; for (const b of bytes) txt += String.fromCharCode(b);
+        const fm = parseToUnicodeCMap(txt);
+        if (fm) maps.set(name, fm);
+      } catch(e){}
+    }
+  } catch(e){}
+  return maps;
+}
+// -- 핵심: 단일페이지 doc(sp)에서 origText의 occurrence번째 show op의 글자 코드만 교체 --
+function applyOneStreamEdit(sp, ed) {
+  const page = sp.getPage(0);
+  const content = getPageContentBytes(sp, page);
+  const fonts = getPageFontMaps(sp, page);
+  const ops = scanShowOps(content);
+  let occ = 0, hit = null, hitFm = null;
+  for (const op of ops) {
+    const fm = op.font ? fonts.get(op.font) : null;
+    if (!fm) continue;
+    const txt = decodeOpText(content, op, fm);
+    if (txt !== ed.origText) continue;
+    if (occ === ed.occurrence) { hit = op; hitFm = fm; break; }
+    occ++;
+  }
+  if (!hit) throw new Error('원본 텍스트 연산자를 찾지 못했습니다');
+  const hx = encodeTextForFont(ed.newText, hitFm);
+  if (hx === null) throw new Error('원본 폰트 서브셋에 없는 글자가 포함되어 있습니다');
+  const repl = hit.kind === 'TJ' ? `[<${hx}>]` : `<${hx}>`;
+  const rb = new Uint8Array(repl.length);
+  for (let k=0;k<repl.length;k++) rb[k] = repl.charCodeAt(k);
+  const out = new Uint8Array(content.length - (hit.end - hit.start) + rb.length);
+  out.set(content.subarray(0, hit.start), 0);
+  out.set(rb, hit.start);
+  out.set(content.subarray(hit.end), hit.start + rb.length);
+  setPageContentBytes(sp, page, out);
+}
+
+// -- 페이지별 스트림 수정본 관리: 원본 단일페이지 추출 → streamEdit들 순차 재적용 --
+const _streamDocs = new Map();   // originalIdx → { bytes, pjsDoc, sig }
+function _streamSig(edits){ return JSON.stringify(edits.map(e=>[e.origText,e.newText,e.occurrence])); }
+async function syncStreamDoc(idx, rerender) {
+  const edits = (models.get(idx)||[]).filter(o=>o.type==='streamEdit');
+  const sig = _streamSig(edits);
+  const cur = _streamDocs.get(idx);
+  if (!edits.length) {
+    if (cur) { try{ cur.pjsDoc.destroy(); }catch(e){} _streamDocs.delete(idx);
+      if (rerender && pages[curPos] && pages[curPos].originalIdx===idx) await renderPage(); }
+    return { ok:true, failed:[] };
+  }
+  if (cur && cur.sig === sig) return { ok:true, failed:[] };
+  if (!_bakeSrc) _bakeSrc = await PDFDocument.load(origBytes.slice(0));
+  const sp = await PDFDocument.create();
+  const [pg] = await sp.copyPages(_bakeSrc, [idx]); sp.addPage(pg);
+  const failed = [];
+  for (const ed of edits) {
+    try { applyOneStreamEdit(sp, ed); }
+    catch(e){ console.warn('스트림 치환 실패:', ed.origText, '→', ed.newText, e.message); failed.push(ed.id); }
+  }
+  if (failed.length === edits.length && edits.length) {   // 전부 실패 — 수정본 불필요
+    if (cur) { try{ cur.pjsDoc.destroy(); }catch(e){} _streamDocs.delete(idx); }
+    return { ok:false, failed };
+  }
+  const bytes = await sp.save({ useObjectStreams:false, updateFieldAppearances:false });
+  const pjsDoc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+  if (cur) { try{ cur.pjsDoc.destroy(); }catch(e){} }
+  _streamDocs.set(idx, { bytes, pjsDoc, sig });
+  if (rerender && pages[curPos] && pages[curPos].originalIdx===idx) await renderPage();
+  return { ok: failed.length===0, failed };
+}
+// 오버레이(redactText) 커밋 후 스트림 치환으로 승격 시도 — 성공하면 오버레이 제거,
+// 실패(서브셋에 없는 글자 등)하면 오버레이 유지 + 경고.
+async function tryStreamPromote(o, idx) {
+  if (!o || !o._streamCand || o.text === o._origText) return false;
+  const m = models.get(idx) || [];
+  const i = m.indexOf(o);
+  if (i < 0) return false;
+  const se = { id:o.id, type:'streamEdit', x:o.x, y:o.y, w:o.w, h:o.h, rot:0,
+    origText:o._streamCand.origText, newText:o.text, occurrence:o._streamCand.occurrence,
+    fontFamily:o.fontFamily, fontSize:o.fontSize, bg:o.bg };
+  m.splice(i, 1, se);
+  const r = await syncStreamDoc(idx, true);
+  if (r.failed.includes(se.id)) {
+    const j = m.indexOf(se); if (j >= 0) m.splice(j, 1, o);   // 원복 — 오버레이 유지
+    await syncStreamDoc(idx, false);
+    setStatus('⚠ 이 글자 조합은 원본 폰트 서브셋에 없어 대체 폰트(오버레이)로 적용됩니다.', 5000);
+    if (pages[curPos] && pages[curPos].originalIdx===idx) { renderObjects(); renderProps(); }
+    return false;
+  }
+  markDirty();
+  if (pages[curPos] && pages[curPos].originalIdx===idx) { selectedIds = new Set([se.id]); renderObjects(); renderProps(); }
+  setStatus('✔ 원본 폰트 그대로 글자만 수정되었습니다 (폰트·위치·자간 무변경).');
+  return true;
+}
+
+// ── 찾기·바꾸기 (스트림 치환 일괄 적용) ──────────────────────────────────────
+// 각 페이지의 '현재 스트림 상태'(기존 streamEdit 반영)를 스캔해 찾을 내용을 포함한
+// show op마다 streamEdit을 추가한다. 동일 텍스트 op는 순차 재적용 시 앞의 것이 먼저
+// 치환되어 남은 첫 번째가 다음 대상이 되므로 occurrence는 항상 0으로 기록한다.
+function toggleFindPanel(force) {
+  const p = document.getElementById('frPanel');
+  const show = force === undefined ? p.style.display === 'none' : !!force;
+  p.style.display = show ? '' : 'none';
+  if (show) document.getElementById('frFind').focus();
+}
+async function buildStreamSp(idx) {
+  if (!_bakeSrc) _bakeSrc = await PDFDocument.load(origBytes.slice(0));
+  const sp = await PDFDocument.create();
+  const [pg] = await sp.copyPages(_bakeSrc, [idx]); sp.addPage(pg);
+  for (const ed of (models.get(idx)||[]).filter(o=>o.type==='streamEdit')) {
+    try { applyOneStreamEdit(sp, ed); } catch(e){}
+  }
+  return sp;
+}
+async function runFindReplace(allPages) {
+  const find = document.getElementById('frFind').value;
+  const repl = document.getElementById('frRepl').value;
+  const resEl = document.getElementById('frResult');
+  if (!find) { resEl.innerHTML = '<span style="color:#ff6b6b;">찾을 내용을 입력하세요.</span>'; return; }
+  if (find === repl) { resEl.innerHTML = '<span style="color:#ff6b6b;">찾을 내용과 바꿀 내용이 같습니다.</span>'; return; }
+  showBusy(true, '찾기·바꾸기 실행 중…');
+  let total = 0, pagesTouched = 0, skipped = 0;
+  try {
+    const idxs = allPages ? pages.map(p=>p.originalIdx) : [pages[curPos].originalIdx];
+    for (const idx of idxs) {
+      const sp = await buildStreamSp(idx);
+      const pg = sp.getPage(0);
+      const content = getPageContentBytes(sp, pg);
+      const fonts = getPageFontMaps(sp, pg);
+      const newEdits = [];
+      for (const op of scanShowOps(content)) {
+        const fm = op.font ? fonts.get(op.font) : null;
+        if (!fm) continue;
+        const txt = decodeOpText(content, op, fm);
+        if (txt === null || txt.indexOf(find) < 0) continue;
+        const nt = txt.split(find).join(repl);
+        if (encodeTextForFont(nt, fm) === null) { skipped++; continue; }
+        newEdits.push({ id:nextId++, type:'streamEdit', x:0, y:0, w:0, h:0, rot:0,
+          origText:txt, newText:nt, occurrence:0,
+          fontFamily:'Malgun Gothic, sans-serif', fontSize:12, bg:'#ffffff' });
+      }
+      if (!newEdits.length) continue;
+      undoStack.push({ idx, data: JSON.stringify(models.get(idx)||[]) }); redoStack.length = 0;
+      const m = models.get(idx) || [];
+      m.push(...newEdits); models.set(idx, m);
+      dirtyPages.add(idx);
+      total += newEdits.length; pagesTouched++;
+      if (idx !== pages[curPos].originalIdx) await syncStreamDoc(idx, false);
+    }
+    await syncStreamDoc(pages[curPos].originalIdx, true);
+    refreshThumbState();
+    resEl.innerHTML = total
+      ? `<b style="color:#ffd60a;">✔ ${total}건 교체</b> (${pagesTouched}페이지)` +
+        (skipped ? `<br>⚠ 서브셋에 없는 글자로 ${skipped}건 스킵됨` : '') +
+        `<br>원본 폰트 그대로 반영됨 — 되돌리기 Ctrl+Z(페이지별)`
+      : `일치하는 텍스트가 없습니다.${skipped?` (서브셋 제한 스킵 ${skipped}건)`:''}<br>여러 서식 조각에 걸친 문구는 조각 단위로만 찾습니다.`;
+  } catch (e) {
+    console.error('찾기·바꾸기 오류:', e);
+    resEl.innerHTML = '<span style="color:#ff6b6b;">오류: ' + (e.message||e) + '</span>';
+  } finally { showBusy(false); }
+}
+
 // ── pdf-lib 단일페이지 굽기 ──────────────────────────────────────────────────
 let _bakeSrc = null;   // 원본 문서(재사용)
 const _fontCache = new Map();
@@ -1153,23 +1724,45 @@ async function loadPdfLibFont(pdfDoc, fontPath, needEmbed) {
     return await pdfDoc.embedFont(_fontCache.get(fontPath), { subset:true });
   } catch(e){ console.warn('폰트 임베드 실패, Helvetica로 대체', e); return await pdfDoc.embedFont(StandardFonts.Helvetica); }
 }
+// 기존 텍스트 편집(redactText)용 — 문서에 임베드된 '원본 폰트 바이트'를 최우선 재임베드.
+// 원본이 서브셋 폰트라 새로 입력한 글자의 글리프가 없으면 시스템 매칭 폰트로 폴백.
+async function loadPdfLibFontFor(pdfDoc, o, text) {
+  const data = o.docFontKey ? _docFontData.get(o.docFontKey) : null;
+  if (data) {
+    try {
+      const fk = fontkit.create(data);
+      const missing = [...text].filter(ch => ch!=='\n' && !fk.hasGlyphForCodePoint(ch.codePointAt(0)));
+      if (!missing.length) {
+        pdfDoc.registerFontkit(fontkit);
+        return await pdfDoc.embedFont(data, { subset:true });
+      }
+      console.warn('원본 폰트에 없는 글자 → 시스템 폰트 폴백:', missing.join(''));
+    } catch(e){ console.warn('원본 문서 폰트 재사용 실패 → 시스템 폰트 폴백', e); }
+  }
+  return await loadPdfLibFont(pdfDoc, o.fontPath, !isAscii(text));
+}
 function hexToRgb(hex){ hex=(hex||'#000000').replace('#',''); if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');
   const n=parseInt(hex,16); return rgb(((n>>16)&255)/255, ((n>>8)&255)/255, (n&255)/255); }
 const isAscii = s => /^[\x00-\x7F]*$/.test(s||'');
 
 async function bakePage(originalIdx, model) {
   if (!_bakeSrc) _bakeSrc = await PDFDocument.load(origBytes.slice(0));
+  // 스트림 치환이 있으면 수정본(단일페이지)이 굽기 소스 — 원본 폰트 유지 글자수정 반영
+  await syncStreamDoc(originalIdx, false);
+  const sd = _streamDocs.get(originalIdx);
+  const srcDoc = sd ? await PDFDocument.load(sd.bytes.slice(0)) : _bakeSrc;
+  const srcIdx = sd ? 0 : originalIdx;
   const angle = pageAngles.get(originalIdx) || 0;   // 페이지 전체 미세회전(스캔 기울기 보정)
-  const pjs = await pdfjsDoc.getPage(originalIdx+1);
+  const pjs = sd ? await sd.pjsDoc.getPage(1) : await pdfjsDoc.getPage(originalIdx+1);
   const vp = pjs.getViewport({ scale:1, rotation:0 });
   const convBase = (vx,vy) => { const p = vp.convertToPdfPoint(vx,vy); return { x:p[0], y:p[1] }; };
   const out = await PDFDocument.create();
   let pg, conv;
   if (!angle) {
-    [pg] = await out.copyPages(_bakeSrc, [originalIdx]); out.addPage(pg); conv = convBase;
+    [pg] = await out.copyPages(srcDoc, [srcIdx]); out.addPage(pg); conv = convBase;
   } else {
     // 원본 페이지를 embedPage로 넣고 페이지 중심 기준으로 회전해 새 페이지에 그린다.
-    const srcPage = _bakeSrc.getPage(originalIdx);
+    const srcPage = srcDoc.getPage(srcIdx);
     const sz = srcPage.getSize(); const W=sz.width, Hh=sz.height;
     pg = out.addPage([W, Hh]);
     const emb = await out.embedPage(srcPage);
@@ -1182,6 +1775,7 @@ async function bakePage(originalIdx, model) {
     conv = (vx,vy)=>{ const rx=pcx+(vx-pcx)*vcs-(vy-pcy)*vsn, ry=pcy+(vx-pcx)*vsn+(vy-pcy)*vcs; return convBase(rx,ry); };
   }
   _mosaicPjs = pjs; _mosaicRaster = null;   // 이 페이지의 모자이크용 래스터(지연 렌더·재사용)
+  await ensureDocFonts(pjs, model);          // 재편집 세션: 원본 폰트 바이트 재해석
   // 오브젝트를 그리기 순서대로
   for (const o of model) {
     try { await drawObj(out, pg, o, conv); } catch(e){ console.warn('오브젝트 그리기 실패', o, e); }
@@ -1233,6 +1827,7 @@ function drawCap(pg, type, P, dir, o) {
 }
 
 async function drawObj(out, pg, o, conv) {
+  if (o.type==='streamEdit') return;   // 콘텐츠 스트림(굽기 소스)에 이미 반영됨
   const g = bakeGeom(o, conv);
   if (o.type==='rect') {
     const fill = o.isLine ? (o.fill||'#111111') : o.fill;
@@ -1297,20 +1892,51 @@ async function drawObj(out, pg, o, conv) {
       pg.drawRectangle({ x:g.C.x+ll.x, y:g.C.y+ll.y, width:o.w, height:o.h, rotate:degrees(g.alphaDeg), color:hexToRgb(o.bg||'#ffffff') });
     }
     const text = o.text||''; if (!text) return;
-    const font = await loadPdfLibFont(out, o.fontPath, !isAscii(text));
+    const font = o.type==='redactText' ? await loadPdfLibFontFor(out, o, text)
+                                       : await loadPdfLibFont(out, o.fontPath, !isAscii(text));
     const size = o.fontSize;
     const ascent = size*0.8;
-    // 정렬 오프셋(뷰공간 x)
-    let offX = 0;
-    try { const tw = font.widthOfTextAtSize(text, size); if (o.align==='center') offX=(o.w-tw)/2; else if(o.align==='right') offX=(o.w-tw); } catch(e){}
-    // 뷰공간 기준: 텍스트 baseline-left = 박스(-w/2, -h/2+ascent) 중심기준, 회전 적용
-    const rel = { x:-o.w/2+offX, y:-o.h/2+ascent };
-    const rv = { x: rel.x*g.cs - rel.y*g.sn, y: rel.x*g.sn + rel.y*g.cs };
-    const P = conv(g.cx+rv.x, g.cy+rv.y);
-    pg.drawText(text, { x:P.x, y:P.y, size, font, color:hexToRgb(o.color||'#111111'), rotate:degrees(g.alphaDeg),
-      lineHeight:size*1.05 });
+    const lh = size*1.05;   // 화면 line-height:1.05 와 동일
+    // 화면(white-space:pre-wrap + word-break:break-word)과 동일하게 박스 폭 기준 자동 줄바꿈.
+    // (기존엔 수동 \n만 반영해 긴 문장이 화면과 저장본에서 다르게 배치되던 불일치 수정)
+    const lines = wrapTextLines(text, font, size, o.w);
+    for (let i=0; i<lines.length; i++) {
+      const ln = lines[i]; if (!ln) continue;
+      // 정렬 오프셋은 줄 단위로 (기존 전체 텍스트 기준 계산은 다중행에서 부정확)
+      let offX = 0;
+      try { const tw = font.widthOfTextAtSize(ln, size); if (o.align==='center') offX=(o.w-tw)/2; else if(o.align==='right') offX=(o.w-tw); } catch(e){}
+      // 뷰공간 기준: 각 줄 baseline-left = 박스(-w/2, -h/2+ascent+i·lh) 중심기준, 회전 적용
+      const rel = { x:-o.w/2+offX, y:-o.h/2+ascent+i*lh };
+      const rv = { x: rel.x*g.cs - rel.y*g.sn, y: rel.x*g.sn + rel.y*g.cs };
+      const P = conv(g.cx+rv.x, g.cy+rv.y);
+      pg.drawText(ln, { x:P.x, y:P.y, size, font, color:hexToRgb(o.color||'#111111'), rotate:degrees(g.alphaDeg) });
+    }
     return;
   }
+}
+
+// 박스 폭 기준 자동 줄바꿈 — 화면 CSS(pre-wrap·break-word) 근사: 공백 단위 우선,
+// 한 토큰이 폭을 넘으면(한글 연속 등) 글자 단위로 쪼갠다. \n(수동 줄바꿈)은 그대로 보존.
+function wrapTextLines(text, font, size, maxW) {
+  const width = s => { try { return font.widthOfTextAtSize(s, size); } catch(e){ return s.length*size*0.6; } };
+  if (!(maxW > 0)) return String(text).split('\n');
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    if (width(para) <= maxW) { out.push(para); continue; }
+    let line = '';
+    for (const tok of para.split(/(\s+)/)) {
+      if (!tok) continue;
+      if (!line ? width(tok) <= maxW : width(line+tok) <= maxW) { line += tok; continue; }
+      // 줄바꿈 지점: 행 끝 공백은 브라우저처럼 제거(정렬 오프셋 왜곡 방지), 줄머리 공백도 제거
+      if (width(tok) <= maxW) { out.push(line.replace(/\s+$/,'')); line = tok.replace(/^\s+/,''); continue; }
+      for (const ch of tok) {   // 초과 토큰: 글자 단위 분할
+        if (!line || width(line+ch) <= maxW) line += ch;
+        else { out.push(line.replace(/\s+$/,'')); line = ch; }
+      }
+    }
+    out.push(line);
+  }
+  return out;
 }
 
 function dataUrlToBytes(dataUrl){ const b=atob(dataUrl.split(',')[1]); const u=new Uint8Array(b.length); for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i); return u; }

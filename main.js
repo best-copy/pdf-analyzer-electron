@@ -2,7 +2,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
+const remoteServer = require('./remote-server');   // 모바일 연동 LAN 변환 서버
 
 // ── 성능: GPU 가속·래스터화 활성화 (캔버스·PDF 렌더링 가속) ──────────────────
 app.commandLine.appendSwitch('enable-gpu-rasterization');
@@ -25,12 +26,190 @@ function docPathsFrom(argv) {
 }
 
 let pendingOpenPaths = docPathsFrom(process.argv);
+let mainWin = null;   // 메인 창 (편집기 창과 구분 — 외부 문서 전달 대상)
+
+// ── 단일 인스턴스: '보내기'·가상 프린터로 온 문서를 기존 창에 전달 ───────────
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_e, argv) => {
+    const items = docPathsFrom(argv).map((p) => ({ path: p, name: path.basename(p) }));
+    if (mainWin && !mainWin.isDestroyed()) {
+      if (mainWin.isMinimized()) mainWin.restore();
+      mainWin.focus();
+      if (items.length) mainWin.webContents.send('external:open', items);
+    } else if (items.length) {
+      pendingOpenPaths.push(...items.map(i => i.path));
+    }
+    // 상주 감시자가 인쇄 감지로 앱을 재실행한 경우 — 대기 중 인쇄물 수거
+    try { ingestPrintedFile(printPortFile()); } catch (e) {}
+  });
+}
+
+// ── Windows '보내기' 메뉴 등록 (포터블 실행 시 자동) ────────────────────────
+// 탐색기에서 문서 우클릭 → 보내기 → 'PDF 분석기' 로 바로 열기.
+function ensureSendToShortcut() {
+  try {
+    if (!app.isPackaged) return;   // 개발 실행(electron.exe)은 등록하지 않음
+    const lnk = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'SendTo', 'PDF 분석기.lnk');
+    try {
+      const cur = shell.readShortcutLink(lnk);
+      if (cur.target === process.execPath) return;   // 이미 최신
+    } catch (e) {}
+    shell.writeShortcutLink(lnk, { target: process.execPath, description: 'PDF 분석기로 열기' });
+  } catch (e) { console.warn('보내기 메뉴 등록 실패:', e); }
+}
+
+// ── 가상 프린터 'PDF Editor' — 어떤 앱에서든 인쇄로 이 앱에 문서 전달 ────────
+// Microsoft Print To PDF 드라이버 + 고정 파일 포트. 포트 파일이 갱신되면
+// 감시자가 임시 사본을 떠서 메인 창으로 열어준다(다음 인쇄가 덮어써도 안전).
+const printDropDir = () => path.join(app.getPath('userData'), 'printjobs');
+const printPortFile = () => path.join(printDropDir(), 'print_output.pdf');
+
+// 가상 프린터 설치 여부 확인 (승격 불필요) — 설치돼 있으면 설치 버튼 숨김용
+ipcMain.handle('printer:status', () => {
+  return new Promise((resolve) => {
+    execFile('powershell.exe',
+      ['-NoProfile', '-Command', `(Get-Printer -Name 'PDF Editor' -ErrorAction SilentlyContinue) -ne $null`],
+      { windowsHide: true, timeout: 20000 },
+      (err, stdout) => resolve({ installed: String(stdout).trim() === 'True' }));
+  });
+});
+
+ipcMain.handle('printer:setup', () => {
+  return new Promise((resolve) => {
+    try { fs.mkdirSync(printDropDir(), { recursive: true }); } catch (e) {}
+    const port = printPortFile().replace(/'/g, "''");
+    const ps = [
+      `$ErrorActionPreference='Stop'`,
+      `if (-not (Get-PrinterPort -Name '${port}' -ErrorAction SilentlyContinue)) { Add-PrinterPort -Name '${port}' }`,
+      `if (-not (Get-Printer -Name 'PDF Editor' -ErrorAction SilentlyContinue)) { Add-Printer -Name 'PDF Editor' -DriverName 'Microsoft Print To PDF' -PortName '${port}' }`,
+    ].join('; ');
+    const enc = Buffer.from(ps, 'utf16le').toString('base64');
+    // 프린터 추가는 관리자 권한 필요 → UAC 승격 실행 후, 실제 설치됐는지 재확인
+    execFile('powershell.exe',
+      ['-NoProfile', '-Command', `Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-EncodedCommand','${enc}'`],
+      { windowsHide: true, timeout: 180000 },
+      () => {
+        execFile('powershell.exe', ['-NoProfile', '-Command', `(Get-Printer -Name 'PDF Editor' -ErrorAction SilentlyContinue) -ne $null`],
+          { windowsHide: true, timeout: 20000 },
+          (err2, stdout) => {
+            const ok = String(stdout).trim() === 'True';
+            if (ok) installPrintWatchdog();   // 설치 성공 → 상주 감시자(인쇄 시 앱 자동 실행)도 구성
+            resolve({ ok });
+          });
+      });
+  });
+});
+
+// 앱 시작 시: 앱이 꺼진 동안 인쇄된 결과물이 포트 파일에 남아 있으면 열어준다.
+// (인쇄 → 앱 자동 실행 흐름의 수신부 — 실행은 아래 상주 감시자가 담당)
+function ingestPendingPrintOnBoot() {
+  try {
+    const p = printPortFile();
+    const st = fs.statSync(p);
+    if (!st.size) return;
+    if (Date.now() - st.mtimeMs < 2500) {
+      // 방금 인쇄돼 아직 쓰는 중일 수 있음 — 창 로드 후 안정화 검사 경로로
+      setTimeout(() => ingestPrintedFile(p), 3000);
+      return;
+    }
+    const dst = path.join(os.tmpdir(), `pdfedit_print_${Date.now()}.pdf`);
+    fs.copyFileSync(p, dst);
+    fs.unlinkSync(p);
+    pendingOpenPaths.push(dst);   // 창 로드 완료 시 external:open으로 전달됨
+  } catch (e) {}
+}
+
+// ── 상주 인쇄 감시자 — 앱이 꺼져 있어도 인쇄가 오면 앱을 실행 ────────────────
+// 로그온 시 숨김 PowerShell(FileSystemWatcher, 뮤텍스 1개 보장)이 포트 폴더를 감시.
+// 앱 미실행 시에만 실행(실행 중이면 앱 내 감시자가 처리, 단일 인스턴스라 중복 없음).
+function installPrintWatchdog() {
+  try {
+    if (!app.isPackaged) return false;   // 개발 실행은 등록하지 않음
+    const dir = printDropDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const script = path.join(dir, 'print-watch.ps1');
+    const exe = process.execPath;
+    const procName = path.basename(exe, '.exe');
+    const ps = `﻿# PDF Editor 인쇄 감시 — 인쇄 결과가 도착하면 앱을 실행한다 (자동 생성 파일)
+$m = New-Object System.Threading.Mutex($false, 'PDFEditorPrintWatch')
+if (-not $m.WaitOne(0)) { exit }
+$dir = '${dir.replace(/'/g, "''")}'
+$exe = '${exe.replace(/'/g, "''")}'
+$fsw = New-Object System.IO.FileSystemWatcher $dir, '*.pdf'
+$fsw.EnableRaisingEvents = $true
+while ($true) {
+  $r = $fsw.WaitForChanged([System.IO.WatcherChangeTypes]'Created, Changed', 15000)
+  if (-not $r.TimedOut) {
+    Start-Sleep -Milliseconds 2000
+    if (-not (Get-Process -Name '${procName.replace(/'/g, "''")}' -ErrorAction SilentlyContinue)) {
+      Start-Process -FilePath $exe
+    }
+  }
+}`;
+    fs.writeFileSync(script, ps, 'utf8');
+    const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${script}"`;
+    // 로그온 자동 시작 (HKCU — 관리자 불필요) + 지금 즉시 1개 기동
+    execFile('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+      '/v', 'PDFEditorPrintWatch', '/t', 'REG_SZ', '/d', cmd, '/f'], { windowsHide: true }, () => {});
+    // 즉시 기동 — WMI(Win32_Process.Create)로 띄워 앱과 완전히 분리된 프로세스로 만든다.
+    // (spawn detached는 Electron 종료 시 함께 죽는 문제가 있었음 — 실측 확인)
+    const escaped = script.replace(/'/g, "''");
+    execFile('powershell.exe', ['-NoProfile', '-Command',
+      `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${escaped}"' } | Out-Null`],
+      { windowsHide: true, timeout: 20000 }, () => {});
+    return true;
+  } catch (e) { console.warn('인쇄 감시자 설치 실패:', e); return false; }
+}
+// 프린터가 설치돼 있으면 감시자 구성을 자동 복구(멱등) — 이전 버전 설치 사용자 대응
+function repairPrintWatchdogIfNeeded() {
+  if (!app.isPackaged) return;
+  execFile('powershell.exe',
+    ['-NoProfile', '-Command', `(Get-Printer -Name 'PDF Editor' -ErrorAction SilentlyContinue) -ne $null`],
+    { windowsHide: true, timeout: 20000 },
+    (err, stdout) => { if (String(stdout).trim() === 'True') installPrintWatchdog(); });
+}
+
+let _printDebounce = null;
+function startPrintWatcher() {
+  try {
+    fs.mkdirSync(printDropDir(), { recursive: true });
+    fs.watch(printDropDir(), (_ev, fn) => {
+      if (!fn || !/\.pdf$/i.test(fn)) return;
+      clearTimeout(_printDebounce);
+      _printDebounce = setTimeout(() => ingestPrintedFile(path.join(printDropDir(), fn)), 900);
+    });
+  } catch (e) { console.warn('인쇄 감시 시작 실패:', e); }
+}
+function ingestPrintedFile(p, retry) {
+  fs.stat(p, (e, st1) => {
+    if (e || !st1.size) return;
+    setTimeout(() => fs.stat(p, (e2, st2) => {
+      if (e2) return;
+      if (st2.size !== st1.size) {   // 아직 쓰는 중 — 재시도 (최대 20회)
+        if ((retry || 0) < 20) setTimeout(() => ingestPrintedFile(p, (retry || 0) + 1), 700);
+        return;
+      }
+      const dst = path.join(os.tmpdir(), `pdfedit_print_${Date.now()}.pdf`);
+      try { fs.copyFileSync(p, dst); } catch (err) { return; }
+      try { fs.unlinkSync(p); } catch (err) {}   // 처리 완료 — 재기동 시 중복 열림 방지
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('external:open', [{ path: dst, name: `인쇄접수_${Date.now() % 100000}.pdf` }]);
+        if (mainWin.isMinimized()) mainWin.restore();
+        mainWin.focus();
+      } else {
+        pendingOpenPaths.push(dst);
+      }
+    }), 600);
+  });
+}
 
 // 이전 세션에서 남은 변환 임시 PDF/HTML/편집 임시파일 정리 (누적 방지)
 function sweepTempConversions() {
   try {
     const dir = os.tmpdir();
-    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin)$/i;
+    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin)$|^remoteup_.*$/i;
     for (const f of fs.readdirSync(dir)) {
       if (re.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} }
     }
@@ -54,7 +233,7 @@ function installZoomShortcuts(win) {
 }
 
 function createWindow() {
-  const win = new BrowserWindow({
+  const win = mainWin = new BrowserWindow({
     width:  1280,
     height: 900,
     minWidth:  900,
@@ -163,6 +342,11 @@ ipcMain.on('editor:close', (event) => {
 
 app.whenReady().then(() => {
   sweepTempConversions(); // 시작 시 이전 세션 변환 임시파일 정리
+  initRemoteServer();     // 모바일 연동 서버 (켜짐 설정이면 자동 구동)
+  ensureSendToShortcut(); // 탐색기 '보내기' 메뉴 등록 (포터블 실행 시)
+  ingestPendingPrintOnBoot(); // 꺼진 동안 인쇄된 결과물이 있으면 열기 (createWindow 전에)
+  startPrintWatcher();    // 가상 프린터 'PDF Editor' 출력 감시
+  setTimeout(repairPrintWatchdogIfNeeded, 6000);   // 상주 감시자 자동 복구 (프린터 설치 시)
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -229,7 +413,8 @@ function findGhostscript() {
   return _gsPath;
 }
 
-ipcMain.handle('ink:coverage', (_, pdfPath) => {
+// gs inkcov 실행 — IPC 핸들러와 원격 서버(remote-server.js)가 공유
+function runInkCoverage(pdfPath) {
   return new Promise((resolve, reject) => {
     try {
       const base = path.basename(pdfPath || '');
@@ -253,6 +438,40 @@ ipcMain.handle('ink:coverage', (_, pdfPath) => {
         }
         if (!pages.length) return reject(new Error('inkcov 출력을 해석하지 못했습니다.'));
         resolve(pages);
+      });
+  });
+}
+
+ipcMain.handle('ink:coverage', (_, pdfPath) => runInkCoverage(pdfPath));
+
+// ── IPC: 폰트 아웃라인화 — gs pdfwrite -dNoOutputFonts (모든 텍스트 → 곡선) ──
+// 외부 출력소 전달 표준 관행: 폰트 문제로 인한 출력 사고 원천 차단.
+ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const base = path.basename(pdfPath || '');
+      if (!/^pdfedit_.*\.pdf$/i.test(base)) return reject(new Error('잘못된 임시파일 경로'));
+      if (path.dirname(pdfPath) !== os.tmpdir()) return reject(new Error('잘못된 임시파일 경로'));
+    } catch (e) { return reject(e); }
+    const outPath = path.join(os.tmpdir(), `pdfedit_outline_${Date.now()}.pdf`);
+    // 이미지 무손실 명시: 재기록 과정의 다운샘플링 금지 + 원본 JPEG 통과(재압축 없음)
+    // flatten: PDF 1.4 강제 → 투명도 평탄화(구형 RIP 대응). 기본은 1.6(투명도 유지).
+    const compat = opts && opts.flatten ? '1.4' : '1.6';
+    execFile(findGhostscript(),
+      ['-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite', '-dNoOutputFonts',
+       '-dPassThroughJPEGImages=true',
+       '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
+       `-dCompatibilityLevel=${compat}`, '-o', outPath, pdfPath],
+      { windowsHide: true, timeout: 600000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (err.code === 'ENOENT')
+            ? 'Ghostscript(gswin64c)가 설치되어 있지 않습니다. 폰트 아웃라인화에는 Ghostscript가 필요합니다.'
+            : ((stderr || err.message || '').toString().slice(0, 300) || 'Ghostscript 실행 실패');
+          return reject(new Error(msg));
+        }
+        if (!fs.existsSync(outPath)) return reject(new Error('아웃라인 PDF가 생성되지 않았습니다.'));
+        resolve(outPath);
       });
   });
 });
@@ -310,7 +529,8 @@ ipcMain.handle('dialog:saveFilePath', async (_, { defaultName }) => {
 // ── IPC: 견적서 HTML → PDF 변환 (숨겨진 BrowserWindow + printToPDF) ──────────
 // Electron 26+ 에서 margins 단위가 인치로 변경됨 → marginType:'none' 사용 (HTML body padding으로 여백 처리)
 // loadURL 완료를 did-finish-load 이벤트로 명시적 대기
-ipcMain.handle('print:toPDF', async (_, html) => {
+// HTML → PDF 렌더 — IPC(견적서)와 원격 서버(모바일 견적서)가 공유
+async function renderHtmlToPdf(html) {
   const tmp = require('os').tmpdir();
   const tmpFile = path.join(tmp, `quote_${Date.now()}.html`);
   fs.writeFileSync(tmpFile, html, 'utf8');
@@ -341,7 +561,8 @@ ipcMain.handle('print:toPDF', async (_, html) => {
     try { fs.unlinkSync(tmpFile); } catch(e) {}
   }
   return pdfBuffer;
-});
+}
+ipcMain.handle('print:toPDF', (_, html) => renderHtmlToPdf(html));
 
 // ── IPC: HWP/HWPX → PDF 변환 (한컴오피스 한글 COM 자동화) ────────────────────
 // 한글은 단일 인스턴스로만 동작하므로 동시 변환 시 충돌 → 큐로 순차 처리.
@@ -374,14 +595,16 @@ function convertHwpToPdf(srcPath) {
   });
 }
 
-ipcMain.handle('hwp:convertToPdf', (_, srcPath) => {
-  // 이전 변환의 성공/실패와 무관하게 다음 변환을 순차로 이어 실행
+// 이전 변환의 성공/실패와 무관하게 다음 변환을 순차로 이어 실행.
+// IPC와 원격 서버(remote-server.js)가 같은 큐를 공유 — PC·폰 요청이 충돌 없이 직렬화된다.
+function enqueueHwpConvert(srcPath) {
   const run = () => convertHwpToPdf(srcPath);
   const result = hwpQueue.then(run, run);
   // 큐 체인은 실패가 전파되지 않도록 별도로 유지 (반환 promise만 실제 결과)
   hwpQueue = result.catch(() => {});
   return result;
-});
+}
+ipcMain.handle('hwp:convertToPdf', (_, srcPath) => enqueueHwpConvert(srcPath));
 
 // ── IPC: MS Office(Word·Excel·PowerPoint) → PDF 변환 (Office COM 자동화) ──────
 // 한글과 마찬가지로 동일 Office 앱은 단일 인스턴스로만 안전하므로 큐로 순차 처리.
@@ -414,12 +637,13 @@ function convertOfficeToPdf(srcPath) {
   });
 }
 
-ipcMain.handle('office:convertToPdf', (_, srcPath) => {
+function enqueueOfficeConvert(srcPath) {
   const run = () => convertOfficeToPdf(srcPath);
   const result = officeQueue.then(run, run);
   officeQueue = result.catch(() => {});
   return result;
-});
+}
+ipcMain.handle('office:convertToPdf', (_, srcPath) => enqueueOfficeConvert(srcPath));
 
 // ── IPC: Adobe(Photoshop·InDesign·Illustrator) → PDF 변환 (Adobe COM 자동화) ──
 // 각 Adobe 앱은 단일 인스턴스로만 안전하고 첫 실행이 느리므로(수십 초) 큐로 순차 처리.
@@ -452,9 +676,25 @@ function convertAdobeToPdf(srcPath) {
   });
 }
 
-ipcMain.handle('adobe:convertToPdf', (_, srcPath) => {
+function enqueueAdobeConvert(srcPath) {
   const run = () => convertAdobeToPdf(srcPath);
   const result = adobeQueue.then(run, run);
   adobeQueue = result.catch(() => {});
   return result;
-});
+}
+ipcMain.handle('adobe:convertToPdf', (_, srcPath) => enqueueAdobeConvert(srcPath));
+
+// ── 모바일 연동 LAN 변환 서버 — 렌더러 설정 UI와 연결 ────────────────────────
+// 변환 함수(큐 공유)·잉크 판정을 서버에 주입. 켜짐 설정이면 앱 시작 시 자동 구동.
+function initRemoteServer() {
+  const cfg = remoteServer.init({
+    userDataDir: app.getPath('userData'),
+    version: app.getVersion(),
+    convert: { hwp: enqueueHwpConvert, office: enqueueOfficeConvert, adobe: enqueueAdobeConvert },
+    inkCoverage: runInkCoverage,
+    htmlToPdf: renderHtmlToPdf,   // 모바일 견적서 PDF 저장용
+  });
+  if (cfg.enabled) remoteServer.start();
+}
+ipcMain.handle('remote:status', () => remoteServer.status());
+ipcMain.handle('remote:setEnabled', (_, on) => remoteServer.setEnabled(!!on));

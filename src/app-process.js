@@ -43,6 +43,7 @@
         if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
         processedPdfBytes = pdfBytes;
+        directOutputBytes = null;   // 파이프라인 결과 — 다운로드는 재조립 경로 사용
         processedFileName = defaultProcessedName();
         setDirty(true);
         updateDownloadBtn();
@@ -205,6 +206,7 @@
       const bytes = useProcessed ? processedPdfBytes : originalPdfBytes;
       if (!bytes) { showError('먼저 PDF를 열어 주세요.'); return; }
       _inkAnalyzing = true;
+      setBtnBusy('inkBtn', true);
       let tmpPath = null;
       try {
         showLoading(`프린터 잉크 판정 중 — ${useProcessed ? '적용본' : '원본'}을 Ghostscript로 분석…`);
@@ -233,6 +235,7 @@
       } finally {
         if (tmpPath) { try { window.electronAPI.removeTempFile(tmpPath); } catch (e) {} }
         _inkAnalyzing = false;
+        setBtnBusy('inkBtn', false);
         hideLoading();
       }
     }
@@ -246,7 +249,17 @@
     let _cutN = 2;       // 정합 분할 수 (2 = 2-up, 4 = 2×2)
     let _cutSides = 2;   // 정합 인쇄면 (2 = 양면, 1 = 단면)
     let _impEnabled = false;   // 임포징을 메인 '✔ 적용'·'⇩ 다운로드' 결과에 포함 (섹션 체크박스)
-    let _impScale = 'fit';     // 슬롯 배치 크기: 'fit' = 칸에 맞춤 / 'orig' = 100% 원본 / 'fixed' = 지정 배율
+    let _impScale = 'orig';    // 슬롯 배치 크기: 'fit' = 칸에 맞춤 / 'orig' = 100% 원본(기본) / 'fixed' = 지정 배율
+    // 재단선 스타일 — UI에서 읽음 (프로파일과 무관한 인쇄 보조 표식이라 항상 현재 값 사용)
+    function _impCropStyle() {
+      const g = id => document.getElementById(id);
+      return {
+        gap: parseFloat(g('impCropGap')?.value) || 1,
+        len: parseFloat(g('impCropLen')?.value) || 3,
+        th:  parseFloat(g('impCropTh')?.value) || 0.4,
+        center: !!g('impCropCenter')?.checked,
+      };
+    }
     let _impProfile = null;    // 불러온 프로파일의 정규화 옵션(그대로 재현). UI를 만지면 null(→UI 기준).
     let _loadingProfile = false;
 
@@ -437,20 +450,120 @@
       }
       return embedded;
     }
+    // ── ◲ 블리드 자동 생성 — 재단여백 없는 원고의 가장자리를 미러로 확장 ─────
+    // 각 페이지를 (w+2b)×(h+2b) 새 페이지 중앙에 놓고, 상하좌우+모서리 8방향에
+    // 미러(음수 스케일) 사본을 해당 스트립만 클립해 그린다. TrimBox=원본 영역.
+    // 벡터 원본이 그대로 유지된다(래스터화 없음). 회전 페이지는 embedAllPages가 보정.
+    async function buildBleedBytes(srcBytes, bleedMm, onProgress) {
+      const MM = 72 / 25.4, b = bleedMm * MM;
+      const src = await PDFLib.PDFDocument.load(srcBytes.slice ? srcBytes.slice(0) : srcBytes);
+      const out = await PDFLib.PDFDocument.create();
+      const embedded = await embedAllPages(out, src, onProgress);
+      const { pushGraphicsState, popGraphicsState, moveTo, lineTo, closePath, clip, endPath, PDFName } = PDFLib;
+      const clipDraw = (pg, cx, cy, cw, ch, e, opts) => {
+        pg.pushOperators(pushGraphicsState(), moveTo(cx, cy), lineTo(cx+cw, cy), lineTo(cx+cw, cy+ch), lineTo(cx, cy+ch), closePath(), clip(), endPath());
+        pg.drawPage(e, opts);
+        pg.pushOperators(popGraphicsState());
+      };
+      embedded.forEach(({ e, w, h }, i) => {
+        const pg = out.addPage([w + 2*b, h + 2*b]);
+        pg.drawPage(e, { x: b, y: b });                                             // 중앙 원본
+        clipDraw(pg, 0,     b,     b, h, e, { x: b,       y: b,       xScale:-1 });               // 좌
+        clipDraw(pg, b+w,   b,     b, h, e, { x: b+2*w,   y: b,       xScale:-1 });               // 우
+        clipDraw(pg, b,     0,     w, b, e, { x: b,       y: b,       yScale:-1 });               // 하
+        clipDraw(pg, b,     b+h,   w, b, e, { x: b,       y: b+2*h,   yScale:-1 });               // 상
+        clipDraw(pg, 0,     0,     b, b, e, { x: b,       y: b,       xScale:-1, yScale:-1 });    // 좌하
+        clipDraw(pg, b+w,   0,     b, b, e, { x: b+2*w,   y: b,       xScale:-1, yScale:-1 });    // 우하
+        clipDraw(pg, 0,     b+h,   b, b, e, { x: b,       y: b+2*h,   xScale:-1, yScale:-1 });    // 좌상
+        clipDraw(pg, b+w,   b+h,   b, b, e, { x: b+2*w,   y: b+2*h,   xScale:-1, yScale:-1 });    // 우상
+        // 재단 정보 기록 — 임포징·출력기가 트림 위치를 알 수 있게
+        pg.node.set(PDFName.of('TrimBox'),  out.context.obj([b, b, b+w, b+h]));
+        pg.node.set(PDFName.of('BleedBox'), out.context.obj([0, 0, w+2*b, h+2*b]));
+        if (onProgress && (i & 7) === 0) onProgress(40 + Math.round(i / embedded.length * 60));
+      });
+      return { bytes: await out.save({ useObjectStreams: false, updateFieldAppearances: false }), n: embedded.length };
+    }
+    async function generateBleed() {
+      if (_bkBusy) return;
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
+      const mm = parseFloat(document.getElementById('bleedGenMm')?.value) || 3;
+      if (mm < 0.5 || mm > 20) { showError('블리드 폭은 0.5~20mm 사이로 입력하세요.'); return; }
+      _bkBusy = true;
+      setBtnBusy('bleedGenBtn', true);
+      try {
+        showLoading('블리드 생성 — 최신 편집 상태 준비 중…');
+        progressBar.style.display = 'block'; updateProgress(0);
+        const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.4)));
+        showLoading(`블리드 생성 — 가장자리 미러 확장 중… (${mm}mm)`);
+        const res = await buildBleedBytes(srcBytes, mm, p => updateProgress(Math.min(99, 40 + Math.round(p * 0.6))));
+        updateProgress(100); hideLoading(); progressBar.style.display = 'none';
+        try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('블리드 미리보기 실패:', e); }
+        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        processedPdfBytes = res.bytes;
+        directOutputBytes = res.bytes;   // 외부 변환 결과 — 다운로드 시 재조립 없이 그대로 저장
+        processedFileName = `${base}_블리드${mm}mm.pdf`;
+        setDirty(true); updateDownloadBtn();
+        showSuccess(`◲ 블리드 ${mm}mm 생성 완료 — ${res.n}쪽 (가장자리 미러 확장 · 트림박스 기록)`
+          + `\n페이지가 사방 ${mm}mm씩 커졌습니다. 저장은 '⇩ 다운로드'`
+          + `\n다음: 저장한 파일로 임포징(재단선 켜기) → 인쇄 → 트림선 따라 재단`);
+      } catch (e) {
+        console.error('블리드 생성 오류:', e);
+        showError('블리드 생성 실패: ' + (e && e.message ? e.message : String(e)));
+      } finally {
+        _bkBusy = false; setBtnBusy('bleedGenBtn', false);
+        hideLoading(); progressBar.style.display = 'none';
+      }
+    }
+
+    // ── ✒ 폰트 아웃라인화 — 체크 옵션 (편집 적용·다운로드의 최종 단계로 반영) ──
+    // 즉시 실행 버튼이 아니라 옵션이므로 프리셋에 저장·복원된다.
+    let _outlineEnabled = false;
+    function setOutlineEnabled(on) {
+      _outlineEnabled = !!on;
+      const chk = document.getElementById('esOutline');
+      if (chk && chk.checked !== _outlineEnabled) chk.checked = _outlineEnabled;
+      invalidateProcessed();   // '적용 필요' 상태로 — ✔ 적용 시 반영
+      if (_outlineEnabled) showSuccess("✒ 폰트 아웃라인화 켜짐 — '✔ 편집 적용' 또는 '⇩ 다운로드' 시 모든 글자가 곡선으로 변환됩니다.\n⚠ 결과물은 텍스트 수정·검색 불가 — 수정용 원본은 따로 보관하세요.");
+    }
+    // bytes → gs 아웃라인 변환 바이트 (적용·다운로드 공용)
+    async function buildOutlinedBytes(bytes) {
+      let tmpPath = null, outPath = null;
+      try {
+        tmpPath = window.electronAPI.writeTempFile(bytes, 'pdf');
+        const flatten = !!document.getElementById('outlineFlatten')?.checked;
+        outPath = await window.electronAPI.outlineFonts(tmpPath, { flatten });
+        return new Uint8Array(window.electronAPI.readFile(outPath));
+      } finally {
+        if (tmpPath) { try { window.electronAPI.removeTempFile(tmpPath); } catch (e) {} }
+        if (outPath) { try { window.electronAPI.removeTempFile(outPath); } catch (e) {} }
+      }
+    }
+
     // 임포징 공용 용지 (가로 기준 [w, h])
     const IMP_PAPERS = { A4: [841.89, 595.28], A3: [1190.55, 841.89], B4: [1031.81, 728.50], B5: [728.50, 515.91] };
 
     // 임포징 공용: 재단선(트림 마크) — 트림 사각형 네 모서리 바깥에 짧은 선(갭 1mm, 길이 3mm)
-    function drawCropMarks(page, x, y, w, h) {
-      const MM = 72 / 25.4, gap = 1 * MM, len = 3 * MM;
+    function drawCropMarks(page, x, y, w, h, style) {
+      // 스타일: UI(impCropGap·impCropLen·impCropTh·impCropCenter)에서 읽고, 독립 도구 등
+      // _impCropStyle이 없는 환경에서는 기본값(간격1mm·길이3mm·0.4pt·중앙마크 없음).
+      const s = style || (typeof _impCropStyle === 'function' ? _impCropStyle() : null) || {};
+      const MM = 72 / 25.4;
+      const gap = (s.gap != null ? s.gap : 1) * MM, len = (s.len != null ? s.len : 3) * MM;
+      const th = s.th != null ? s.th : 0.4;
       const black = PDFLib.rgb(0, 0, 0);
       const L = (x1, y1, x2, y2) =>
-        page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: 0.4, color: black });
+        page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: th, color: black });
       [[x, y, -1, -1], [x + w, y, 1, -1], [x, y + h, -1, 1], [x + w, y + h, 1, 1]]
         .forEach(([cx, cy, dx, dy]) => {
           L(cx + dx * gap, cy, cx + dx * (gap + len), cy);   // 모서리 바깥 가로선
           L(cx, cy + dy * gap, cx, cy + dy * (gap + len));   // 모서리 바깥 세로선
         });
+      if (s.center) {   // 중앙 마크 — 각 변 중점 바깥 (접지·정합 확인용)
+        L(x + w/2, y - gap, x + w/2, y - gap - len);           // 하
+        L(x + w/2, y + h + gap, x + w/2, y + h + gap + len);   // 상
+        L(x - gap, y + h/2, x - gap - len, y + h/2);           // 좌
+        L(x + w + gap, y + h/2, x + w + gap + len, y + h/2);   // 우
+      }
     }
 
     // 임포징 공용: 슬롯 내 배치 계산 (순수 함수 — 노드 단독 검증 가능)
@@ -934,7 +1047,7 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
         const single = res.sides === 1;
-        const outName = `${base}_복제2부${single ? '단면' : '양면'}.pdf`;
+        const outName = `${base}_2up${single ? '단면' : '양면'}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = single
           ? `📖 복제 2-up(단면 2부) 생성 완료 — 시트 ${res.sheets}장 (페이지당 1시트, 본문 ${res.n0}쪽)`
@@ -1047,7 +1160,7 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
         const grid = `${res.across}x${res.down}`;
-        const outName = `${base}_${isCut ? '정합' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}.pdf`;
+        const outName = `${base}_${isCut ? '1up' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 ${isCut ? '정합(Cut&Stack)' : '모아찍기(N-up)'} 생성 완료 — 시트 ${res.sheets}장 · ${grid} 배치(칸당 ${res.per}쪽) · ${res.sides === 2 ? '양면' : '단면'} (본문 ${res.n0}쪽)`
           + (isCut ? `\n인쇄 → 재단 → 좌상 묶음부터 차례로 겹치면 페이지 순서 완성` : `\n연속 페이지가 좌→우·상→하로 배치됩니다`)
@@ -1176,8 +1289,12 @@
       const p = list[idx];
       applyProfileToUI(p);
       _impProfile = profileToOpts(p);          // 정확 재현 (UI를 만지기 전까지)
-      if (!_impEnabled) toggleImpEnabled(true); else { invalidateProcessed(); scheduleLivePreview(); }
-      showSuccess(`프로파일 '${p.n}' 불러옴 — 용지 ${_impProfile.paper}, ${p.m}${p.sd ? (p.sd === 2 ? ' 양면' : ' 단면') : ''}. '📖 임포징 PDF 생성' 또는 메인 '✔ 적용'으로 반영됩니다.`);
+      // 프로파일은 '옵션만' 세팅한다 — 시트 재조립(편집 적용)은 사용자가
+      // '📖 임포징 PDF 생성'이나 메인 '✔ 적용'을 눌러야 진행(자동 미리보기·재조립 안 함).
+      _impEnabled = true;
+      const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
+      invalidateProcessed();                   // '적용 필요' 표시만 (렌더 없음)
+      showSuccess(`프로파일 '${p.n}' 불러옴 — 용지 ${_impProfile.paper}, ${p.m}${p.sd ? (p.sd === 2 ? ' 양면' : ' 단면') : ''}. 옵션만 적용됨 — '📖 임포징 PDF 생성' 또는 메인 '✔ 적용'을 눌러 반영하세요.`);
     }
     // 프로파일 수정 — 선택 프로파일의 내부 항목을 UI 컨트롤에 펼쳐 직접 편집.
     // 이름칸에 이름을 채워두고 _impProfile은 비워 UI 기준으로 전환(편집 후 '💾 저장'으로 반영).
@@ -1190,7 +1307,10 @@
       applyProfileToUI(p);
       _impProfile = null;                      // UI 기준 편집 모드
       const nm = document.getElementById('impProfName'); if (nm) nm.value = p.n;
-      if (!_impEnabled) toggleImpEnabled(true); else { invalidateProcessed(); scheduleLivePreview(); }
+      // 옵션만 펼쳐 편집 상태로 둔다 — 시트 재조립은 '📖 임포징 PDF 생성'·'✔ 적용'에서만.
+      _impEnabled = true;
+      const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
+      invalidateProcessed();                   // '적용 필요' 표시만 (렌더 없음)
       showSuccess(`프로파일 '${p.n}' 편집 모드 — 모드·용지·그리드·여백·정렬 등을 아래에서 수정한 뒤 '💾 저장'을 누르면 같은 이름으로 덮어써집니다.`);
     }
     // ── 프로파일 내보내기 / 가져오기 (독립 임포징 도구와 JSON으로 동기화) ──────
@@ -1542,28 +1662,48 @@
         if (chk) chk.checked = true;
       }
       processedPdfBytes = bytes;
+      directOutputBytes = null;   // 임포징은 파이프라인 포함(_impEnabled) — 재조립 경로와 일치
       processedFileName = name;
       setDirty(true);
       updateDownloadBtn();
     }
 
     // 임포징 실행 — 모드에 따라 모아찍기/정합/반복/복제/중철 분기 (화면 생성만; 저장은 메인 다운로드)
-    function generateImposition() {
+    async function generateImposition() {
       if (!_impMode) { showError('임포징 방식(중철·모아찍기·정합·반복·복제)을 먼저 선택하거나 프로파일을 불러오세요.'); return; }
-      if (_impMode === 'nup' || _impMode === 'cutstack') return generateNup();
-      if (_impMode === 'repeat')   return generateStepRepeat();
-      if (_impMode === 'dup')      return generateDup2up();
-      return generateBooklet();
+      setBtnBusy('impGenBtn', true);
+      try {
+        if (_impMode === 'nup' || _impMode === 'cutstack') return await generateNup();
+        if (_impMode === 'repeat')   return await generateStepRepeat();
+        if (_impMode === 'dup')      return await generateDup2up();
+        return await generateBooklet();
+      } finally { setBtnBusy('impGenBtn', false); }
     }
 
     async function downloadProcessed() {
       if (!processedPdfBytes) { showError('먼저 \'✔ 적용\'을 눌러 수정사항을 적용하거나, 다운로드 버튼을 우클릭해 원본을 저장하세요.'); return; }
+      // 외부 변환 결과(아웃라인·블리드)는 재조립하면 변환이 사라짐 — 그대로 저장
+      if (directOutputBytes) {
+        try {
+          const saved = await window.electronAPI.saveFile({ defaultName: processedFileName, buffer: directOutputBytes });
+          if (saved) { setDirty(false); showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)'); }
+        } catch (err) {
+          console.error('다운로드 오류:', err);
+          showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
+        }
+        return;
+      }
       try {
         applying = true; updateDownloadBtn();
         showLoading('다운로드용 PDF 최적화 중…');
         progressBar.style.display = 'block'; updateProgress(0);
         // 최종 파일은 용량 최적화 방식으로 새로 생성 (미리보기와 내용 동일)
-        const finalBytes = await buildOptimizedOutput(p => updateProgress(p));
+        let finalBytes = await buildOptimizedOutput(p => updateProgress(p));
+        finalBytes = await applyTocBookmarks(finalBytes);   // 목차 북마크 태그가 있으면 최종본에 적용
+        if (_outlineEnabled) {   // 아웃라인 옵션 ON — 재조립 경로에서도 최종 단계로 반영 (화면·파일 일치)
+          showLoading('폰트 → 곡선 변환 중… (Ghostscript)');
+          finalBytes = await buildOutlinedBytes(finalBytes);
+        }
         applying = false; updateDownloadBtn();
         hideLoading(); progressBar.style.display = 'none';
         const saved = await window.electronAPI.saveFile({
@@ -3708,6 +3848,502 @@
       const win = window.open('', '_blank');
       win.document.write(html);
       win.document.close();
+    }
+
+    // ── 🖨 가상 프린터 설치 — 어떤 앱에서든 '인쇄'로 이 앱에 문서 전달 ────────
+    async function setupVirtualPrinter() {
+      if (!confirm("가상 프린터 'PDF Editor'를 설치합니다.\n관리자 권한 창(UAC)이 뜨면 '예'를 눌러주세요.\n\n설치 후: 아크로뱃·한글 등 어떤 프로그램에서든\n인쇄 → 프린터 'PDF Editor' 선택 → 인쇄하면 이 앱으로 문서가 들어옵니다.\n(인쇄 대화상자에서 페이지 범위를 지정하면 그 페이지만 전달됩니다)")) return;
+      showLoading("가상 프린터 설치 중… (UAC 승인 필요)");
+      try {
+        const r = await window.electronAPI.setupPrinter();
+        hideLoading();
+        if (r && r.ok) {
+          showSuccess("🖨 가상 프린터 'PDF Editor' 설치 완료\n다른 프로그램에서 인쇄 → 'PDF Editor' 선택 → 인쇄하면 이 앱이 자동으로 문서를 엽니다.\n페이지 범위 인쇄로 필요한 쪽만 보낼 수 있습니다.");
+          const b = document.getElementById('printerSetupBtn');
+          if (b) b.style.display = 'none';   // 설치 완료 — 1회성 버튼 숨김
+        }
+        else showError("프린터 설치가 확인되지 않았습니다 — UAC 창에서 '예'를 눌렀는지 확인 후 다시 시도하세요.");
+      } catch (e) {
+        hideLoading();
+        showError('프린터 설치 오류: ' + (e && e.message ? e.message : String(e)));
+      }
+    }
+
+    // ── 📑 목차 생성 — 선택 페이지=장 시작, 제목 자동 인식 → 목차 페이지·북마크 ──
+    // 제목 인식: 페이지 상단 45% 영역에서 가장 큰 글자 라인(동일 y 병합)을 제목으로 추정.
+    async function extractPageTitle(originalIdx) {
+      const page = await globalPdfDoc.getPage(originalIdx + 1);
+      const vp = page.getViewport({ scale: 1, rotation: 0 });
+      const tc = await page.getTextContent();
+      const items = [];
+      for (const it of tc.items) {
+        if (!it.str || !it.str.trim()) continue;
+        const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
+        const fh = Math.hypot(tx[2], tx[3]) || Math.hypot(tx[0], tx[1]);
+        if (fh < 6) continue;
+        items.push({ str: it.str.trim(), x: tx[4], y: tx[5], h: fh });
+      }
+      if (!items.length) return '';
+      const top = items.filter(i => i.y < vp.height * 0.45);
+      const pool = top.length ? top : items;
+      const maxH = Math.max(...pool.map(i => i.h));
+      const cand = pool.filter(i => i.h >= maxH * 0.88).sort((a, b) => a.y - b.y || a.x - b.x);
+      const line = [];
+      for (const c of cand) { if (!line.length || Math.abs(c.y - line[0].y) < maxH * 0.8) line.push(c); }
+      line.sort((a, b) => a.x - b.x);
+      return line.map(l => l.str).join(' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+    }
+    let _tocEntries = [];
+    async function openTocDialog() {
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
+      const sel = [...selectedPages].sort((a, b) => a - b);
+      if (!sel.length) { showError('썸네일에서 목차로 지정할 페이지(각 장의 시작 페이지)를 먼저 선택하세요.'); return; }
+      setBtnBusy('tocBtn', true);
+      showLoading('페이지 제목 인식 중…');
+      _tocEntries = [];
+      try {
+        for (const pn of sel) {
+          const r = pageResults.find(x => x && x.pageNum === pn);
+          if (!r || r.isBlank || r.isTocPage) continue;   // 빈 페이지·목차 페이지 자신은 제외
+          let title = '';
+          try { title = await extractPageTitle(r.originalIdx); } catch (e) {}
+          // ref: pageResults 엔트리 객체 참조 — 목차 재생성으로 번호가 밀려도 안정적으로 추적
+          _tocEntries.push({ pageNum: pn, title: title || `${pn}쪽`, ref: r });
+        }
+        if (!_tocEntries.length) { showError('목차로 지정할 수 있는 페이지가 없습니다 (빈 페이지·목차 페이지 제외).'); return; }
+      } finally { hideLoading(); setBtnBusy('tocBtn', false); }
+      const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+      document.getElementById('tocRows').innerHTML = _tocEntries.map((en, i) =>
+        `<tr><td style="padding:5px; border:1px solid #e8e8ed; text-align:center;">${en.pageNum}</td>
+         <td style="padding:3px; border:1px solid #e8e8ed;"><input type="text" value="${esc(en.title)}" data-toc-i="${i}" style="width:100%; border:1px solid #d2d2d7; border-radius:5px; padding:5px 7px; box-sizing:border-box; font-family:inherit;"></td></tr>`).join('');
+      document.getElementById('tocModal').style.display = 'block';
+    }
+    // 목차 페이지를 doc '끝에' 그려 붙인다 (원본 페이지 인덱스를 보존하기 위해 append —
+    // 표시 위치는 pageResults 순서가 결정하므로 엔트리를 맨 앞에 끼우면 맨 앞에 보인다).
+    // entries[].displayNum = 목차에 인쇄할 쪽 번호(이미 목차 분량이 보정된 값).
+    async function appendTocPages(doc, entries, title, fontBytes) {
+      let font = null;
+      if (fontBytes) {
+        const fk = (typeof fontkit !== 'undefined') ? fontkit : (typeof self !== 'undefined' && self.fontkit) ? self.fontkit : null;
+        if (fk) { doc.registerFontkit(fk); font = await doc.embedFont(fontBytes.slice ? new Uint8Array(fontBytes.slice(0)) : fontBytes, { subset: true }); }
+      }
+      if (!font) font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+      const { width: W, height: H } = doc.getPage(0).getSize();
+      const mTop = 90, mBot = 60, mSide = Math.max(50, W * 0.12), lineH = 26, titleSize = 24, entrySize = 12;
+      const perPage = Math.max(1, Math.floor((H - mTop - mBot - 40) / lineH));
+      const tocPageCount = Math.ceil(entries.length / perPage);
+      for (let p = 0; p < tocPageCount; p++) {
+        const pg = doc.addPage([W, H]);
+        if (p === 0) {
+          const t = title || '목  차';
+          const tw = font.widthOfTextAtSize(t, titleSize);
+          pg.drawText(t, { x: (W - tw) / 2, y: H - mTop, size: titleSize, font, color: PDFLib.rgb(0.11, 0.11, 0.12) });
+        }
+        const slice = entries.slice(p * perPage, (p + 1) * perPage);
+        slice.forEach((en, i) => {
+          const y = H - mTop - 40 - i * lineH;
+          const numStr = String(en.displayNum);
+          const numW = font.widthOfTextAtSize(numStr, entrySize);
+          let t = en.title;
+          while (t.length > 4 && font.widthOfTextAtSize(t, entrySize) > W - mSide * 2 - numW - 30) t = t.slice(0, -1);
+          const titleW = font.widthOfTextAtSize(t, entrySize);
+          pg.drawText(t, { x: mSide, y, size: entrySize, font, color: PDFLib.rgb(0.11, 0.11, 0.12) });
+          const dotStart = mSide + titleW + 6, dotEnd = W - mSide - numW - 8;
+          const dotW = font.widthOfTextAtSize('.', entrySize) + 2.2;
+          let dots = '';
+          for (let k = 0; k < Math.floor((dotEnd - dotStart) / dotW); k++) dots += '.';
+          if (dots) pg.drawText(dots, { x: dotStart, y, size: entrySize, font, color: PDFLib.rgb(0.6, 0.6, 0.62) });
+          pg.drawText(numStr, { x: W - mSide - numW, y, size: entrySize, font, color: PDFLib.rgb(0.11, 0.11, 0.12) });
+        });
+      }
+      return { tocPageCount, perPage };
+    }
+    // 다운로드 최종본에 목차 북마크 적용 — pageResults의 tocTitle 태그 기반이라
+    // 이후 페이지 재배열·삭제에도 대상이 따라간다. 임포징 포함이면 의미 없어 생략.
+    async function applyTocBookmarks(bytes) {
+      try {
+        const valid = pageResults.filter(Boolean);
+        const marks = valid.map((r, i) => ({ i, t: r.tocTitle })).filter(x => x.t);
+        if (!marks.length || _impEnabled) return bytes;
+        const doc = await PDFLib.PDFDocument.load(bytes.slice ? bytes.slice(0) : bytes);
+        if (doc.getPageCount() !== valid.length) return bytes;   // 페이지 수 불일치 — 안전 중단
+        const PDFName = PDFLib.PDFName, ctx = doc.context;
+        const outlineRef = ctx.nextRef();
+        const itemRefs = marks.map(() => ctx.nextRef());
+        marks.forEach((mk, i) => {
+          const d = ctx.obj({
+            Title: PDFLib.PDFHexString.fromText(mk.t),
+            Parent: outlineRef,
+            Dest: [doc.getPage(mk.i).ref, PDFName.of('XYZ'), null, null, null],
+          });
+          if (i > 0) d.set(PDFName.of('Prev'), itemRefs[i - 1]);
+          if (i < marks.length - 1) d.set(PDFName.of('Next'), itemRefs[i + 1]);
+          ctx.assign(itemRefs[i], d);
+        });
+        ctx.assign(outlineRef, ctx.obj({
+          Type: PDFName.of('Outlines'),
+          First: itemRefs[0], Last: itemRefs[itemRefs.length - 1], Count: marks.length,
+        }));
+        doc.catalog.set(PDFName.of('Outlines'), outlineRef);
+        doc.catalog.set(PDFName.of('PageMode'), PDFName.of('UseOutlines'));
+        return await doc.save({ useObjectStreams: false, updateFieldAppearances: false });
+      } catch (e) { console.warn('북마크 적용 실패(파일은 정상 저장):', e); return bytes; }
+    }
+    async function generateToc() {
+      if (_bkBusy) return;
+      // 모달 입력값 수거
+      document.querySelectorAll('#tocRows input[data-toc-i]').forEach(inp => {
+        const i = parseInt(inp.dataset.tocI);
+        if (_tocEntries[i]) _tocEntries[i].title = inp.value.trim() || `${_tocEntries[i].pageNum}쪽`;
+      });
+      const insertPage = document.getElementById('tocInsertPage').checked;
+      const bookmarks = document.getElementById('tocBookmarks').checked;
+      if (!insertPage && !bookmarks) { showError('목차 페이지 삽입과 PDF 북마크 중 하나 이상을 선택하세요.'); return; }
+      document.getElementById('tocModal').style.display = 'none';
+      _bkBusy = true;
+      setBtnBusy('tocBtn', true);
+      try {
+        showLoading('목차 페이지 생성 중…');
+        progressBar.style.display = 'block'; updateProgress(10);
+
+        // 1) 기존 목차 페이지 제거(재생성 = 교체) + 북마크 태그 초기화
+        for (let i = pageResults.length - 1; i >= 0; i--) {
+          const r = pageResults[i];
+          if (r && r.isTocPage) {
+            if (r.thumbnail && r.thumbnail.startsWith && r.thumbnail.startsWith('blob:')) { try { URL.revokeObjectURL(r.thumbnail); } catch (e) {} }
+            pageResults.splice(i, 1);
+          } else if (r && r.tocTitle) delete r.tocTitle;
+        }
+        rebuildPageNums();
+        // 엔트리 대상은 객체 참조(ref)로 추적 — 제거·재번호 후의 실제 pageNum 사용
+        const live = _tocEntries.filter(en => en.ref && pageResults.includes(en.ref));
+        if (!live.length) { showError('목차 대상 페이지를 찾지 못했습니다 — 다시 선택해 주세요.'); return; }
+        // 북마크 태그 (다운로드 시 최종본에 적용 — 재배열·삭제에도 따라감)
+        if (bookmarks) live.forEach(en => { en.ref.tocTitle = en.title; });
+
+        // 2) 목차 페이지를 '원본 문서 끝'에 그려 붙임 (기존 originalIdx 전부 보존)
+        let tocPageCount = 0, baseCount = 0, mergedBytes = null;
+        if (insertPage) {
+          updateProgress(30);
+          const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+          baseCount = srcDoc.getPageCount();
+          // 인쇄될 쪽 번호 = 현재 표시 번호 + 목차 분량 (선계산: perPage 동일 공식)
+          const { height: H0 } = srcDoc.getPage(0).getSize();
+          const perPage = Math.max(1, Math.floor((H0 - 90 - 60 - 40) / 26));
+          const cnt = Math.ceil(live.length / perPage);
+          const entries = live.map(en => ({ title: en.title, displayNum: en.ref.pageNum + cnt }));
+          const res = await appendTocPages(srcDoc, entries, document.getElementById('tocTitle').value.trim() || '목  차', getSlugFontBytes());
+          tocPageCount = res.tocPageCount;
+          mergedBytes = await srcDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+        }
+        updateProgress(60);
+
+        // 3) 탭 상태 갱신 — 목차 페이지를 '실제 페이지'로 맨 앞에 삽입
+        if (insertPage && mergedBytes) {
+          originalPdfBytes = mergedBytes;
+          const tab = tabs.get(activeTabId);
+          if (tab) { tab.originalPdfBytes = mergedBytes; tab.fileSize = mergedBytes.byteLength; }
+          const newPdf = await pdfjsLib.getDocument({ data: mergedBytes.slice(0) }).promise;
+          try { if (globalPdfDoc) globalPdfDoc.destroy(); } catch (e) {}
+          globalPdfDoc = newPdf;
+          if (tab) tab.pdfDoc = newPdf;
+          // 목차 페이지 썸네일 생성 + 엔트리 삽입 (빈 페이지 엔트리와 동일 형태)
+          const newEntries = [];
+          for (let k = 0; k < tocPageCount; k++) {
+            const page = await newPdf.getPage(baseCount + k + 1);
+            const res = await analyzePageColor(page);
+            const thumb = res && res.thumbPromise ? await res.thumbPromise : null;
+            newEntries.push({
+              pageNum: 0, originalIdx: baseCount + k,
+              isColor: false, isBlank: false, isTocPage: true, rotation: 0,
+              thumbnail: thumb, thumbW: res && res.thumbW, thumbH: res && res.thumbH,
+              chapter: (pageResults[0] && pageResults[0].chapter) || '',
+            });
+          }
+          pageResults.unshift(...newEntries);
+          rebuildPageNums();
+          syncTabPageResults();
+          clearProcessCaches();     // 원본 바이트 교체 — 흑백·베이스 캐시 전부 무효
+          invalidateProcessed();
+          // 화면 반영: refreshResults는 카운트만 갱신하므로 그리드를 직접 재렌더해야
+          // 목차 페이지가 원본 보기(썸네일)에 나타난다. 미리보기가 열려 있으면 닫는다.
+          try { closePreview(); } catch (e) {}
+          renderAllPages(pageResults);
+          totalPagesEl.textContent = pageResults.filter(Boolean).length;
+          refreshResults();
+        }
+        updateProgress(100); hideLoading(); progressBar.style.display = 'none';
+        showSuccess(`📑 목차 생성 완료 — 항목 ${live.length}개`
+          + (insertPage ? ` · 목차 페이지 ${tocPageCount}쪽이 문서 맨 앞에 '실제 페이지'로 삽입됨` : '')
+          + (bookmarks ? ` · 북마크는 다운로드 시 최종 파일에 적용` : '')
+          + `\n목차 페이지도 일반 페이지처럼 편집됩니다 — 내용 수정: 우클릭 → 🖊 내부 내용 편집`
+          + `\n항목을 바꾸려면 페이지 다시 선택 → 📑 목차 생성 (기존 목차가 교체됩니다)`);
+      } catch (e) {
+        console.error('목차 생성 오류:', e);
+        showError('목차 생성 실패: ' + (e && e.message ? e.message : String(e)));
+      } finally {
+        _bkBusy = false; setBtnBusy('tocBtn', false);
+        hideLoading(); progressBar.style.display = 'none';
+      }
+    }
+
+    // ── 🧪 프리플라이트 (출력 적합성 검사) ────────────────────────────────────
+    // 인쇄 사고 예방 점검: 폰트 미임베드·저해상도 이미지·블리드 정보·RGB 이미지·
+    // 페이지 크기 혼재·주석/폼. 결과는 #preflightModal에 경고/주의/정보로 표시.
+    function _pfFmtPages(arr) {
+      const a = [...arr].sort((x, y) => x - y);
+      const out = [];
+      for (let i = 0; i < a.length; i++) {
+        let j = i;
+        while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++;
+        out.push(j > i ? `${a[i]}-${a[j]}` : String(a[i]));
+        i = j;
+        if (out.length >= 8 && i < a.length - 1) { out.push(`외 ${a.length - i - 1}쪽`); break; }
+      }
+      return out.join(', ') + '쪽';
+    }
+    async function runPreflight() {
+      if (!originalPdfBytes) { showError('먼저 PDF를 열어 주세요.'); return; }
+      setBtnBusy('pfMainBtn', true); setBtnBusy('sbPfBtn', true);
+      showLoading('프리플라이트 검사 중…');
+      progressBar.style.display = 'block'; updateProgress(0);
+      const errs = [], warns = [], infos = [];
+      try {
+        const doc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0), { ignoreEncryption: true, updateMetadata: false });
+        const ctx = doc.context, PDFName = PDFLib.PDFName;
+        const n = doc.getPageCount();
+
+        // 1) 페이지 크기 혼재 + 블리드/트림 박스
+        const sizes = new Map(); const noBleed = [];
+        doc.getPages().forEach((pg, i) => {
+          const { width, height } = pg.getSize();
+          const key = `${Math.round(width / 72 * 25.4)}×${Math.round(height / 72 * 25.4)}`;
+          if (!sizes.has(key)) sizes.set(key, []);
+          sizes.get(key).push(i + 1);
+          const has = b => { try { return !!pg.node.get(PDFName.of(b)); } catch (e) { return false; } };
+          if (!has('TrimBox') && !has('BleedBox')) noBleed.push(i + 1);
+        });
+        if (sizes.size > 1)
+          warns.push(`페이지 크기 혼재 — ${[...sizes.entries()].map(([k, v]) => `${k}mm(${v.length}쪽)`).join(' · ')} — 임포징·양면 인쇄 시 주의`);
+        if (noBleed.length === n) infos.push(`블리드/트림 박스 정보 없음 — 가장자리까지 인쇄물이 닿는 원고면 '블리드 자동 생성'을 사용하세요.`);
+        else if (noBleed.length) infos.push(`일부 페이지(${_pfFmtPages(noBleed)})에 블리드/트림 박스 없음`);
+
+        // 2) 폰트 임베드 (Type0은 DescendantFonts 쪽 디스크립터 확인)
+        const notEmb = new Map();
+        doc.getPages().forEach((pg, i) => {
+          try {
+            const res = ctx.lookup(pg.node.get(PDFName.of('Resources')));
+            const fd = res ? ctx.lookup(res.get(PDFName.of('Font'))) : null;
+            if (!fd || !fd.entries) return;
+            for (const [, v] of fd.entries()) {
+              const f = ctx.lookup(v); if (!f || !f.get) continue;
+              let desc = ctx.lookup(f.get(PDFName.of('FontDescriptor')));
+              if (!desc) {
+                const dfs = ctx.lookup(f.get(PDFName.of('DescendantFonts')));
+                if (dfs && dfs.size && dfs.size() > 0) {
+                  const df = ctx.lookup(dfs.get(0));
+                  desc = df ? ctx.lookup(df.get(PDFName.of('FontDescriptor'))) : null;
+                }
+              }
+              const emb = desc && ['FontFile', 'FontFile2', 'FontFile3'].some(x => desc.get(PDFName.of(x)));
+              if (!emb) {
+                const bn = f.get(PDFName.of('BaseFont'));
+                const nm = bn ? String(bn).replace(/^\//, '').replace(/^[A-Z]{6}\+/, '') : '(이름없음)';
+                if (!notEmb.has(nm)) notEmb.set(nm, new Set());
+                notEmb.get(nm).add(i + 1);
+              }
+            }
+          } catch (e) {}
+        });
+        if (notEmb.size)
+          errs.push(`폰트 미임베드 ${notEmb.size}종 — ${[...notEmb.entries()].slice(0, 6).map(([nm, ps]) => `${nm}(${_pfFmtPages(ps)})`).join(', ')}${notEmb.size > 6 ? ' 외' : ''} → 다른 PC에서 글꼴이 바뀔 수 있음. '✒ 폰트 아웃라인화' 권장`);
+
+        // 3) RGB 이미지 (XObject ColorSpace — ICCBased는 성분 수로 판정)
+        const rgbPages = new Set();
+        doc.getPages().forEach((pg, i) => {
+          try {
+            const res = ctx.lookup(pg.node.get(PDFName.of('Resources')));
+            const xo = res ? ctx.lookup(res.get(PDFName.of('XObject'))) : null;
+            if (!xo || !xo.entries) return;
+            for (const [, v] of xo.entries()) {
+              const x = ctx.lookup(v); if (!x || !x.dict) continue;
+              if (String(x.dict.get(PDFName.of('Subtype')) || '') !== '/Image') continue;
+              let cs = ctx.lookup(x.dict.get(PDFName.of('ColorSpace')));
+              let name = String(cs || '');
+              if (cs instanceof PDFLib.PDFArray && cs.size() > 0) {
+                const c0 = String(ctx.lookup(cs.get(0)) || '');
+                if (c0 === '/ICCBased') {
+                  const st = ctx.lookup(cs.get(1));
+                  const nc = st && st.dict ? Number(String(st.dict.get(PDFName.of('N')) || '')) : 0;
+                  name = nc === 3 ? '/DeviceRGB' : (nc === 4 ? '/DeviceCMYK' : c0);
+                } else name = c0;
+              }
+              if (name === '/DeviceRGB') rgbPages.add(i + 1);
+            }
+          } catch (e) {}
+        });
+        if (rgbPages.size)
+          infos.push(`RGB 이미지 사용 — ${_pfFmtPages(rgbPages)} · 인쇄 시 CMYK 변환으로 색이 달라질 수 있음 (흑백 원고는 '🖨 잉크 정규화'로 해결)`);
+
+        // 4) 주석/폼 (인쇄 시 표시되지 않을 수 있는 개체)
+        try {
+          const acro = ctx.lookup(doc.catalog.get(PDFName.of('AcroForm')));
+          if (acro) infos.push(`입력 폼(AcroForm) 존재 — 입력값이 인쇄에 표시되지 않을 수 있음`);
+        } catch (e) {}
+        const annotPages = [];
+        doc.getPages().forEach((pg, i) => {
+          try {
+            const an = ctx.lookup(pg.node.get(PDFName.of('Annots')));
+            if (an && an.size && an.size() > 0) annotPages.push(i + 1);
+          } catch (e) {}
+        });
+        if (annotPages.length) infos.push(`주석·링크 개체 — ${_pfFmtPages(annotPages)} (인쇄에 나오지 않을 수 있음)`);
+
+        // 4-1) 보안 설정 (암호화)
+        if (doc.isEncrypted) warns.push(`보안(암호화) 설정된 PDF — 일부 출력기·RIP에서 인쇄가 거부될 수 있음`);
+
+        // 4-2) 페이지 회전값 (/Rotate) — 임포징·양면 시 주의
+        const rotPages = [];
+        doc.getPages().forEach((pg, i) => {
+          try { if ((pg.getRotation().angle % 360) !== 0) rotPages.push(i + 1); } catch (e) {}
+        });
+        if (rotPages.length && rotPages.length < n)
+          infos.push(`페이지 회전값 혼재 — ${_pfFmtPages(rotPages)}에 /Rotate 설정 (임포징은 자동 보정하나 원본 방향 확인 권장)`);
+
+        // 4-3) 별색(Separation/DeviceN) — 디지털 인쇄면 CMYK로 근사 변환됨
+        const spotNames = new Map();   // 이름 → 페이지들
+        doc.getPages().forEach((pg, i) => {
+          try {
+            const res = ctx.lookup(pg.node.get(PDFName.of('Resources')));
+            const csd = res ? ctx.lookup(res.get(PDFName.of('ColorSpace'))) : null;
+            if (!csd || !csd.entries) return;
+            for (const [, v] of csd.entries()) {
+              const cs = ctx.lookup(v);
+              if (!(cs instanceof PDFLib.PDFArray) || cs.size() < 2) continue;
+              const kind = String(ctx.lookup(cs.get(0)) || '');
+              if (kind !== '/Separation' && kind !== '/DeviceN') continue;
+              let nm = kind === '/Separation' ? String(ctx.lookup(cs.get(1)) || '').replace(/^\//, '') : 'DeviceN';
+              if (nm === 'All' || nm === 'None') continue;
+              if (!spotNames.has(nm)) spotNames.set(nm, new Set());
+              spotNames.get(nm).add(i + 1);
+            }
+          } catch (e) {}
+        });
+        if (spotNames.size)
+          warns.push(`별색(스팟컬러) 사용 ${spotNames.size}종 — ${[...spotNames.entries()].slice(0, 5).map(([nm, ps]) => `${nm}(${_pfFmtPages(ps)})`).join(', ')}${spotNames.size > 5 ? ' 외' : ''} · 디지털 인쇄에서는 CMYK 근사색으로 출력됨`);
+
+        // 4-4) 투명도 (ExtGState 불투명도<1·SMask / 페이지 투명 그룹) — 구형 RIP 평탄화 이슈
+        const transPages = new Set();
+        doc.getPages().forEach((pg, i) => {
+          try {
+            const grp = ctx.lookup(pg.node.get(PDFName.of('Group')));
+            if (grp && String(grp.get(PDFName.of('S')) || '') === '/Transparency') { transPages.add(i + 1); return; }
+            const res = ctx.lookup(pg.node.get(PDFName.of('Resources')));
+            const egs = res ? ctx.lookup(res.get(PDFName.of('ExtGState'))) : null;
+            if (!egs || !egs.entries) return;
+            for (const [, v] of egs.entries()) {
+              const gd = ctx.lookup(v); if (!gd || !gd.get) continue;
+              const ca = gd.get(PDFName.of('ca')), CA = gd.get(PDFName.of('CA'));
+              const sm = gd.get(PDFName.of('SMask'));
+              const lt1 = x => x != null && parseFloat(String(x)) < 1;
+              if (lt1(ca) || lt1(CA) || (sm && String(sm) !== '/None')) { transPages.add(i + 1); break; }
+            }
+          } catch (e) {}
+        });
+        if (transPages.size)
+          infos.push(`투명도 효과 사용 — ${_pfFmtPages(transPages)} · 구형 출력기(RIP)에서는 평탄화로 색·경계가 달라질 수 있음`);
+
+        // 4-5) 헤어라인 (0.25pt 미만 선폭) — 인쇄 시 끊기거나 사라질 수 있음
+        const hairPages = [];
+        doc.getPages().forEach((pg, i) => {
+          try {
+            const c = ctx.lookup(pg.node.get(PDFName.of('Contents')));
+            const streams = [];
+            if (c instanceof PDFLib.PDFArray) { for (let k = 0; k < c.size(); k++) streams.push(ctx.lookup(c.get(k))); }
+            else if (c) streams.push(c);
+            let txt = '';
+            for (const st of streams) {
+              let by; try { by = PDFLib.decodePDFRawStream(st).decode(); } catch (e) { by = st.contents || new Uint8Array(0); }
+              if (by.length > 4 * 1024 * 1024) return;   // 과대 스트림은 생략 (성능)
+              for (let k = 0; k < by.length; k++) txt += String.fromCharCode(by[k]);
+            }
+            for (const m of txt.matchAll(/(?:^|[^\d.])(\d*\.?\d+)\s+w(?![\w])/g)) {
+              const v = parseFloat(m[1]);
+              if (v > 0 && v < 0.25) { hairPages.push(i + 1); break; }
+            }
+          } catch (e) {}
+        });
+        if (hairPages.length)
+          warns.push(`헤어라인(0.25pt 미만 선) — ${_pfFmtPages(hairPages)} · 인쇄 시 선이 끊기거나 안 보일 수 있음 (0.25pt 이상 권장)`);
+
+        // 5) 이미지 실효 해상도 (pdf.js 연산자 + CTM 추적 — 배치 크기 대비 원본 픽셀)
+        if (globalPdfDoc) {
+          const OPS = pdfjsLib.OPS, U = pdfjsLib.Util;
+          const low = [], edgeTextPages = [];
+          const m3 = 3 * 72 / 25.4;   // 안전여백 3mm (pt)
+          const lim = Math.min(n, globalPdfDoc.numPages);
+          for (let i = 1; i <= lim; i++) {
+            try {
+              const page = await globalPdfDoc.getPage(i);
+              // 텍스트 안전여백: 재단 가장자리 3mm 이내에 글자가 있으면 잘릴 위험
+              try {
+                const tc = await page.getTextContent();
+                const vb = page.view;   // [x0, y0, x1, y1]
+                for (const it of tc.items) {
+                  if (!it.str || !it.str.trim()) continue;
+                  const tr = it.transform;
+                  const th = Math.hypot(tr[2], tr[3]) || Math.hypot(tr[0], tr[1]) || 0;
+                  const x = tr[4], y = tr[5], w = it.width || 0;
+                  if (x < vb[0] + m3 || x + w > vb[2] - m3 || y < vb[1] + m3 || y + th > vb[3] - m3) {
+                    edgeTextPages.push(i); break;
+                  }
+                }
+              } catch (e) {}
+              const opl = await page.getOperatorList();
+              let m = [1, 0, 0, 1, 0, 0]; const st = []; let minDpi = Infinity;
+              for (let k = 0; k < opl.fnArray.length; k++) {
+                const fn = opl.fnArray[k], a = opl.argsArray[k];
+                if (fn === OPS.save) st.push(m.slice());
+                else if (fn === OPS.restore) m = st.pop() || [1, 0, 0, 1, 0, 0];
+                else if (fn === OPS.transform) m = U.transform(m, a);
+                else if (fn === OPS.paintImageXObject || fn === OPS.paintJpegXObject) {
+                  let img = null; try { img = page.objs.get(a[0]); } catch (e) {}
+                  if (!img || !img.width) continue;
+                  const dispW = Math.hypot(m[0], m[1]), dispH = Math.hypot(m[2], m[3]);   // pt
+                  if (dispW < 6 || dispH < 6) continue;   // 아이콘급 미세 배치 제외
+                  const dpi = Math.min(img.width / (dispW / 72), img.height / (dispH / 72));
+                  if (dpi < minDpi) minDpi = dpi;
+                }
+              }
+              if (minDpi < 150) low.push({ p: i, dpi: Math.max(1, Math.round(minDpi)) });
+              page.cleanup();
+            } catch (e) {}
+            updateProgress(Math.round(i / lim * 100));
+          }
+          if (low.length)
+            warns.push(`저해상도 이미지 — ${low.slice(0, 8).map(x => `${x.p}쪽 ${x.dpi}dpi`).join(', ')}${low.length > 8 ? ` 외 ${low.length - 8}쪽` : ''} · 인쇄 권장 300dpi, 150dpi 미만은 흐릿하게 출력됨`);
+          if (edgeTextPages.length)
+            warns.push(`재단 위험 텍스트 — ${_pfFmtPages(edgeTextPages)} · 글자가 가장자리 3mm 안전여백 이내에 있어 재단 시 잘릴 수 있음`);
+        }
+      } catch (e) {
+        console.error('프리플라이트 오류:', e);
+        hideLoading(); progressBar.style.display = 'none';
+        setBtnBusy('pfMainBtn', false); setBtnBusy('sbPfBtn', false);
+        showError('프리플라이트 검사 실패: ' + (e && e.message ? e.message : String(e)));
+        return;
+      }
+      hideLoading(); progressBar.style.display = 'none';
+      setBtnBusy('pfMainBtn', false); setBtnBusy('sbPfBtn', false);
+      const sec = (icon, title, arr, color) => arr.length
+        ? `<div style="margin-bottom:14px;"><div style="font-weight:700; color:${color}; margin-bottom:4px;">${icon} ${title} ${arr.length}건</div>${arr.map(t => `<div style="margin:3px 0 3px 10px;">· ${t}</div>`).join('')}</div>` : '';
+      const body = document.getElementById('preflightBody');
+      body.innerHTML = (!errs.length && !warns.length && !infos.length)
+        ? `<div style="font-size:15px;">✅ <b>발견된 문제 없음</b> — 출력에 적합한 원고입니다.</div>`
+        : sec('✖', '경고 (출력 사고 위험)', errs, '#c62828')
+          + sec('⚠', '주의', warns, '#b26a00')
+          + sec('ℹ', '정보', infos, '#48484a')
+          + `<div style="color:#8e8e93; font-size:12px; border-top:1px solid #e5e5ea; padding-top:8px;">경고 항목은 인쇄 전 해결을 권장합니다. 검사 대상: 원본 문서(편집·적용 전)</div>`;
+      document.getElementById('preflightModal').style.display = 'block';
     }
 
     // ── 페이지 삭제 · 빈 페이지 삽입 ────────────────────────────────────────
