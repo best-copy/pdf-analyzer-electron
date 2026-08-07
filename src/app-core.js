@@ -69,14 +69,26 @@
     function newEditSettings() {
       return {
         scope:   { mode: 'all', from: 1, to: 1, chapter: '' },
-        scaling: { mode: 'none', paper: 'A4', orient: 'auto', customW: 210, customH: 297, fitMargins: true },
+        scaling: { mode: 'none', paper: 'A4', orient: 'auto', customW: 210, customH: 297, fitMargins: true, percent: 100 },
         margins: { enabled: false, top: 10, bottom: 10, left: 10, right: 10 }, // mm — enabled일 때만 적용
         nUp: 1,
         gutter: 0,        // 조판 칸 사이 간격 (mm)
         border: 'none',
+        // 기울기 보정 — auto: 페이지별 자동 감지, manual: angle(° , + = 시계방향) 일괄
+        deskew: { enabled: false, mode: 'auto', angle: 0 },
+        // 내용 가운데 정렬 — mode: page(페이지별)|uniform(문서 평균 일괄), axis: both|h|v, ignore: 가장자리 무시 %
+        center: { enabled: false, mode: 'page', axis: 'both', ignore: 3 },
+        // 제본여백 — size(mm), side: left|right|top, method: scale(축소)|shift(밀기), alt: 홀짝 교대(양면)
+        bind: { enabled: false, size: 10, side: 'left', method: 'scale', alt: true },
         // 머리글/바닥글 — 좌/중/우 6칸, 자리표시자 {page}{total}{date}{filename}{n}
         hf: { enabled: false, hL: '', hC: '', hR: '', fL: '', fC: '', fR: '',
+              // 홀·짝 전용 칸 — 값이 하나라도 있으면 그쪽 페이지는 전용 칸으로 인쇄(공통 칸 대신),
+              // 모두 비어 있으면 공통(hL~fR)으로 폴백. o*=홀수쪽, e*=짝수쪽.
+              oHL: '', oHC: '', oHR: '', oFL: '', oFC: '', oFR: '',
+              eHL: '', eHC: '', eHR: '', eFL: '', eFC: '', eFR: '',
               size: 9, color: '#333333', margin: 10, pnumStyle: 1, alt: false,   // alt = 짝수쪽 좌우 교대(책 바깥쪽)
+              start: 1,   // 번호 시작 페이지 — 이 출력 페이지가 {n}=1, 앞 페이지는 번호 생략(표지·목차 제외용)
+              offX: 0, offY: 0,   // 위치 미세조절 mm (+X=오른쪽, +Y=아래) — 머리글·바닥글 전체 이동
               font: 'C:\\Windows\\Fonts\\malgun.ttf' },
         // 워터마크
         wm: { enabled: false, text: '', size: 48, color: '#cccccc',
@@ -1183,10 +1195,15 @@
       const px  = THUMB_STEPS[thumbStepIdx];
       const pct = 50 + thumbStepIdx * 10;
       document.getElementById('pagesGrid').style.setProperty('--thumb-size', px + 'px');
+      // 편집 작업공간·적용 결과 미리보기 그리드도 같은 줌을 공유
+      const pvGrid = document.getElementById('previewGrid');
+      if (pvGrid) pvGrid.style.setProperty('--thumb-size', px + 'px');
       document.getElementById('zoomPct').textContent = pct + '%';
       document.getElementById('zoomOutBtn').disabled = thumbStepIdx === 0;
       document.getElementById('zoomInBtn').disabled  = thumbStepIdx === THUMB_STEPS.length - 1;
       applyThumbFontStep(thumbStepIdx);
+      // 편집 모드 표본 미리보기: 줌 배율에 맞는 해상도로 다시 렌더 + 보이는 범위 재계산(스크롤 핸들러)
+      if (document.body.classList.contains('edit-fullscreen') && typeof scheduleLivePreview === 'function') scheduleLivePreview();
     }
 
     function setThumbZoomWidgetVisible(visible) {
@@ -1712,9 +1729,13 @@
       const parts = [];
       if (es.scaling.mode === 'standard') parts.push(`${es.scaling.paper} 규격화`);
       else if (es.scaling.mode === 'custom') parts.push(`${es.scaling.customW}×${es.scaling.customH}mm`);
+      else if (es.scaling.mode === 'percent') parts.push(`배율 ${es.scaling.percent || 100}%`);
       if ((es.nUp | 0) > 1) parts.push(`${es.nUp}-up 조판${es.gutter ? `(거터 ${es.gutter}mm)` : ''}`);
+      if (es.deskew && es.deskew.enabled) parts.push(es.deskew.mode === 'manual' ? `기울기 ${es.deskew.angle}°` : '기울기 자동보정');
+      if (es.center && es.center.enabled) parts.push(es.center.mode === 'uniform' ? '가운데 정렬(일괄)' : '가운데 정렬');
+      if (es.bind && es.bind.enabled) parts.push(`제본여백 ${es.bind.size}mm`);
       if (es.border !== 'none') parts.push('테두리');
-      if (es.hf && es.hf.enabled) parts.push('머리글/바닥글');
+      if (es.hf && es.hf.enabled) parts.push('머리글/바닥글' + (((es.hf.start | 0) > 1) ? `(번호 ${es.hf.start}p=1)` : ''));
       if (es.wm && es.wm.enabled && es.wm.text.trim()) parts.push('워터마크');
       return parts;
     }
@@ -1729,14 +1750,16 @@
       });
       return notes.length ? ` · 레이아웃: ${notes.join(' / ')}` : '';
     }
+    // 저장 기본 파일명 = 원본 파일명 + 임포징 명칭(1up·2up·N-up…).
+    // (예전엔 '_수정_20260807_101530'처럼 타임스탬프가 붙어 원본과 무관한 이름처럼 보였다 —
+    //  인쇄 실무에서는 '문서_2up.pdf'처럼 조판 방식이 파일명에 드러나는 편이 훨씬 유용하다.)
     function defaultProcessedName() {
-      const now = new Date();
-      const ds = now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0')
-        + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0') + String(now.getSeconds()).padStart(2,'0');
+      const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+      const tag = (typeof impNameTag === 'function') ? impNameTag() : '1up';
       const includeAmt = document.getElementById('includeAmountChk')?.checked;
       const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + itemTotal(it), 0) : 0;
       const amountStr = (includeAmt && totalSum > 0) ? `_${totalSum}원` : '';
-      return `${originalFileName}_수정_${ds}${amountStr}.pdf`;
+      return `${base}_${tag}${amountStr}.pdf`;
     }
 
     // ── 흑백 PDF / 편집 적용 (명시적 '적용' 버튼) ─────────────────────────────

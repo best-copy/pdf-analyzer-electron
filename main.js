@@ -84,6 +84,10 @@ ipcMain.handle('printer:setup', () => {
       `$ErrorActionPreference='Stop'`,
       `if (-not (Get-PrinterPort -Name '${port}' -ErrorAction SilentlyContinue)) { Add-PrinterPort -Name '${port}' }`,
       `if (-not (Get-Printer -Name 'PDF Editor' -ErrorAction SilentlyContinue)) { Add-Printer -Name 'PDF Editor' -DriverName 'Microsoft Print To PDF' -PortName '${port}' }`,
+      // 인쇄 완료 로그(문서명 기록) 활성화 — 접수 파일의 '원래 문서 이름' 복구용.
+      // 포트가 고정 파일이라 파일명에는 문서명이 없고, 스풀러 로그에만 남는다.
+      // (Windows 기본값은 꺼짐. 실패해도 프린터 설치 자체는 계속 진행 — SilentlyContinue)
+      `try { wevtutil sl Microsoft-Windows-PrintService/Operational /e:true /ms:4194304 } catch {}`,
     ].join('; ');
     const enc = Buffer.from(ps, 'utf16le').toString('base64');
     // 프린터 추가는 관리자 권한 필요 → UAC 승격 실행 후, 실제 설치됐는지 재확인
@@ -117,7 +121,13 @@ function ingestPendingPrintOnBoot() {
     const dst = path.join(os.tmpdir(), `pdfedit_print_${Date.now()}.pdf`);
     fs.copyFileSync(p, dst);
     fs.unlinkSync(p);
-    pendingOpenPaths.push(dst);   // 창 로드 완료 시 external:open으로 전달됨
+    // 앱이 꺼져 있는 동안 인쇄된 건 — 인쇄 로그에서 원래 문서명을 되찾는다(넉넉히 1시간 이내)
+    const entry = { path: dst, name: `인쇄접수_${Date.now() % 100000}.pdf` };
+    pendingOpenPaths.push(entry);   // 창 로드 완료 시 external:open으로 전달됨
+    lookupPrintedDocFromLog(3600, raw => {
+      const nm = cleanPrintDocName(raw);
+      if (nm) entry.name = `${nm}.pdf`;   // 창 로드 전이면 이 이름으로, 늦으면 기본 이름 유지
+    });
   } catch (e) {}
 }
 
@@ -171,6 +181,113 @@ function repairPrintWatchdogIfNeeded() {
     (err, stdout) => { if (String(stdout).trim() === 'True') installPrintWatchdog(); });
 }
 
+// ── 접수 문서의 '원래 이름' 복구 ─────────────────────────────────────────────
+// 포트가 고정 파일(print_output.pdf)이라 파일명에는 문서명이 없다. 문서명은 스풀러에만
+// 있으므로 두 경로로 회수한다:
+//   ① 인쇄 완료 로그(PrintService/Operational 이벤트 307) — 앱이 꺼져 있을 때 인쇄된 것도 복구
+//   ② 인쇄 작업 큐(Win32_PrintJob) 실시간 캡처 — 로그를 못 켠 환경(UAC 거부·정책)용 폴백
+// 둘 다 실패하면 기존처럼 '인쇄접수_시각'을 쓴다.
+const PRINT_LOG = 'Microsoft-Windows-PrintService/Operational';
+let _printLogEnabled = false;
+let _lastPrintJob = null;      // { name, at } — 실시간 캡처 결과
+let _printJobPoller = null;
+
+// PowerShell 출력의 한글 깨짐(콘솔 코드페이지) 회피 — base64(UTF-8)로 주고받는다
+function psB64(script, cb, timeout) {
+  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { windowsHide: true, timeout: timeout || 15000 },
+    (err, stdout) => {
+      // PowerShell은 조회 도중 비종료 오류만 있어도 종료코드 1을 내므로(로그 비활성 등)
+      // 종료코드가 아니라 '출력이 있는지'로 판단한다.
+      const b64 = String(stdout || '').trim();
+      if (!b64) return cb(null);
+      try { cb(Buffer.from(b64, 'base64').toString('utf8').trim() || null); }
+      catch (e) { cb(null); }
+    });
+}
+
+// 인쇄 문서명 정리 — 앱이 붙이는 접두·접미와 경로·확장자를 떼고 파일명으로 안전하게.
+// 예) 'Microsoft Word - 계약서.docx' → '계약서', '견적서.xlsx - Excel' → '견적서'
+function cleanPrintDocName(raw) {
+  if (!raw) return '';
+  let s = String(raw).trim();
+  if (!s || /^(문서|document)$/i.test(s)) return '';
+  s = s.replace(/^(Microsoft\s+(Word|Excel|PowerPoint|Edge)|Adobe\s+\w+|메모장|Notepad|Chrome|Firefox)\s+[-–]\s+/i, '');
+  s = s.replace(/\s+[-–]\s+(Microsoft\s+)?(Word|Excel|PowerPoint|Edge|Chrome|Firefox|한글|Adobe\s+\w+)\s*$/i, '');
+  // 경로가 통째로 온 경우만 앞부분 제거 — 제목에 그냥 '/'가 들어간 경우(제품/사양)는 보존
+  if (/^[a-z]:[\\/]|^\\\\|^https?:\/\/|\\/i.test(s)) s = s.replace(/^.*[\\/]/, '');
+  s = s.replace(/\.(pdf|hwpx?|docx?|xlsx?|pptx?|txt|jpe?g|png|html?)$/i, '');
+  s = s.replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
+  return s.slice(0, 80);
+}
+
+// ① 인쇄 로그에서 최근(초 단위 window) 'PDF Editor' 인쇄 작업의 문서명 조회
+// (로그가 꺼져 있으면 조회 결과가 비어 자연히 null — 활성 여부 확인을 기다리지 않는다)
+function lookupPrintedDocFromLog(withinSec, cb) {
+  const script = `$ErrorActionPreference='SilentlyContinue'
+$evs = Get-WinEvent -FilterHashtable @{LogName='${PRINT_LOG}';Id=307;StartTime=(Get-Date).AddSeconds(-${withinSec | 0})} -MaxEvents 25
+foreach ($e in $evs) {
+  $x = [xml]$e.ToXml(); $d = $x.Event.UserData.FirstChild
+  if ($d -and $d.Param5 -eq 'PDF Editor' -and $d.Param2) {
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$d.Param2)); break
+  }
+}
+exit 0`;
+  psB64(script, cb);
+}
+
+// ② 인쇄 작업 큐 실시간 캡처 — 로그를 못 쓰는 환경에서만 상주(문서명이 보이면 기록)
+function startPrintJobPoller() {
+  if (_printJobPoller) return;
+  const script = `$ErrorActionPreference='SilentlyContinue'
+while ($true) {
+  $j = Get-CimInstance Win32_PrintJob | Where-Object { $_.Name -like 'PDF Editor,*' } | Select-Object -First 1
+  if ($j -and $j.Document) {
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$j.Document))
+  }
+  Start-Sleep -Milliseconds 700
+}`;
+  try {
+    _printJobPoller = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
+    _printJobPoller.stdout.on('data', buf => {
+      String(buf).split(/\r?\n/).forEach(line => {
+        const b64 = line.trim();
+        if (!b64) return;
+        try {
+          const name = cleanPrintDocName(Buffer.from(b64, 'base64').toString('utf8'));
+          if (name) _lastPrintJob = { name, at: Date.now() };
+        } catch (e) {}
+      });
+    });
+    _printJobPoller.on('exit', () => { _printJobPoller = null; });
+  } catch (e) { console.warn('인쇄 작업 감시 실패:', e); }
+}
+function stopPrintJobPoller() {
+  if (!_printJobPoller) return;
+  try { _printJobPoller.kill(); } catch (e) {}
+  _printJobPoller = null;
+}
+
+// 프린터가 설치돼 있으면 로그 사용 가능 여부를 확인하고, 불가하면 실시간 캡처로 폴백
+function initPrintDocNameSources() {
+  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$ErrorActionPreference='SilentlyContinue'; if (Get-Printer -Name 'PDF Editor') { (Get-WinEvent -ListLog '${PRINT_LOG}').IsEnabled } else { 'noprinter' }`],
+    { windowsHide: true, timeout: 20000 },
+    (err, stdout) => {
+      const out = String(stdout || '').trim();
+      if (out === 'noprinter' || err) return;      // 가상 프린터 미설치 — 아무것도 상주시키지 않음
+      _printLogEnabled = out === 'True';
+      if (!_printLogEnabled) startPrintJobPoller();   // 로그가 꺼져 있을 때만 폴링 상주
+    });
+}
+
+// 접수 파일에 붙일 이름 결정 (실시간 캡처 우선 → 로그 → 폴백)
+function resolvePrintedDocName(cb) {
+  const fresh = _lastPrintJob && (Date.now() - _lastPrintJob.at < 180000) ? _lastPrintJob.name : null;
+  if (fresh) { _lastPrintJob = null; return cb(fresh); }
+  lookupPrintedDocFromLog(180, raw => cb(cleanPrintDocName(raw) || null));
+}
+
 let _printDebounce = null;
 function startPrintWatcher() {
   try {
@@ -194,13 +311,17 @@ function ingestPrintedFile(p, retry) {
       const dst = path.join(os.tmpdir(), `pdfedit_print_${Date.now()}.pdf`);
       try { fs.copyFileSync(p, dst); } catch (err) { return; }
       try { fs.unlinkSync(p); } catch (err) {}   // 처리 완료 — 재기동 시 중복 열림 방지
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('external:open', [{ path: dst, name: `인쇄접수_${Date.now() % 100000}.pdf` }]);
-        if (mainWin.isMinimized()) mainWin.restore();
-        mainWin.focus();
-      } else {
-        pendingOpenPaths.push(dst);
-      }
+      // 인쇄를 건 문서의 원래 이름을 찾아 붙인다(못 찾으면 기존처럼 '인쇄접수_시각')
+      resolvePrintedDocName(docName => {
+        const name = `${docName || `인쇄접수_${Date.now() % 100000}`}.pdf`;
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('external:open', [{ path: dst, name }]);
+          if (mainWin.isMinimized()) mainWin.restore();
+          mainWin.focus();
+        } else {
+          pendingOpenPaths.push({ path: dst, name });   // 창 로드 시 이 이름으로 열림
+        }
+      });
     }), 600);
   });
 }
@@ -255,9 +376,10 @@ function createWindow() {
   // 실행 인자로 받은 문서를 렌더러 준비 후 전달 (목차 검증기 연동)
   win.webContents.on('did-finish-load', () => {
     if (pendingOpenPaths.length) {
+      // 항목은 경로 문자열 또는 { path, name }(인쇄 접수처럼 표시 이름이 따로 있는 경우)
       win.webContents.send(
         'external:open',
-        pendingOpenPaths.map((p) => ({ path: p, name: path.basename(p) }))
+        pendingOpenPaths.map((p) => (typeof p === 'string' ? { path: p, name: path.basename(p) } : p))
       );
       pendingOpenPaths = [];
     }
@@ -346,6 +468,7 @@ app.whenReady().then(() => {
   ensureSendToShortcut(); // 탐색기 '보내기' 메뉴 등록 (포터블 실행 시)
   ingestPendingPrintOnBoot(); // 꺼진 동안 인쇄된 결과물이 있으면 열기 (createWindow 전에)
   startPrintWatcher();    // 가상 프린터 'PDF Editor' 출력 감시
+  initPrintDocNameSources();  // 접수 문서의 '원래 이름' 회수 경로 준비 (로그 / 작업 큐)
   setTimeout(repairPrintWatchdogIfNeeded, 6000);   // 상주 감시자 자동 복구 (프린터 설치 시)
   createWindow();
   app.on('activate', () => {
@@ -354,6 +477,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', sweepTempConversions); // 종료 시에도 한 번 더 정리
+app.on('will-quit', stopPrintJobPoller);   // 인쇄 작업 감시 프로세스 정리(상주했다면)
 
 // 렌더러 → '저장 안 한 작업' 상태 보고
 ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });

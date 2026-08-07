@@ -10,9 +10,14 @@
     }
     function scheduleLivePreview() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
+      // 기하 옵션(여백·제본여백)은 재조립을 기다리지 않고 오버레이로 즉시 선반영 (편집 모드 전용)
+      if (typeof updateGeometryOverlays === 'function') updateGeometryOverlays();
+      if (typeof updateEsGroupBadges === 'function') updateEsGroupBadges();   // 그룹 활성 배지 동기
       if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }
       // 자동 반영 꺼짐: 렌더하지 않고 '적용 필요' 상태로만 둔다(편집 조작 자체는 항상 즉시 반응).
-      if (!liveAutoPreview) {
+      // 단, 전체화면 편집 작업공간에서는 항상 자동 반영 — 편집 모드의 존재 이유가 실시간 확인이므로
+      // 토글과 무관하게 켠다(큰 문서는 아래 표본 미리보기가 비용을 흡수).
+      if (!liveAutoPreview && !document.body.classList.contains('edit-fullscreen')) {
         invalidateProcessed(); // 직전 결과 무효화 → '적용' 다시 눌러야 다운로드 가능
         const sec0 = document.getElementById('previewSection');
         const note0 = document.getElementById('previewNote');
@@ -40,6 +45,14 @@
         const base = await buildBaseProcessed();
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
+        // ── 편집 작업공간 표본 미리보기: 큰 문서는 보이는 페이지 주변만 재조립·렌더 ──
+        // (다운로드용 결과가 아니므로 processedPdfBytes는 만들지 않는다 — '저장하고 닫기'가 전체 적용)
+        if (wsSampleEligible(groups)) {
+          await runWorkspaceSamplePreview(base, groups);
+          invalidateProcessed();
+          return;
+        }
+        wsResetSampleGrid();
         if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
         processedPdfBytes = pdfBytes;
@@ -59,6 +72,157 @@
         if (_liveQueued) { _liveQueued = false; scheduleLivePreview(); }
       }
     }
+
+    // ── 편집 작업공간 표본 미리보기 ──────────────────────────────────────────
+    // 큰 문서에서 옵션을 바꿀 때마다 전체를 재조립하면 수 초씩 걸려 "실시간"이 아니게 된다.
+    // 전체화면 편집 모드에서는 현재 보이는 페이지(중심 ±WS_SPAN)만 base에서 잘라 레이아웃
+    // 변환·렌더하고, 나머지는 분석 썸네일을 흐리게 보여준다(스크롤하면 그 위치를 다시 표본으로).
+    // 임포징 포함·N-up은 시트 구성이 전체 페이지에 의존하므로 표본 불가 → 기존 전체 경로.
+    const WS_MAX = 20;                 // 한 번에 실시간 유지할 최대 페이지 수 (비용 상한)
+    const WS_SAMPLE_MIN = 16;          // 이보다 적으면 그냥 전체 렌더가 더 낫다
+    let _wsView = null;                // {from,to} 화면에 보이는 페이지 범위(±1 버퍼) — 스크롤이 갱신
+    let _wsGrid = { n: -1, from: -1, to: -1, cells: null };
+    let _wsSliceCache = { sig: null, doc: null };
+    function wsSampleEligible(groups) {
+      if (!document.body.classList.contains('edit-fullscreen')) return false;
+      if (_impEnabled) return false;
+      if (!groups || !groups.length) return false;
+      if (groups.some(g => (g.es.nUp | 0) > 1)) return false;
+      return pageResults.filter(Boolean).length >= WS_SAMPLE_MIN;
+    }
+    function wsResetSampleGrid() { _wsGrid = { n: -1, from: -1, to: -1, cells: null }; _wsView = null; }
+    async function runWorkspaceSamplePreview(base, groups) {
+      const valid = pageResults.filter(Boolean);
+      const N = valid.length;
+      // 실시간 창 = 화면에 보이는 페이지 범위(_wsView, 스크롤 추적) ±1 버퍼. 최대 WS_MAX로 상한.
+      let from = _wsView ? Math.max(0, Math.min(N - 1, _wsView.from)) : 0;
+      let to = _wsView ? Math.max(from, Math.min(N - 1, _wsView.to)) : Math.min(N - 1, 11);
+      if (to - from + 1 > WS_MAX) {   // 상한 초과 시 가운데 기준으로 잘라냄
+        const mid = (from + to) >> 1;
+        from = Math.max(0, mid - (WS_MAX >> 1));
+        to = Math.min(N - 1, from + WS_MAX - 1);
+      }
+      // base 파싱 캐시(sig 기준) → 표본만 복사한 소문서
+      if (_wsSliceCache.sig !== base.sig || !_wsSliceCache.doc) {
+        _wsSliceCache = { sig: base.sig, doc: await PDFLib.PDFDocument.load(base.bytes.slice(0)) };
+      }
+      const sub = await PDFLib.PDFDocument.create();
+      const idxs = Array.from({ length: to - from + 1 }, (_, k) => from + k);
+      (await sub.copyPages(_wsSliceCache.doc, idxs)).forEach(p => sub.addPage(p));
+      const sampleBytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
+      // 그룹 마스크도 같은 창으로 슬라이스 — es는 그대로 공유(전역/챕터별 설정 유지)
+      const sGroups = groups.map(g => ({ mask: g.mask.slice(from, to + 1), es: g.es })).filter(g => g.mask.some(Boolean));
+      const bytes = sGroups.length
+        ? await applyLayoutTransform(sampleBytes, sGroups, base.sig + '#ws' + from + '-' + to, { window: { from, to } })
+        : sampleBytes;
+      await renderWorkspaceSampleGrid(bytes, from, to, valid);
+    }
+    // 표본 그리드: [from,to]는 변환 결과 캔버스, 나머지는 분석 썸네일 플레이스홀더.
+    // 페이지 수가 같으면 셀을 재사용(패치)해 큰 문서에서도 DOM 재구축 비용이 없다.
+    async function renderWorkspaceSampleGrid(bytes, from, to, valid) {
+      const grid = document.getElementById('previewGrid');
+      const section = document.getElementById('previewSection');
+      const note = document.getElementById('previewNote');
+      if (!grid || !section) return;
+      const N = valid.length;
+      const myToken = ++previewRenderToken;
+      const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      try {
+        if (myToken !== previewRenderToken) return;
+        // 그리드 골격 (재)구축 — 페이지 수가 달라졌거나 표본 모드 첫 진입일 때만
+        if (_wsGrid.n !== N || !_wsGrid.cells || grid.dataset.wsSample !== '1') {
+          const frag = document.createDocumentFragment();
+          const cells = [];
+          for (let i = 0; i < N; i++) {
+            const cell = document.createElement('div');
+            cell.className = 'pv-cell';
+            const num = document.createElement('div'); num.className = 'pv-num'; num.textContent = i + 1;
+            cell.appendChild(num);
+            cell.addEventListener('click', () => {   // 회색 페이지 클릭 → 그 위치 주변을 실시간 창으로
+              if (cell.classList.contains('pv-stale')) { _wsView = { from: Math.max(0, i - 3), to: i + 8 }; scheduleLivePreview(); }
+            });
+            frag.appendChild(cell);
+            cells.push(cell);
+          }
+          grid.replaceChildren(frag);
+          grid.dataset.wsSample = '1';
+          _wsGrid = { n: N, from: -1, to: -1, cells };
+        }
+        const cells = _wsGrid.cells;
+        const setPlaceholder = i => {
+          const cell = cells[i], r = valid[i];
+          cell.classList.add('pv-stale');
+          const old = cell.querySelector('canvas, img'); if (old) old.remove();
+          delete cell.dataset.pw; delete cell.dataset.ph;   // 회색 셀은 오버레이 제외
+          if (r && r.thumbnail) {
+            const img = document.createElement('img');
+            img.src = r.thumbnail; img.className = 'pv-canvas'; img.draggable = false;
+            cell.insertBefore(img, cell.firstChild);
+          } else {
+            const ph = document.createElement('canvas');
+            ph.className = 'pv-canvas'; ph.width = 170; ph.height = 240;
+            cell.insertBefore(ph, cell.firstChild);
+          }
+        };
+        // 이전 표본 창을 플레이스홀더로 되돌리고, 새 창을 렌더
+        if (_wsGrid.from >= 0) {
+          for (let i = _wsGrid.from; i <= _wsGrid.to; i++) {
+            if (i < from || i > to) setPlaceholder(i);
+          }
+        } else {
+          for (let i = 0; i < N; i++) if (i < from || i > to) setPlaceholder(i);
+        }
+        // 렌더 해상도: 썸네일 줌(--thumb-size)에 맞춰 키운다 — 확대해도 선명하게
+        const pxW = Math.max(240, Math.round(((typeof THUMB_STEPS !== 'undefined' && typeof thumbStepIdx !== 'undefined') ? THUMB_STEPS[thumbStepIdx] : 160) * 1.5));
+        for (let i = from; i <= to; i++) {
+          if (myToken !== previewRenderToken) return;
+          const page = await pdf.getPage(i - from + 1);
+          const vp1 = page.getViewport({ scale: 1 });
+          const vp = page.getViewport({ scale: pxW / vp1.width });
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+          if (myToken !== previewRenderToken) return;
+          canvas.className = 'pv-canvas';
+          const cell = cells[i];
+          cell.classList.remove('pv-stale');
+          cell.dataset.pw = vp1.width; cell.dataset.ph = vp1.height;   // 기하 오버레이용 pt 크기
+          const old = cell.querySelector('canvas, img'); if (old) old.remove();
+          cell.insertBefore(canvas, cell.firstChild);
+          page.cleanup();
+        }
+        _wsGrid.from = from; _wsGrid.to = to;
+        if (typeof updateGeometryOverlays === 'function') updateGeometryOverlays();
+        document.getElementById('previewCount').textContent = `(전체 ${N}페이지 · 표본 ${from + 1}~${to + 1}쪽 실시간)`;
+        if (note) note.textContent = `표본 미리보기 — ${from + 1}~${to + 1}쪽만 실시간 반영 중. 회색 페이지는 스크롤하거나 클릭하면 그 위치가 반영됩니다. '💾 저장하고 닫기'에서 전체 적용.`;
+        setAnalysisGridVisible(false);
+        section.style.display = 'block';
+      } finally { try { await pdf.destroy(); } catch (e) {} }
+    }
+    // 스크롤 추적 — 화면 상단에 보이는 페이지를 표본 중심으로 (디바운스)
+    (function initWsScrollSampler() {
+      const sec = document.getElementById('previewSection');
+      if (!sec) return;
+      let t = null;
+      sec.addEventListener('scroll', () => {
+        if (!document.body.classList.contains('edit-fullscreen') || _wsGrid.n < 0) return;
+        clearTimeout(t);
+        t = setTimeout(() => {
+          if (_wsGrid.n < 0 || !_wsGrid.cells) return;
+          // 화면(뷰포트)에 걸친 페이지 전부 + 위아래 1쪽 버퍼를 실시간 창으로
+          const top = sec.scrollTop, bot = top + sec.clientHeight;
+          let first = -1, last = -1;
+          for (let i = 0; i < _wsGrid.cells.length; i++) {
+            const c = _wsGrid.cells[i], ct = c.offsetTop, cb = ct + c.offsetHeight;
+            if (cb > top && ct < bot) { if (first < 0) first = i; last = i; }
+            else if (first >= 0 && ct >= bot) break;
+          }
+          if (first < 0) return;
+          const from = Math.max(0, first - 1), to = Math.min(_wsGrid.n - 1, last + 1);
+          if (from !== _wsGrid.from || to !== _wsGrid.to) { _wsView = { from, to }; scheduleLivePreview(); }
+        }, 250);
+      });
+    })();
 
     // ── 적용된 결과 PDF 다운로드(저장) ───────────────────────────────────────
     // 다운로드 버튼 우클릭: 적용을 누르지 않아도 원본 PDF를 바로 저장
@@ -433,11 +597,29 @@
     // 행렬 유도: /Rotate 90(시계방향 표시) → 표시좌표 X=y, Y=w-x … 각도별 대응.
     // extraRot: 페이지 /Rotate에 더할 추가 회전(도) — 복제 2-up의 180° 벌 등에 사용.
     // 반환: [{ e, w, h }] (w/h = 회전 반영된 표시 크기)
+    // Contents가 없거나 깨진(허상 참조) 페이지는 pdf-lib embedPage가
+    // "Can't embed page with missing Contents"로 실패한다 — embedPage와 같은 판정
+    // (normalizedEntries().Contents)으로 검사해서, 깨졌으면 Contents를 제거하고 보이지 않는
+    // 사각형을 그려 새 콘텐츠 스트림을 만들어 준다(출력에는 아무것도 안 보임).
+    function ensurePageContents(pg, force) {
+      try {
+        let broken = !!force;
+        if (!broken) {
+          try { broken = !pg.node.normalizedEntries().Contents; }
+          catch (e) { broken = true; }
+        }
+        if (broken) {
+          try { pg.node.delete(PDFLib.PDFName.of('Contents')); } catch (e) {}
+          pg.drawRectangle({ x: 0, y: 0, width: 0.01, height: 0.01, opacity: 0, borderOpacity: 0 });
+        }
+      } catch (e) {}
+    }
     async function embedAllPages(out, src, onProgress, extraRot) {
       const n0 = src.getPageCount();
       const embedded = [];
       for (let i = 0; i < n0; i++) {
         const pg = src.getPage(i);
+        ensurePageContents(pg);
         const { width: w, height: h } = pg.getSize();
         const rot = (((pg.getRotation().angle + (extraRot || 0)) % 360) + 360) % 360;
         let mtx, ew, eh;
@@ -445,7 +627,10 @@
         else if (rot === 180) { mtx = [-1, 0, 0, -1, w, h]; ew = w; eh = h; }
         else if (rot === 270) { mtx = [0, 1, -1, 0, h, 0];  ew = h; eh = w; }
         else                  { mtx = undefined;            ew = w; eh = h; }
-        embedded.push({ e: await out.embedPage(pg, undefined, mtx), w: ew, h: eh });
+        let epg;
+        try { epg = await out.embedPage(pg, undefined, mtx); }
+        catch (err) { ensurePageContents(pg, true); epg = await out.embedPage(pg, undefined, mtx); }   // 강제 복구 후 1회 재시도
+        embedded.push({ e: epg, w: ew, h: eh });
         if (onProgress && (i & 15) === 0) onProgress(Math.round(i / n0 * 40));
       }
       return embedded;
@@ -511,6 +696,187 @@
         showError('블리드 생성 실패: ' + (e && e.message ? e.message : String(e)));
       } finally {
         _bkBusy = false; setBtnBusy('bleedGenBtn', false);
+        hideLoading(); progressBar.style.display = 'none';
+      }
+    }
+
+    // ── 📕 표지 만들기 — 선택 페이지 추출 / 무선제본 표지 스프레드 ─────────────
+    // 책등폭(mm) = 내지 장수(쪽수÷2 올림) × 장당 두께(mm) — 순수 함수 (노드 단독 검증 가능)
+    function coverSpineMm(bodyPages, thickMm) {
+      const sheets = Math.ceil(Math.max(0, bodyPages | 0) / 2);
+      return Math.round(sheets * (thickMm || 0) * 100) / 100;
+    }
+    // 단일 페이지 임베드 — /Rotate를 변환행렬로 굽기 (embedAllPages와 동일 규약, 1페이지판)
+    async function embedPageRot(out, src, idx) {
+      const pg = src.getPage(idx);
+      ensurePageContents(pg);   // 빈 페이지 embedPage 실패 방지
+      const { width: w, height: h } = pg.getSize();
+      const rot = (((pg.getRotation().angle || 0) % 360) + 360) % 360;
+      let mtx, ew, eh;
+      if (rot === 90)       { mtx = [0, -1, 1, 0, 0, w];  ew = h; eh = w; }
+      else if (rot === 180) { mtx = [-1, 0, 0, -1, w, h]; ew = w; eh = h; }
+      else if (rot === 270) { mtx = [0, 1, -1, 0, h, 0];  ew = h; eh = w; }
+      else                  { mtx = undefined;            ew = w; eh = h; }
+      return { e: await out.embedPage(pg, undefined, mtx), w: ew, h: eh };
+    }
+    // 캔버스 텍스트 → PNG 임베드 (책등 텍스트용 — 한글 포함, 시스템 글꼴로 그림)
+    async function coverTextPng(out, text, sizePt) {
+      const SS = 3, fpx = sizePt * SS;
+      const c = document.createElement('canvas');
+      const mctx = c.getContext('2d');
+      mctx.font = `600 ${fpx}px "Malgun Gothic", "맑은 고딕", sans-serif`;
+      const tw = Math.ceil(mctx.measureText(text).width);
+      c.width = tw + fpx; c.height = Math.ceil(fpx * 1.35);
+      const ctx = c.getContext('2d');
+      ctx.font = `600 ${fpx}px "Malgun Gothic", "맑은 고딕", sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000';
+      ctx.fillText(text, c.width / 2, c.height / 2);
+      const bytes = Uint8Array.from(atob(c.toDataURL('image/png').split(',')[1]), ch => ch.charCodeAt(0));
+      const png = await out.embedPng(bytes);
+      return { png, w: c.width / SS, h: c.height / SS };
+    }
+    // 무선제본 표지 스프레드: [뒤표지 | 책등 | 앞표지] 한 판 + 블리드·재단선·오시선(접는선)
+    // o: { frontIdx, backIdx(0-based), spineMm, bleedMm, crop, fold, spineText }
+    async function buildCoverSpreadBytes(srcBytes, o) {
+      const MM = 72 / 25.4;
+      const src = await PDFLib.PDFDocument.load(srcBytes.slice ? srcBytes.slice(0) : srcBytes);
+      const out = await PDFLib.PDFDocument.create();
+      const front = await embedPageRot(out, src, o.frontIdx);
+      const back  = await embedPageRot(out, src, o.backIdx);
+      const tw = front.w, th = front.h;                       // 트림 = 앞표지 크기 기준
+      const sp = Math.max(0, o.spineMm || 0) * MM;
+      const b  = Math.max(0, o.bleedMm || 0) * MM;
+      const m  = (o.crop || o.fold) ? 6 * MM : 0;             // 재단선·오시선 표시용 바깥 여백
+      const W = tw * 2 + sp + 2 * b + 2 * m, H = th + 2 * b + 2 * m;
+      const page = out.addPage([W, H]);
+      const { pushGraphicsState, popGraphicsState, moveTo, lineTo, closePath, clip, endPath, PDFName } = PDFLib;
+      const clipDraw = (cx, cy, cw, ch, fn) => {
+        page.pushOperators(pushGraphicsState(), moveTo(cx, cy), lineTo(cx + cw, cy), lineTo(cx + cw, cy + ch), lineTo(cx, cy + ch), closePath(), clip(), endPath());
+        fn();
+        page.pushOperators(popGraphicsState());
+      };
+      // 각 표지: 트림에 맞춤 → 블리드만큼 확대해 중앙 배치. 클립은 책등 중앙까지 —
+      // 꽉 찬 표지 원고면 책등까지 자연스럽게 이어지고, 반대편 표지는 침범하지 않는다.
+      const drawCover = (emb, trimX, clipX, clipW) => {
+        const s0 = Math.min(tw / emb.w, th / emb.h);
+        const k = b > 0 ? Math.max((tw + 2 * b) / tw, (th + 2 * b) / th) : 1;
+        const s = s0 * k;
+        const cx = trimX + tw / 2, cy = m + b + th / 2;
+        clipDraw(clipX, 0, clipW, H, () =>
+          page.drawPage(emb.e, { x: cx - emb.w * s / 2, y: cy - emb.h * s / 2, xScale: s, yScale: s }));
+      };
+      const backX = m + b, frontX = m + b + tw + sp;          // 각 트림의 왼쪽 x
+      const spineMid = m + b + tw + sp / 2;
+      drawCover(back,  backX,  0,        spineMid);
+      drawCover(front, frontX, spineMid, W - spineMid);
+      // 책등 텍스트 — 세로(90° 시계방향, 위→아래로 읽힘), 책등폭·높이에 맞게 자동 축소
+      if (o.spineText && o.spineText.trim() && sp > 2) {
+        const im = await coverTextPng(out, o.spineText.trim(), 12);
+        const fit = Math.min(1, (sp * 0.7) / im.h, (th * 0.85) / im.w);
+        const iw = im.w * fit, ih = im.h * fit;
+        const cy = m + b + th / 2;
+        // rotate −90°: 앵커 기준 (u,v)→(v,−u) — 중심이 (spineMid, cy)에 오도록 앵커 역산
+        page.drawImage(im.png, { x: spineMid - ih / 2, y: cy + iw / 2, width: iw, height: ih, rotate: PDFLib.degrees(-90) });
+      }
+      const trimAll = { x: m + b, y: m + b, w: tw * 2 + sp, h: th };
+      if (o.crop) drawCropMarks(page, trimAll.x, trimAll.y, trimAll.w, trimAll.h, { gap: (o.bleedMm || 0) + 1, len: 4, th: 0.4 });
+      if (o.fold && sp > 0) {
+        // 오시선(접는선) — 책등 양쪽 경계 위·아래 여백에 짧은 선 (재단 후 접는 위치 표시)
+        const black = PDFLib.rgb(0, 0, 0);
+        const gap = ((o.bleedMm || 0) + 1) * MM, len = 4 * MM;
+        [m + b + tw, m + b + tw + sp].forEach(fx => {
+          page.drawLine({ start: { x: fx, y: trimAll.y - gap }, end: { x: fx, y: Math.max(0, trimAll.y - gap - len) }, thickness: 0.4, color: black, dashArray: [2, 2] });
+          page.drawLine({ start: { x: fx, y: trimAll.y + th + gap }, end: { x: fx, y: Math.min(H, trimAll.y + th + gap + len) }, thickness: 0.4, color: black, dashArray: [2, 2] });
+        });
+      }
+      // TrimBox 기록 — 출력기·후속 임포징이 재단 위치를 알 수 있게
+      page.node.set(PDFName.of('TrimBox'), out.context.obj([trimAll.x, trimAll.y, trimAll.x + trimAll.w, trimAll.y + trimAll.h]));
+      return out.save({ useObjectStreams: false, updateFieldAppearances: false });
+    }
+    // UI: 표지 모드 전환 + 책등폭 읽어주기
+    function setCoverMode(m) {
+      _coverMode = m;
+      if (typeof activateChip === 'function') activateChip('covermode', m);
+      const opts = document.getElementById('coverSpreadOpts');
+      if (opts) opts.style.display = m === 'spread' ? '' : 'none';
+      updateCoverSpineInfo();
+    }
+    let _coverMode = 'extract';
+    function _coverInputs() {
+      const g = id => document.getElementById(id);
+      const total = pageResults.filter(Boolean).length;
+      const front = parseInt(g('coverFront')?.value) || 1;
+      const back  = parseInt(g('coverBack')?.value) || total;
+      const bodyRaw = parseInt(g('coverBodyPages')?.value);
+      const body = bodyRaw > 0 ? bodyRaw : Math.max(0, total - 2);   // 비우면 표지 2쪽 뺀 나머지
+      let thick = parseFloat(g('coverStock')?.value);
+      if (!(thick > 0)) thick = parseFloat(g('coverThick')?.value) || 0.1;
+      const spineOverride = parseFloat(g('coverSpineMm')?.value);
+      const spine = spineOverride > 0 ? spineOverride : coverSpineMm(body, thick);
+      return {
+        front, back, body, thick, spine,
+        bleed: Math.max(0, parseFloat(g('coverBleed')?.value) || 0),
+        crop: !!g('coverCrop')?.checked, fold: !!g('coverFold')?.checked,
+        spineText: g('coverSpineText')?.value || '',
+      };
+    }
+    function updateCoverSpineInfo() {
+      const el = document.getElementById('coverSpineInfo');
+      if (!el) return;
+      if (!pageResults.filter(Boolean).length) { el.textContent = ''; return; }
+      const c = _coverInputs();
+      el.textContent = `책등 ${c.spine}mm (내지 ${c.body}쪽 × ${c.thick}mm/장)`;
+    }
+    function onCoverStockChange() {
+      const custom = document.getElementById('coverStock')?.value === '';
+      const row = document.getElementById('coverThickWrap');
+      if (row) row.style.display = custom ? '' : 'none';
+      updateCoverSpineInfo();
+    }
+    async function generateCover() {
+      if (_bkBusy) return;
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
+      const c = _coverInputs();
+      _bkBusy = true; setBtnBusy('coverGenBtn', true);
+      try {
+        showLoading('표지 만들기 — 최신 편집 상태 준비 중…');
+        progressBar.style.display = 'block'; updateProgress(0);
+        const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.6)));
+        const src = await PDFLib.PDFDocument.load(srcBytes.slice(0));
+        const total = src.getPageCount();
+        const fi = Math.min(Math.max(1, c.front), total) - 1;
+        const bi = Math.min(Math.max(1, c.back), total) - 1;
+        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        if (_coverMode === 'spread') {
+          showLoading('표지 만들기 — 무선제본 스프레드 조판 중…');
+          updateProgress(75);
+          const bytes = await buildCoverSpreadBytes(srcBytes, {
+            frontIdx: fi, backIdx: bi, spineMm: c.spine, bleedMm: c.bleed,
+            crop: c.crop, fold: c.fold, spineText: c.spineText,
+          });
+          updateProgress(100); hideLoading(); progressBar.style.display = 'none';
+          try { renderProcessedPreview(bytes); } catch (e) {}
+          const saved = await window.electronAPI.saveFile({ defaultName: `${base}_표지스프레드_책등${c.spine}mm.pdf`, buffer: bytes });
+          if (saved) showSuccess(`📕 무선제본 표지 스프레드 생성 완료 — [뒤표지 ${bi + 1}p | 책등 ${c.spine}mm | 앞표지 ${fi + 1}p]`
+            + `\n내지 ${c.body}쪽 × ${c.thick}mm/장 기준${c.bleed ? ` · 블리드 ${c.bleed}mm` : ''}${c.crop ? ' · 재단선' : ''}${c.fold ? ' · 오시선(점선=접는 위치)' : ''}`
+            + `\n인쇄: 표지 용지(두꺼운 지종) 단면 → 재단선 따라 재단 → 오시(접선) 넣고 → 무선제본 감싸기`
+            + `\n⚠ 실제 책등폭은 지종·부피에 따라 다르니 가제본으로 확인 후 책등폭(mm)을 직접 보정하세요.`);
+        } else {
+          const out = await PDFLib.PDFDocument.create();
+          const idxs = fi === bi ? [fi] : [fi, bi];
+          (await out.copyPages(src, idxs)).forEach(p => out.addPage(p));
+          const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+          updateProgress(100); hideLoading(); progressBar.style.display = 'none';
+          try { renderProcessedPreview(bytes); } catch (e) {}
+          const saved = await window.electronAPI.saveFile({ defaultName: `${base}_표지.pdf`, buffer: bytes });
+          if (saved) showSuccess(`📕 표지 추출 완료 — ${idxs.length}쪽 (앞표지 ${fi + 1}p${fi === bi ? '' : ` · 뒤표지 ${bi + 1}p`})`
+            + `\n표지 용지에 별도 인쇄하세요. 책등 포함 한 판이 필요하면 '무선제본 스프레드' 모드를 사용하세요.`);
+        }
+      } catch (e) {
+        console.error('표지 생성 오류:', e);
+        showError('표지 생성 실패: ' + (e && e.message ? e.message : String(e)));
+      } finally {
+        _bkBusy = false; setBtnBusy('coverGenBtn', false);
         hideLoading(); progressBar.style.display = 'none';
       }
     }
@@ -1628,6 +1994,26 @@
         return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), sides: _cutSides });
       return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), creep: parseFloat(g('bkCreep')?.value) || 0, binding: _bkBind, sides: _cutSides });
     }
+    // 저장 파일명에 붙일 임포징 명칭 — 시트 한 장에 들어가는 페이지 수 기준(1up·2up·N-up).
+    // 임포징을 쓰지 않으면 '1up'(원고 그대로 한 장에 한 쪽). 프로파일을 불러온 상태도
+    // currentImpOptions()가 정규화해 주므로 그대로 반영된다.
+    function impNameTag() {
+      if (typeof _impEnabled === 'undefined' || !_impEnabled) return '1up';
+      let o = null;
+      try { o = currentImpOptions(); } catch (e) {}
+      const mode = (o && o.mode) || _impMode;
+      const cell = (a, b) => Math.max(1, parseInt(a) || 1) * Math.max(1, parseInt(b) || 1);
+      if (mode === 'booklet')  return '중철2up';
+      if (mode === 'dup')      return '복제2up';
+      if (mode === 'repeat') {
+        const c = parseInt(o && o.cols) || 0, r = parseInt(o && o.rows) || 0;
+        return (c > 0 && r > 0) ? `반복${c * r}up` : '반복배치';
+      }
+      if (mode === 'cutstack') return `정합${cell(o && o.across, o && o.down)}up`;
+      if (mode === 'nup')      return `${cell(o && o.across, o && o.down)}up`;
+      return '1up';
+    }
+
     // 임포징 최종 단계 — srcBytes(적용/최적화 결과)를 현재 모드의 시트로 조립.
     // 적용(applyChanges)·다운로드(downloadProcessed)·실시간 미리보기가 공유한다.
     async function buildImposedBytes(srcBytes, onProgress) {
@@ -3948,11 +4334,13 @@
           while (t.length > 4 && font.widthOfTextAtSize(t, entrySize) > W - mSide * 2 - numW - 30) t = t.slice(0, -1);
           const titleW = font.widthOfTextAtSize(t, entrySize);
           pg.drawText(t, { x: mSide, y, size: entrySize, font, color: PDFLib.rgb(0.11, 0.11, 0.12) });
-          const dotStart = mSide + titleW + 6, dotEnd = W - mSide - numW - 8;
-          const dotW = font.widthOfTextAtSize('.', entrySize) + 2.2;
-          let dots = '';
-          for (let k = 0; k < Math.floor((dotEnd - dotStart) / dotW); k++) dots += '.';
-          if (dots) pg.drawText(dots, { x: dotStart, y, size: entrySize, font, color: PDFLib.rgb(0.6, 0.6, 0.62) });
+          // 점선 리더: 실제 '.' 글리프 폭으로 개수를 계산하고 쪽 번호 직전(dotEnd)에 오른쪽
+          // 정렬로 채운다 — 이전엔 점당 2.2pt 가짜 간격으로 세어 중간에 끊겼음(항목이 길수록 심함).
+          const dotStart = mSide + titleW + 6, dotEnd = W - mSide - numW - 6;
+          const dotAdv = font.widthOfTextAtSize('.', entrySize);
+          const nDots = Math.max(0, Math.floor((dotEnd - dotStart) / dotAdv));
+          if (nDots > 0) pg.drawText('.'.repeat(nDots),
+            { x: dotEnd - nDots * dotAdv, y, size: entrySize, font, color: PDFLib.rgb(0.6, 0.6, 0.62) });
           pg.drawText(numStr, { x: W - mSide - numW, y, size: entrySize, font, color: PDFLib.rgb(0.11, 0.11, 0.12) });
         });
       }
@@ -4027,11 +4415,22 @@
           updateProgress(30);
           const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
           baseCount = srcDoc.getPageCount();
-          // 인쇄될 쪽 번호 = 현재 표시 번호 + 목차 분량 (선계산: perPage 동일 공식)
+          // 인쇄될 쪽 번호 — 기준(tocNumMode)에 따라:
+          //   real     = 실제 페이지 위치(목차 분량 포함, 종전 방식)
+          //   afterToc = 목차 다음 본문 첫 페이지가 1 (목차·표지류가 번호에서 빠짐)
+          //   custom   = 지정 페이지(현재 썸네일 번호 기준)가 1 — 그 앞 항목은 실제 위치로 표기
           const { height: H0 } = srcDoc.getPage(0).getSize();
           const perPage = Math.max(1, Math.floor((H0 - 90 - 60 - 40) / 26));
           const cnt = Math.ceil(live.length / perPage);
-          const entries = live.map(en => ({ title: en.title, displayNum: en.ref.pageNum + cnt }));
+          const numMode = document.getElementById('tocNumMode')?.value || 'real';
+          const numStart = Math.max(1, parseInt(document.getElementById('tocNumStart')?.value) || 1);
+          const entries = live.map(en => {
+            const phys = en.ref.pageNum + cnt;
+            let dn = phys;
+            if (numMode === 'afterToc') dn = en.ref.pageNum;
+            else if (numMode === 'custom') { const v = en.ref.pageNum - numStart + 1; dn = v > 0 ? v : phys; }
+            return { title: en.title, displayNum: dn };
+          });
           const res = await appendTocPages(srcDoc, entries, document.getElementById('tocTitle').value.trim() || '목  차', getSlugFontBytes());
           tocPageCount = res.tocPageCount;
           mergedBytes = await srcDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
@@ -4072,10 +4471,28 @@
           totalPagesEl.textContent = pageResults.filter(Boolean).length;
           refreshResults();
         }
+        // 4) '본문에도 쪽 번호 인쇄' — 머리글/바닥글 번호 시작 페이지를 같은 기준으로 자동 설정.
+        //    (기준 앞 페이지(목차·표지류)는 {n}·{page}가 생략되어 번호 없이 인쇄됨)
+        const numModeSel = document.getElementById('tocNumMode')?.value || 'real';
+        let hfNote = '';
+        if (document.getElementById('tocSyncHf')?.checked && numModeSel !== 'real' && editSettings) {
+          const nStart = Math.max(1, parseInt(document.getElementById('tocNumStart')?.value) || 1);
+          const startPhys = numModeSel === 'afterToc' ? tocPageCount + 1 : nStart + tocPageCount;
+          const hf = editSettings.hf;
+          hf.start = startPhys;
+          if (!hf.enabled || (typeof hfAnyContent === 'function' ? !hfAnyContent(hf) : ![hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim()))) {
+            hf.enabled = true;
+            if (!hf.fC || !hf.fC.trim()) hf.fC = '{n}';
+          }
+          if (typeof syncEditUI === 'function') syncEditUI();
+          invalidateProcessed();
+          hfNote = `\n쪽 번호: ${startPhys}번째 페이지가 1페이지 — 머리글/바닥글에 설정됨 ('✔ 적용' 또는 '⇩ 다운로드' 시 인쇄, ✏ 편집 모드에서 위치·형식 조정 가능)`;
+        }
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         showSuccess(`📑 목차 생성 완료 — 항목 ${live.length}개`
           + (insertPage ? ` · 목차 페이지 ${tocPageCount}쪽이 문서 맨 앞에 '실제 페이지'로 삽입됨` : '')
           + (bookmarks ? ` · 북마크는 다운로드 시 최종 파일에 적용` : '')
+          + hfNote
           + `\n목차 페이지도 일반 페이지처럼 편집됩니다 — 내용 수정: 우클릭 → 🖊 내부 내용 편집`
           + `\n항목을 바꾸려면 페이지 다시 선택 → 📑 목차 생성 (기존 목차가 교체됩니다)`);
       } catch (e) {
@@ -4396,7 +4813,14 @@
       pageEdited = true;
       if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).pageEdited = true;
       invalidateProcessed();
-      if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
+      if (typeof previewVisible === 'function' && previewVisible()) {
+        // 미리보기가 자동 갱신되지 않는 상태(편집 모드 밖 + 자동 반영 꺼짐)라면, 화면에는 방금
+        // 무효화된 옛 결과가 그대로 남아 회전·삭제 같은 편집이 "먹지 않는" 것처럼 보인다.
+        // 이때는 미리보기를 닫아 실제 썸네일 그리드로 돌아가 편집 결과가 바로 보이게 한다.
+        const autoRefresh = document.body.classList.contains('edit-fullscreen') || liveAutoPreview;
+        if (autoRefresh) scheduleLivePreview();
+        else if (typeof closePreview === 'function') closePreview();
+      }
     }
 
     function updateUndoBtn() {

@@ -1051,6 +1051,26 @@
        편집 설정 초기화는 헤더 우측(es-head-reset)에 남아 항상 보인다. */
     body.edit-fullscreen .es-actions { display: none; }
 
+    /* ── 편집 패널 아코디언 그룹 (JS buildEsGroups가 구성) ── */
+    .es-group { border-top: 1px solid rgba(255, 255, 255, 0.09); }
+    .es-group-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px; cursor: pointer; user-select: none;
+      font-weight: 700; font-size: 13.5px; color: #f5f5f7;
+      background: #19191a;
+    }
+    .es-group-head:hover { background: #232324; }
+    .esg-arrow { color: #ffd60a; font-size: 12px; transition: transform 0.15s ease; flex: 0 0 auto; }
+    .es-group-head.open .esg-arrow { transform: rotate(90deg); }
+    .esg-title { flex: 0 0 auto; }
+    .esg-badge {
+      margin-left: auto; font-size: 11px; font-weight: 600; color: #ffd60a;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%;
+      text-align: right;
+    }
+    .es-group-body { display: none; }
+    .es-group-body.open { display: block; }
+
     .es-head {
       position: sticky; top: 0; z-index: 2;
       background: #161617; padding: 14px 16px;
@@ -1197,7 +1217,30 @@
       padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85em; font-weight: 600;
     }
     .preview-close:hover { background: #eef4ff; border-color: #48484a; color: #48484a; }
-    .pv-cell { text-align: center; cursor: pointer; }
+    .pv-cell { text-align: center; cursor: pointer; position: relative; }
+    /* 기하 옵션 오버레이(편집 모드) — 여백 점선 박스 · 제본여백 빗금 띠 (재조립 전 선반영) */
+    .pv-geo { position: absolute; left: 0; right: 0; top: 0; bottom: 22px; pointer-events: none; z-index: 2; }
+    .pv-geo-margin { position: absolute; border: 1px dashed rgba(255, 214, 10, 0.85); }
+    .pv-geo-bind {
+      position: absolute;
+      background: repeating-linear-gradient(45deg, rgba(255, 214, 10, 0.28) 0 5px, rgba(255, 214, 10, 0.06) 5px 10px);
+      border: 0; box-shadow: inset 0 0 0 1px rgba(255, 214, 10, 0.5);
+    }
+    /* 작업공간 표본 미리보기 — 실시간 반영 창 밖의 페이지(분석 썸네일)는 흐리게 */
+    .pv-cell.pv-stale .pv-canvas { opacity: 0.35; filter: grayscale(1); }
+    .pv-cell.pv-stale .pv-num::after { content: ' · 클릭하면 반영'; color: #aeaeb2; font-weight: 400; }
+    /* ✚ 십자 가이드선 — 기울기·정렬 확인용 (previewGrid.pv-guides일 때 각 페이지 중앙에 수평·수직선) */
+    #previewGrid.pv-guides .pv-cell::before {
+      content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 22px; /* 페이지 번호 영역 제외 */
+      pointer-events: none; z-index: 3;
+      background:
+        linear-gradient(to bottom, transparent calc(50% - 0.5px), rgba(255, 214, 10, 0.9) calc(50% - 0.5px), rgba(255, 214, 10, 0.9) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+        linear-gradient(to right,  transparent calc(50% - 0.5px), rgba(255, 214, 10, 0.9) calc(50% - 0.5px), rgba(255, 214, 10, 0.9) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+        linear-gradient(to bottom, transparent calc(25% - 0.5px), rgba(255, 214, 10, 0.35) calc(25% - 0.5px), rgba(255, 214, 10, 0.35) calc(25% + 0.5px), transparent calc(25% + 0.5px)),
+        linear-gradient(to bottom, transparent calc(75% - 0.5px), rgba(255, 214, 10, 0.35) calc(75% - 0.5px), rgba(255, 214, 10, 0.35) calc(75% + 0.5px), transparent calc(75% + 0.5px)),
+        linear-gradient(to right,  transparent calc(25% - 0.5px), rgba(255, 214, 10, 0.35) calc(25% - 0.5px), rgba(255, 214, 10, 0.35) calc(25% + 0.5px), transparent calc(25% + 0.5px)),
+        linear-gradient(to right,  transparent calc(75% - 0.5px), rgba(255, 214, 10, 0.35) calc(75% - 0.5px), rgba(255, 214, 10, 0.35) calc(75% + 0.5px), transparent calc(75% + 0.5px));
+    }
     .pv-cell.pv-selected .pv-canvas { outline: 3px solid #48484a; outline-offset: -3px; filter: grayscale(1); }
     .pv-cell.pv-selected .pv-num { color: #48484a; font-weight: 700; }
     .pv-canvas {

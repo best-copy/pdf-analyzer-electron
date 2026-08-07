@@ -44,9 +44,11 @@ function formatPageNumber(style, page, total) {
 }
 
 function resolveHF(tpl, ctx) {
+  // 로마자 페이지(ctx.roman — 목차·지정 앞붙이)는 번호 토큰이 i, ii…로 치환된다.
+  // 번호 시작 페이지(hf.start) 이전의 일반 페이지는 ctx.page ≤ 0 — 번호 토큰만 비운다(다른 문구는 유지).
   return (tpl || '')
-    .replace(/\{n\}/g, formatPageNumber(ctx.pnumStyle, ctx.page, ctx.total))
-    .replace(/\{page\}/g, ctx.page)
+    .replace(/\{n\}/g, ctx.roman ? ctx.roman : (ctx.page > 0 ? formatPageNumber(ctx.pnumStyle, ctx.page, ctx.total) : ''))
+    .replace(/\{page\}/g, ctx.roman ? ctx.roman : (ctx.page > 0 ? ctx.page : ''))
     .replace(/\{total\}/g, ctx.total)
     .replace(/\{date\}/g, ctx.date)
     .replace(/\{filename\}/g, ctx.filename);
@@ -90,7 +92,13 @@ async function textToPngEmbed(outDoc, text, opt, cache) {
 //   (합본 문서에서 챕터별로 다른 es를 쓸 수 있도록 전역 설정 + 챕터별 개별 설정을 그룹으로 분리해 전달).
 // fontBytesMap: 머리글/바닥글용 폰트 경로 → 바이트(메인 스레드에서 미리 읽어 전달, 없으면 이미지 폴백).
 async function handleLayoutTransform(payload) {
-  const { srcBytes, groups, fontBytesMap, fileName, baseSig } = payload;
+  // adjust: base 페이지 순서 기준 [{rot(도, 반시계+), dx, dy(pt, 원본 크기 기준)} | null]
+  //   — 기울기 보정·가운데 정렬의 페이지별 최종 보정값 (메인 스레드에서 측정·계산해 전달)
+  // roman: base 페이지 순서 기준 [로마자 문자열 | null] — 목차·지정 페이지의 {n}/{page} 치환용
+  // pageOffset/totalPages: 표본 미리보기(문서 일부만 조립)에서 홀짝·번호시작·{total}을 문서 전체
+  // 기준(절대 페이지 번호)으로 계산하기 위한 값 — 전체 조립이면 0/미지정.
+  const { srcBytes, groups, fontBytesMap, fileName, baseSig, adjust, roman, pageOffset, totalPages } = payload;
+  const pageOff = pageOffset | 0;
   // base(순서·회전·흑백)가 그대로면 파싱한 문서를 재사용 — 레이아웃 옵션(규격·N-up·테두리·
   // 머리글바닥글·워터마크)만 바꾸는 실시간 편집에서 매번 전체 PDF를 다시 파싱하지 않는다.
   // 라이브 미리보기는 직렬 실행되고 워커풀이 방금 반납된 워커를 다시 꺼내므로(LIFO) 같은
@@ -112,11 +120,38 @@ async function handleLayoutTransform(payload) {
   groups.forEach((g, gi) => { g.mask.forEach((v, i) => { if (v) groupIds[i] = gi; }); });
 
   const embCache = new Map();
-  const emb = async i => { if (!embCache.has(i)) embCache.set(i, await out.embedPage(pages[i])); return embCache.get(i); };
+  // Contents가 없거나 깨진(허상 참조) 페이지는 embedPage가 "missing Contents"로 실패 →
+  // embedPage와 같은 판정(normalizedEntries)으로 검사·복구 (app-process ensurePageContents와 동일 규약).
+  const ensureContents = (pg, force) => {
+    try {
+      let broken = !!force;
+      if (!broken) {
+        try { broken = !pg.node.normalizedEntries().Contents; } catch (e) { broken = true; }
+      }
+      if (broken) {
+        try { pg.node.delete(PDFLib.PDFName.of('Contents')); } catch (e) {}
+        pg.drawRectangle({ x: 0, y: 0, width: 0.01, height: 0.01, opacity: 0, borderOpacity: 0 });
+      }
+    } catch (e) {}
+  };
+  const emb = async i => {
+    if (!embCache.has(i)) {
+      ensureContents(pages[i]);
+      let e2;
+      try { e2 = await out.embedPage(pages[i]); }
+      catch (err) { ensureContents(pages[i], true); e2 = await out.embedPage(pages[i]); }   // 강제 복구 후 1회 재시도
+      embCache.set(i, e2);
+    }
+    return embCache.get(i);
+  };
   const angOf = i => (((pages[i].getRotation().angle || 0) % 360) + 360) % 360;
 
   function sheetSizeFor(es, refW, refH) {
     if (es.scaling.mode === 'standard') return paperSizePt(es.scaling.paper, es.scaling.orient, refW, refH);
+    if (es.scaling.mode === 'percent') {   // 배율: 페이지 크기 자체를 N%로 확대·축소
+      const k = Math.max(0.1, Math.min(4, (parseFloat(es.scaling.percent) || 100) / 100));
+      return [refW * k, refH * k];
+    }
     if (es.scaling.mode === 'custom') {
       let w = mm2pt(es.scaling.customW || 210), h = mm2pt(es.scaling.customH || 297);
       const o = es.scaling.orient;
@@ -128,23 +163,46 @@ async function handleLayoutTransform(payload) {
     return [refW, refH];
   }
 
-  function drawFit(outPage, e, ang, rect) {
+  // adj: {rot, dx, dy} 페이지별 보정(기울기·정렬), exDx/exDy: 제본여백 '밀기' 등 추가 이동(pt).
+  // /Rotate N = 뷰어가 '시계방향' N도 회전 표시. embedPage는 /Rotate를 무시하므로 같은
+  // 시계방향으로 그려야 한다 — pdf-lib rotate는 반시계(+)라서 90↔270을 바꿔 쓴다.
+  // 임의 각도(기울기 보정) 지원을 위해 앵커를 일반식으로 계산한다: drawPage의 rotate는
+  // (x,y)를 중심으로 돌므로, 콘텐츠 중심이 rect 중앙(+보정 이동)에 오도록 앵커를 역산.
+  function drawFit(outPage, e, ang, rect, adj, exDx, exDy) {
     const ew = e.width, eh = e.height;
     const swap = (ang === 90 || ang === 270);
     const cw = swap ? eh : ew, ch = swap ? ew : eh;
     const scale = Math.min(rect.w / cw, rect.h / ch);
-    const dw = cw * scale, dh = ch * scale;
-    const cx = rect.x + (rect.w - dw) / 2, cy = rect.y + (rect.h - dh) / 2;
-    // /Rotate N = 뷰어가 '시계방향' N도 회전 표시. embedPage는 /Rotate를 무시하므로
-    // 같은 시계방향으로 그려야 한다 — pdf-lib rotate는 반시계(+)라서 90↔270을 바꿔 쓴다.
-    // (이전 코드는 반시계로 그려 회전 페이지가 기대와 180° 어긋났음 — 임포징 embedAllPages의
-    //  시계방향 행렬과 동일 규약으로 통일)
-    const o = { xScale: scale, yScale: scale };
-    if (ang === 0)        { o.x = cx;      o.y = cy; }
-    else if (ang === 90)  { o.x = cx;      o.y = cy + dh; o.rotate = PDFLib.degrees(-90); }
-    else if (ang === 180) { o.x = cx + dw; o.y = cy + dh; o.rotate = PDFLib.degrees(180); }
-    else                  { o.x = cx + dw; o.y = cy;      o.rotate = PDFLib.degrees(90); }
+    const baseRot = ang === 90 ? -90 : ang === 180 ? 180 : ang === 270 ? 90 : 0;
+    const rot = baseRot + ((adj && adj.rot) || 0);
+    // dx/dy는 원본(뷰어 방향) pt 기준 → 배치 배율만큼 함께 축소·확대
+    const cx0 = rect.x + rect.w / 2 + ((adj && adj.dx) || 0) * scale + (exDx || 0);
+    const cy0 = rect.y + rect.h / 2 + ((adj && adj.dy) || 0) * scale + (exDy || 0);
+    const rad = rot * Math.PI / 180;
+    const ux = scale * (ew / 2 * Math.cos(rad) - eh / 2 * Math.sin(rad));
+    const uy = scale * (ew / 2 * Math.sin(rad) + eh / 2 * Math.cos(rad));
+    const o = { x: cx0 - ux, y: cy0 - uy, xScale: scale, yScale: scale };
+    if (rot) o.rotate = PDFLib.degrees(rot);
     outPage.drawPage(e, o);
+  }
+
+  // 제본여백(축소 방식): 제본쪽 가장자리를 bPt만큼 비운 rect 반환
+  function shrinkRectForBind(rect, side, bPt) {
+    const r = { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+    if (side === 'left')       { r.x += bPt; r.w = Math.max(10, r.w - bPt); }
+    else if (side === 'right') { r.w = Math.max(10, r.w - bPt); }
+    else if (side === 'top')   { r.h = Math.max(10, r.h - bPt); }
+    else if (side === 'bottom'){ r.y += bPt; r.h = Math.max(10, r.h - bPt); }
+    return r;
+  }
+  // 홀짝 교대(alt): 짝수쪽은 제본이 반대편 — 좌↔우, 상↔하
+  function bindSideFor(bind, pageNo) {
+    let side = bind.side || 'left';
+    if (bind.alt !== false && pageNo % 2 === 0) {
+      side = side === 'left' ? 'right' : side === 'right' ? 'left'
+           : side === 'top' ? 'bottom' : side === 'bottom' ? 'top' : side;
+    }
+    return side;
   }
 
   function drawCropMarks(p, x, y, w, h) {
@@ -168,6 +226,7 @@ async function handleLayoutTransform(payload) {
   // flags[]: 출력 페이지가 오버레이 대상인지, flagEs[]: 그 출력 페이지를 만든 es(오버레이에 사용).
   async function flushBucket(es, bucket, flags, flagEs) {
     if (!bucket.length) return;
+    const adjOf = idx => (adjust && adjust[idx]) || null;
     const nUp = Math.max(1, es.nUp | 0);
     const [cols, rows] = NUP_GRID[nUp] || [1, 1];
     const m = es.margins;
@@ -184,10 +243,12 @@ async function handleLayoutTransform(payload) {
       const marginRect = { x: mL, y: mB, w: Math.max(10, sw - mL - mR), h: Math.max(10, sh - mT - mB) };
       const fullRect   = { x: 0,  y: 0,  w: sw, h: sh };
       const noScale = es.scaling.mode === 'none';
+      const bind = (es.bind && es.bind.enabled && (es.bind.size || 0) > 0) ? es.bind : null;
       // ── 빠른 경로: 규격화 없음 + 회전 0 페이지는 원본을 그대로 copyPages 하고 오버레이(머리글/바닥글·워터마크·
       //    테두리)만 얹는다. embedPage(무거운 재-임베드)를 건너뛰어 머리글/바닥글만 켰을 때 대폭 빨라진다.
       //    회전된 페이지는 좌표 정규화가 필요하므로 기존 embedPage 경로 유지.
-      const copyIdx = noScale ? bucket.filter(idx => angOf(idx) === 0) : [];
+      //    기울기·정렬 보정(adj)이나 제본여백이 걸린 페이지는 다시 그려야 하므로 빠른 경로 제외.
+      const copyIdx = noScale ? bucket.filter(idx => angOf(idx) === 0 && !adjOf(idx) && !bind) : [];
       const copyMap = new Map();
       if (copyIdx.length) {
         const cps = await out.copyPages(src, copyIdx);
@@ -202,10 +263,32 @@ async function handleLayoutTransform(payload) {
             drawBorder(es.border, p, mL, mB, Math.max(10, ps.width - mL - mR), Math.max(10, ps.height - mT - mB));
           }
         } else {
-          p = out.addPage([sw, sh]);
-          const contentRect = noScale ? fullRect : (es.scaling.fitMargins ? marginRect : fullRect);
-          drawFit(p, await emb(idx), angOf(idx), contentRect);
-          if (es.border !== 'none') drawBorder(es.border, p, marginRect.x, marginRect.y, marginRect.w, marginRect.h);
+          // 규격화 없음(noScale)이면 시트를 각 페이지의 원본 크기로 — 보정·제본여백 때문에
+          // embedPage 경로로 와도 페이지 크기는 원본 그대로 유지한다.
+          let psw = sw, psh = sh, mRect = marginRect, fRect = fullRect;
+          if (noScale) {
+            const a = angOf(idx), sz = pages[idx].getSize();
+            psw = (a === 90 || a === 270) ? sz.height : sz.width;
+            psh = (a === 90 || a === 270) ? sz.width  : sz.height;
+            fRect = { x: 0, y: 0, w: psw, h: psh };
+            mRect = { x: mL, y: mB, w: Math.max(10, psw - mL - mR), h: Math.max(10, psh - mT - mB) };
+          }
+          p = out.addPage([psw, psh]);
+          let contentRect = noScale ? fRect : (es.scaling.fitMargins ? mRect : fRect);
+          let exDx = 0, exDy = 0;
+          if (bind) {
+            const bPt = mm2pt(bind.size || 0);
+            const side = bindSideFor(bind, flags.length + 1 + pageOff); // 절대 페이지 번호 기준 홀짝 (표본 창 보정)
+            if (bind.method === 'shift') {
+              // 밀기: 크기 유지, 제본 반대쪽으로 이동 (반대쪽 가장자리는 잘릴 수 있음)
+              if (side === 'left') exDx = bPt; else if (side === 'right') exDx = -bPt;
+              else if (side === 'top') exDy = -bPt; else exDy = bPt;
+            } else {
+              contentRect = shrinkRectForBind(contentRect, side, bPt);
+            }
+          }
+          drawFit(p, await emb(idx), angOf(idx), contentRect, adjOf(idx), exDx, exDy);
+          if (es.border !== 'none') drawBorder(es.border, p, mRect.x, mRect.y, mRect.w, mRect.h);
         }
         flags.push(true); flagEs.push(es);
       }
@@ -227,7 +310,7 @@ async function handleLayoutTransform(payload) {
           y: mB + innerH - (row + 1) * cellH - row * gut,
           w: cellW, h: cellH,
         };
-        drawFit(p, await emb(idx), angOf(idx), rect);
+        drawFit(p, await emb(idx), angOf(idx), rect, adjOf(idx));
         if (es.border !== 'none') drawBorder(es.border, p, rect.x, rect.y, rect.w, rect.h);
       }
       flags.push(true); flagEs.push(es);
@@ -295,7 +378,11 @@ async function handleLayoutTransform(payload) {
     const es = flagEs[i];
     if (!es) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const hf = es.hf, wm = es.wm;
-    const hfOn = hf && hf.enabled && [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim());
+    const someHf = a => a.some(s => s && s.trim());
+    const hfOn = hf && hf.enabled && (
+      someHf([hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR])
+      || someHf([hf.oHL, hf.oHC, hf.oHR, hf.oFL, hf.oFC, hf.oFR])
+      || someHf([hf.eHL, hf.eHC, hf.eHR, hf.eFL, hf.eFC, hf.eFR]));
     const wmOn = wm && wm.enabled && wm.text.trim();
     if (!hfOn && !wmOn) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const p = outPages[i];
@@ -313,11 +400,27 @@ async function handleLayoutTransform(payload) {
       }
     }
     if (hfOn) {
-      // 홀짝 좌우 교대(책 바깥쪽): 짝수 페이지는 좌/우 칸 내용을 맞바꿔 찍는다
-      const hfEff = (hf.alt && ((i + 1) % 2 === 0))
-        ? Object.assign({}, hf, { hL: hf.hR, hR: hf.hL, fL: hf.fR, fR: hf.fL })
-        : hf;
-      const ctx = { page: i + 1, total, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
+      // 절대 페이지 번호(문서 전체 기준) — 표본 미리보기(pageOffset>0)에서도 홀짝·번호시작이
+      // 최종 생성물과 동일하게 계산된다. (이전엔 창 내 상대 번호라 미리보기에서 홀짝이 뒤집히거나
+      // 번호가 사라져 "짝수쪽만 생성된다"로 보였음)
+      const absPage = i + 1 + pageOff;
+      const even = absPage % 2 === 0;
+      // 홀·짝 전용 칸(o*/e*)에 값이 하나라도 있으면 그쪽 페이지는 전용 칸으로 인쇄, 비어 있으면
+      // 공통 칸으로 폴백 — 전용 칸만 채워도 반대쪽 페이지가 비어버리지 않는다.
+      // 폴백된 짝수 페이지에는 홀짝 좌우 교대(alt)가 적용된다(책 바깥쪽 번호).
+      const oddSet  = { hL: hf.oHL, hC: hf.oHC, hR: hf.oHR, fL: hf.oFL, fC: hf.oFC, fR: hf.oFR };
+      const evenSet = { hL: hf.eHL, hC: hf.eHC, hR: hf.eHR, fL: hf.eFL, fC: hf.eFC, fR: hf.eFR };
+      let hfEff = hf;
+      if (!even && someHf(Object.values(oddSet)))      hfEff = Object.assign({}, hf, oddSet);
+      else if (even && someHf(Object.values(evenSet))) hfEff = Object.assign({}, hf, evenSet);
+      else if (even && hf.alt) hfEff = Object.assign({}, hf, { hL: hf.hR, hR: hf.hL, fL: hf.fR, fR: hf.fL });
+      // 번호 시작 페이지(start): 그 출력 페이지가 {n}=1 — 표지·목차를 번호에서 빼는 용도.
+      // 시작 전 페이지는 page ≤ 0 → resolveHF가 번호 토큰을 비워 번호 없이 인쇄된다.
+      const hfStart = Math.max(1, (hf.start | 0) || 1);
+      // 로마자 배열은 base 페이지 순서 기준 — 출력 페이지와 1:1일 때만 사용(N-up 등으로 수가 다르면 무시)
+      const rn = (roman && roman.length === total) ? roman[i] : null;
+      const totalAll = totalPages || total;
+      const ctx = { page: absPage - (hfStart - 1), total: Math.max(1, totalAll - (hfStart - 1)), roman: rn, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
       const mgOn = !!(es.margins && es.margins.enabled);
       const mL = mgOn ? mm2pt(es.margins.left) : 0, mR = mgOn ? mm2pt(es.margins.right) : 0;
       const segs = [
@@ -325,6 +428,8 @@ async function handleLayoutTransform(payload) {
         ['fL', mL,      'left',   false], ['fC', pw / 2,  'center', false], ['fR', pw - mR, 'right', false],
       ];
       const mHF = mm2pt(hf.margin || 0);
+      // 위치 미세조절 (mm): +X=오른쪽, +Y=아래 — 머리글·바닥글 여섯 칸 전체에 적용
+      const offX = mm2pt(parseFloat(hf.offX) || 0), offY = mm2pt(parseFloat(hf.offY) || 0);
       for (const [key, ax, align, isHeader] of segs) {
         const txt = resolveHF(hfEff[key], ctx);
         if (!txt || !txt.trim()) continue;
@@ -332,13 +437,13 @@ async function handleLayoutTransform(payload) {
         const font = isAsciiText(txt) ? await getStdFont() : await embedHfFont(hf.font);
         if (font) {
           const w = font.widthOfTextAtSize(txt, hf.size);
-          const x = align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w);
-          const y = isHeader ? (ph - mHF - hf.size) : mHF;
+          const x = (align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w)) + offX;
+          const y = (isHeader ? (ph - mHF - hf.size) : mHF) - offY;
           p.drawText(txt, { x, y, size: hf.size, font, color: hexToRgb(hf.color) });
         } else {
           const im = await textToPngEmbed(out, txt, { size: hf.size, css: hf.color, angle: 0 }, cache);
-          const x = align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w);
-          const y = isHeader ? (ph - mHF - im.h) : mHF;
+          const x = (align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w)) + offX;
+          const y = (isHeader ? (ph - mHF - im.h) : mHF) - offY;
           p.drawImage(im.png, { x, y, width: im.w, height: im.h });
         }
       }
