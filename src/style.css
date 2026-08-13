@@ -1052,12 +1052,13 @@
     body.edit-fullscreen .es-actions { display: none; }
 
     /* ── 편집 패널 아코디언 그룹 (JS buildEsGroups가 구성) ── */
-    .es-group { border-top: 1px solid rgba(255, 255, 255, 0.09); }
+    /* 계층 구분: 그룹(대분류) ▶ 섹션(카테고리) ▶ 하위 구획 — 크기·굵기·색으로 명확히 */
+    .es-group { border-top: 2px solid rgba(255, 214, 10, 0.35); margin-top: 4px; }
     .es-group-head {
       display: flex; align-items: center; gap: 8px;
-      padding: 12px 16px; cursor: pointer; user-select: none;
-      font-weight: 700; font-size: 13.5px; color: #f5f5f7;
-      background: #19191a;
+      padding: 13px 16px; cursor: pointer; user-select: none;
+      font-weight: 800; font-size: 15px; color: #ffd60a;
+      background: #19191a; letter-spacing: 0.2px;
     }
     .es-group-head:hover { background: #232324; }
     .esg-arrow { color: #ffd60a; font-size: 12px; transition: transform 0.15s ease; flex: 0 0 auto; }
@@ -1091,10 +1092,21 @@
     }
     .es-close:hover { background: #2c2c2e; color: #fff; }
 
-    .es-section { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    /* 섹션(카테고리) — 카드형으로 분리해 경계를 눈에 보이게 */
+    .es-section {
+      padding: 12px 14px; margin: 10px 10px;
+      background: #232325; border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 10px;
+    }
     .es-section-title {
-      font-size: 12px; font-weight: 700; color: #ffd60a; text-transform: uppercase;
-      letter-spacing: 0.4px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 800; color: #f5f5f7;
+      letter-spacing: 0.3px; margin: 0 0 10px; padding-left: 8px;
+      border-left: 3px solid #ffd60a;
+      display: flex; align-items: center; gap: 6px;
+    }
+    /* 병합 카테고리 안의 하위 구획 제목 — 한 단계 작고 연하게 (카테고리 제목과 구분) */
+    .es-subsec .es-section-title, .es-subsec > label.es-section-title {
+      font-size: 11.5px; font-weight: 600; color: #aeaeb2;
+      border-left: 0; padding-left: 0; text-transform: none; letter-spacing: 0;
     }
     .es-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .es-row:last-child { margin-bottom: 0; }
@@ -1109,6 +1121,15 @@
 
     /* 라디오/토글 버튼 그룹 */
     .es-btngroup { display: flex; flex-wrap: wrap; gap: 6px; }
+    /* 그룹 내 칩은 동일 비율 폭 — 버튼 크기·가로 간격 일률화 */
+    .es-btngroup .es-chip { flex: 1 1 0; min-width: 0; }
+    .es-btngroup .es-chip[style*="flex: 0"], .es-btngroup .es-chip[style*="flex:0"] { flex: 0 0 auto; }
+    /* 한 줄 고정 그룹(임포징 모드 등) — 줄바꿈 없이 균등 분할 */
+    .es-btngroup.one-line { flex-wrap: nowrap; }
+    .es-btngroup.one-line .es-chip { padding-left: 4px; padding-right: 4px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+    /* 병합 카테고리 안의 하위 구획 — 점선으로 구분 */
+    .es-subsec { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #3a3a3c; }
+    .es-subsec:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
     .es-chip {
       background: #2c2c2e; color: #d1d1d6;
       border: 1px solid rgba(255,255,255,0.14); border-radius: 7px;
@@ -1226,9 +1247,40 @@
       background: repeating-linear-gradient(45deg, rgba(255, 214, 10, 0.28) 0 5px, rgba(255, 214, 10, 0.06) 5px 10px);
       border: 0; box-shadow: inset 0 0 0 1px rgba(255, 214, 10, 0.5);
     }
-    /* 작업공간 표본 미리보기 — 실시간 반영 창 밖의 페이지(분석 썸네일)는 흐리게 */
-    .pv-cell.pv-stale .pv-canvas { opacity: 0.35; filter: grayscale(1); }
+    /* 작업공간 표본 미리보기 — 실시간 반영 창 밖의 페이지(분석 썸네일)는 흐리게.
+       grayscale은 쓰지 않는다: 컬러 페이지가 회색으로 보여 "컬러 표시가 풀렸다"로 오인됨
+       (흐림 + 번호 옆 '클릭하면 반영' 문구만으로 스테일 표시는 충분) */
+    .pv-cell.pv-stale .pv-canvas { opacity: 0.45; }
     .pv-cell.pv-stale .pv-num::after { content: ' · 클릭하면 반영'; color: #aeaeb2; font-weight: 400; }
+    /* 📖 펼침 보기 — 실제 책을 펼친 모양: 1쪽=오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임.
+       열 폭 상한으로 과확대 방지(화질), 중앙 정렬. 목적이 '펼침에서 이어지는 이미지 확인'
+       이므로 두 쪽 사이 여백·테두리·그림자·둥근 모서리를 전부 제거해 딱 붙인다. */
+    /* 펼친 책 효과(상시): 그림자가 바깥쪽으로만 떨어지고 중앙(책등)은 깨끗하게 이어짐.
+       왼쪽 면=왼쪽·아래로, 오른쪽 면=오른쪽·아래로 — 테두리 없이 음영만. 호버=노란 외곽선. */
+    #previewGrid.pv-spread { grid-template-columns: repeat(2, minmax(0, var(--spread-w, 560px))); justify-content: center; gap: 26px 0; }
+    #previewGrid.pv-spread .pv-cell:first-child { grid-column: 2; }
+    #previewGrid.pv-spread .pv-canvas { border-radius: 0; border: 0; }
+    #previewGrid.pv-spread .pv-cell:nth-child(even) .pv-canvas { box-shadow: -7px 7px 16px rgba(0, 0, 0, 0.2); }   /* 왼쪽 면 */
+    #previewGrid.pv-spread .pv-cell:nth-child(odd)  .pv-canvas { box-shadow: 7px 7px 16px rgba(0, 0, 0, 0.2); }    /* 오른쪽 면 */
+    #previewGrid.pv-spread .pv-cell:hover .pv-canvas { outline: 3px solid #ffd60a; outline-offset: -3px; }
+    #pagesGrid.pv-spread { grid-template-columns: repeat(2, minmax(0, var(--spread-w, 480px))); justify-content: center; gap: 26px 0; }
+    #pagesGrid.pv-spread .page-item.spread-first { grid-column: 2; }
+    #pagesGrid.pv-spread .chapter-divider { grid-column: 1 / -1; }
+    #pagesGrid.pv-spread .page-item { padding: 0; border-width: 0; border-radius: 0; background: transparent; overflow: visible; }
+    #pagesGrid.pv-spread .page-thumb-wrap { border-radius: 0; margin-bottom: 4px; background: transparent; }
+    #pagesGrid.pv-spread .page-thumbnail { border-radius: 0; box-shadow: none; }
+    /* 그림자는 래퍼에 — .page-thumb-wrap의 overflow:hidden이 이미지 그림자를 잘라내
+       흰 배경 페이지에서 그림자가 안 보이던 문제. 래퍼 밖(.page-item)은 overflow:visible */
+    #pagesGrid.pv-spread .page-item.sp-left  .page-thumb-wrap { box-shadow: -7px 7px 16px rgba(0, 0, 0, 0.2); }   /* 왼쪽 면 — 바깥쪽으로만 */
+    #pagesGrid.pv-spread .page-item.sp-right .page-thumb-wrap { box-shadow: 7px 7px 16px rgba(0, 0, 0, 0.2); }    /* 오른쪽 면 — 바깥쪽으로만 */
+    #pagesGrid.pv-spread .page-item:hover .page-thumbnail,
+    #pagesGrid.pv-spread .page-item.peer-hover .page-thumbnail {
+      outline: 3px solid #ffd60a; outline-offset: -3px;
+    }
+    /* 선택 표시는 펼침에서도 보여야 함 — 테두리 대신 안쪽 외곽선으로 */
+    #pagesGrid.pv-spread .page-item.selected .page-thumbnail { outline: 3px solid #ffd60a; outline-offset: -3px; }
+    /* filter:none — .sel-btn의 이모지 무채색 필터가 노란 활성 배경까지 회색으로 만드는 것 방지 */
+    #spreadViewBtn.active, #spreadViewBtn2.active { background: #ffd60a; color: #1d1d1f; border-color: #ffd60a; filter: none; }
     /* ✚ 십자 가이드선 — 기울기·정렬 확인용 (previewGrid.pv-guides일 때 각 페이지 중앙에 수평·수직선) */
     #previewGrid.pv-guides .pv-cell::before {
       content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 22px; /* 페이지 번호 영역 제외 */

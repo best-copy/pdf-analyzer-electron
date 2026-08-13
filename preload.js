@@ -6,6 +6,14 @@ const os   = require('os');
 contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 열기 다이얼로그 — 경로만 반환 (파일 내용은 readFile로 별도 요청)
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
+  openCoverFile: () => ipcRenderer.invoke('dialog:openCoverFile'),
+  genCoverImage: (opts) => ipcRenderer.invoke('ai:genCoverImage', opts),
+  // 📂 표지 핫폴더 — 감시는 메인, 표지 생성은 렌더러
+  pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  hotfolderStart: (dir) => ipcRenderer.invoke('hotfolder:start', dir),
+  hotfolderStop: () => ipcRenderer.invoke('hotfolder:stop'),
+  hotfolderFinish: (r) => ipcRenderer.invoke('hotfolder:finish', r),
+  onHotfolderJob: (cb) => ipcRenderer.on('hotfolder:job', (_, job) => cb(job)),
 
   // 외부(실행 인자·목차 검증기 연동)에서 넘어온 문서 열기 알림
   // cb([{path, name}]) — main이 검증한 실제 존재 문서만 온다
@@ -88,7 +96,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     try {
       if (!p) return false;
       const base = path.basename(p);
-      if (!/^pdfedit_.*\.(pdf|bin)$/i.test(base)) return false;
+      if (!/^pdfedit_.*\.(pdf|bin|png)$/i.test(base)) return false;   // png: AI 뒤표지 생성 결과
       if (path.dirname(p) !== os.tmpdir()) return false;
       fs.unlinkSync(p);
       return true;

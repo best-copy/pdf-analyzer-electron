@@ -1024,6 +1024,9 @@
     }
 
     function restoreThumbnailEl(el, pageNum, sbEl) {
+      // 적용 확정된 흑백 페이지는 선택 여부와 무관하게 회색 표시 유지
+      const rr = pageResults.find(x => x && x.pageNum === pageNum);
+      if (rr && rr.appliedBw) return;
       const img = el.querySelector('.page-thumbnail');
       if (img) img.style.filter = '';
       const span = el.querySelector('.page-type-inline');
@@ -1111,9 +1114,12 @@
     }
 
     function deselectAll() {
+      if (!selectedPages.size) return;   // 이미 비어 있으면 아무 것도 무효화하지 않음
+      const isCommitted = pn => { const r = pageResults.find(x => x && x.pageNum === pn); return !!(r && r.appliedBw); };
       selectedPages.clear();
       document.querySelectorAll('.page-item.selected').forEach(el => {
         el.classList.remove('selected');
+        if (isCommitted(parseInt(el.dataset.page, 10))) return;   // 확정 흑백은 회색 유지
         const img = el.querySelector('.page-thumbnail');
         if (img) img.style.filter = '';
         const span = el.querySelector('.page-type-inline');
@@ -1121,10 +1127,20 @@
       });
       sidebar.querySelectorAll('.sb-item.sb-selected').forEach(el => {
         el.classList.remove('sb-selected');
+        if (isCommitted(parseInt(el.dataset.sbPage, 10))) return;
         const sbImg = el.querySelector('img');
         if (sbImg) sbImg.style.filter = '';
       });
       updateSelectedCount();
+    }
+    // 적용 확정 후 선택만 조용히 해제 — 결과(processedPdfBytes)·캐시·회색 표시는 유지
+    function commitClearSelection() {
+      selectedPages.clear();
+      document.querySelectorAll('.page-item.selected').forEach(el => el.classList.remove('selected'));
+      sidebar.querySelectorAll('.sb-item.sb-selected').forEach(el => el.classList.remove('sb-selected'));
+      selectedCountEl.textContent = '0개 선택됨';
+      syncSidebarPanel();
+      if (typeof refreshPreviewMarks === 'function') refreshPreviewMarks();
     }
 
     function updateSelectedCount() {
@@ -1154,7 +1170,7 @@
       pageResults.forEach(r => {
         if (!r) return;
         // 선택 페이지를 흑백으로 세는 것은 '흑백변환' 옵션이 켜진 경우만
-        if (r.isColor && !(processingOptions.bw && selectedPages.has(r.pageNum))) { newColor++; colorPages.push(r.pageNum); }
+        if (r.isColor && !r.appliedBw && !(processingOptions.bw && selectedPages.has(r.pageNum))) { newColor++; colorPages.push(r.pageNum); }
         else { newGray++; grayPages.push(r.pageNum); }
       });
       colorPagesEl.textContent = newColor;
@@ -1189,6 +1205,12 @@
     }
 
     function changeThumbZoom(dir) {
+      // 📖 펼침 모드에서는 줌 조작이 '펼침 크기(%)'를 조절한다 (50~200%, 10% 단계)
+      const pgSpread = document.getElementById('previewGrid');
+      if (pgSpread && pgSpread.classList.contains('pv-spread') && typeof changeSpreadZoom === 'function') {
+        changeSpreadZoom(dir);
+        return;
+      }
       const next = thumbStepIdx + dir;
       if (next < 0 || next >= THUMB_STEPS.length) return;
       thumbStepIdx = next;
@@ -1336,6 +1358,8 @@
     // 원본 PDF는 임시파일로 넘기고(대용량 IPC 손상 방지) 편집기는 fs로 직접 읽는다.
     async function openContentEditor(startDisplayIdx) {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('편집할 PDF가 없습니다.'); return; }
+      // 표지 편집기 세션이 (편집기 취소 등으로) 남아 있으면 폐기 — 결과 오라우팅 방지
+      if (typeof _coverEditSession !== 'undefined') _coverEditSession = null;
       try {
         const buf = originalPdfBytes.slice ? originalPdfBytes.slice(0) : originalPdfBytes;
         const pdfPath = window.electronAPI.writeTempFile(buf, 'pdf');
@@ -1417,7 +1441,16 @@
     }
 
     // 편집기 → 메인: 저장 결과 수신 등록 (1회)
-    try { window.electronAPI.onEditorResult && window.electronAPI.onEditorResult(applyEditorResult); } catch (e) {}
+    // 표지 편집기 세션(_coverEditSession)이 열려 있으면 결과를 표지 저장 흐름으로 라우팅.
+    try {
+      window.electronAPI.onEditorResult && window.electronAPI.onEditorResult(res => {
+        if (typeof _coverEditSession !== 'undefined' && _coverEditSession && typeof handleCoverEditorResult === 'function') {
+          handleCoverEditorResult(res);
+          return;
+        }
+        applyEditorResult(res);
+      });
+    } catch (e) {}
 
     function jumpToPage() {
       const input = document.getElementById('jumpPageInput');
@@ -1509,7 +1542,19 @@
       // 사이드바 미러 버튼도 즉시 동기 — 상태·표시 불일치로 인한 오인 방지
       const sb = document.getElementById(`sb-opt-${key}`);
       if (sb) sb.classList.toggle('active', processingOptions[key]);
-      if (key === 'bw') { syncSelectionVisuals(); if (typeof refreshResults === 'function') refreshResults(); }
+      if (key === 'bw') {
+        // 옵션을 끄면 확정(appliedBw)도 함께 해제 — 흑백변환을 되돌리는 유일한 명시적 방법
+        if (!processingOptions.bw) {
+          pageResults.forEach(r => {
+            if (!r || !r.appliedBw) return;
+            delete r.appliedBw;
+            const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+            if (el) restoreThumbnailEl(el, r.pageNum);
+          });
+        }
+        syncSelectionVisuals();
+        if (typeof refreshResults === 'function') refreshResults();
+      }
       invalidateProcessed();
       if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
       // 잉크 정규화를 켜면 유휴 시간에 미리 변환 시작
@@ -1571,20 +1616,28 @@
     function baseOrderBwKey() {
       const valid = pageResults.filter(Boolean);
       const order = valid.map(r => (r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx) + (r.isBlank ? '' : '@' + editRev(r.originalIdx))).join('|');
-      const bw = (processingOptions.bw && selectedPages.size) ? [...selectedPages].sort((a, b) => a - b).join(',') : '';
+      const bw = bwSigPages(valid);
       return order + '#' + bw + (processingOptions.inkNorm ? '#ink' : '');
     }
     function baseSignature() {
       const valid = pageResults.filter(Boolean);
       const order = valid.map(r => `${r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx + '@' + editRev(r.originalIdx)}:${r.rotation || 0}`).join('|');
-      const bw = (processingOptions.bw && selectedPages.size) ? [...selectedPages].sort((a, b) => a - b).join(',') : '';
+      const bw = bwSigPages(valid);
       return order + '#' + bw + (processingOptions.inkNorm ? '#ink' : '');
+    }
+    // 시그니처용 흑백 대상 페이지 목록 — 확정(appliedBw) + 현재 선택(bw 옵션 시) 합집합
+    function bwSigPages(valid) {
+      const nums = valid
+        .filter(r => r.appliedBw || (processingOptions.bw && selectedPages.has(r.pageNum)))
+        .map(r => r.pageNum);
+      return nums.sort((a, b) => a - b).join(',');
     }
     // ── 흑백(DeviceGray) 변환 대상 판정 — 적용(buildBaseProcessed)과 다운로드
     // (buildBaseOptimized) 두 파이프라인이 반드시 이 함수를 공유한다.
     // (한쪽에만 조건이 빠져 다운로드본에서 잉크 정규화가 누락됐던 버그의 재발 방지)
     function isBwTarget(r) {
       if (!r || r.isBlank) return false;
+      if (r.appliedBw) return true;   // '✔ 적용'으로 확정된 흑백 — 선택과 무관하게 유지
       if (processingOptions.bw && selectedPages.size > 0 && selectedPages.has(r.pageNum)) return true;
       return !!processingOptions.inkNorm && !r.isColor;
     }
@@ -1733,6 +1786,8 @@
       if ((es.nUp | 0) > 1) parts.push(`${es.nUp}-up 조판${es.gutter ? `(거터 ${es.gutter}mm)` : ''}`);
       if (es.deskew && es.deskew.enabled) parts.push(es.deskew.mode === 'manual' ? `기울기 ${es.deskew.angle}°` : '기울기 자동보정');
       if (es.center && es.center.enabled) parts.push(es.center.mode === 'uniform' ? '가운데 정렬(일괄)' : '가운데 정렬');
+      const paN = es.pageAdjust ? Object.keys(es.pageAdjust).length : 0;
+      if (paN) parts.push(`개별 보정 ${paN}쪽`);
       if (es.bind && es.bind.enabled) parts.push(`제본여백 ${es.bind.size}mm`);
       if (es.border !== 'none') parts.push('테두리');
       if (es.hf && es.hf.enabled) parts.push('머리글/바닥글' + (((es.hf.start | 0) > 1) ? `(번호 ${es.hf.start}p=1)` : ''));
@@ -1765,12 +1820,13 @@
     // ── 흑백 PDF / 편집 적용 (명시적 '적용' 버튼) ─────────────────────────────
     async function applyChanges() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
-      if (processingOptions.bw && !selectedPages.size) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
+      const appliedBwCnt = pageResults.filter(r => r && r.appliedBw).length;
+      if (processingOptions.bw && !selectedPages.size && !appliedBwCnt) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
       try {
         applying = true;
         processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
         updateDownloadBtn();
-        const bwMode = processingOptions.bw && selectedPages.size > 0;
+        const bwMode = processingOptions.bw && (selectedPages.size > 0 || appliedBwCnt > 0);
         const inkCnt = processingOptions.inkNorm ? pageResults.filter(r => r && !r.isBlank && !r.isColor).length : 0;
         showLoading(bwMode ? `벡터 흑백변환 중 — 선택 ${selectedPages.size}페이지${inkCnt ? ` + 잉크 정규화 ${inkCnt}페이지` : ''}`
                   : inkCnt ? `잉크 정규화 중 — 흑백 판정 ${inkCnt}페이지를 DeviceGray로 변환`
@@ -1792,12 +1848,16 @@
         // 폰트 아웃라인화 옵션: 최종 단계로 gs 변환 (다운로드는 이 결과를 그대로 저장)
         let outlined = false;
         if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled) {
-          showLoading('폰트 → 곡선 변환 중… (Ghostscript, 문서 크기에 따라 수십 초)');
-          pdfBytes = await buildOutlinedBytes(pdfBytes);
+          showLoading('폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
+          pdfBytes = await buildOutlinedBytes(pdfBytes, p => updateProgress(Math.round(p * 100)));
           outlined = true;
         }
         const layoutNote = layoutNoteOf() + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '')
-          + (outlined ? ' · ✒ 폰트 아웃라인화(텍스트→곡선)' : '');
+          + (outlined ? (typeof _outlineMode !== 'undefined' && _outlineMode === 'embed'
+              ? ' · 🔤 폰트 완전 임베드' + (typeof _outlineRasterInfo !== 'undefined' && _outlineRasterInfo
+                  ? `\n🖼 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 대체 임베드 대신 300DPI 이미지로 굳혔습니다 — 어디서 출력해도 화면과 동일.`
+                  : '')
+              : ' · ✒ 폰트 곡선화(텍스트→곡선)') : '');
 
         processedPdfBytes = pdfBytes;
         if (outlined) directOutputBytes = pdfBytes;   // 재조립하면 아웃라인이 사라짐 — 그대로 저장
@@ -1806,12 +1866,22 @@
         updateProgress(100);
         renderProcessedPreview(pdfBytes);
 
+        // 흑백변환 확정(commit): 선택 페이지에 appliedBw 표식 → 이후 선택 해제·재선택과
+        // 무관하게 변환이 유지된다. 선택은 자동 해제(결과·캐시는 그대로).
+        let committed = 0;
+        if (processingOptions.bw && selectedPages.size) {
+          pageResults.forEach(r => { if (r && !r.isBlank && selectedPages.has(r.pageNum) && !r.appliedBw) { r.appliedBw = true; committed++; } });
+          commitClearSelection();
+        }
+
         const conv = base.stats || { converted: 0, errors: 0, errPages: [] };
         let msg = conv.converted > 0
           ? `적용 완료! ${conv.converted}페이지 흑백 변환됨${layoutNote} — '⇩ 다운로드'를 눌러 저장하세요.`
           : `적용 완료! 편집된 PDF(${base.validCount}페이지)${layoutNote} — '⇩ 다운로드'를 눌러 저장하세요.`;
         if (conv.errors > 0)
           msg += `\n⚠️ 주의: ${conv.errors}개 페이지(${conv.errPages.join(', ')})에서 일부 이미지 변환 실패 — 해당 페이지는 부분적으로 칼라가 남아있을 수 있습니다.`;
+        if (committed > 0)
+          msg += `\n✅ 흑백변환 확정 — 선택은 자동 해제되었고 변환은 유지됩니다. 되돌리려면 ⬛ 흑백변환 체크를 끄세요.`;
         showSuccess(msg);
         // 적용 완료 → 유휴 시간에 다운로드용 최적화본을 미리 생성(다운로드 즉시 저장)
         setTimeout(prewarmOptimizedOutput, 400);

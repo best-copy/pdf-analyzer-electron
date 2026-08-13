@@ -150,10 +150,16 @@
     // 섹션 17개 세로 나열이 어지러워 4개 그룹으로 재편. 각 그룹은 접이식이며 마지막
     // 펼침 상태를 localStorage(esGroupOpen)에 기억. 접힌 그룹은 제목 옆에 활성 기능
     // 요약 배지(●)를 보여 준다. 고정 상단(자동반영·프리셋·적용범위)은 그룹 밖에 남는다.
+    // ids 항목이 객체({wrap, title, ids})면 그 섹션들을 하나의 카테고리(es-section)로 병합해
+    // 담는다 — 안의 섹션들은 es-subsec(점선 구분)으로 강등. 마크업 이동 없이 부트 시 조립.
     const ES_GROUPS = [
-      { key: 'page', title: '📄 페이지 보정', ids: ['secScale', 'secDeskew', 'secCenter', 'secMargins', 'secBind', 'secBorder'] },
-      { key: 'imp',  title: '📖 임포징 · 제본', ids: ['secImp', 'secBleed', 'secCover'] },
-      { key: 'mark', title: '🔖 문구 · 번호', ids: ['secHf', 'secWm'] },
+      { key: 'page', title: '📄 페이지 보정', ids: ['secScale',
+        { wrap: 'secAdjust', title: '<span class="ic">🎯</span> 기울기 · 정렬 · 개별 보정', ids: ['secDeskew', 'secCenter', 'secPageAdjust'] },
+        { wrap: 'secMarginsBind', title: '<span class="ic">📏</span> 여백 · 제본여백', ids: ['secMargins', 'secBind'] },
+        'secBorder'] },
+      { key: 'imp',  title: '📖 임포징 · 제본', ids: ['secImp', 'secBleed'] },
+      { key: 'cover', title: '📕 표지 만들기', ids: ['secCover'] },
+      { key: 'mark', title: '🔖 머릿말 · 꼬릿말 · 워터마크', ids: ['secHf', 'secWm'] },
       { key: 'tool', title: '🛠 도구', ids: ['secContentEdit', 'secOutline'] },
     ];
     function esGroupOpenState() { try { return JSON.parse(localStorage.getItem('esGroupOpen') || '{}') || {}; } catch (e) { return {}; } }
@@ -171,7 +177,7 @@
     // 그룹별 활성 기능 요약 배지 — 접혀 있어도 무엇이 켜져 있는지 보이게
     function updateEsGroupBadges() {
       const ls = editSettings ? ensureAdjustFields(activeLayoutSettings()) : null;
-      const parts = { page: [], imp: [], mark: [], tool: [] };
+      const parts = { page: [], imp: [], cover: [], mark: [], tool: [] };
       if (ls) {
         if (ls.scaling.mode === 'percent') parts.page.push(`배율 ${ls.scaling.percent || 100}%`);
         else if (ls.scaling.mode !== 'none') parts.page.push('크기');
@@ -183,8 +189,11 @@
         if (ls.hf && ls.hf.enabled) parts.mark.push('머리글/바닥글');
         if (ls.wm && ls.wm.enabled && ls.wm.text.trim()) parts.mark.push('워터마크');
       }
+      const paN = editSettings && editSettings.pageAdjust ? Object.keys(editSettings.pageAdjust).length : 0;
+      if (paN) parts.page.push(`개별 ${paN}쪽`);
       if (typeof _impEnabled !== 'undefined' && _impEnabled) parts.imp.push('임포징 포함');
-      if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled) parts.tool.push('아웃라인화');
+      if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled)
+        parts.tool.push(typeof _outlineMode !== 'undefined' && _outlineMode === 'embed' ? '폰트 임베드' : '곡선화');
       Object.entries(parts).forEach(([k, arr]) => {
         const el = document.getElementById('esgBadge-' + k);
         if (el) el.textContent = arr.length ? '● ' + arr.join(' · ') : '';
@@ -206,7 +215,26 @@
         const body = document.createElement('div');
         body.className = 'es-group-body';
         body.id = 'esgBody-' + g.key;
-        g.ids.forEach(id => { const el = document.getElementById(id); if (el) body.appendChild(el); });
+        g.ids.forEach(id => {
+          if (typeof id === 'string') {
+            const el = document.getElementById(id);
+            if (el) body.appendChild(el);
+            return;
+          }
+          // 병합 카테고리: 새 es-section을 만들어 하위 섹션들을 es-subsec으로 담는다
+          const wrap = document.createElement('div');
+          wrap.className = 'es-section';
+          wrap.id = id.wrap;
+          const t = document.createElement('div');
+          t.className = 'es-section-title';
+          t.innerHTML = id.title;
+          wrap.appendChild(t);
+          id.ids.forEach(sid => {
+            const el = document.getElementById(sid);
+            if (el) { el.classList.remove('es-section'); el.classList.add('es-subsec'); wrap.appendChild(el); }
+          });
+          body.appendChild(wrap);
+        });
         wrap.append(head, body);
         sidebar.insertBefore(wrap, anchor || null);
         if (st[g.key]) { body.classList.add('open'); head.classList.add('open'); }
@@ -402,20 +430,20 @@
       const exists = target && !!getPresets()[target];
       btn.textContent = exists ? '💾 덮어쓰기' : '＋ 저장';
       btn.title = exists
-        ? `'${target}' 프리셋을 현재 설정으로 덮어씁니다 (새 이름을 적으면 새 프리셋으로 저장)`
-        : '이름을 적으면 새 프리셋으로, 비우면 위에서 선택한 프리셋에 현재 설정을 덮어씁니다';
+        ? `'${target}' 프로파일을 현재 설정으로 덮어씁니다 (새 이름을 적으면 새 프로파일으로 저장)`
+        : '이름을 적으면 새 프로파일으로, 비우면 위에서 선택한 프로파일에 현재 설정을 덮어씁니다';
     }
     function savePreset() {
       if (!editSettings) return;
       const inp = document.getElementById('esPresetName');
       const name = presetSaveTarget();
       if (!name) {
-        showError('프리셋 이름을 입력하거나, 덮어쓸 프리셋을 목록에서 선택하세요.');
+        showError('프로파일 이름을 입력하거나, 덮어쓸 프로파일을 목록에서 선택하세요.');
         inp.focus(); return;
       }
       const presets = getPresets();
       const overwrite = !!presets[name];
-      if (overwrite && !confirm(`프리셋 '${name}'을(를) 현재 설정으로 덮어쓸까요?`)) return;
+      if (overwrite && !confirm(`프로파일 '${name}'을(를) 현재 설정으로 덮어쓸까요?`)) return;
       presets[name] = JSON.parse(JSON.stringify(
         Object.assign(presetFromSettings(activeLayoutSettings()), captureExtraPreset())));
       savePresetsObj(presets);
@@ -424,8 +452,8 @@
       document.getElementById('esPresetSel').value = name;
       updatePresetSaveBtn();
       showSuccess(overwrite
-        ? `프리셋 '${name}' 을(를) 현재 설정으로 덮어썼습니다.`
-        : `프리셋 '${name}' 을(를) 저장했습니다.`);
+        ? `프로파일 '${name}' 을(를) 현재 설정으로 덮어썼습니다.`
+        : `프로파일 '${name}' 을(를) 저장했습니다.`);
     }
     function loadPreset(name) {
       if (!name || !editSettings) return;
@@ -444,24 +472,24 @@
       t.bind   = Object.assign(def.bind,   c.bind   || {});
       t.hf = Object.assign(def.hf, c.hf || {});
       t.wm = Object.assign(def.wm, c.wm || {});
-      applyExtraPreset(c);   // 처리 옵션·임포징 설정 복원 (구버전 프리셋엔 없으면 무시)
+      applyExtraPreset(c);   // 처리 옵션·임포징 설정 복원 (구버전 프로파일엔 없으면 무시)
       syncEditUI();
-      updatePresetSaveBtn();  // 이제 '💾 덮어쓰기' — 옵션을 고쳐 이 프리셋을 갱신할 수 있다
+      updatePresetSaveBtn();  // 이제 '💾 덮어쓰기' — 옵션을 고쳐 이 프로파일을 갱신할 수 있다
       scheduleLivePreview();
-      showSuccess(`프리셋 '${name}' 을(를) 적용했습니다. (편집·처리옵션·임포징 설정 포함)`
-        + `\n옵션을 고친 뒤 '💾 덮어쓰기'를 누르면 이 프리셋이 갱신됩니다.`);
+      showSuccess(`프로파일 '${name}' 을(를) 적용했습니다. (편집·처리옵션·임포징 설정 포함)`
+        + `\n옵션을 고친 뒤 '💾 덮어쓰기'를 누르면 이 프로파일이 갱신됩니다.`);
     }
     function deletePreset() {
       const sel = document.getElementById('esPresetSel');
       const name = sel && sel.value;
-      if (!name) { showError('삭제할 프리셋을 선택하세요.'); return; }
+      if (!name) { showError('삭제할 프로파일을 선택하세요.'); return; }
       const presets = getPresets();
       if (presets[name]) {
-        if (!confirm(`프리셋 '${name}' 을(를) 삭제할까요?`)) return;
+        if (!confirm(`프로파일 '${name}' 을(를) 삭제할까요?`)) return;
         delete presets[name]; savePresetsObj(presets);
         sel.value = '';
         loadPresetList();     // updatePresetSaveBtn 포함
-        showSuccess(`프리셋 '${name}' 을(를) 삭제했습니다.`);
+        showSuccess(`프로파일 '${name}' 을(를) 삭제했습니다.`);
       }
     }
 
@@ -655,6 +683,194 @@
     function setCenterAxis(a) { if (editSettings) { ensureAdjustFields(activeLayoutSettings()).center.axis = a; activateChip('ctaxis', a); scheduleLivePreview(); } }
     function setBindSide(s)   { if (editSettings) { ensureAdjustFields(activeLayoutSettings()).bind.side = s; activateChip('bindside', s); scheduleLivePreview(); } }
     function setBindMethod(m) { if (editSettings) { ensureAdjustFields(activeLayoutSettings()).bind.method = m; activateChip('bindmethod', m); scheduleLivePreview(); } }
+    // ── 페이지별 개별 보정 (자동 기울기·정렬 위에 페이지 단위 가감) ──────────
+    // 저장소는 전역 editSettings.pageAdjust — { 페이지키: {skip, rot(°,+시계), dx(mm,+오른쪽), dy(mm,+아래)} }.
+    // 키는 원본 페이지 기준(adjKeyOf)이라 순서 변경에도 따라간다. 프리셋에는 저장하지 않는다(문서 종속).
+    function adjKeyOf(r) { return r.isBlank ? 'b' + r.pageNum : 'o' + r.originalIdx; }
+    function pageAdjustMap() {
+      if (!editSettings) return null;
+      if (!editSettings.pageAdjust) editSettings.pageAdjust = {};
+      return editSettings.pageAdjust;
+    }
+    function paTarget() {
+      const valid = pageResults.filter(Boolean);
+      const el = document.getElementById('paPage');
+      let n = parseInt(el && el.value, 10) || 1;
+      n = Math.max(1, Math.min(valid.length || 1, n));
+      if (el && el.value !== String(n) && document.activeElement !== el) el.value = n;
+      return { r: valid[n - 1] || null, n, valid };
+    }
+    function updatePaList() {
+      const el = document.getElementById('paList');
+      if (!el) return;
+      const map = (editSettings && editSettings.pageAdjust) || {};
+      const valid = pageResults.filter(Boolean);
+      const nums = [];
+      valid.forEach((r, i) => { if (map[adjKeyOf(r)]) nums.push(i + 1); });
+      el.textContent = nums.length ? `개별 보정 지정: ${nums.join(', ')}쪽` : '';
+    }
+    function syncPaUI() {
+      const st = document.getElementById('paState');
+      if (!editSettings || !pageResults.filter(Boolean).length) {
+        if (st) st.textContent = '';
+        updatePaList();
+        return;
+      }
+      const { r } = paTarget();
+      const o = (r && editSettings.pageAdjust && editSettings.pageAdjust[adjKeyOf(r)]) || null;
+      document.getElementById('paSkip').checked = !!(o && o.skip);
+      document.getElementById('paRot').value = o ? (o.rot || 0) : 0;
+      document.getElementById('paDx').value  = o ? (o.dx  || 0) : 0;
+      document.getElementById('paDy').value  = o ? (o.dy  || 0) : 0;
+      if (st) st.textContent = o ? '● 지정됨' : '기본';
+      updatePaList();
+    }
+    function paApplyInput() {
+      if (!editSettings) return;
+      const { r } = paTarget();
+      if (!r) return;
+      const map = pageAdjustMap();
+      const key = adjKeyOf(r);
+      const rec = {
+        skip: !!document.getElementById('paSkip').checked,
+        rot: Math.max(-45, Math.min(45, parseFloat(document.getElementById('paRot').value) || 0)),
+        dx:  Math.max(-200, Math.min(200, parseFloat(document.getElementById('paDx').value) || 0)),
+        dy:  Math.max(-200, Math.min(200, parseFloat(document.getElementById('paDy').value) || 0)),
+      };
+      if (!rec.skip && !rec.rot && !rec.dx && !rec.dy) delete map[key];
+      else map[key] = rec;
+      const st = document.getElementById('paState');
+      if (st) st.textContent = map[key] ? '● 지정됨' : '기본';
+      updatePaList();
+      updateEsGroupBadges();
+      scheduleLivePreview();
+    }
+    function paGoto(d) {
+      const { n, valid } = paTarget();
+      const el = document.getElementById('paPage');
+      if (el) el.value = Math.max(1, Math.min(valid.length || 1, n + d));
+      syncPaUI();
+    }
+    function paResetPage() {
+      if (!editSettings || !editSettings.pageAdjust) return;
+      const { r } = paTarget();
+      if (r) delete editSettings.pageAdjust[adjKeyOf(r)];
+      syncPaUI(); updateEsGroupBadges(); scheduleLivePreview();
+    }
+    function paResetAll() {
+      if (!editSettings) return;
+      editSettings.pageAdjust = {};
+      syncPaUI(); updateEsGroupBadges(); scheduleLivePreview();
+    }
+    // 우클릭 메뉴 → 이 페이지를 개별 보정 대상으로 열기.
+    // 편집 모드 밖(분석 썸네일 우클릭)이면 먼저 편집 작업공간으로 진입한다.
+    function ctxPageAdjust() {
+      hideCtxMenu();
+      if (ctxTargetIdx < 0 || !pageResults[ctxTargetIdx]) return;
+      const r = pageResults[ctxTargetIdx];
+      const n = pageResults.filter(Boolean).indexOf(r) + 1;
+      if (n <= 0) return;
+      if (!document.body.classList.contains('edit-fullscreen')) enterEditWorkspace();
+      toggleEsGroup('page', true);   // 📄 페이지 보정 그룹 펼침
+      const el = document.getElementById('paPage');
+      if (el) el.value = n;
+      syncPaUI();
+      const sec = document.getElementById('secPageAdjust');
+      if (sec) {
+        sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 어디로 갔는지 눈에 띄게 잠깐 강조
+        sec.style.transition = 'background 0.4s';
+        sec.style.background = 'rgba(255,214,10,0.12)';
+        setTimeout(() => { sec.style.background = ''; }, 1200);
+      }
+      const rot = document.getElementById('paRot');
+      if (rot) rot.focus();
+    }
+
+    // 📖 펼침 보기 — 실제 책 펼침 모양 (1쪽 오른쪽 단독, 이후 짝|홀 맞붙임).
+    // 적용 전(분석 썸네일)·적용 후(결과 미리보기) 양쪽에 적용. 펼침은 페이지가 크게
+    // 보이므로 결과 미리보기는 고해상도로 다시 렌더한다(화질).
+    function toggleSpreadView(force) {
+      const pg = document.getElementById('previewGrid');
+      const ag = document.getElementById('pagesGrid');
+      const on = force !== undefined ? !!force : !(pg && pg.classList.contains('pv-spread'));
+      [pg, ag].forEach(g => { if (g) g.classList.toggle('pv-spread', on); });
+      markSpreadFirst();
+      ['spreadViewBtn', 'spreadViewBtn2'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.classList.toggle('active', on);
+      });
+      _syncSpreadZoomWidget(on);
+      // 결과 미리보기가 떠 있으면 펼침 해상도로 재렌더 (표본 모드는 라이브 경로가 재렌더)
+      if (typeof previewVisible === 'function' && previewVisible()) {
+        if (pg && pg.dataset.wsSample === '1') { if (typeof scheduleLivePreview === 'function') scheduleLivePreview(); }
+        else if (typeof processedPdfBytes !== 'undefined' && processedPdfBytes) renderProcessedPreview(processedPdfBytes);
+      }
+    }
+    // 📖 펼침 크기 조절 — 줌 위젯(−/%/+ · Ctrl+[ ])이 펼침 모드에서는 이 값을 조절한다.
+    // 50~200%, 10% 단계. 확대 시 흐려지지 않게 결과 미리보기를 새 해상도로 재렌더(디바운스).
+    let _spreadZoomPct = 100;
+    let _spreadRerenderTimer = null;
+    function changeSpreadZoom(dir) {
+      _spreadZoomPct = Math.max(50, Math.min(200, _spreadZoomPct + dir * 10));
+      applySpreadZoom();
+    }
+    function applySpreadZoom() {
+      const k = _spreadZoomPct / 100;
+      const pg = document.getElementById('previewGrid');
+      const ag = document.getElementById('pagesGrid');
+      if (pg) pg.style.setProperty('--spread-w', Math.round(560 * k) + 'px');
+      if (ag) ag.style.setProperty('--spread-w', Math.round(480 * k) + 'px');
+      const pctEl = document.getElementById('zoomPct');
+      if (pctEl) pctEl.textContent = _spreadZoomPct + '%';
+      const zo = document.getElementById('zoomOutBtn'), zi = document.getElementById('zoomInBtn');
+      if (zo) zo.disabled = _spreadZoomPct <= 50;
+      if (zi) zi.disabled = _spreadZoomPct >= 200;
+      clearTimeout(_spreadRerenderTimer);
+      _spreadRerenderTimer = setTimeout(() => {
+        if (typeof previewVisible === 'function' && previewVisible()) {
+          if (pg && pg.dataset.wsSample === '1') { if (typeof scheduleLivePreview === 'function') scheduleLivePreview(); }
+          else if (typeof processedPdfBytes !== 'undefined' && processedPdfBytes) renderProcessedPreview(processedPdfBytes);
+        }
+      }, 300);
+    }
+    // 펼침 토글 ↔ 줌 위젯 연동: 켜면 위젯을 띄워 펼침 %를 표시, 끄면 썸네일 % 표시로 복원
+    function _syncSpreadZoomWidget(on) {
+      if (on) {
+        if (typeof setThumbZoomWidgetVisible === 'function') setThumbZoomWidgetVisible(true);
+        applySpreadZoom();
+        return;
+      }
+      const pctEl = document.getElementById('zoomPct');
+      if (pctEl && typeof thumbStepIdx !== 'undefined') pctEl.textContent = (50 + thumbStepIdx * 10) + '%';
+      const zo = document.getElementById('zoomOutBtn'), zi = document.getElementById('zoomInBtn');
+      if (zo && typeof thumbStepIdx !== 'undefined') zo.disabled = thumbStepIdx === 0;
+      if (zi && typeof THUMB_STEPS !== 'undefined') zi.disabled = thumbStepIdx === THUMB_STEPS.length - 1;
+      // 편집 모드가 아니면 위젯은 원래 숨김 상태로 복귀
+      if (!document.body.classList.contains('edit-fullscreen') && typeof setThumbZoomWidgetVisible === 'function')
+        setThumbZoomWidgetVisible(false);
+    }
+    // 분석 그리드 펼침 표식 — 첫 페이지(오른쪽 단독) + 각 카드의 좌/우 면(sp-left/sp-right).
+    // 챕터 구분선이 전폭 행을 차지해 CSS 순서만으로는 열을 판정할 수 없어, 그리드
+    // 자동 배치를 그대로 시뮬레이션하며 클래스를 붙인다(구분선을 만나면 다음은 왼쪽부터).
+    function markSpreadFirst() {
+      const ag = document.getElementById('pagesGrid');
+      if (!ag) return;
+      ag.querySelectorAll('.page-item.spread-first, .page-item.sp-left, .page-item.sp-right')
+        .forEach(el => el.classList.remove('spread-first', 'sp-left', 'sp-right'));
+      if (!ag.classList.contains('pv-spread')) return;
+      let col = 1, first = true;
+      for (const el of ag.children) {
+        if (el.classList.contains('chapter-divider')) { col = 1; continue; }   // 전폭 행 → 다음은 왼쪽부터
+        if (!el.classList.contains('page-item')) continue;
+        if (first) { el.classList.add('spread-first', 'sp-right'); first = false; col = 1; continue; }
+        if (col === 1) { el.classList.add('sp-left'); col = 2; }
+        else { el.classList.add('sp-right'); col = 1; }
+      }
+    }
+    // 펼침 보기는 항상 꺼진 상태로 시작 — 필요할 때만 켜는 확인용 보기(기본 꺼짐).
+    try { localStorage.removeItem('spreadView'); } catch (e) {}   // 과거 저장값 정리
+
     // ✚ 십자 가이드선 — 미리보기 각 페이지 위에 수평·수직 중앙선 오버레이 (탭 공통 화면 옵션)
     function togglePreviewGuide(on) {
       const grid = document.getElementById('previewGrid');
@@ -794,6 +1010,9 @@
       activateChip('bindside', ls.bind.side);
       activateChip('bindmethod', ls.bind.method);
       document.getElementById('esBindAlt').checked = ls.bind.alt !== false;
+      syncPaUI();   // 페이지별 개별 보정 (전역 editSettings.pageAdjust — 포커스와 무관)
+      // 폰트 출력 안전화 방식 칩 (localStorage 전역 — es와 무관, 부트 복원 겸용)
+      if (typeof _outlineMode !== 'undefined') activateChip('olmode', _outlineMode);
       // 머리글/바닥글
       document.getElementById('esHfEnabled').checked = ls.hf.enabled;
       document.getElementById('esHfBody').classList.toggle('show', ls.hf.enabled);
@@ -867,7 +1086,15 @@
           scheduleLivePreview();
         });
       };
-      bindToggleSub('esDkEnabled',   'esDkBody',   (ls, on) => { ls.deskew.enabled = on; });
+      bindToggleSub('esDkEnabled',   'esDkBody',   (ls, on) => {
+        ls.deskew.enabled = on;
+        // 기울기 보정을 켜면 십자 가이드선도 자동으로 켠다 — 수평 확인이 목적이므로.
+        // (끌 때는 그대로 둠 — 다른 보정 확인에 계속 쓸 수 있게 사용자가 직접 끈다)
+        if (on) {
+          const g = document.getElementById('esGuideChk');
+          if (g && !g.checked) { g.checked = true; togglePreviewGuide(true); }
+        }
+      });
       bindToggleSub('esCtEnabled',   'esCtBody',   (ls, on) => { ls.center.enabled = on; });
       bindToggleSub('esBindEnabled', 'esBindBody', (ls, on) => { ls.bind.enabled = on; });
       // 수동 각도: 슬라이더 ↔ 숫자 입력 동기
@@ -1015,6 +1242,7 @@
         es.scaling.mode !== 'none' || (es.nUp | 0) > 1 || es.border !== 'none' ||
         (es.deskew && es.deskew.enabled) ||
         (es.center && es.center.enabled) ||
+        (es.pageAdjust && Object.keys(es.pageAdjust).length > 0) ||
         (es.bind && es.bind.enabled) ||
         (es.hf && es.hf.enabled) ||
         (es.wm && es.wm.enabled && es.wm.text.trim())
@@ -1157,12 +1385,25 @@
       return data;
     }
     // groups의 기울기·정렬 설정 → 워커에 넘길 페이지별 최종 보정 배열 [{rot,dx,dy}|null]
-    async function computeAdjustArray(srcBytes, groups, baseSig) {
+    // winFrom: 표본 창(문서 일부 조립)이면 창 시작의 문서 절대 인덱스 — 개별 보정 키 매칭용
+    async function computeAdjustArray(srcBytes, groups, baseSig, winFrom) {
       const needsAdj = g => (g.es.deskew && g.es.deskew.enabled) || (g.es.center && g.es.center.enabled);
       const needsMeasure = g => (g.es.deskew && g.es.deskew.enabled && g.es.deskew.mode !== 'manual')
                              || (g.es.center && g.es.center.enabled);
-      if (!groups.some(needsAdj)) return null;
       const N = groups[0].mask.length;
+      // 페이지별 개별 보정 — 문서 순서 기준 전역(editSettings.pageAdjust), 그룹과 무관하게 적용
+      const off = winFrom | 0;
+      const pa = (editSettings && editSettings.pageAdjust) || {};
+      const validAll = pageResults.filter(Boolean);
+      const ovOf = i => {
+        const r = validAll[off + i];
+        if (!r) return null;
+        const o = pa[adjKeyOf(r)];
+        return (o && (o.skip || o.rot || o.dx || o.dy)) ? o : null;
+      };
+      let anyOv = false;
+      for (let i = 0; i < N && !anyOv; i++) if (ovOf(i)) anyOv = true;
+      if (!groups.some(needsAdj) && !anyOv) return null;
       const adjust = new Array(N).fill(null);
       let meas = null;
       if (groups.some(needsMeasure)) {
@@ -1200,6 +1441,16 @@
           if (rot || dx || dy) adjust[i] = { rot, dx, dy };
         });
       });
+      // 개별 보정 패스 — 자동 보정값 위에 가감. skip이면 그 페이지의 자동값은 버리고 수동값만.
+      for (let i = 0; i < N; i++) {
+        const o = ovOf(i);
+        if (!o) continue;
+        const a = (!o.skip && adjust[i]) ? adjust[i] : { rot: 0, dx: 0, dy: 0 };
+        a.rot += -(parseFloat(o.rot) || 0);                       // UI '+=시계방향' → pdf-lib 반시계(+)
+        a.dx  += (parseFloat(o.dx) || 0) * PT_PER_MM_UI;          // +=오른쪽
+        a.dy  += -(parseFloat(o.dy) || 0) * PT_PER_MM_UI;         // UI '+=아래' → PDF y는 위가 +
+        adjust[i] = (a.rot || a.dx || a.dy) ? a : null;
+      }
       return adjust.some(Boolean) ? adjust : null;
     }
 
@@ -1251,7 +1502,10 @@
       let roman = computeRomanNums();
       if (roman && win) roman = roman.slice(win.from, win.to + 1);
       if (roman && !roman.some(Boolean)) roman = null;
-      const sig = (baseSig || '') + '::' + JSON.stringify(groups) + '::R' + (roman ? roman.join(',') : '');
+      // 개별 보정(pageAdjust)은 전역 저장이라 그룹 JSON에 안 잡힐 수 있어(챕터 그룹만 있을 때) 명시 포함
+      const sig = (baseSig || '') + '::' + JSON.stringify(groups)
+        + '::A' + JSON.stringify((editSettings && editSettings.pageAdjust) || {})
+        + '::R' + (roman ? roman.join(',') : '');
       if (_layoutCache.sig === sig) return _layoutCache.bytes;
       const fileName = (typeof originalFileName === 'string' ? originalFileName : '') || '';
       // 머리글/바닥글이 ASCII(숫자·영문)만이면 워커가 내장 표준폰트로 그리므로 13MB 시스템 폰트를 읽지도 넘기지도 않는다.
@@ -1280,7 +1534,7 @@
       // 기울기 보정·가운데 정렬: base PDF를 저해상 렌더로 측정해 페이지별 보정값 계산
       // (측정은 baseSig 캐시 — 같은 base면 재측정 없이 즉시. 실패해도 나머지 레이아웃은 진행)
       let adjust = null;
-      try { adjust = await computeAdjustArray(srcBytes, groups, baseSig); }
+      try { adjust = await computeAdjustArray(srcBytes, groups, baseSig, win ? win.from : 0); }
       catch (e) { console.warn('기울기·정렬 측정 실패 — 보정 없이 진행:', e); }
       const srcCopy = srcBytes.slice(0);
       const transfer = [srcCopy.buffer];
@@ -1411,7 +1665,11 @@
       const note = document.getElementById('previewNote');
       if (!section || !grid || !bytes) return;
       const myToken = ++previewRenderToken;
-      const pxW = opts.live ? 170 : 240;   // 캔버스 폭(작을수록 빠름)
+      // 캔버스 폭(작을수록 빠름). 펼침 모드는 표시 폭(560px × 펼침%)에 맞춘 고해상도로.
+      const spreadK = (typeof _spreadZoomPct !== 'undefined' ? _spreadZoomPct : 100) / 100;
+      const pxW = grid.classList.contains('pv-spread')
+        ? Math.max(400, Math.round(560 * spreadK * 1.15))
+        : (opts.live ? 170 : 240);
       // 진입 시 원본 통계 스냅샷(최초 1회)
       if (!_origStats) _origStats = {
         t: totalPagesEl.textContent, c: colorPagesEl.textContent,
@@ -1454,7 +1712,7 @@
           let sig = null;
           if (src && src.length === 1) {
             const r = pnMap.get(src[0]);
-            if (r) sig = [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0, (r.isRoman || r.isTocPage) ? 1 : 0, selectedPages.has(src[0]) ? 1 : 0].join('|');
+            if (r) sig = [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0, (r.isRoman || r.isTocPage) ? 1 : 0, (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
           }
           const cached = sig ? _pvPageCache.get(i) : null;
           let canvas, isColor, pagePtW = 0, pagePtH = 0;   // pt 크기 — 기하 오버레이(여백·제본여백) 계산용
@@ -1610,10 +1868,11 @@
           sbPrevChapter = r.chapter;
         }
         const item = document.createElement('div');
-        item.className = 'sb-item' + (r.isBlank ? '' : (r.isColor ? ' sb-color-page' : ' sb-mono-page'));
+        // 적용 확정 흑백(appliedBw)은 사이드바에서도 흑백으로 표시
+        item.className = 'sb-item' + (r.isBlank ? '' : ((r.isColor && !r.appliedBw) ? ' sb-color-page' : ' sb-mono-page'));
         item.dataset.sbPage = r.pageNum;
         item.innerHTML = r.thumbnail
-          ? `<img src="${r.thumbnail}" alt="${r.pageNum}">`
+          ? `<img src="${r.thumbnail}"${r.appliedBw ? ' style="filter:grayscale(1);"' : ''} alt="${r.pageNum}">`
           : `<div class="sb-blank" style="height:44px;background:#2c2c2e;border-radius:3px;"></div>`;
         item.innerHTML += `<div class="sb-num">${r.pageNum}</div>`;
 
@@ -1784,6 +2043,13 @@
         el.classList.add('selected');
         const img = el.querySelector('.page-thumbnail');
         if (img && !isBlank && processingOptions.bw) img.style.filter = 'grayscale(1)';   // 흑백 미리보기는 옵션 ON일 때만
+      }
+      // 적용 확정된 흑백 페이지 — 선택과 무관하게 회색 + '흑백' 라벨 유지
+      if (r.appliedBw && !isBlank) {
+        const img = el.querySelector('.page-thumbnail');
+        if (img) img.style.filter = 'grayscale(1)';
+        const span = el.querySelector('.page-type-inline');
+        if (span) { if (!span.dataset.orig) span.dataset.orig = span.textContent; span.textContent = '흑백'; }
       }
       el.addEventListener('click', e => {
         if (e.target.closest('button')) return;
@@ -1986,25 +2252,10 @@
       document.querySelectorAll('.peer-hover').forEach(el => el.classList.remove('peer-hover'));
     }
 
-    // 빈 곳 클릭 → 선택 전체 해제 — 문서 어디든(그리드 여백·본문 배경·통계 영역 등).
-    // 제외: 페이지 카드·챕터 헤더·버튼/입력류·양쪽 사이드바·미리보기·모달·툴바 등 상호작용 영역.
-    // Ctrl/Shift 누른 채 빗나간 클릭은 범위선택 중 실수로 간주해 유지.
-    const KEEP_SELECTION_SEL = [
-      '.page-item', '.chapter-divider', 'button', 'input', 'select', 'textarea', 'label', 'a',
-      '#sidebar', '#sbToggle', '#sbResizer', '#editSidebar', '#editToggle',
-      '#previewSection', '#pageCtxMenu', '#tabBar', '#mainTabBar', '.sticky-panel',
-      '#preflightModal', '#tocModal', '#orderModal', '#loading', '.imp-prof-list',
-    ].join(', ');
-    document.addEventListener('click', e => {
-      if (!selectedPages.size) return;
-      if (e.ctrlKey || e.shiftKey) return;
-      // ⬛ 흑백변환 모드에서는 선택 = 변환 대상 — 빈 곳을 무심코 클릭했다가 선택이 풀리면
-      // 적용된 흑백변환까지 무효화(invalidateProcessed)되어 "흑백이 풀리는" 사고가 된다.
-      // 흑백 모드 중에는 빈 곳 클릭 해제를 막고, 해제는 '선택 해제' 버튼(명시적)으로만.
-      if (processingOptions.bw) return;
-      if (e.target.closest(KEEP_SELECTION_SEL)) return;
-      deselectAll();
-    });
+    // 빈 곳 클릭 → 선택 해제 기능은 제거됨 — 선택은 흑백변환·회전·복제·적용범위 등
+    // 여러 파이프라인의 입력이라, 사이드바·본문 여백을 무심코 클릭만 해도 풀리는 사고가
+    // 반복됐다(흑백 모드만 막아도 체크 전에 선택하는 흐름에서 여전히 풀림).
+    // 해제는 명시적 동작으로만: '선택 해제' 버튼 또는 C 키.
 
     // 메인 그리드 → 사이드바
     pagesGrid.addEventListener('mouseover', e => {

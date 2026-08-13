@@ -90,6 +90,7 @@
     <div class="grp">
       <button class="tbtn" id="tool-select" title="선택/이동 (V)" onclick="setTool('select')">▧</button>
       <button class="tbtn" id="tool-text"   title="텍스트 삽입 (T)" onclick="setTool('text')">T</button>
+      <button class="tbtn" id="tool-vtext"  title="세로 텍스트 삽입 (Shift+T) — 책등 제목 등, 90° 회전된 텍스트" onclick="setTool('vtext')">T↓</button>
       <button class="tbtn" id="tool-edit"   title="기존 텍스트 편집 (E)" onclick="setTool('edit')">✎</button>
       <button class="tbtn" id="tool-image"  title="이미지 삽입 (I)" onclick="pickImage()">🖼</button>
       <button class="tbtn" id="tool-line"   title="선 (L)" onclick="setTool('line')">╱</button>
@@ -160,7 +161,7 @@
       </div>
     </div>
     <div id="props"><div class="hint"><b>PDF의 기존 글자를 클릭</b>하면 바로 수정할 수 있습니다(가림 후 재입력). 빈 곳을 클릭하면 새 오브젝트 선택이 해제됩니다.<br><br>
-      단축키: <b>V</b> 선택·<b>T</b> 텍스트삽입·<b>E</b> 기존텍스트·<b>I</b> 이미지·<b>R</b> 도형·<b>C</b> 자르기·<b>Ctrl+G</b> 그룹·<b>[</b> <b>]</b> 0.1° 회전·<b>Shift+[ ]</b> 1° 회전·<b>Del</b> 삭제·<b>Ctrl+Z/Y</b> 취소/재실행·<b>Ctrl+S</b> 저장.<br>
+      단축키: <b>V</b> 선택·<b>T</b> 텍스트삽입·<b>Shift+T</b> 세로텍스트·<b>E</b> 기존텍스트·<b>I</b> 이미지·<b>R</b> 도형·<b>C</b> 자르기·<b>Ctrl+G</b> 그룹·<b>[</b> <b>]</b> 0.1° 회전·<b>Shift+[ ]</b> 1° 회전·<b>Del</b> 삭제·<b>Ctrl+Z/Y</b> 취소/재실행·<b>Ctrl+S</b> 저장.<br>
       크기조절 시 <b>Shift</b>=비율 고정, 선택 오브젝트 <b>모서리 바깥</b>을 드래그하면 마우스 회전.
     </div></div>
   </div>
@@ -546,7 +547,7 @@ function stageXY(ev){ const r = stage.getBoundingClientRect(); return { x:(ev.cl
 function toView(px){ return px/scale; }
 
 // ── 툴 선택 ──────────────────────────────────────────────────────────────────
-function setTool(t){ tool=t; ['select','text','edit','rect','line','shape','mosaic','region'].forEach(x=>{ const b=document.getElementById('tool-'+x); if(b) b.classList.toggle('active', x===t); }); cropMode=false; document.getElementById('btn-crop').classList.remove('active'); }
+function setTool(t){ tool=t; ['select','text','vtext','edit','rect','line','shape','mosaic','region'].forEach(x=>{ const b=document.getElementById('tool-'+x); if(b) b.classList.toggle('active', x===t); }); cropMode=false; document.getElementById('btn-crop').classList.remove('active'); }
 setTool('select');
 
 // ── 스테이지 포인터 (생성 / 마퀴 선택) ──────────────────────────────────────
@@ -558,6 +559,7 @@ function onStagePointerDown(ev) {
   commitContentEditing();
   const s = stageXY(ev);
   if (tool === 'text')  { createText(toView(s.x), toView(s.y)); setTool('select'); return; }
+  if (tool === 'vtext') { createText(toView(s.x), toView(s.y), 90); setTool('select'); return; }   // 세로 텍스트(책등 제목)
   if (tool === 'edit')  { editExistingAt(s.x, s.y, true); setTool('select'); return; }
   if (tool === 'rect' || tool === 'line' || tool === 'mosaic' || tool === 'shape') { startDrawShape(ev, tool); return; }
   if (tool === 'region') { startRegionEdit(ev); return; }
@@ -733,9 +735,9 @@ function startDrawShape(ev, kind) {
 }
 
 // ── 오브젝트 생성 ────────────────────────────────────────────────────────────
-function createText(vx, vy) {
+function createText(vx, vy, rot) {
   pushUndo();
-  const o = { id:nextId++, type:'text', x:vx, y:vy, w:140, h:22, rot:0, text:'텍스트', fontSize:16,
+  const o = { id:nextId++, type:'text', x:vx, y:vy, w:140, h:22, rot:rot||0, text:'텍스트', fontSize:16,
     color:'#111111', fontFamily:'Malgun Gothic, sans-serif', fontPath:defaultFontPath(), bold:false, align:'left' };
   curModel().push(o); markDirty(); selectedIds=new Set([o.id]); renderObjects(); renderProps();
   const el = overlay.querySelector(`.obj[data-id="${o.id}"]`); if (el) startContentEditing(el, o);
@@ -1311,7 +1313,8 @@ window.addEventListener('keydown', e => {
   if (inField) return;
   switch (e.key) {
     case 'v': case 'V': setTool('select'); break;
-    case 't': case 'T': setTool('text'); break;
+    case 't': setTool('text'); break;
+    case 'T': setTool(e.shiftKey ? 'vtext' : 'text'); break;   // Shift+T = 세로 텍스트
     case 'e': case 'E': setTool('edit'); break;
     case 'i': case 'I': pickImage(); break;
     case 'l': case 'L': setTool('line'); break;

@@ -580,9 +580,18 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
     const outPath = path.join(os.tmpdir(), `pdfedit_outline_${Date.now()}.pdf`);
     // 이미지 무손실 명시: 재기록 과정의 다운샘플링 금지 + 원본 JPEG 통과(재압축 없음)
     // flatten: PDF 1.4 강제 → 투명도 평탄화(구형 RIP 대응). 기본은 1.6(투명도 유지).
+    // mode 'embed': 곡선화 대신 모든 폰트를 완전(비서브셋) 임베드 — 용량 증가가 폰트
+    // 파일 크기 정도로 그침. 미임베드 폰트는 FONTPATH(윈도우 폰트 폴더)에서 찾아 싣는다.
     const compat = opts && opts.flatten ? '1.4' : '1.6';
+    const embed = opts && opts.mode === 'embed';
+    const winFonts = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts');
+    // embed 모드는 -q를 빼고 gs 로그를 함께 반환 — "Loading font X (or substitute) from %rom%..."
+    // 메시지로 '이 PC에도 없어 대체된 폰트'를 렌더러가 감지해 해당 페이지를 이미지화한다.
     execFile(findGhostscript(),
-      ['-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite', '-dNoOutputFonts',
+      [...(embed ? [] : ['-q']), '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite',
+       ...(embed
+         ? ['-dEmbedAllFonts=true', '-dSubsetFonts=false', '-dCompressFonts=true', `-sFONTPATH=${winFonts}`]
+         : ['-dNoOutputFonts']),
        '-dPassThroughJPEGImages=true',
        '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
        `-dCompatibilityLevel=${compat}`, '-o', outPath, pdfPath],
@@ -595,7 +604,7 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
           return reject(new Error(msg));
         }
         if (!fs.existsSync(outPath)) return reject(new Error('아웃라인 PDF가 생성되지 않았습니다.'));
-        resolve(outPath);
+        resolve(embed ? { path: outPath, log: String(stdout || '') + '\n' + String(stderr || '') } : outPath);
       });
   });
 });
@@ -617,6 +626,121 @@ app.on('window-all-closed', () => {
 });
 
 // ── IPC: 파일 열기 다이얼로그 ──────────────────────────────────────────────
+// ── IPC: AI 뒤표지 이미지 생성 — OpenAI Images API (gpt-image-1) ──────────────
+// 렌더러는 CORS 때문에 직접 호출 불가 → 메인에서 호출하고 임시 PNG 경로만 반환.
+// 키는 렌더러(localStorage)가 들고 있다가 호출 시에만 전달 — 파일로 저장하지 않는다.
+ipcMain.handle('ai:genCoverImage', async (_, opts) => {
+  const { apiKey, prompt, size } = opts || {};
+  if (!apiKey || !String(apiKey).trim()) throw new Error('API 키가 비어 있습니다');
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 180000);   // 3분 상한
+  try {
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${String(apiKey).trim()}` },
+      body: JSON.stringify({ model: 'gpt-image-1', prompt: String(prompt || ''), size: size || '1024x1536', n: 1 }),
+      signal: ctrl.signal,
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((j.error && j.error.message) || ('이미지 생성 API 오류 (HTTP ' + res.status + ')'));
+    const b64 = j.data && j.data[0] && j.data[0].b64_json;
+    if (!b64) throw new Error('이미지 생성 응답이 비어 있습니다');
+    const out = path.join(os.tmpdir(), `pdfedit_aicover_${Date.now()}.png`);
+    fs.writeFileSync(out, Buffer.from(b64, 'base64'));
+    return out;
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('이미지 생성 시간 초과(3분) — 네트워크를 확인하세요');
+    throw e;
+  } finally { clearTimeout(to); }
+});
+
+// ── 📂 표지 핫폴더 — 폴더 감시는 메인, 표지 생성은 렌더러(pdf-lib·캔버스 필요) ──
+// 구조: 핫폴더\{본문, 표지, 완료, 실패}. 파일 크기가 2회 연속 같아지면(쓰기 완료) 렌더러에
+// 잡을 보내고, 렌더러가 결과 임시파일 경로로 finish를 호출하면 여기서 이동·정리한다.
+let _hfTimer = null, _hfDir = null;
+const _hfBusy = new Set(), _hfSizes = new Map();
+const HF_KINDS = { '본문': 'body', '표지': 'cover' };
+const HF_EXTS = /\.(pdf|ai|psd|png|jpg|jpeg)$/i;
+function hfSubdirs(dir) { return ['본문', '표지', '완료', '실패'].map(s => path.join(dir, s)); }
+function hfUniquePath(p) {
+  if (!fs.existsSync(p)) return p;
+  const ext = path.extname(p), base = p.slice(0, -ext.length || undefined);
+  for (let i = 1; i < 1000; i++) { const q = `${base} (${i})${ext}`; if (!fs.existsSync(q)) return q; }
+  return `${base}.${Date.now()}${ext}`;
+}
+function hfPoll() {
+  if (!_hfDir) return;
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win || win.isDestroyed()) return;
+  for (const [sub, kind] of Object.entries(HF_KINDS)) {
+    let files = [];
+    try { files = fs.readdirSync(path.join(_hfDir, sub)).filter(f => HF_EXTS.test(f)); } catch (e) { continue; }
+    for (const f of files) {
+      const p = path.join(_hfDir, sub, f);
+      if (_hfBusy.has(p)) continue;
+      let size = -1;
+      try { size = fs.statSync(p).size; } catch (e) { continue; }
+      if (size <= 0) continue;
+      if (_hfSizes.get(p) === size) {          // 크기 안정 = 복사 완료
+        _hfBusy.add(p);
+        _hfSizes.delete(p);
+        win.webContents.send('hotfolder:job', { path: p, kind, name: f });
+      } else {
+        _hfSizes.set(p, size);
+      }
+    }
+  }
+}
+ipcMain.handle('hotfolder:start', (_, dir) => {
+  try {
+    if (!dir || !fs.existsSync(dir)) return { ok: false, error: '폴더가 없습니다' };
+    hfSubdirs(dir).forEach(d => { try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} });
+    _hfDir = dir;
+    _hfBusy.clear(); _hfSizes.clear();
+    clearInterval(_hfTimer);
+    _hfTimer = setInterval(hfPoll, 2500);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('hotfolder:stop', () => { clearInterval(_hfTimer); _hfTimer = null; _hfDir = null; _hfBusy.clear(); _hfSizes.clear(); return true; });
+// 렌더러 처리 완료 → 원본·결과 이동 (성공: 완료\, 실패: 실패\ + 사유 텍스트)
+ipcMain.handle('hotfolder:finish', (_, r) => {
+  try {
+    const dir = _hfDir;
+    if (!dir || !r || !r.srcPath) return false;
+    const doneDir = path.join(dir, '완료'), failDir = path.join(dir, '실패');
+    if (r.ok) {
+      if (r.outTmp && fs.existsSync(r.outTmp)) fs.renameSync(r.outTmp, hfUniquePath(path.join(doneDir, r.outName || 'cover.pdf')));
+      if (fs.existsSync(r.srcPath)) fs.renameSync(r.srcPath, hfUniquePath(path.join(doneDir, path.basename(r.srcPath))));
+    } else {
+      if (fs.existsSync(r.srcPath)) fs.renameSync(r.srcPath, hfUniquePath(path.join(failDir, path.basename(r.srcPath))));
+      try { fs.writeFileSync(hfUniquePath(path.join(failDir, path.basename(r.srcPath) + '.실패사유.txt')), String(r.errMsg || '알 수 없는 오류'), 'utf8'); } catch (e) {}
+    }
+    _hfBusy.delete(r.srcPath);
+    return true;
+  } catch (e) { _hfBusy.delete(r && r.srcPath); return false; }
+});
+// 폴더 선택 다이얼로그 (핫폴더 지정용)
+ipcMain.handle('dialog:pickFolder', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({ title: '핫폴더 선택', properties: ['openDirectory', 'createDirectory'] });
+  return (canceled || !filePaths.length) ? null : filePaths[0];
+});
+
+// 표지 파일 선택 — PDF(1쪽째 사용) 또는 이미지
+ipcMain.handle('dialog:openCoverFile', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: '표지 파일 선택 (PDF · 이미지 · AI · PSD)',
+    filters: [
+      { name: '표지 파일 (PDF·이미지·AI·PSD)', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'ai', 'psd'] },
+      { name: 'PDF', extensions: ['pdf'] },
+      { name: '이미지 (PNG·JPG)', extensions: ['png', 'jpg', 'jpeg'] },
+      { name: 'Adobe (AI·PSD)', extensions: ['ai', 'psd'] },
+    ],
+    properties: ['openFile'],
+  });
+  return (canceled || !filePaths.length) ? null : filePaths[0];
+});
+
 ipcMain.handle('dialog:openFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe)',
