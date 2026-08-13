@@ -273,10 +273,35 @@
     <div class="es-head">
       <span class="es-head-title">✏️ 페이지 편집</span>
       <span class="es-head-actions">
+        <label class="es-head-auto" title="⚡ 편집 중 자동 반영 — 끄면 편집 조작은 즉시 반응하고 미리보기·다운로드는 '✔ 적용'을 눌러야 반영(큰 문서에서 빨라짐). 전체화면 편집 모드는 항상 자동 반영">
+          <input type="checkbox" id="esAutoPreview" style="accent-color:#ffd60a; width:13px; height:13px;">⚡ 실시간 편집반영
+        </label>
         <button class="es-head-reset" onclick="resetEditSettings()" title="편집 설정 초기화 — 크기·회전·조판·테두리 등 편집 옵션을 기본값으로">↺ 초기화</button>
         <button class="es-close es-fs-btn" onclick="enterEditWorkspace()" title="전체화면 편집 작업공간" style="font-size:16px;">⛶</button>
         <button class="es-close" onclick="toggleEditSidebar(false)" title="닫기">✕</button>
       </span>
+    </div>
+
+    <!-- ✒ 폰트 출력 안전화 — 최상단 고정 (그룹 밖) -->
+    <div class="es-section" id="secOutline">
+      <div class="es-row">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6; flex:1;" title="켜면 적용·다운로드 시 모든 글자를 곡선으로 변환 (Ghostscript) — 폰트 문제로 인한 출력 사고 원천 차단. 이미지 무손실 유지. 결과물은 텍스트 수정·검색 불가">
+          <input type="checkbox" id="esOutline" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="setOutlineEnabled(this.checked)">
+          <span class="ic">✒</span> 폰트 출력 안전화 (출력소 전달용)
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6; flex:0 0 auto;" title="투명도 효과를 미리 합성(PDF 1.4) — 구형 출력기(RIP)에서 투명도 사고 방지. 파일이 커질 수 있음">
+          <input type="checkbox" id="outlineFlatten" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="if(document.getElementById('esOutline').checked)invalidateProcessed()">
+          평탄화
+        </label>
+      </div>
+      <div class="es-row" style="margin-top:6px;">
+        <span class="es-label">방식</span>
+        <div class="es-btngroup" style="flex:1;">
+          <button class="es-chip active" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
+          <button class="es-chip" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
+        </div>
+      </div>
+      <div class="es-hint"><b>곡선화</b>=글자를 곡선 데이터로(용량 수십 배↑·수정 불가), <b>완전 임베드</b>=폰트를 통째로 실어(용량 증가 적음·텍스트 유지) 다른 PC·출력기에서 동일하게 인쇄되게 합니다.</div>
     </div>
 
     <!-- 페이지 내부(텍스트·요소) 편집기 — JS(buildEsGroups)가 '🛠 도구' 그룹으로 이동 -->
@@ -284,14 +309,6 @@
       <div class="es-section-title"><span class="ic">🖊</span> 내부 내용 편집</div>
       <button class="es-apply-btn" style="width:100%;" onclick="openContentEditor(ctxTargetIdx>=0?ctxTargetIdx:null)">🖊 내부 편집기 열기 (T)</button>
       <div class="es-hint" style="margin-top:4px;">별도 창에서 페이지 내부의 <b>텍스트 수정·삽입, 이미지·도형, 이동·회전·자르기, 그룹·정밀회전</b>을 편집합니다. 저장하면 즉시 반영됩니다. (페이지를 우클릭해 열면 그 페이지로 시작)</div>
-    </div>
-
-    <!-- 편집 중 자동 반영 — 한 줄 압축(설명은 툴팁). 전체화면 편집 모드에서는 항상 자동 반영 -->
-    <div class="es-section" id="secAutoPreview" style="padding-top:8px; padding-bottom:8px;">
-      <label class="es-section-title" style="cursor:pointer; margin:0;" title="끄면 편집 조작은 즉시 반응하고, 미리보기·다운로드는 '✔ 적용'을 눌러야 반영됩니다(큰 문서에서 빨라짐). 전체화면 편집 모드에서는 항상 자동 반영됩니다.">
-        <input type="checkbox" id="esAutoPreview" style="accent-color:#48484a; width:15px; height:15px;">
-        <span class="ic">⚡</span> 편집 중 자동 반영
-      </label>
     </div>
 
     <!-- 프로파일 -->
@@ -308,6 +325,15 @@
         <button class="es-chip" id="esPresetSaveBtn" style="flex:0 0 auto;" onclick="savePreset()" title="이름을 적으면 새 프로파일으로, 비우면 위에서 선택한 프로파일에 현재 설정을 덮어씁니다">＋ 저장</button>
       </div>
       <div class="es-hint">크기·조판·테두리·머리글/바닥글·워터마크 + <b>처리 옵션(흑백·잉크정규화)·임포징 설정</b>까지 통째로 저장해 재사용합니다. 불러온 프로파일의 옵션을 바꾼 뒤 <b>💾 덮어쓰기</b>를 누르면 그 프로파일이 갱신됩니다. 적용 범위가 '챕터'면 그 챕터에만, 아니면 전체 공통 설정에 적용됩니다.</div>
+    </div>
+
+    <!-- 🕓 최근 작업 설정 — 문서별 자동 기록 (프로파일 저장을 잊었을 때의 안전망) -->
+    <div class="es-section" id="secWorkHistory" style="display:none;">
+      <div class="es-section-title" style="cursor:pointer;" onclick="toggleWorkHistory()" title="문서별로 자동 기록된 최근 작업 설정 — 클릭해 펼치고, 항목을 누르면 적용됩니다. 같은 문서(● 표시)는 회전·순서·흑백선택까지 이어받습니다">
+        <span class="ic">🕓</span> 최근 작업 설정 <span id="whCount" style="color:#6e6e73; font-weight:400;"></span>
+        <span id="whArrow" style="margin-left:auto; color:#6e6e73;">▸</span>
+      </div>
+      <div id="workHistoryList" style="display:none;"></div>
     </div>
 
     <!-- 적용 범위 -->
@@ -718,13 +744,19 @@
 
     <!-- 블리드 자동 생성 — 재단여백 없는 원고 가장자리 미러 확장 -->
     <div class="es-section" id="secBleed">
-      <div class="es-section-title"><span class="ic">◲</span> 블리드 생성</div>
+      <label class="es-section-title" style="cursor:pointer;">
+        <input type="checkbox" id="bleedEnabled" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="setBleedEnabled(this.checked)">
+        <span class="ic">◲</span> 블리드 생성
+      </label>
       <div class="es-row">
         <span class="es-label">폭(mm)</span>
-        <input type="number" class="es-input" id="bleedGenMm" value="3" min="0.5" max="20" step="0.5" style="flex:0 0 64px;" title="재단여백 폭 — 실무 표준 3mm">
-        <button class="es-chip" id="bleedGenBtn" style="flex:1;" onclick="generateBleed()" title="가장자리를 미러로 확장해 재단여백을 만들고 트림박스를 기록합니다 (벡터 유지)">◲ 블리드 생성</button>
+        <input type="number" class="es-input" id="bleedGenMm" value="3" min="0.5" max="20" step="0.5" style="flex:0 0 64px;" title="재단여백 폭 — 실무 표준 3mm" oninput="bleedSettingsChanged()">
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="트림(원본 크기) 위치에 재단선을 그립니다 — 블리드 영역 안에 표시">
+          <input type="checkbox" id="bleedCrop" checked style="accent-color:#ffd60a; width:14px; height:14px;" onchange="bleedSettingsChanged()">
+          ✂ 재단선
+        </label>
       </div>
-      <div class="es-hint">여백 없이 꽉 찬 원고용 — 가장자리를 거울로 늘여 재단여백을 만듭니다. 생성 후 '⇩ 다운로드'로 저장하고 그 파일로 임포징하세요.</div>
+      <div class="es-hint">여백 없이 꽉 찬 원고용 — 가장자리를 거울로 늘여 재단여백을 만듭니다. <b>켜 두면 다른 작업을 해도 유지</b>되어 '✔ 적용'·'⇩ 다운로드' 결과에 항상 포함됩니다. 재단선은 블리드 폭만큼 트림 모서리에 표시됩니다.</div>
     </div>
 
     <!-- 📕 표지 만들기 — 선택 페이지 추출 / 무선제본 표지 스프레드 (책등 자동 계산) -->
@@ -912,33 +944,15 @@
     </div>
 
     <!-- 폰트 아웃라인화 — 체크 옵션: '✔ 편집 적용'·'⇩ 다운로드'의 최종 단계로 반영 (프리셋 저장됨) -->
-    <div class="es-section" id="secOutline">
-      <div class="es-row">
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6; flex:1;" title="켜면 적용·다운로드 시 모든 글자를 곡선으로 변환 (Ghostscript) — 폰트 문제로 인한 출력 사고 원천 차단. 이미지 무손실 유지. 결과물은 텍스트 수정·검색 불가">
-          <input type="checkbox" id="esOutline" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="setOutlineEnabled(this.checked)">
-          <span class="ic">✒</span> 폰트 출력 안전화 (출력소 전달용)
-        </label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6; flex:0 0 auto;" title="투명도 효과를 미리 합성(PDF 1.4) — 구형 출력기(RIP)에서 투명도 사고 방지. 파일이 커질 수 있음">
-          <input type="checkbox" id="outlineFlatten" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="if(document.getElementById('esOutline').checked)invalidateProcessed()">
-          평탄화
-        </label>
-      </div>
-      <div class="es-row" style="margin-top:6px;">
-        <span class="es-label">방식</span>
-        <div class="es-btngroup" style="flex:1;">
-          <button class="es-chip active" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
-          <button class="es-chip" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
-        </div>
-      </div>
-      <div class="es-hint"><b>곡선화</b>=글자를 곡선 데이터로(용량 수십 배↑·수정 불가), <b>완전 임베드</b>=폰트를 통째로 실어(용량 증가 적음·텍스트 유지) 다른 PC·출력기에서 동일하게 인쇄되게 합니다. 디지털 인쇄는 완전 임베드로 충분한 경우가 많습니다.</div>
-    </div>
-
     <!-- 여백 -->
     <div class="es-section" id="secMargins">
-      <label class="es-section-title" style="cursor:pointer;">
-        <input type="checkbox" id="esMgEnabled" style="accent-color:#48484a; width:15px; height:15px;">
-        <span class="ic">📏</span> 여백 (mm)
-      </label>
+      <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
+        <label class="es-section-title" style="cursor:pointer; margin:0; flex:1;">
+          <input type="checkbox" id="esMgEnabled" style="accent-color:#48484a; width:15px; height:15px;">
+          <span class="ic">📏</span> 여백 (mm)
+        </label>
+        <button class="es-chip" id="esMgLink" style="flex:0 0 auto;" onclick="toggleMgLink()" title="🔗 사방 동일 — 켜면 한 칸만 입력해도 상·하·좌·우가 같은 값으로 맞춰집니다 (누르는 순간 '상' 값으로 통일)">🔗 동일</button>
+      </div>
       <div class="es-margins" id="esMgBody">
         <label>상 <input type="number" id="esMgTop"    min="0" value="10"></label>
         <label>하 <input type="number" id="esMgBottom" min="0" value="10"></label>
@@ -951,14 +965,13 @@
     <!-- 4. 테두리 -->
     <div class="es-section" id="secBorder">
       <div class="es-section-title"><span class="ic">🔳</span> 테두리</div>
-      <div class="es-btngroup" id="esBorderGroup">
-        <button class="es-chip active" data-border="none"   onclick="setBorder('none')">없음</button>
-        <button class="es-chip" data-border="thin"   onclick="setBorder('thin')">얇은 실선</button>
-        <button class="es-chip" data-border="medium" onclick="setBorder('medium')">굵은 실선</button>
-        <button class="es-chip" data-border="dotted" onclick="setBorder('dotted')">점선</button>
-        <button class="es-chip" data-border="crop"   onclick="setBorder('crop')">재단선</button>
+      <div class="es-btngroup one-line" id="esBorderGroup">
+        <button class="es-chip" data-border="thin"   onclick="setBorder('thin')"   title="얇은 실선 (0.75pt) — 다시 누르면 해제"><span class="bd-sample" style="border-top:1px solid currentColor;"></span>얇은</button>
+        <button class="es-chip" data-border="medium" onclick="setBorder('medium')" title="굵은 실선 (2pt) — 다시 누르면 해제"><span class="bd-sample" style="border-top:3px solid currentColor;"></span>굵은</button>
+        <button class="es-chip" data-border="dotted" onclick="setBorder('dotted')" title="점선 — 다시 누르면 해제"><span class="bd-sample" style="border-top:2px dotted currentColor;"></span>점선</button>
+        <button class="es-chip" data-border="crop"   onclick="setBorder('crop')"   title="재단선(트림 마크) — 다시 누르면 해제"><span class="bd-sample bd-crop">┌ ┐</span>재단선</button>
       </div>
-      <div class="es-hint">조판 시 각 칸마다, 단일 페이지면 페이지 둘레에 그려집니다.</div>
+      <div class="es-hint">누르면 적용, <b>한 번 더 누르면 해제</b>됩니다. 조판 시 각 칸마다, 단일 페이지면 페이지 둘레에 그려집니다.</div>
     </div>
 
     <!-- 5. 머리글 / 바닥글 -->
@@ -1028,6 +1041,11 @@
             <option value="C:\Windows\Fonts\malgun.ttf">맑은 고딕</option>
           </select>
         </div>
+        <div class="es-row" style="gap:6px; margin-top:8px;">
+          <button class="es-chip" onclick="commitHfLayer()" title="현재 입력한 문구를 확정(1차→2차→3차… 누적)하고 입력칸을 비웁니다. 확정된 문구들은 각자의 위치·크기·색 그대로 전부 함께 인쇄됩니다">💾 문구 확정 후 새 문구</button>
+          <button class="es-chip" style="flex:0 0 auto;" onclick="undoHfLayer()" title="마지막 확정 문구를 입력칸으로 되돌립니다 (수정 후 재확정)">↩ 확정 취소</button>
+        </div>
+        <div class="es-hint" id="hfLayerInfo" style="display:none;"></div>
         <div class="es-row" style="gap:6px;">
           <span class="es-label" style="min-width:auto;">크기</span>
           <input type="number" class="es-input" id="esHfSize" min="5" max="48" value="9" style="flex:0 0 50px;">

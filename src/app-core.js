@@ -993,6 +993,8 @@
       if (activeTabId && tabs.has(activeTabId)) updateFileInfo(tabs.get(activeTabId));
       // 분석 완료 → 유휴 시간에 잉크 정규화 변환을 미리 수행(적용 즉시화)
       setTimeout(() => { if (typeof prewarmInkNorm === 'function') prewarmInkNorm(); }, 1200);
+      // 🕓 같은 문서의 지난 작업이 기록되어 있으면 안내 (분석 성공 메시지 뒤에 표시되게 지연)
+      setTimeout(() => { if (typeof notifyWorkHistory === 'function') notifyWorkHistory(); }, 600);
     }
 
     // ── 썸네일 흑백 표시 — CSS filter (GPU 가속, 픽셀 연산 없음) ─────────────
@@ -1808,8 +1810,17 @@
     // 저장 기본 파일명 = 원본 파일명 + 임포징 명칭(1up·2up·N-up…).
     // (예전엔 '_수정_20260807_101530'처럼 타임스탬프가 붙어 원본과 무관한 이름처럼 보였다 —
     //  인쇄 실무에서는 '문서_2up.pdf'처럼 조판 방식이 파일명에 드러나는 편이 훨씬 유용하다.)
-    function defaultProcessedName() {
+    // 저장 파일명의 기준 이름 — 원본 파일명. 단, 챕터(병합 파일)가 있는데 원본 이름의
+    // 챕터가 삭제되어 더 이상 없으면(예: 두 챕터 중 첫 챕터 삭제) 남아 있는 첫 챕터명을 쓴다.
+    function effectiveBaseName() {
       const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+      const names = [];
+      pageResults.forEach(r => { if (r && r.chapter && !names.includes(r.chapter)) names.push(r.chapter); });
+      if (!names.length || names.includes(base)) return base;
+      return names[0];
+    }
+    function defaultProcessedName() {
+      const base = effectiveBaseName();
       const tag = (typeof impNameTag === 'function') ? impNameTag() : '1up';
       const includeAmt = document.getElementById('includeAmountChk')?.checked;
       const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + itemTotal(it), 0) : 0;
@@ -1840,6 +1851,11 @@
           updateProgress((typeof _impEnabled !== 'undefined' && _impEnabled) ? 82 : 96);
           pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
         }
+        // ◲ 블리드 옵션 — 켜져 있으면 항상 포함 (임포징 앞, 다운로드 경로와 동일 순서)
+        if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled) {
+          showLoading('블리드 생성 중 — 가장자리 미러 확장…');
+          pdfBytes = await applyBleedStage(pdfBytes);
+        }
         // 임포징 포함 모드: 조립·레이아웃 결과를 시트로 임포징 (메인 다운로드와 동일 경로)
         if (typeof _impEnabled !== 'undefined' && _impEnabled) {
           updateProgress(88);
@@ -1852,7 +1868,9 @@
           pdfBytes = await buildOutlinedBytes(pdfBytes, p => updateProgress(Math.round(p * 100)));
           outlined = true;
         }
-        const layoutNote = layoutNoteOf() + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '')
+        const layoutNote = layoutNoteOf()
+          + (typeof _bleedEnabled !== 'undefined' && _bleedEnabled ? ` · ◲ 블리드 ${_bleedOpts().mm}mm${_bleedOpts().crop ? '+재단선' : ''}` : '')
+          + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '')
           + (outlined ? (typeof _outlineMode !== 'undefined' && _outlineMode === 'embed'
               ? ' · 🔤 폰트 완전 임베드' + (typeof _outlineRasterInfo !== 'undefined' && _outlineRasterInfo
                   ? `\n🖼 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 대체 임베드 대신 300DPI 이미지로 굳혔습니다 — 어디서 출력해도 화면과 동일.`

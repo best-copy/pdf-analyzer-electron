@@ -153,14 +153,14 @@
     // ids 항목이 객체({wrap, title, ids})면 그 섹션들을 하나의 카테고리(es-section)로 병합해
     // 담는다 — 안의 섹션들은 es-subsec(점선 구분)으로 강등. 마크업 이동 없이 부트 시 조립.
     const ES_GROUPS = [
-      { key: 'page', title: '📄 페이지 보정', ids: ['secScale',
+      { key: 'imp',  title: '📖 임포징 · 제본', ids: ['secImp'] },
+      { key: 'page', title: '📄 페이지 보정', ids: [
+        { wrap: 'secScaleAll', title: '<span class="ic">📐</span> 크기 · 여백 · 제본여백 · 블리드', ids: ['secScale', 'secMargins', 'secBind', 'secBleed'] },
         { wrap: 'secAdjust', title: '<span class="ic">🎯</span> 기울기 · 정렬 · 개별 보정', ids: ['secDeskew', 'secCenter', 'secPageAdjust'] },
-        { wrap: 'secMarginsBind', title: '<span class="ic">📏</span> 여백 · 제본여백', ids: ['secMargins', 'secBind'] },
         'secBorder'] },
-      { key: 'imp',  title: '📖 임포징 · 제본', ids: ['secImp', 'secBleed'] },
       { key: 'cover', title: '📕 표지 만들기', ids: ['secCover'] },
       { key: 'mark', title: '🔖 머릿말 · 꼬릿말 · 워터마크', ids: ['secHf', 'secWm'] },
-      { key: 'tool', title: '🛠 도구', ids: ['secContentEdit', 'secOutline'] },
+      { key: 'tool', title: '🛠 도구', ids: ['secContentEdit'] },
     ];
     function esGroupOpenState() { try { return JSON.parse(localStorage.getItem('esGroupOpen') || '{}') || {}; } catch (e) { return {}; } }
     function toggleEsGroup(key, force) {
@@ -191,6 +191,7 @@
       }
       const paN = editSettings && editSettings.pageAdjust ? Object.keys(editSettings.pageAdjust).length : 0;
       if (paN) parts.page.push(`개별 ${paN}쪽`);
+      if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled) parts.page.push('블리드');
       if (typeof _impEnabled !== 'undefined' && _impEnabled) parts.imp.push('임포징 포함');
       if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled)
         parts.tool.push(typeof _outlineMode !== 'undefined' && _outlineMode === 'embed' ? '폰트 임베드' : '곡선화');
@@ -455,10 +456,8 @@
         ? `프로파일 '${name}' 을(를) 현재 설정으로 덮어썼습니다.`
         : `프로파일 '${name}' 을(를) 저장했습니다.`);
     }
-    function loadPreset(name) {
-      if (!name || !editSettings) return;
-      const p = getPresets()[name]; if (!p) return;
-      const c = JSON.parse(JSON.stringify(p));
+    // 프로파일 데이터 적용 공용부 — 프로파일 불러오기와 '이전 세션 복원'이 공유
+    function applyPresetData(c) {
       const def = newEditSettings();
       // 현재 포커스(전체 또는 특정 챕터)의 설정에 적용 — 적용 범위(scope) 자체는 유지
       const t = activeLayoutSettings();
@@ -474,11 +473,182 @@
       t.wm = Object.assign(def.wm, c.wm || {});
       applyExtraPreset(c);   // 처리 옵션·임포징 설정 복원 (구버전 프로파일엔 없으면 무시)
       syncEditUI();
-      updatePresetSaveBtn();  // 이제 '💾 덮어쓰기' — 옵션을 고쳐 이 프로파일을 갱신할 수 있다
+      updatePresetSaveBtn();
       scheduleLivePreview();
+    }
+    function loadPreset(name) {
+      if (!name || !editSettings) return;
+      const p = getPresets()[name]; if (!p) return;
+      applyPresetData(JSON.parse(JSON.stringify(p)));
       showSuccess(`프로파일 '${name}' 을(를) 적용했습니다. (편집·처리옵션·임포징 설정 포함)`
         + `\n옵션을 고친 뒤 '💾 덮어쓰기'를 누르면 이 프로파일이 갱신됩니다.`);
     }
+    // ── 🕓 이전 세션 설정 자동 보관 — 프로파일 저장을 잊고 껐을 때의 안전망 ──
+    // 문서가 열려 있는 동안 1분마다 + 종료 직전에 현재 설정(편집·처리·임포징)을 스냅샷.
+    // 재시작하면 지난 세션 스냅샷을 '🕓 이전 설정' 버튼으로 불러와 재사용하거나,
+    // 불러온 뒤 기존 '＋ 저장'으로 프로파일로 남길 수 있다.
+    const SESSION_SNAP_KEY = 'lastSessionSettings';
+    let _bootPrevSession = null;   // 부트 시점의 지난 세션 스냅샷 (이번 세션 자동저장이 덮기 전 확보)
+    function saveSessionSnapshot() {
+      if (!editSettings) return;
+      try {
+        const data = Object.assign(presetFromSettings(activeLayoutSettings()), captureExtraPreset());
+        localStorage.setItem(SESSION_SNAP_KEY, JSON.stringify({ ts: Date.now(), data: JSON.parse(JSON.stringify(data)) }));
+      } catch (e) {}
+      recordWorkHistory();   // 🕓 문서별 작업내역에도 기록
+    }
+    // ── 🕓 최근 작업 설정 — 문서(파일명+크기)별 자동 기록 목록.
+    // 같은 문서로 판정되면 설정 + 문서 편집 상태(순서·회전·빈페이지·흑백확정·선택·개별보정)까지
+    // 이어받고, 다른 문서면 설정(프로파일 범위)만 적용한다.
+    const WORK_HISTORY_KEY = 'workHistory';
+    const WH_MAX = 12;
+    const whEsc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const whFmt = ts => { const d = new Date(ts || 0), p2 = v => String(v).padStart(2, '0'); return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+    function workHistory() { try { return JSON.parse(localStorage.getItem(WORK_HISTORY_KEY) || '[]') || []; } catch (e) { return []; } }
+    function saveWorkHistoryList(list) { try { localStorage.setItem(WORK_HISTORY_KEY, JSON.stringify(list.slice(0, WH_MAX))); } catch (e) {} }
+    function whIsSameDoc(h) {
+      return !!(h && h.ident && originalPdfBytes
+        && h.ident.name === (originalFileName || '문서')
+        && h.ident.size === originalPdfBytes.byteLength);
+    }
+    function whSummary() {
+      const parts = describeLayoutParts(activeLayoutSettings()).slice(0, 4);
+      if (typeof _impEnabled !== 'undefined' && _impEnabled) parts.push('임포징');
+      if (processingOptions.bw) parts.push('흑백');
+      if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled) parts.push('블리드');
+      return parts.join(' · ') || '기본 설정';
+    }
+    function captureDocState() {
+      return {
+        order: pageResults.filter(Boolean).map(r => ({
+          oi: r.isBlank ? null : r.originalIdx, blank: !!r.isBlank, rot: r.rotation || 0,
+          chapter: r.chapter || '', bw: !!r.appliedBw, roman: !!r.isRoman,
+          ps: r.isBlank ? (r.pageSize || null) : undefined,
+        })),
+        selected: [...selectedPages],
+        pageAdjust: (editSettings && editSettings.pageAdjust) ? JSON.parse(JSON.stringify(editSettings.pageAdjust)) : {},
+      };
+    }
+    function recordWorkHistory() {
+      if (!editSettings || !originalPdfBytes) return;
+      try {
+        const entry = {
+          ident: { name: originalFileName || '문서', size: originalPdfBytes.byteLength },
+          ts: Date.now(),
+          summary: whSummary(),
+          data: JSON.parse(JSON.stringify(Object.assign(presetFromSettings(activeLayoutSettings()), captureExtraPreset()))),
+          docState: captureDocState(),
+        };
+        const list = workHistory().filter(h => !(h.ident && h.ident.name === entry.ident.name));
+        list.unshift(entry);
+        saveWorkHistoryList(list);
+        renderWorkHistory();
+      } catch (e) {}
+    }
+    function toggleWorkHistory(force) {
+      const el = document.getElementById('workHistoryList');
+      const arrow = document.getElementById('whArrow');
+      if (!el) return;
+      const open = force !== undefined ? !!force : el.style.display === 'none';
+      el.style.display = open ? '' : 'none';
+      if (arrow) arrow.textContent = open ? '▾' : '▸';
+    }
+    function renderWorkHistory() {
+      const sec = document.getElementById('secWorkHistory');
+      const listEl = document.getElementById('workHistoryList');
+      if (!sec || !listEl) return;
+      const list = workHistory();
+      sec.style.display = list.length ? '' : 'none';
+      const cnt = document.getElementById('whCount');
+      if (cnt) cnt.textContent = list.length ? `(${list.length})` : '';
+      listEl.innerHTML = list.map((h, i) => {
+        const same = whIsSameDoc(h);
+        return `<div class="es-row" style="margin-bottom:4px;">
+          <button class="es-chip" style="flex:1; min-width:0; text-align:left; white-space:normal; line-height:1.5;" onclick="applyWorkHistory(${i})"
+            title="${same ? '같은 문서 — 설정 + 회전·순서·흑백선택·개별보정까지 이어받습니다 (Ctrl+Z로 되돌리기 가능)' : '설정(편집 옵션·처리·임포징)만 적용합니다'}">
+            ${same ? '<span style="color:#ffd60a;">●</span> ' : ''}${whEsc(h.ident && h.ident.name)} <span style="color:#6e6e73; font-size:11px;">${whFmt(h.ts)}</span><br>
+            <span style="color:#aeaeb2; font-size:11px;">${whEsc(h.summary)}</span>
+          </button>
+          <button class="es-chip" style="flex:0 0 auto;" onclick="deleteWorkHistory(${i})" title="이 기록 삭제">✕</button>
+        </div>`;
+      }).join('');
+    }
+    function applyWorkHistory(i) {
+      const h = workHistory()[i];
+      if (!h) return;
+      if (!editSettings) { showError('먼저 PDF를 열어 주세요 — 문서가 있어야 설정을 적용할 수 있습니다.'); return; }
+      const same = whIsSameDoc(h);
+      applyPresetData(JSON.parse(JSON.stringify(h.data || {})));
+      let full = false;
+      if (same && h.docState) full = restoreDocState(h.docState);
+      scheduleLivePreview();
+      showSuccess(full
+        ? `🕓 '${h.ident.name}' 작업을 이어받았습니다 — 설정 + 회전·순서·빈페이지·흑백확정·선택·개별보정 복원. (문서 되돌리기 Ctrl+Z)`
+        : `🕓 '${h.ident.name}'의 설정을 적용했습니다${same ? '' : ' (다른 문서라 설정만)'} — ＋ 저장으로 프로파일로 남길 수 있습니다.`);
+    }
+    function deleteWorkHistory(i) {
+      const list = workHistory();
+      list.splice(i, 1);
+      saveWorkHistoryList(list);
+      renderWorkHistory();
+    }
+    // 같은 문서의 편집 상태 복원 — 스냅샷의 순서/회전/빈페이지/흑백확정/선택/개별보정을 재현.
+    // originalIdx 매칭이 어긋나면(문서가 실제로는 다름) 조용히 포기하고 설정만 남긴다.
+    function restoreDocState(ds) {
+      try {
+        if (!ds || !Array.isArray(ds.order) || !ds.order.length) return false;
+        const byOi = new Map();
+        pageResults.forEach(r => { if (r && !r.isBlank && r.originalIdx != null && !byOi.has(r.originalIdx)) byOi.set(r.originalIdx, r); });
+        const next = [];
+        for (const o of ds.order) {
+          if (o.blank) {
+            next.push({ pageNum: 0, originalIdx: null, isColor: false, isBlank: true, rotation: 0,
+              thumbnail: (typeof blankThumbnail === 'function') ? blankThumbnail() : null,
+              pageSize: o.ps || [595.28, 841.89], chapter: o.chapter || '' });
+          } else {
+            const r = byOi.get(o.oi);
+            if (!r) return false;
+            next.push(Object.assign({}, r, { rotation: o.rot || 0, chapter: o.chapter || '', appliedBw: !!o.bw, isRoman: !!o.roman }));
+          }
+        }
+        if (typeof pushHistory === 'function') pushHistory();   // Ctrl+Z 복귀 지점
+        pageResults.length = 0;
+        next.forEach(r => pageResults.push(r));
+        pageResults.forEach((r, i2) => { r.pageNum = i2 + 1; });
+        selectedPages.clear();
+        (ds.selected || []).forEach(n => selectedPages.add(n));
+        if (editSettings) editSettings.pageAdjust = JSON.parse(JSON.stringify(ds.pageAdjust || {}));
+        if (typeof clearProcessCaches === 'function') clearProcessCaches();
+        if (typeof syncTabPageResults === 'function') syncTabPageResults();
+        if (typeof rerenderPages === 'function') rerenderPages();
+        if (typeof updateSelectedCount === 'function') updateSelectedCount();
+        if (typeof updateUndoBtn === 'function') updateUndoBtn();
+        return true;
+      } catch (e) { console.warn('작업내역 문서상태 복원 실패:', e); return false; }
+    }
+    // 문서 분석 완료 시 호출 — 같은 문서의 지난 작업이 있으면 안내 + 편집 버튼 강조
+    function notifyWorkHistory() {
+      renderWorkHistory();
+      const h = workHistory().find(whIsSameDoc);
+      if (!h) return;
+      showSuccess(`🕓 이 문서의 지난 작업(${whFmt(h.ts)} · ${h.summary})이 기록되어 있습니다.`
+        + `\n✏ 편집(E)을 열고 '🕓 최근 작업 설정'에서 ● 항목을 누르면 회전·순서·흑백선택까지 그대로 이어받습니다.`);
+      const et = document.getElementById('editToggle');
+      if (et) { et.classList.add('wh-pulse'); setTimeout(() => et.classList.remove('wh-pulse'), 6000); }
+    }
+    function restoreLastSession() {
+      if (!_bootPrevSession || !_bootPrevSession.data) { showError('보관된 이전 세션 설정이 없습니다.'); return; }
+      if (!editSettings) { showError('먼저 PDF를 열어 주세요 — 문서가 있어야 설정을 적용할 수 있습니다.'); return; }
+      applyPresetData(JSON.parse(JSON.stringify(_bootPrevSession.data)));
+      showSuccess('🕓 이전 세션 설정을 불러왔습니다 (편집·처리옵션·임포징 포함).'
+        + '\n계속 쓰려면 프로파일 이름을 적고 ＋ 저장으로 남겨두세요.');
+    }
+    (function initSessionSnapshot() {
+      try { _bootPrevSession = JSON.parse(localStorage.getItem(SESSION_SNAP_KEY) || 'null'); } catch (e) {}
+      window.addEventListener('beforeunload', saveSessionSnapshot);
+      setInterval(saveSessionSnapshot, 60000);
+      renderWorkHistory();   // 🕓 최근 작업 목록 표시 (기록이 있으면 섹션 노출)
+    })();
     function deletePreset() {
       const sel = document.getElementById('esPresetSel');
       const name = sel && sel.value;
@@ -660,7 +830,36 @@
     }
     function setOrient(o) { if (editSettings) { activeLayoutSettings().scaling.orient = o; activateChip('orient', o); scheduleLivePreview(); } }
     function setNup(n)    { if (editSettings) { activeLayoutSettings().nUp = n; activateChip('nup', n); scheduleLivePreview(); } }
-    function setBorder(b) { if (editSettings) { activeLayoutSettings().border = b; activateChip('border', b); scheduleLivePreview(); } }
+    // 테두리: 누르면 적용, 같은 걸 한 번 더 누르면 해제('없음' 버튼 없이 토글)
+    function setBorder(b) {
+      if (!editSettings) return;
+      const ls = activeLayoutSettings();
+      const next = (b !== 'none' && ls.border === b) ? 'none' : b;
+      ls.border = next;
+      activateChip('border', next);   // 'none'은 어떤 칩과도 안 맞아 전부 비활성 표시
+      scheduleLivePreview();
+    }
+    // 📏 여백 사방 동일(링크) — 켜면 한 칸 입력이 상·하·좌·우 전체에 복사된다
+    let _mgLinked = localStorage.getItem('mgLinked') === '1';
+    function toggleMgLink(force) {
+      _mgLinked = force !== undefined ? !!force : !_mgLinked;
+      try { localStorage.setItem('mgLinked', _mgLinked ? '1' : '0'); } catch (e) {}
+      const btn = document.getElementById('esMgLink');
+      if (btn) btn.classList.toggle('active', _mgLinked);
+      if (_mgLinked && force === undefined) mgSetAll(document.getElementById('esMgTop')?.value);   // 켜는 순간 '상' 값으로 통일
+    }
+    function mgSetAll(v) {
+      const val = Math.max(0, parseFloat(v) || 0);
+      ['esMgTop', 'esMgBottom', 'esMgLeft', 'esMgRight'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.value !== String(val)) el.value = val;
+      });
+      if (editSettings) {
+        const m = activeLayoutSettings().margins;
+        m.top = m.bottom = m.left = m.right = val;
+      }
+      scheduleLivePreview();
+    }
     function setWmMode(m) { if (editSettings) { activeLayoutSettings().wm.mode = m; activateChip('wmmode', m); scheduleLivePreview(); } }
 
     // ── 기울기 보정 / 가운데 정렬 / 제본여백 ──────────────────────────────────
@@ -1028,6 +1227,7 @@
       const hfStartEl = document.getElementById('esHfStart'); if (hfStartEl) hfStartEl.value = Math.max(1, (ls.hf.start | 0) || 1);
       const hfOffXEl = document.getElementById('esHfOffX'); if (hfOffXEl) hfOffXEl.value = ls.hf.offX || 0;
       const hfOffYEl = document.getElementById('esHfOffY'); if (hfOffYEl) hfOffYEl.value = ls.hf.offY || 0;
+      if (typeof updateHfLayerInfo === 'function') updateHfLayerInfo();   // 💾 확정 문구 개수 표시
       // 워터마크
       document.getElementById('esWmEnabled').checked = ls.wm.enabled;
       document.getElementById('esWmBody').classList.toggle('show', ls.wm.enabled);
@@ -1051,7 +1251,12 @@
       onIn('esCustomH',   el => { if (editSettings) activeLayoutSettings().scaling.customH = parseFloat(el.value) || 0; });
       onIn('esScalePercent', el => { if (editSettings) activeLayoutSettings().scaling.percent = Math.max(10, Math.min(400, parseFloat(el.value) || 100)); });
       const mg = { esMgTop:'top', esMgBottom:'bottom', esMgLeft:'left', esMgRight:'right' };
-      Object.entries(mg).forEach(([id, k]) => onIn(id, el => { if (editSettings) activeLayoutSettings().margins[k] = parseFloat(el.value) || 0; }));
+      Object.entries(mg).forEach(([id, k]) => onIn(id, el => {
+        if (!editSettings) return;
+        if (_mgLinked) { mgSetAll(el.value); return; }   // 🔗 사방 동일 — 한 칸 입력이 전체 복사
+        activeLayoutSettings().margins[k] = parseFloat(el.value) || 0;
+      }));
+      toggleMgLink(_mgLinked);   // 부트 시 🔗 버튼 상태 복원
       const autoPv = document.getElementById('esAutoPreview');
       if (autoPv) {
         autoPv.checked = liveAutoPreview;
@@ -1165,10 +1370,16 @@
         if (el) el.addEventListener('focus', () => { _lastHfField = id; });
       });
     })();
-    // 페이지번호 토큰 {n}을 마지막 포커스된 머리글/바닥글 칸에 삽입
-    let _lastHfField = 'esHfFC';
+    // 페이지번호 토큰 {n}을 마지막 포커스된 머리글/바닥글 칸에 삽입.
+    // 포커스한 칸이 없으면: 홀짝 좌우 교대가 켜져 있으면 바닥글 오른쪽(홀수쪽 기준 책 바깥쪽,
+    // 짝수쪽은 교대로 왼쪽에 인쇄됨), 아니면 바닥글 중앙이 기본.
+    let _lastHfField = null;
+    function hfDefaultNumField() {
+      const ls = editSettings && activeLayoutSettings();
+      return (ls && ls.hf && ls.hf.alt) ? 'fR' : 'fC';
+    }
     function insertPageNumberToken() {
-      const id = _lastHfField || 'esHfFC';
+      const id = _lastHfField || (hfDefaultNumField() === 'fR' ? 'esHfFR' : 'esHfFC');
       const el = document.getElementById(id);
       if (!el || !editSettings) return;
       const key = { esHfHL:'hL', esHfHC:'hC', esHfHR:'hR', esHfFL:'fL', esHfFC:'fC', esHfFR:'fR' }[id];
@@ -1193,7 +1404,52 @@
     }
     // 공통·홀·짝 어느 세트든 내용이 있는지 (자동 켜기 판단용)
     function hfAnyContent(hf) {
+      if (hf.layers && hf.layers.length) return true;   // 확정(누적) 문구가 있으면 활성
       return ['common', 'odd', 'even'].some(t => HF_BASE_KEYS.some(k => { const v = hf[hfKeyFor(k, t)]; return v && v.trim(); }));
+    }
+    // ── 💾 문구 확정(누적) — 현재 입력을 레이어로 굳히고 입력칸을 비워 다음 문구를 받는다.
+    // 확정된 레이어들은 각자의 스타일(크기·색·글꼴·위치·교대·번호시작)대로 전부 겹쳐 인쇄된다.
+    const HF_LAYER_FIELDS = ['hL', 'hC', 'hR', 'fL', 'fC', 'fR',
+      'oHL', 'oHC', 'oHR', 'oFL', 'oFC', 'oFR', 'eHL', 'eHC', 'eHR', 'eFL', 'eFC', 'eFR'];
+    const HF_LAYER_STYLE = ['size', 'color', 'margin', 'font', 'pnumStyle', 'alt', 'start', 'offX', 'offY'];
+    function commitHfLayer() {
+      if (!editSettings) return;
+      const hf = activeLayoutSettings().hf;
+      if (!HF_LAYER_FIELDS.some(k => hf[k] && String(hf[k]).trim())) {
+        showError('확정할 문구가 없습니다 — 먼저 머리글/바닥글 칸에 내용을 입력하세요.');
+        return;
+      }
+      if (!hf.layers) hf.layers = [];
+      const snap = {};
+      HF_LAYER_STYLE.forEach(k => { snap[k] = hf[k]; });
+      HF_LAYER_FIELDS.forEach(k => { snap[k] = hf[k] || ''; hf[k] = ''; });   // 스냅샷 후 입력칸 비움
+      hf.layers.push(snap);
+      hf.enabled = true;
+      syncEditUI();
+      updateHfLayerInfo();
+      scheduleLivePreview();
+      showSuccess(`💾 문구 ${hf.layers.length}차 확정 — 입력칸을 비웠습니다. 다음 문구를 입력해 겹쳐 넣으세요.\n확정된 문구는 전부 함께 인쇄되며, '✔ 적용'/'⇩ 다운로드'에 포함됩니다.`);
+    }
+    function undoHfLayer() {
+      if (!editSettings) return;
+      const hf = activeLayoutSettings().hf;
+      if (!hf.layers || !hf.layers.length) { showError('되돌릴 확정 문구가 없습니다.'); return; }
+      if (HF_LAYER_FIELDS.some(k => hf[k] && String(hf[k]).trim())
+        && !confirm('현재 입력 중인 문구를 버리고 마지막 확정 문구를 입력칸으로 되돌릴까요?')) return;
+      const snap = hf.layers.pop();
+      Object.keys(snap).forEach(k => { hf[k] = snap[k]; });
+      syncEditUI();
+      updateHfLayerInfo();
+      scheduleLivePreview();
+      showSuccess(`↩ ${hf.layers.length + 1}차 확정 문구를 입력칸으로 되돌렸습니다 — 수정 후 다시 확정하세요.`);
+    }
+    function updateHfLayerInfo() {
+      const el = document.getElementById('hfLayerInfo');
+      if (!el) return;
+      const ls = editSettings && activeLayoutSettings();
+      const n = (ls && ls.hf && ls.hf.layers) ? ls.hf.layers.length : 0;
+      el.style.display = n ? '' : 'none';
+      el.textContent = n ? `💾 확정된 문구 ${n}개가 함께 인쇄됩니다 — 마지막 확정을 고치려면 '↩ 확정 취소'` : '';
     }
     function syncHfGridInputs() {
       if (!editSettings) return;
@@ -1229,7 +1485,7 @@
       ls.hf.start = sel[0];
       if (!ls.hf.enabled || !hfAnyContent(ls.hf)) {
         ls.hf.enabled = true;
-        if (!ls.hf.fC || !ls.hf.fC.trim()) ls.hf.fC = '{n}';
+        { const nk = ls.hf.alt ? 'fR' : 'fC'; if (!ls.hf[nk] || !ls.hf[nk].trim()) ls.hf[nk] = '{n}'; }   // 교대 시 책 바깥쪽
       }
       syncEditUI();
       showSuccess(`${sel[0]}페이지가 1페이지로 지정되었습니다 — 앞 ${sel[0] - 1}쪽은 번호 생략.\n'💾 저장하고 닫기' 또는 '✔ 적용'으로 반영됩니다.`);
@@ -1482,7 +1738,7 @@
       const ls = activeLayoutSettings();
       if (!allOn && (!ls.hf.enabled || !hfAnyContent(ls.hf))) {
         ls.hf.enabled = true;
-        if (!ls.hf.fC || !ls.hf.fC.trim()) ls.hf.fC = '{n}';
+        { const nk = ls.hf.alt ? 'fR' : 'fC'; if (!ls.hf[nk] || !ls.hf[nk].trim()) ls.hf[nk] = '{n}'; }   // 교대 시 책 바깥쪽
         syncEditUI();
       }
       invalidateProcessed();
@@ -1519,17 +1775,29 @@
           || (/\{filename\}/.test(t) && !asciiRe.test(fileName))
           || (/\{n\}/.test(t) && (hf.pnumStyle | 0) === 4)));
       const fontBytesMap = {}; // 폰트 경로 → Uint8Array (그룹 간 동일 폰트는 1회만 로드)
+      const loadHfFont = sel => {
+        if (fontBytesMap[sel] === undefined) {
+          try { fontBytesMap[sel] = loadFontBytes(sel).slice(0); }
+          catch (e) { console.warn('머리글/바닥글 글꼴 로드 실패 → 이미지로 대체:', e); fontBytesMap[sel] = null; }
+        }
+        return sel;
+      };
       const workerGroups = groups.map(g => {
         const hf = g.es.hf;
-        const hfOn = hf && hf.enabled && hfAllFields(hf).some(s => s && s.trim());
-        if (!hfOn || !hfNeedsEmbed(hf)) return g;
-        const fontSel = (hf.font && hf.font.trim()) ? hf.font : DEFAULT_HF_FONT;
-        if (fontBytesMap[fontSel] === undefined) {
-          try { fontBytesMap[fontSel] = loadFontBytes(fontSel).slice(0); }
-          catch (e) { console.warn('머리글/바닥글 글꼴 로드 실패 → 이미지로 대체:', e); fontBytesMap[fontSel] = null; }
-        }
-        // 워커는 이미 해석된(빈값이면 기본값 대입된) 폰트 경로만 안다 — fontBytesMap의 키와 맞춰준다.
-        return { mask: g.mask, es: Object.assign({}, g.es, { hf: Object.assign({}, hf, { font: fontSel }) }) };
+        if (!hf || !hf.enabled) return g;
+        // 확정 레이어 + 현재 입력 — 내용 있는 구성마다 폰트를 준비하고 경로를 해석해 전달
+        const cfgs = [hf, ...(hf.layers || [])].filter(c => hfAllFields(c).some(s => s && s.trim()));
+        if (!cfgs.length || !cfgs.some(c => hfNeedsEmbed(c))) return g;
+        const resolve = c => {
+          const sel = (c.font && c.font.trim()) ? c.font : DEFAULT_HF_FONT;
+          if (hfNeedsEmbed(c)) loadHfFont(sel);
+          return sel;
+        };
+        const hf2 = Object.assign({}, hf, {
+          font: resolve(hf),
+          layers: (hf.layers || []).map(L => Object.assign({}, L, { font: resolve(L) })),
+        });
+        return { mask: g.mask, es: Object.assign({}, g.es, { hf: hf2 }) };
       });
       // 기울기 보정·가운데 정렬: base PDF를 저해상 렌더로 측정해 페이지별 보정값 계산
       // (측정은 baseSig 캐시 — 같은 base면 재측정 없이 즉시. 실패해도 나머지 레이아웃은 진행)

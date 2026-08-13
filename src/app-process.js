@@ -2,7 +2,7 @@
     let _livePvTimer = null, _liveRunning = false, _liveQueued = false;
     // 미리보기가 필요한 상태: 편집 레이아웃이 있거나, 흑백변환+선택이 있음
     function shouldPreview() {
-      return !!originalPdfBytes && (hasAnyActiveLayout() || _impEnabled || (processingOptions.bw && selectedPages.size > 0));
+      return !!originalPdfBytes && (hasAnyActiveLayout() || _impEnabled || _bleedEnabled || (processingOptions.bw && selectedPages.size > 0));
     }
     function previewVisible() {
       const s = document.getElementById('previewSection');
@@ -54,6 +54,7 @@
         }
         wsResetSampleGrid();
         if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
+        pdfBytes = await applyBleedStage(pdfBytes);   // ◲ 블리드 옵션 (임포징 앞)
         if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
         processedPdfBytes = pdfBytes;
         directOutputBytes = null;   // 파이프라인 결과 — 다운로드는 재조립 경로 사용
@@ -112,9 +113,10 @@
       const sampleBytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
       // 그룹 마스크도 같은 창으로 슬라이스 — es는 그대로 공유(전역/챕터별 설정 유지)
       const sGroups = groups.map(g => ({ mask: g.mask.slice(from, to + 1), es: g.es })).filter(g => g.mask.some(Boolean));
-      const bytes = sGroups.length
+      let bytes = sGroups.length
         ? await applyLayoutTransform(sampleBytes, sGroups, base.sig + '#ws' + from + '-' + to, { window: { from, to } })
         : sampleBytes;
+      bytes = await applyBleedStage(bytes);   // ◲ 블리드 옵션 — 표본 창에도 동일 반영
       await renderWorkspaceSampleGrid(bytes, from, to, valid);
     }
     // 표본 그리드: [from,to]는 변환 결과 캔버스, 나머지는 분석 썸네일 플레이스홀더.
@@ -316,7 +318,7 @@
       try { return '|imp:' + _impMode + JSON.stringify(currentImpOptions()); }
       catch (e) { return '|imp:' + _impMode; }
     }
-    function optSignature() { return baseSignature() + '|' + JSON.stringify(editSettings) + impSignature(); }
+    function optSignature() { return baseSignature() + '|' + JSON.stringify(editSettings) + impSignature() + bleedSig(); }
     // 같은 시그니처의 빌드가 이미 진행 중이면(예: 프리웜 도중 다운로드 클릭) 그 결과를
     // 공유한다. 늦게 합류한 쪽(다운로드)의 onProgress를 진행 중 빌드의 리스너에 등록해
     // 실제 진행률을 그대로 이어받는다 — '90%에서 멈춘 듯한' 구간이 사라진다.
@@ -349,6 +351,7 @@
       const report = p => cbs.forEach(cb => { try { cb(p); } catch (e) {} });
       const promise = (async () => {
         let bytes = await buildOptimizedBase(p => report(_impEnabled ? Math.round(p * 0.85) : p));
+        bytes = await applyBleedStage(bytes);   // ◲ 블리드 옵션 (임포징 앞) — 다운로드 경로에도 동일 적용
         // 임포징 포함 모드: 조립·레이아웃까지 마친 결과를 최종적으로 시트로 임포징한다.
         if (_impEnabled) {
           report(85);
@@ -655,7 +658,49 @@
     // 각 페이지를 (w+2b)×(h+2b) 새 페이지 중앙에 놓고, 상하좌우+모서리 8방향에
     // 미러(음수 스케일) 사본을 해당 스트립만 클립해 그린다. TrimBox=원본 영역.
     // 벡터 원본이 그대로 유지된다(래스터화 없음). 회전 페이지는 embedAllPages가 보정.
-    async function buildBleedBytes(srcBytes, bleedMm, onProgress) {
+    // ◲ 블리드 옵션 상태 — 켜 두면 적용·다운로드·미리보기의 최종 단계(임포징 앞)에 항상 포함.
+    // (예전 1회성 버튼은 다른 작업 시 invalidateProcessed로 결과가 사라져 "삭제된다"로 보였음)
+    let _bleedEnabled = false;
+    function _bleedOpts() {
+      return {
+        mm: Math.max(0.5, Math.min(20, parseFloat(document.getElementById('bleedGenMm')?.value) || 3)),
+        crop: !!document.getElementById('bleedCrop')?.checked,
+      };
+    }
+    function bleedSig() {
+      if (!_bleedEnabled) return '';
+      const o = _bleedOpts();
+      return `::BL${o.mm}${o.crop ? 'c' : ''}`;
+    }
+    function setBleedEnabled(on) {
+      _bleedEnabled = !!on;
+      const chk = document.getElementById('bleedEnabled');
+      if (chk && chk.checked !== _bleedEnabled) chk.checked = _bleedEnabled;
+      if (typeof updateEsGroupBadges === 'function') updateEsGroupBadges();
+      invalidateProcessed();
+      scheduleLivePreview();
+      if (_bleedEnabled) {
+        const o = _bleedOpts();
+        showSuccess(`◲ 블리드 생성 켜짐 — 사방 ${o.mm}mm 미러 확장${o.crop ? ' + 트림 재단선' : ''}이 '✔ 적용'과 '⇩ 다운로드'에 항상 포함됩니다.\n다른 편집을 해도 유지됩니다. 끄려면 체크를 해제하세요.`);
+      }
+    }
+    function bleedSettingsChanged() {
+      if (!_bleedEnabled) return;
+      invalidateProcessed();
+      scheduleLivePreview();
+    }
+    // 파이프라인 공용 블리드 단계 — 결과 캐시(입력 지문+옵션)로 라이브 미리보기 반복에 대비
+    let _bleedCache = { sig: null, bytes: null };
+    async function applyBleedStage(bytes, onProgress) {
+      if (!_bleedEnabled) return bytes;
+      const o = _bleedOpts();
+      const sig = bytesFingerprint(bytes) + '|' + o.mm + '|' + o.crop;
+      if (_bleedCache.sig === sig && _bleedCache.bytes) return _bleedCache.bytes;
+      const res = await buildBleedBytes(bytes, o.mm, onProgress, { crop: o.crop });
+      _bleedCache = { sig, bytes: res.bytes };
+      return res.bytes;
+    }
+    async function buildBleedBytes(srcBytes, bleedMm, onProgress, opts) {
       const MM = 72 / 25.4, b = bleedMm * MM;
       const src = await PDFLib.PDFDocument.load(srcBytes.slice ? srcBytes.slice(0) : srcBytes);
       const out = await PDFLib.PDFDocument.create();
@@ -680,6 +725,11 @@
         // 재단 정보 기록 — 임포징·출력기가 트림 위치를 알 수 있게
         pg.node.set(PDFName.of('TrimBox'),  out.context.obj([b, b, b+w, b+h]));
         pg.node.set(PDFName.of('BleedBox'), out.context.obj([0, 0, w+2*b, h+2*b]));
+        // ✂ 재단선 — 트림 모서리에, 블리드 영역 안에 딱 맞게 (간격+길이 = 블리드 폭)
+        if (opts && opts.crop) {
+          const gap = Math.min(1, bleedMm * 0.25);
+          drawCropMarks(pg, b, b, w, h, { gap, len: Math.max(1, bleedMm - gap), th: 0.4 });
+        }
         if (onProgress && (i & 7) === 0) onProgress(40 + Math.round(i / embedded.length * 60));
       });
       return { bytes: await out.save({ useObjectStreams: false, updateFieldAppearances: false }), n: embedded.length };
@@ -699,7 +749,7 @@
         const res = await buildBleedBytes(srcBytes, mm, p => updateProgress(Math.min(99, 40 + Math.round(p * 0.6))));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('블리드 미리보기 실패:', e); }
-        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         processedPdfBytes = res.bytes;
         directOutputBytes = res.bytes;   // 외부 변환 결과 — 다운로드 시 재조립 없이 그대로 저장
         processedFileName = `${base}_블리드${mm}mm.pdf`;
@@ -1661,7 +1711,7 @@
         const total = src.getPageCount();
         const fi = Math.min(Math.max(1, c.front), total) - 1;
         let bi = Math.min(Math.max(1, c.back), total) - 1;
-        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         // 외부 표지 파일(PDF 1쪽/이미지) 반영 — 문서 끝에 추가하고 그 페이지를 표지로 사용
         let workBytes = srcBytes, autoBackNote = '', fileNote = '';
         if (_coverFiles.front) {
@@ -2397,7 +2447,7 @@
         const res = await buildStepRepeatBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
-        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const g = res.grid || { cols: 0, rows: 0 };
         const outName = `${base}_반복${g.cols}x${g.rows}.pdf`;
         adoptImposedResult(res.bytes, outName);
@@ -2495,7 +2545,7 @@
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         // 결과를 화면에 바로 표시 (저장 다이얼로그 뒤에서 확인 가능)
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
-        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const single = res.sides === 1;
         const outName = `${base}_2up${single ? '단면' : '양면'}.pdf`;
         adoptImposedResult(res.bytes, outName);
@@ -2532,7 +2582,7 @@
         const res = await buildBookletBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
-        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         // 표지 분리: 맨 바깥 시트(표지 4면)와 내지를 별도 PDF 두 개로 저장 (표지 = 두꺼운 용지)
         if (document.getElementById('bkCoverSplit')?.checked) {
           if (res.sheets < 2) {
@@ -2608,7 +2658,7 @@
         const res = await buildNupBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
-        const base = (originalFileName || '문서').replace(/\.pdf$/i, '');
+        const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const grid = `${res.across}x${res.down}`;
         const outName = `${base}_${isCut ? '1up' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}.pdf`;
         adoptImposedResult(res.bytes, outName);
@@ -3029,7 +3079,7 @@
     function currentSlugOpt() {
       if (!document.getElementById('impSlug')?.checked) return null;
       const d = new Date(), p2 = v => String(v).padStart(2, '0');
-      const name = (originalFileName || '문서').replace(/\.pdf$/i, '');
+      const name = effectiveBaseName();
       return { text: `${name} · ${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, fontBytes: getSlugFontBytes() };
     }
     // 현재 임포징 UI 상태 → 빌더 옵션 (모드별). '임포징 PDF 생성' 버튼과 메인
@@ -5566,7 +5616,7 @@
           hf.start = startPhys;
           if (!hf.enabled || (typeof hfAnyContent === 'function' ? !hfAnyContent(hf) : ![hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR].some(s => s && s.trim()))) {
             hf.enabled = true;
-            if (!hf.fC || !hf.fC.trim()) hf.fC = '{n}';
+            { const nk = hf.alt ? 'fR' : 'fC'; if (!hf[nk] || !hf[nk].trim()) hf[nk] = '{n}'; }   // 교대 시 책 바깥쪽
           }
           if (typeof syncEditUI === 'function') syncEditUI();
           invalidateProcessed();

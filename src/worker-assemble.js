@@ -379,10 +379,14 @@ async function handleLayoutTransform(payload) {
     if (!es) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const hf = es.hf, wm = es.wm;
     const someHf = a => a.some(s => s && s.trim());
-    const hfOn = hf && hf.enabled && (
-      someHf([hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR])
-      || someHf([hf.oHL, hf.oHC, hf.oHR, hf.oFL, hf.oFC, hf.oFR])
-      || someHf([hf.eHL, hf.eHC, hf.eHR, hf.eFL, hf.eFC, hf.eFR]));
+    // 확정(누적) 문구 레이어 + 현재 입력 — 순서대로 전부 겹쳐 인쇄한다.
+    // 각 레이어는 자기 스타일(크기·색·글꼴·위치·교대·번호시작)을 그대로 보존.
+    const hfHasContent = H => H && (
+      someHf([H.hL, H.hC, H.hR, H.fL, H.fC, H.fR])
+      || someHf([H.oHL, H.oHC, H.oHR, H.oFL, H.oFC, H.oFR])
+      || someHf([H.eHL, H.eHC, H.eHR, H.eFL, H.eFC, H.eFR]));
+    const hfCfgs = (hf && hf.enabled) ? [...(hf.layers || []), hf].filter(hfHasContent) : [];
+    const hfOn = hfCfgs.length > 0;
     const wmOn = wm && wm.enabled && wm.text.trim();
     if (!hfOn && !wmOn) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const p = outPages[i];
@@ -405,46 +409,53 @@ async function handleLayoutTransform(payload) {
       // 번호가 사라져 "짝수쪽만 생성된다"로 보였음)
       const absPage = i + 1 + pageOff;
       const even = absPage % 2 === 0;
-      // 홀·짝 전용 칸(o*/e*)에 값이 하나라도 있으면 그쪽 페이지는 전용 칸으로 인쇄, 비어 있으면
-      // 공통 칸으로 폴백 — 전용 칸만 채워도 반대쪽 페이지가 비어버리지 않는다.
-      // 폴백된 짝수 페이지에는 홀짝 좌우 교대(alt)가 적용된다(책 바깥쪽 번호).
-      const oddSet  = { hL: hf.oHL, hC: hf.oHC, hR: hf.oHR, fL: hf.oFL, fC: hf.oFC, fR: hf.oFR };
-      const evenSet = { hL: hf.eHL, hC: hf.eHC, hR: hf.eHR, fL: hf.eFL, fC: hf.eFC, fR: hf.eFR };
-      let hfEff = hf;
-      if (!even && someHf(Object.values(oddSet)))      hfEff = Object.assign({}, hf, oddSet);
-      else if (even && someHf(Object.values(evenSet))) hfEff = Object.assign({}, hf, evenSet);
-      else if (even && hf.alt) hfEff = Object.assign({}, hf, { hL: hf.hR, hR: hf.hL, fL: hf.fR, fR: hf.fL });
-      // 번호 시작 페이지(start): 그 출력 페이지가 {n}=1 — 표지·목차를 번호에서 빼는 용도.
-      // 시작 전 페이지는 page ≤ 0 → resolveHF가 번호 토큰을 비워 번호 없이 인쇄된다.
-      const hfStart = Math.max(1, (hf.start | 0) || 1);
-      // 로마자 배열은 base 페이지 순서 기준 — 출력 페이지와 1:1일 때만 사용(N-up 등으로 수가 다르면 무시)
-      const rn = (roman && roman.length === total) ? roman[i] : null;
-      const totalAll = totalPages || total;
-      const ctx = { page: absPage - (hfStart - 1), total: Math.max(1, totalAll - (hfStart - 1)), roman: rn, date: dateStr, filename: fname, pnumStyle: hf.pnumStyle || 0 };
       const mgOn = !!(es.margins && es.margins.enabled);
       const mL = mgOn ? mm2pt(es.margins.left) : 0, mR = mgOn ? mm2pt(es.margins.right) : 0;
       const segs = [
         ['hL', mL,      'left',   true],  ['hC', pw / 2,  'center', true],  ['hR', pw - mR, 'right', true],
         ['fL', mL,      'left',   false], ['fC', pw / 2,  'center', false], ['fR', pw - mR, 'right', false],
       ];
-      const mHF = mm2pt(hf.margin || 0);
-      // 위치 미세조절 (mm): +X=오른쪽, +Y=아래 — 머리글·바닥글 여섯 칸 전체에 적용
-      const offX = mm2pt(parseFloat(hf.offX) || 0), offY = mm2pt(parseFloat(hf.offY) || 0);
-      for (const [key, ax, align, isHeader] of segs) {
-        const txt = resolveHF(hfEff[key], ctx);
-        if (!txt || !txt.trim()) continue;
-        // ASCII면 내장 표준폰트(임베드 불필요), 한글 등 포함 시에만 시스템 폰트 서브셋 임베드
-        const font = isAsciiText(txt) ? await getStdFont() : await embedHfFont(hf.font);
-        if (font) {
-          const w = font.widthOfTextAtSize(txt, hf.size);
-          const x = (align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w)) + offX;
-          const y = (isHeader ? (ph - mHF - hf.size) : mHF) - offY;
-          p.drawText(txt, { x, y, size: hf.size, font, color: hexToRgb(hf.color) });
-        } else {
-          const im = await textToPngEmbed(out, txt, { size: hf.size, css: hf.color, angle: 0 }, cache);
-          const x = (align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w)) + offX;
-          const y = (isHeader ? (ph - mHF - im.h) : mHF) - offY;
-          p.drawImage(im.png, { x, y, width: im.w, height: im.h });
+      // 로마자 배열은 base 페이지 순서 기준 — 출력 페이지와 1:1일 때만 사용(N-up 등으로 수가 다르면 무시)
+      const rn = (roman && roman.length === total) ? roman[i] : null;
+      const totalAll = totalPages || total;
+      // 확정 레이어(1차, 2차, …) → 현재 입력 순으로 전부 겹쳐 인쇄
+      for (const H of hfCfgs) {
+        // 홀·짝 전용 칸(o*/e*)에 값이 하나라도 있으면 그쪽 페이지는 전용 칸으로 인쇄, 비어 있으면
+        // 공통 칸으로 폴백 — 전용 칸만 채워도 반대쪽 페이지가 비어버리지 않는다.
+        const oddSet  = { hL: H.oHL, hC: H.oHC, hR: H.oHR, fL: H.oFL, fC: H.oFC, fR: H.oFR };
+        const evenSet = { hL: H.eHL, hC: H.eHC, hR: H.eHR, fL: H.eFL, fC: H.eFC, fR: H.eFR };
+        const hasOdd = someHf(Object.values(oddSet)), hasEven = someHf(Object.values(evenSet));
+        let hfEff = H, mirrored = false;   // mirrored = 교대(alt)로 좌우가 뒤집힌 페이지 (위치 미세조절도 미러)
+        if (!even && hasOdd)      hfEff = Object.assign({}, H, oddSet);
+        else if (even && hasEven) hfEff = Object.assign({}, H, evenSet);
+        else if (even && H.alt) {
+          // 짝수 전용 칸이 비어 있으면: 홀수 전용 칸이 있으면 그것을, 없으면 공통 칸을 좌우 교대해 적용
+          const b = hasOdd ? Object.assign({}, H, oddSet) : H;
+          hfEff = Object.assign({}, b, { hL: b.hR, hR: b.hL, fL: b.fR, fR: b.fL });
+          mirrored = true;
+        }
+        // 번호 시작 페이지(start): 그 출력 페이지가 {n}=1 — 표지·목차를 번호에서 빼는 용도.
+        const hfStart = Math.max(1, (H.start | 0) || 1);
+        const ctx = { page: absPage - (hfStart - 1), total: Math.max(1, totalAll - (hfStart - 1)), roman: rn, date: dateStr, filename: fname, pnumStyle: H.pnumStyle || 0 };
+        const mHF = mm2pt(H.margin || 0);
+        // 위치 미세조절 (mm): +X=오른쪽, +Y=아래. 교대로 뒤집힌 짝수 페이지는 가로 이동도 거울로.
+        const offX = mm2pt(parseFloat(H.offX) || 0) * (mirrored ? -1 : 1), offY = mm2pt(parseFloat(H.offY) || 0);
+        for (const [key, ax, align, isHeader] of segs) {
+          const txt = resolveHF(hfEff[key], ctx);
+          if (!txt || !txt.trim()) continue;
+          // ASCII면 내장 표준폰트(임베드 불필요), 한글 등 포함 시에만 시스템 폰트 서브셋 임베드
+          const font = isAsciiText(txt) ? await getStdFont() : await embedHfFont(H.font);
+          if (font) {
+            const w = font.widthOfTextAtSize(txt, H.size);
+            const x = (align === 'left' ? ax : align === 'center' ? (ax - w / 2) : (ax - w)) + offX;
+            const y = (isHeader ? (ph - mHF - H.size) : mHF) - offY;
+            p.drawText(txt, { x, y, size: H.size, font, color: hexToRgb(H.color) });
+          } else {
+            const im = await textToPngEmbed(out, txt, { size: H.size, css: H.color, angle: 0 }, cache);
+            const x = (align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w)) + offX;
+            const y = (isHeader ? (ph - mHF - im.h) : mHF) - offY;
+            p.drawImage(im.png, { x, y, width: im.w, height: im.h });
+          }
         }
       }
     }
