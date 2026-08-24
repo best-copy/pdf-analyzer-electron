@@ -22,7 +22,7 @@
       <div class="file-input-wrapper">
         <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()"><span class="ic">📁</span> 파일 선택하기</button>
       </div>
-      <p class="drop-sub">한글·MS Office·Adobe 문서는 자동으로 PDF 변환 후 처리 · 여러 파일은 각각 탭으로 열립니다</p>
+      <p class="drop-sub">한글·MS Office·Adobe 문서와 <b>이미지(PNG·JPG·GIF·BMP·WEBP·TIFF)</b>는 자동으로 PDF 변환 후 처리 · 여러 파일은 각각 탭으로 열립니다<br>이미지는 파일에 기록된 해상도(DPI)로 <b>실제 인쇄 크기</b>의 1쪽 PDF가 됩니다 (기록이 없으면 큰 이미지는 300DPI, 작은 이미지는 96DPI)</p>
       <div class="recent-files" id="recentFiles"></div>
       <div class="file-info" id="fileInfo"></div>
       <div class="progress-bar" id="progressBar">
@@ -85,6 +85,7 @@
           <button class="sel-btn" onclick="deselectAll()">선택 해제</button>
           <span class="sel-count" id="selectedCount">0개 선택됨</span>
           <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
+          <button class="sel-btn" id="forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다. 열려 있던 문서·편집 내용은 사라집니다.">⟳ 앱 새로고침 (Force Reload)</button>
           <button class="sel-btn" id="inkBtn" onclick="analyzeInkCoverage()" title="Ghostscript inkcov로 페이지별 CMY 잉크 사용을 검사해 '프린터가 셀 컬러 장수'를 예측합니다. 적용본이 있으면 적용본을, 없으면 원본을 검사합니다.">🧾 프린터 판정</button>
           <button class="sel-btn" id="undoBtn" onclick="undoEdit()" title="실행취소 (Ctrl+Z)" style="display:none;">↩ 실행취소</button>
           <button class="sel-btn" id="redoBtn" onclick="redoEdit()" title="다시실행 (Ctrl+Y)" style="display:none;">↪ 다시실행</button>
@@ -100,6 +101,7 @@
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
           <button class="opt-btn" id="spreadViewBtn2" onclick="toggleSpreadView()" title="실제 책을 펼친 모양으로 보기 — 1쪽은 오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임. 적용 전 썸네일과 적용 결과 모두에 적용">📖 펼침</button>
           <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
+          <button class="opt-btn" id="opt-outline" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '✔ 적용'·'⇩ 다운로드' 결과의 글자를 곡선으로 바꾸거나(곡선화) 폰트를 통째로 실어(완전 임베드) 다른 PC·출력기에서도 동일하게 인쇄되게 합니다. 방식·평탄화는 좌측 사이드바 '⚙ 처리옵션'에서 선택"><span class="ic">✒</span> 폰트 출력 안전화</button>
           <button class="clear-opts-btn" id="clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <span class="action-btn-group">
             <button class="apply-btn" id="applyBtn" onclick="applyChanges()" style="margin-left:0;" disabled>✔ 적용</button>
@@ -110,7 +112,7 @@
       </div>
 
       <h3 id="pagesDetailHead" style="color:#1d1d1f; margin:30px 0 8px;">📄 페이지별 상세 정보</h3>
-      <p class="convert-hint" id="pagesDetailHint">페이지 썸네일을 클릭하면 흑백으로 변환할 페이지를 선택할 수 있습니다</p>
+      <p class="convert-hint" id="pagesDetailHint">페이지 썸네일을 <b>클릭</b>하면 흑백으로 변환할 페이지를 선택할 수 있습니다 · <b>더블클릭</b>(또는 V)하면 크게 보기로 컬러/흑백을 눈으로 판별할 수 있습니다</p>
 
       <div class="pages-grid" id="pagesGrid"></div>
 
@@ -222,12 +224,31 @@
           <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="sbp-opt active" id="sb-opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백 판정 페이지의 색공간을 DeviceGray로 통일 — 프린터 컬러 과금 방지">🖨 잉크 정규화</button>
           <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
+          <button class="sbp-clear" id="sb-forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다">⟳ 앱 새로고침 (Force Reload)</button>
           <button class="sbp-clear" id="sbPfBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·색공간·페이지 크기 혼재를 점검합니다"><span class="ic">🧪</span> 프리플라이트 검사</button>
           <button class="sbp-clear" id="tocBtn" onclick="openTocDialog()" title="선택한 페이지들을 목차 항목(장 시작)으로 지정 — 제목 글자를 자동 인식해 목차 페이지·PDF 북마크를 만듭니다"><span class="ic">📑</span> 목차 생성 (선택 페이지)</button>
           <button class="sbp-clear" id="printerSetupBtn" style="display:none;" onclick="setupVirtualPrinter()" title="가상 프린터 'PDF Editor' 설치 — 아크로뱃 등 어떤 프로그램에서든 인쇄 → PDF Editor 선택으로 문서(페이지 범위 지정 가능)를 이 앱에 보냅니다"><span class="ic">🖨</span> '인쇄로 받기' 프린터 설치</button>
           <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✔ 적용</button>
           <button class="sbp-btn sbp-dl" id="sb-downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>⇩ 다운로드</button>
+        </div>
+      </div>
+      <!-- ✒ 폰트 출력 안전화 — 편집 작업공간에서 메인으로 옮김.
+           적용·다운로드의 최종 단계(Ghostscript)라 편집 옵션이 아니라 처리 옵션이다. -->
+      <div class="sbp-section">
+        <div class="sbp-title"><span class="ic">✒</span> 폰트 출력 안전화 (출력소 전달용)</div>
+        <div class="sbp-opts">
+          <label class="sbp-chk" title="켜면 '✔ 적용'·'⇩ 다운로드' 결과에 폰트 처리를 최종 단계로 반영합니다 (Ghostscript). 이미지는 무손실 유지">
+            <input type="checkbox" id="esOutline" onchange="setOutlineEnabled(this.checked)"> 폰트 출력 안전화 켜기
+          </label>
+          <div class="sbp-row2">
+            <button class="sbp-opt active" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
+            <button class="sbp-opt" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
+          </div>
+          <label class="sbp-chk" title="투명도 효과를 미리 합성(PDF 1.4) — 구형 출력기(RIP)에서 투명도 사고 방지. 파일이 커질 수 있음">
+            <input type="checkbox" id="outlineFlatten" onchange="if(document.getElementById('esOutline').checked)invalidateProcessed()"> 평탄화 (투명도 미리 합성)
+          </label>
+          <div class="sbp-note"><b>곡선화</b> = 글자를 곡선 데이터로(용량 수십 배↑·수정 불가) · <b>완전 임베드</b> = 폰트를 통째로 실어(용량 증가 적음·텍스트 유지)</div>
         </div>
       </div>
       <!-- 모바일 연동 서버 — 폰이 이 PC로 HWP/Office/Adobe 변환·잉크판정을 위임 (사무실 WiFi 전용)
@@ -282,27 +303,8 @@
       </span>
     </div>
 
-    <!-- ✒ 폰트 출력 안전화 — 최상단 고정 (그룹 밖) -->
-    <div class="es-section" id="secOutline">
-      <div class="es-row">
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6; flex:1;" title="켜면 적용·다운로드 시 모든 글자를 곡선으로 변환 (Ghostscript) — 폰트 문제로 인한 출력 사고 원천 차단. 이미지 무손실 유지. 결과물은 텍스트 수정·검색 불가">
-          <input type="checkbox" id="esOutline" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="setOutlineEnabled(this.checked)">
-          <span class="ic">✒</span> 폰트 출력 안전화 (출력소 전달용)
-        </label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6; flex:0 0 auto;" title="투명도 효과를 미리 합성(PDF 1.4) — 구형 출력기(RIP)에서 투명도 사고 방지. 파일이 커질 수 있음">
-          <input type="checkbox" id="outlineFlatten" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="if(document.getElementById('esOutline').checked)invalidateProcessed()">
-          평탄화
-        </label>
-      </div>
-      <div class="es-row" style="margin-top:6px;">
-        <span class="es-label">방식</span>
-        <div class="es-btngroup" style="flex:1;">
-          <button class="es-chip active" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
-          <button class="es-chip" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
-        </div>
-      </div>
-      <div class="es-hint"><b>곡선화</b>=글자를 곡선 데이터로(용량 수십 배↑·수정 불가), <b>완전 임베드</b>=폰트를 통째로 실어(용량 증가 적음·텍스트 유지) 다른 PC·출력기에서 동일하게 인쇄되게 합니다.</div>
-    </div>
+    <!-- ✒ 폰트 출력 안전화 — 메인 화면(처리 옵션 · 좌측 사이드바 패널)으로 이동했습니다.
+         편집 작업공간에 두면 '저장하고 닫기'가 gs 변환을 기다리느라 닫히지 않는 것처럼 보였다. -->
 
     <!-- 페이지 내부(텍스트·요소) 편집기 — JS(buildEsGroups)가 '🛠 도구' 그룹으로 이동 -->
     <div class="es-section" id="secContentEdit">
@@ -1134,6 +1136,10 @@
   </div>
 
   <div id="pageCtxMenu">
+    <div class="ctx-item" onclick="ctxPageView()">
+      <span>🔍 크게 보기 (컬러/흑백 판별)</span><span class="ctx-key">V</span>
+    </div>
+    <div class="ctx-sep"></div>
     <div class="ctx-item" onclick="ctxEditContent()">
       <span>🖊 내부 내용 편집</span><span class="ctx-key">T</span>
     </div>
@@ -1253,6 +1259,39 @@
         <button onclick="document.getElementById('preflightModal').style.display='none'" style="background:none; border:0; color:#f5f5f7; font-size:18px; cursor:pointer;">✕</button>
       </div>
       <div id="preflightBody" style="padding:16px 18px; overflow-y:auto; font-size:13.5px; line-height:1.6; color:#1d1d1f;"></div>
+    </div>
+  </div>
+
+
+  <!-- 🔍 페이지 크게 보기 — 컬러/흑백 판별용 (썸네일 더블클릭 · 우클릭 메뉴 · V) -->
+  <div id="pageViewModal" style="display:none;">
+    <div class="pvv-head">
+      <b><span class="ic">🔍</span> 페이지 크게 보기</b>
+      <span class="pvv-title" id="pvvTitle"></span>
+      <span class="pvv-verdict" id="pvvVerdict"></span>
+      <span style="flex:1;"></span>
+      <button class="es-chip" onclick="pvvNav(-1)" title="이전 (←)" style="flex:0 0 auto;">◀</button>
+      <button class="es-chip" onclick="pvvNav(1)" title="다음 (→)" style="flex:0 0 auto;">▶</button>
+      <button class="es-chip" onclick="closePageView()" title="닫기 (Esc)" style="flex:0 0 auto;">✕ 닫기</button>
+    </div>
+    <div class="pvv-body" id="pvvBody"><canvas id="pvvCanvas"></canvas></div>
+    <div class="pvv-foot">
+      <label class="pvv-chk" title="중성(회색)이 아닌 픽셀을 자홍색으로 칠해 보여 줍니다 — 흑백처럼 보이지만 컬러가 섞인 부분을 눈으로 찾을 때">
+        <input type="checkbox" id="pvvMark" onchange="pvvRedraw()"> 🎨 컬러 픽셀 표시
+      </label>
+      <span class="pvv-lbl" title="R·G·B 차이가 이 값보다 크면 '컬러'로 봅니다. 1 = 분석기와 같은 기준">감도</span>
+      <input type="range" id="pvvTol" min="0" max="30" step="1" value="1" style="width:110px; accent-color:#ffd60a;" oninput="pvvTolChanged()">
+      <span class="pvv-lbl" id="pvvTolVal" style="min-width:18px;">1</span>
+      <span class="pvv-stat" id="pvvStat"></span>
+      <span style="flex:1;"></span>
+      <label class="pvv-chk" id="pvvOnlySelWrap" style="display:none;" title="◀ ▶ 이동을 선택한 페이지들 안에서만 합니다">
+        <input type="checkbox" id="pvvOnlySel" checked onchange="pvvSyncTitle()"> 선택한 페이지만
+      </label>
+      <button class="es-chip" id="pvvBwBtn" onclick="pvvToggleBw()" title="이 페이지를 흑백변환 대상으로 선택/해제 (B)" style="flex:0 0 auto;">⬛ 흑백변환 선택</button>
+      <button class="es-chip" onclick="pvvZoom(-1)" title="축소" style="flex:0 0 auto;">−</button>
+      <span class="pvv-lbl" id="pvvZoomPct" style="min-width:44px; text-align:center;">맞춤</span>
+      <button class="es-chip" onclick="pvvZoom(1)" title="확대" style="flex:0 0 auto;">＋</button>
+      <button class="es-chip" onclick="pvvZoom(0)" title="화면에 맞춤" style="flex:0 0 auto;">맞춤</button>
     </div>
   </div>
 

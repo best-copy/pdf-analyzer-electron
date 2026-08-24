@@ -374,6 +374,16 @@ function createWindow() {
   // win.webContents.openDevTools(); // 디버그 시 주석 해제
 
   // 실행 인자로 받은 문서를 렌더러 준비 후 전달 (목차 검증기 연동)
+  // Ctrl+R / Ctrl+Shift+R — 기본 메뉴의 새로고침을 가로채 렌더러의 확인 절차를 태운다.
+  // (그냥 두면 편집 중이던 문서가 경고 없이 날아간다)
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || !input.control || input.alt) return;
+    if (input.key === 'r' || input.key === 'R' || input.key === 'F5') {
+      event.preventDefault();
+      win.webContents.send('app:reload-request');
+    }
+  });
+
   win.webContents.on('did-finish-load', () => {
     if (pendingOpenPaths.length) {
       // 항목은 경로 문자열 또는 { path, name }(인쇄 접수처럼 표시 이름이 따로 있는 경우)
@@ -481,6 +491,16 @@ app.on('will-quit', stopPrintJobPoller);   // 인쇄 작업 감시 프로세스 
 
 // 렌더러 → '저장 안 한 작업' 상태 보고
 ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });
+
+// 렌더러 → 앱 강제 새로고침(캐시 무시). 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 복구한다.
+// 새로고침하면 편집 내용이 사라지므로 '저장 안 한 작업' 플래그도 함께 해제한다.
+ipcMain.handle('app:forceReload', (event) => {
+  const w = BrowserWindow.fromWebContents(event.sender);
+  if (!w) return false;
+  unsavedWork = false;
+  w.webContents.reloadIgnoringCache();
+  return true;
+});
 
 // 렌더러 → 설치된 시스템 폰트 목록 (이름·경로). 임베드 가능한 TTF/OTF만.
 // 폰트 레지스트리(HKLM/HKCU)에서 표시 이름→파일을 읽어 반환. TTC는 pdf-lib 임베드 불가라 제외.
@@ -743,10 +763,12 @@ ipcMain.handle('dialog:openCoverFile', async () => {
 
 ipcMain.handle('dialog:openFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
-    title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe)',
+    title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe · 이미지)',
     filters: [
-      { name: '문서 전체 (PDF·HWP·Office·Adobe)',
-        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'ai', 'psd', 'indd'] },
+      { name: '문서·이미지 전체 (PDF·HWP·Office·Adobe·이미지)',
+        extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'ai', 'psd', 'indd',
+                     'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'avif'] },
+      { name: '이미지 (PNG·JPG·GIF·BMP·WEBP·TIFF)', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'avif'] },
       { name: 'PDF',  extensions: ['pdf'] },
       { name: '한글 (HWP·HWPX)', extensions: ['hwp', 'hwpx'] },
       { name: 'Word (DOC·DOCX)', extensions: ['doc', 'docx'] },

@@ -921,6 +921,18 @@
     }
     .sbp-opt:hover, .sbp-clear:hover, .sbp-btn:not(:disabled):hover { background: #3a3a3c; }
     .sbp-opt.active { background: #ffd60a; border-color: #ffd60a; color: #1d1d1f; }
+    /* 처리옵션 패널 안의 체크박스·2열 칩·설명 (✒ 폰트 출력 안전화) */
+    .sbp-chk {
+      display: flex; align-items: center; gap: 7px; cursor: pointer;
+      font-size: 0.74em; font-weight: 600; color: #f5f5f7;
+      background: #1c1c1e; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 7px; padding: 7px 8px;
+    }
+    .sbp-chk:hover { background: #3a3a3c; }
+    .sbp-chk input { accent-color: #ffd60a; width: 14px; height: 14px; cursor: pointer; flex: 0 0 auto; }
+    .sbp-row2 { display: flex; gap: 6px; }
+    .sbp-row2 .sbp-opt { flex: 1 1 0; min-width: 0; }
+    .sbp-note { font-size: 0.66em; color: #8e8e93; line-height: 1.5; }
     .sbp-apply { background: #ffd60a; border-color: #ffd60a; color: #1d1d1f; }
     .sbp-apply:not(:disabled):hover { background: #ffdf3a !important; }
     .sbp-dl    { background: #1d1d1f; border-color: rgba(255,255,255,0.2); color: #ffd60a; }
@@ -1322,4 +1334,34 @@
 @keyframes btnSweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 
 /* es-chip 비활성 상태 (아웃라인화 1회 완료 등) */
+
+    /* ── 🔍 페이지 크게 보기 (컬러/흑백 판별용) ── */
+    #pageViewModal {
+      /* 사이드바(500)·편집 작업공간(610)·플로팅 버튼(9999)보다 위 — 전체를 덮는 뷰어 */
+      position: fixed; inset: 0; z-index: 100010; background: #0e0e0f;
+      display: flex; flex-direction: column;
+    }
+    .pvv-head, .pvv-foot {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 9px 14px; background: #1d1d1f; color: #f5f5f7; font-size: 13px;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+    }
+    .pvv-foot { border-bottom: none; border-top: 1px solid rgba(255,255,255,0.10); }
+    .pvv-head b { color: #ffd60a; }
+    .pvv-title { color: #f5f5f7; font-weight: 600; }
+    .pvv-verdict { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+    .pvv-verdict.is-color { background: #ffd60a; color: #1d1d1f; }
+    .pvv-verdict.is-gray  { background: #48484a; color: #f5f5f7; }
+    .pvv-body {
+      flex: 1; min-height: 0; overflow: auto; background: #2c2c2e;
+      display: flex; align-items: center; justify-content: center; padding: 12px;
+    }
+    #pvvCanvas { background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,0.6); }
+    .pvv-lbl { color: #aeaeb2; font-size: 12px; }
+    .pvv-stat { color: #ffd60a; font-size: 12px; font-weight: 600; }
+    .pvv-chk {
+      display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #f5f5f7;
+    }
+    .pvv-chk input { accent-color: #ffd60a; width: 14px; height: 14px; cursor: pointer; }
+
 .es-chip:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; background: #f5f5f7; }

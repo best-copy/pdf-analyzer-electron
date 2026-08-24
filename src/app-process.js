@@ -1,3 +1,15 @@
+    // ── 긴 동기 루프 중 UI 양보 ────────────────────────────────────────────────
+    // pdf-lib의 embedPage/drawPage는 await해도 마이크로태스크로만 풀려 이벤트 루프로 돌아가지
+    // 않는다 → 수백 쪽 임포징에서 화면이 통째로 멈춘 것처럼 보인다. 40ms 넘게 붙들고 있었을
+    // 때만 매크로태스크(setTimeout 0)로 한 번 양보해, 품질 손실 없이 프리즈만 없앤다.
+    let _yieldAt = 0;
+    function uiYield(ms) {
+      const now = Date.now();
+      if (now - _yieldAt < (ms || 40)) return Promise.resolve();
+      _yieldAt = now;
+      return new Promise(r => setTimeout(r));
+    }
+
     // ── 실시간 미리보기 (편집 옵션 변경 시 디바운스 자동 갱신) ─────────────────
     let _livePvTimer = null, _liveRunning = false, _liveQueued = false;
     // 미리보기가 필요한 상태: 편집 레이아웃이 있거나, 흑백변환+선택이 있음
@@ -32,7 +44,9 @@
       const note = document.getElementById('previewNote');
       if (sec && sec.style.display !== 'none' && note) note.textContent = '갱신 중…';
       clearTimeout(_livePvTimer);
-      _livePvTimer = setTimeout(runLivePreview, 120);
+      // 임포징 포함 상태는 시트 재조립 비용이 커서(전체 페이지 의존) 디바운스를 늘린다 —
+      // 슬라이더·숫자칸을 연속으로 만질 때 중간 단계마다 전체 조립하는 낭비를 없앤다.
+      _livePvTimer = setTimeout(runLivePreview, _impEnabled ? 420 : 120);
     }
     async function runLivePreview() {
       if (applying || _liveRunning) { _liveQueued = true; return; }
@@ -446,6 +460,23 @@
     let _impProfile = null;    // 불러온 프로파일의 정규화 옵션(그대로 재현). UI를 만지면 null(→UI 기준).
     let _loadingProfile = false;
 
+    // ── '📖 임포징 PDF 생성'은 1회용 ─────────────────────────────────────────
+    // 같은 설정으로 다시 눌러도 결과가 같은데 매번 전체를 재조립해 시간을 버렸다.
+    // 생성이 끝나면 버튼을 잠그고, 설정·문서·적용 상태가 바뀌면(invalidateProcessed 경유)
+    // 자동으로 다시 열린다.
+    let _impGenDone = false;
+    function setImpGenDone(done) {
+      _impGenDone = !!done;
+      const b = document.getElementById('impGenBtn');
+      if (!b) return;
+      b.disabled = _impGenDone;
+      b.textContent = _impGenDone ? '✅ 임포징 생성 완료 (설정을 바꾸면 다시 활성화)' : '📖 임포징 PDF 생성';
+      b.title = _impGenDone
+        ? '현재 설정으로 이미 생성했습니다. 임포징 옵션·페이지·흑백 선택을 바꾸면 다시 누를 수 있습니다.'
+        : '현재 편집·적용 상태로 임포징 시트를 생성합니다.';
+    }
+    function impGenInvalidate() { if (_impGenDone) setImpGenDone(false); }
+
 
     // 임포징 포함 토글 — 켜면 적용·다운로드·실시간 미리보기가 임포징 시트를 최종 단계로 얹는다.
     // ('임포징 PDF 생성' 버튼을 누르면 자동으로 켜져 화면 결과와 메인 다운로드가 일치)
@@ -472,6 +503,7 @@
     // 임포징 옵션 변경 — UI를 만지면 불러온 프로파일 재현을 해제(이후 UI 기준).
     // 포함 모드일 때 적용 결과 무효화 + 미리보기 갱신.
     function impSettingsChanged() {
+      impGenInvalidate();                     // 설정이 바뀌면 '생성 완료' 잠금 해제
       if (_loadingProfile) return;            // 프로파일 불러오는 중 UI 세팅은 무시
       _impProfile = null;                     // 사용자가 손대면 UI 기준으로 전환
       if (typeof updateImpSheetReadout === 'function') updateImpSheetReadout();
@@ -633,6 +665,29 @@
         }
       } catch (e) {}
     }
+    // ✂ 원고가 이미 블리드를 품고 있으면(◲ 블리드 생성본·일러스트 아트보드 등) TrimBox가
+    // MediaBox보다 작다. 재단선·프레임은 반드시 그 '트림' 사각형에 찍혀야 하므로(블리드 안쪽),
+    // 표시 좌표 기준 사방 인셋(pt)을 구해 임베드 항목에 실어 둔다.
+    // 회전(/Rotate)이 있으면 표시 방향에 맞춰 인셋도 같이 돌린다.
+    //   90°: 좌→상·우→하·하→좌·상→우 / 180°: 좌↔우·상↔하 / 270°: 좌→하·우→상·하→우·상→좌
+    function pageTrimInset(pg, w, h, rot) {
+      let tb = null, mb = null;
+      try { tb = pg.getTrimBox(); } catch (e) { return null; }
+      if (!tb || !(tb.width > 0) || !(tb.height > 0)) return null;
+      try { mb = pg.getMediaBox(); } catch (e) { mb = null; }
+      const ox = mb ? (mb.x || 0) : 0, oy = mb ? (mb.y || 0) : 0;
+      let l = tb.x - ox, b = tb.y - oy;
+      let r = w - (l + tb.width), t = h - (b + tb.height);
+      const eps = 0.05;
+      if (l < -eps || b < -eps || r < -eps || t < -eps) return null;      // 미디어 밖으로 나간 비정상 트림
+      if (l + r < eps && b + t < eps) return null;                        // 트림 = 미디어 → 인셋 없음
+      if (tb.width < w * 0.5 || tb.height < h * 0.5) return null;         // 절반 이하는 재단여백이 아님 — 무시
+      l = Math.max(0, l); b = Math.max(0, b); r = Math.max(0, r); t = Math.max(0, t);
+      if (rot === 90)  return { l: b, r: t, b: r, t: l };
+      if (rot === 180) return { l: r, r: l, b: t, t: b };
+      if (rot === 270) return { l: t, r: b, b: l, t: r };
+      return { l, r, b, t };
+    }
     async function embedAllPages(out, src, onProgress, extraRot) {
       const n0 = src.getPageCount();
       const embedded = [];
@@ -649,8 +704,9 @@
         let epg;
         try { epg = await out.embedPage(pg, undefined, mtx); }
         catch (err) { ensurePageContents(pg, true); epg = await out.embedPage(pg, undefined, mtx); }   // 강제 복구 후 1회 재시도
-        embedded.push({ e: epg, w: ew, h: eh });
+        embedded.push({ e: epg, w: ew, h: eh, trim: pageTrimInset(pg, w, h, rot) });
         if (onProgress && (i & 15) === 0) onProgress(Math.round(i / n0 * 40));
+        await uiYield();   // 대용량 문서 임베드 중에도 화면이 멈추지 않게 주기적으로 양보
       }
       return embedded;
     }
@@ -711,7 +767,8 @@
         pg.drawPage(e, opts);
         pg.pushOperators(popGraphicsState());
       };
-      embedded.forEach(({ e, w, h }, i) => {
+      for (let i = 0; i < embedded.length; i++) {
+        const { e, w, h } = embedded[i];
         const pg = out.addPage([w + 2*b, h + 2*b]);
         pg.drawPage(e, { x: b, y: b });                                             // 중앙 원본
         clipDraw(pg, 0,     b,     b, h, e, { x: b,       y: b,       xScale:-1 });               // 좌
@@ -731,7 +788,8 @@
           drawCropMarks(pg, b, b, w, h, { gap, len: Math.max(1, bleedMm - gap), th: 0.4 });
         }
         if (onProgress && (i & 7) === 0) onProgress(40 + Math.round(i / embedded.length * 60));
-      });
+        await uiYield();
+      }
       return { bytes: await out.save({ useObjectStreams: false, updateFieldAppearances: false }), n: embedded.length };
     }
     async function generateBleed() {
@@ -1456,14 +1514,36 @@
         hf.innerHTML = names.map(n => `<option${n === cur ? ' selected' : ''}>${n}</option>`).join('');
       }
     }
-    function saveCoverPreset() {
-      const cur = document.getElementById('coverPresetSel')?.value || '';
-      const name = (prompt('표지 프리셋 이름 (같은 이름이 있으면 덮어쓰기)', cur) || '').trim();
-      if (!name) return;
+    // 표지 섹션 값 전체 스냅샷 — 표지 프리셋 저장과 '🕓 최근 작업 설정'이 공유한다
+    function captureCoverState() {
       const g = id => document.getElementById(id);
       const data = { v: {}, c: {}, mode: _coverMode, backAuto: _coverBackAuto, spinePos: _coverSpinePos };
       COVER_PRESET_V.forEach(id => { if (g(id)) data.v[id] = g(id).value; });
       COVER_PRESET_C.forEach(id => { if (g(id)) data.c[id] = !!g(id).checked; });
+      return data;
+    }
+    // 스냅샷 → 표지 UI 복원 (값 + 모드 칩 + 종속 행 표시). 프리셋 불러오기와 공용.
+    function applyCoverState(data) {
+      if (!data) return;
+      const g = id => document.getElementById(id);
+      COVER_PRESET_V.forEach(id => { if (g(id) && data.v && data.v[id] !== undefined) g(id).value = data.v[id]; });
+      COVER_PRESET_C.forEach(id => { if (g(id) && data.c && data.c[id] !== undefined) g(id).checked = data.c[id]; });
+      setCoverMode(data.mode || 'extract');
+      setCoverBackAuto(data.backAuto || 'none');
+      setCoverSpinePos(data.spinePos || 'center');
+      // 표시 토글 동기 (값은 스냅샷 그대로 — onCover*Change는 값을 덮어쓰므로 직접)
+      const szCustom = g('coverSizeSel')?.value === 'custom';
+      if (g('coverCustomWrap')) g('coverCustomWrap').style.display = szCustom ? '' : 'none';
+      const shSel = g('coverSheetSel')?.value || '';
+      if (g('coverSheetCustom')) g('coverSheetCustom').style.display = shSel === 'custom' ? '' : 'none';
+      if (g('coverSheetMargins')) g('coverSheetMargins').style.display = shSel !== '' ? '' : 'none';
+      updateCoverSpineInfo();
+    }
+    function saveCoverPreset() {
+      const cur = document.getElementById('coverPresetSel')?.value || '';
+      const name = (prompt('표지 프리셋 이름 (같은 이름이 있으면 덮어쓰기)', cur) || '').trim();
+      if (!name) return;
+      const data = captureCoverState();
       const all = coverPresets();
       const overwrite = !!all[name];
       all[name] = data;
@@ -1476,19 +1556,7 @@
       if (!name) return;
       const data = coverPresets()[name];
       if (!data) return;
-      const g = id => document.getElementById(id);
-      COVER_PRESET_V.forEach(id => { if (g(id) && data.v[id] !== undefined) g(id).value = data.v[id]; });
-      COVER_PRESET_C.forEach(id => { if (g(id) && data.c[id] !== undefined) g(id).checked = data.c[id]; });
-      setCoverMode(data.mode || 'extract');
-      setCoverBackAuto(data.backAuto || 'none');
-      setCoverSpinePos(data.spinePos || 'center');
-      // 표시 토글 동기 (값은 프리셋 그대로 — onCover*Change는 값을 덮어쓰므로 직접)
-      const szCustom = g('coverSizeSel')?.value === 'custom';
-      if (g('coverCustomWrap')) g('coverCustomWrap').style.display = szCustom ? '' : 'none';
-      const shSel = g('coverSheetSel')?.value || '';
-      if (g('coverSheetCustom')) g('coverSheetCustom').style.display = shSel === 'custom' ? '' : 'none';
-      if (g('coverSheetMargins')) g('coverSheetMargins').style.display = shSel !== '' ? '' : 'none';
-      updateCoverSpineInfo();
+      applyCoverState(data);
       showSuccess(`📕 표지 프리셋 '${name}' 적용 완료 — '📕 표지 PDF 생성'을 누르면 이 설정으로 만듭니다.`);
     }
     function deleteCoverPreset() {
@@ -1874,6 +1942,10 @@
       _outlineEnabled = !!on;
       const chk = document.getElementById('esOutline');
       if (chk && chk.checked !== _outlineEnabled) chk.checked = _outlineEnabled;
+      // 메인 '처리 옵션' 줄의 미러 버튼도 즉시 동기 (상태·표시 불일치로 인한 오인 방지)
+      const mb = document.getElementById('opt-outline');
+      if (mb) mb.classList.toggle('active', _outlineEnabled);
+      if (typeof updateEsGroupBadges === 'function') updateEsGroupBadges();
       invalidateProcessed();   // '적용 필요' 상태로 — ✔ 적용 시 반영
       if (_outlineEnabled) outlineOnMessage();
     }
@@ -2087,14 +2159,22 @@
       const t = placeInSlot(slot, emb, opts.place);
       const x = t.x + (shiftX || 0), y = t.y;
       const bPt = (opts.bleed || 0) * 72 / 25.4;
+      let dx = x, dy = y, ds = t.s;
       if (bPt > 0) {
         // 블리드: 트림보다 크게(면당 bPt) 확대해 중앙 정렬 — 재단 밀림 대비
         const k = Math.max((t.w + 2 * bPt) / t.w, (t.h + 2 * bPt) / t.h);
-        const s2 = t.s * k;
-        page.drawPage(emb.e, { x: x + t.w / 2 - emb.w * s2 / 2, y: y + t.h / 2 - emb.h * s2 / 2, xScale: s2, yScale: s2 });
-      } else {
-        page.drawPage(emb.e, { x, y, xScale: t.s, yScale: t.s });
+        ds = t.s * k;
+        dx = x + t.w / 2 - emb.w * ds / 2;
+        dy = y + t.h / 2 - emb.h * ds / 2;
       }
+      page.drawPage(emb.e, { x: dx, y: dy, xScale: ds, yScale: ds });
+      // 원고가 블리드를 품고 있으면(TrimBox < MediaBox) 재단선·프레임은 그 트림 위치에 —
+      // 블리드까지 포함한 바깥 테두리에 찍히면 재단선이 블리드 밖으로 나가 재단 기준이 틀어진다.
+      const tr = emb.trim;
+      if (tr) return {
+        x: dx + tr.l * ds, y: dy + tr.b * ds,
+        w: (emb.w - tr.l - tr.r) * ds, h: (emb.h - tr.b - tr.t) * ds,
+      };
       return { x, y, w: t.w, h: t.h };
     }
     // 임포징 공용: 여백(mm)을 pt 4방으로 해석. opts.margin이 숫자면 4방 동일, 객체면 {l,t,r,b}.
@@ -2223,7 +2303,8 @@
       };
       const slug = await prepSlug(out, opts);
       let sheetsMade = 0;
-      sheets.forEach(({ front, back }, i) => {
+      for (let i = 0; i < sheets.length; i++) {
+        const { front, back } = sheets[i];
         const fp = out.addPage([sw, sh]);
         const ft = front.map((lg, s) => drawInto(fp, lg, s));
         if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
@@ -2239,7 +2320,8 @@
           sheetsMade++;
         }
         if (onProgress) onProgress(40 + Math.round((i + 1) / sheets.length * 55));
-      });
+        await uiYield();
+      }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
       return { bytes, n0, per, across, down, sides, sheets: sheetsMade };
@@ -2275,7 +2357,8 @@
 
       const order = bookletSheetOrder(n, opts.binding);
       const slug = await prepSlug(out, opts);
-      order.forEach(({ front, back }, i) => {
+      for (let i = 0; i < order.length; i++) {
+        const { front, back } = order[i];
         const shift = creepPt * i;   // 바깥 시트 0 → 안쪽으로 갈수록 책등 쪽 이동
         const fp = out.addPage([sw, sh]);
         const ft = [drawSlot(fp, front[0], 'L', shift), drawSlot(fp, front[1], 'R', shift)];
@@ -2288,7 +2371,8 @@
         drawSlug(fp, slug, i + 1, order.length, 'F');
         drawSlug(bp, slug, i + 1, order.length, 'B');
         if (onProgress) onProgress(40 + Math.round((i + 1) / order.length * 55));
-      });
+        await uiYield();
+      }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
       return { bytes, n0, n, sheets: n / 4 };
@@ -2351,7 +2435,8 @@
       };
 
       const { sheets, n, chunk } = cutStackOrder(n0, nup, sides);
-      sheets.forEach(({ front, back }, i) => {
+      for (let i = 0; i < sheets.length; i++) {
+        const { front, back } = sheets[i];
         const fp = out.addPage([sw, sh]);
         const ft = front.map((pg, s) => drawCell(fp, pg, s));
         if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
@@ -2361,7 +2446,8 @@
           if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
         }
         if (onProgress) onProgress(40 + Math.round((i + 1) / sheets.length * 55));
-      });
+        await uiYield();
+      }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
       return { bytes, n0, n, chunk, sheets: sheets.length, nup, sides };
@@ -2428,6 +2514,7 @@
         total += cols * rows;
         if (!firstGrid) firstGrid = { cols, rows };
         if (onProgress) onProgress(40 + Math.round((pi + 1) / n0 * 55));
+        await uiYield();
       }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
@@ -2513,7 +2600,8 @@
       const sides = opts.sides === 1 ? 1 : 2;
       const { sheets, n } = dup2upOrder(n0, sides);
       const slug = await prepSlug(out, opts);
-      sheets.forEach(({ front, back }, i) => {
+      for (let i = 0; i < sheets.length; i++) {
+        const { front, back } = sheets[i];
         const fp = out.addPage([sw, sh]);
         const ft = [drawCell(fp, front[0], 'L'), drawCell(fp, front[1], 'R')];
         if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
@@ -2525,7 +2613,8 @@
           drawSlug(bp, slug, i + 1, sheets.length, 'B');
         }
         if (onProgress) onProgress(45 + Math.round((i + 1) / sheets.length * 50));
-      });
+        await uiYield();
+      }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
       return { bytes, n0, n, sheets: sheets.length, sides };
@@ -2631,6 +2720,7 @@
       const savedCover = await window.electronAPI.saveFile({ defaultName: `${base}_중철_표지.pdf`, buffer: cover });
       const savedInner = await window.electronAPI.saveFile({ defaultName: `${base}_중철_내지.pdf`, buffer: inner });
       if (!savedCover && !savedInner) return;   // 둘 다 취소
+      setImpGenDone(true);
       let msg = `📕 중철 표지 분리 저장 완료 — 표지 1시트(양면 2면: 겉면 [뒤표지|앞표지] / 안쪽 [표2|표3])`
         + ` + 내지 ${res.sheets - 1}시트 (본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
         + `\n인쇄: 표지 = 두꺼운 표지 용지 1장 · 양면 · 짧은 쪽 넘김 / 내지 = 본문 용지 · 양면 · 짧은 쪽 넘김`
@@ -3150,13 +3240,26 @@
 
     // 임포징 최종 단계 — srcBytes(적용/최적화 결과)를 현재 모드의 시트로 조립.
     // 적용(applyChanges)·다운로드(downloadProcessed)·실시간 미리보기가 공유한다.
+    // 임포징 결과 캐시 — 소스 바이트 지문 + 임포징 옵션이 같으면 시트를 다시 조립하지 않는다.
+    // (편집 모드에서 임포징 무관한 옵션을 만질 때마다 전체 재조립하던 딜레이 제거)
+    let _impBytesCache = { sig: null, bytes: null };
+    function clearImpCache() { _impBytesCache = { sig: null, bytes: null }; }
     async function buildImposedBytes(srcBytes, onProgress) {
       const opts = currentImpOptions();
+      const u8 = srcBytes instanceof Uint8Array ? srcBytes : new Uint8Array(srcBytes);
+      // 시그니처는 opts에서 직접 만든다 — impSignature()는 '임포징 포함'이 꺼져 있으면 빈 문자열을
+      // 돌려주므로, 그걸 쓰면 옵션을 바꿔도 캐시가 적중하는 낡은 결과 버그가 생긴다.
+      let sig;
+      try { sig = bytesFingerprint(u8) + '|' + JSON.stringify(opts); }
+      catch (e) { sig = null; }
+      if (sig && _impBytesCache.sig === sig && _impBytesCache.bytes) { if (onProgress) onProgress(100); return _impBytesCache.bytes; }
       const build = opts.mode === 'nup' || opts.mode === 'cutstack' ? buildNupBytes
                   : opts.mode === 'repeat'   ? buildStepRepeatBytes
                   : opts.mode === 'dup'      ? buildDup2upBytes
                   : buildBookletBytes;
-      return (await build(srcBytes, opts, onProgress)).bytes;
+      const bytes = (await build(srcBytes, opts, onProgress)).bytes;
+      _impBytesCache = sig ? { sig, bytes } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
+      return bytes;
     }
     // 적용 완료 메시지용 임포징 설명
     function impositionNoteOf() {
@@ -3186,6 +3289,9 @@
       processedFileName = name;
       setDirty(true);
       updateDownloadBtn();
+      setImpGenDone(true);        // 같은 설정으로 다시 누르지 않도록 버튼 잠금
+      // 🕓 임포징까지 반영된 현재 설정을 최근 작업으로 기록 (제본 설정 유실 방지)
+      if (typeof recordWorkHistory === 'function') { try { recordWorkHistory(); } catch (e) {} }
     }
 
     // 임포징 실행 — 모드에 따라 모아찍기/정합/반복/복제/중철 분기 (화면 생성만; 저장은 메인 다운로드)

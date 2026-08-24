@@ -193,8 +193,7 @@
       if (paN) parts.page.push(`개별 ${paN}쪽`);
       if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled) parts.page.push('블리드');
       if (typeof _impEnabled !== 'undefined' && _impEnabled) parts.imp.push('임포징 포함');
-      if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled)
-        parts.tool.push(typeof _outlineMode !== 'undefined' && _outlineMode === 'embed' ? '폰트 임베드' : '곡선화');
+      // ✒ 폰트 출력 안전화는 메인 '처리 옵션'으로 이동 — 편집 그룹 배지에서는 제외
       Object.entries(parts).forEach(([k, arr]) => {
         const el = document.getElementById('esgBadge-' + k);
         if (el) el.textContent = arr.length ? '● ' + arr.join(' · ') : '';
@@ -266,9 +265,17 @@
     // 닫는다. 별도 OS 창이 아니라 같은 렌더러 안이므로 메모리 캐시(_baseCache·_pvDoc 등)·워커가
     // 그대로 유지된다. 메인 화면에는 분석·흑백·잉크정규화·프린터판정·프리플라이트·적용·다운로드만 남는다.
     let _wsEnteredWithPreview = false;   // 편집 모드 진입 전에 이미 '적용 결과'를 보고 있었는지
+    // 편집 모드 진입 직전의 '적용 결과' 보관본. 편집 모드의 라이브/표본 미리보기는
+    // processedPdfBytes를 무효화하므로(runLivePreview → invalidateProcessed), 저장 없이 나오면
+    // 이미 적용해 둔 흑백·잉크정규화 결과가 화면에서 사라져 "적용이 풀렸다"로 보였다.
+    // 나올 때 이 보관본을 되돌려 결과 화면·다운로드 상태를 그대로 유지한다.
+    let _wsSavedResult = null;
     function enterEditWorkspace() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
       _wsEnteredWithPreview = previewVisible() && !!processedPdfBytes;
+      _wsSavedResult = processedPdfBytes
+        ? { bytes: processedPdfBytes, name: processedFileName, direct: directOutputBytes }
+        : null;
       if (!document.body.classList.contains('edit-open')) {
         document.body.classList.add('edit-open');
         populateFontDropdown(); ensureFontList(); loadPresetList(); syncEditUI();
@@ -291,16 +298,42 @@
       // 넣으면 미리보기가 메인에 남아 썸네일 그리드가 숨겨진 채로 끝난다 → 우클릭 회전 등
       // 썸네일 기반 편집이 "먹지 않는" 것처럼 보였다(실제 원인). 진입 전부터 결과를 보고 있던
       // 경우에만 그 화면을 유지한다.
-      if (!applied && !_wsEnteredWithPreview) closePreview();
+      if (!applied) {
+        // 진입 전 적용 결과 되살리기 — 편집 모드 미리보기가 지워 놓은 상태를 원복한다.
+        if (_wsSavedResult && !processedPdfBytes) {
+          processedPdfBytes = _wsSavedResult.bytes;
+          processedFileName = _wsSavedResult.name;
+          directOutputBytes = _wsSavedResult.direct;
+          setDirty(true);
+          updateDownloadBtn();
+        }
+        // 결과를 보고 있던 상태로 들어왔다면 결과 화면을 그대로(원본 결과 기준으로) 다시 그린다.
+        // 편집 모드의 표본 미리보기 그리드가 남아 있으면 흐린 원본 썸네일이 섞여 보여
+        // 흑백 적용이 풀린 것처럼 보이기 때문. 렌더는 오프스크린 → 한 번에 교체라 깜빡임 없음.
+        if (_wsEnteredWithPreview && processedPdfBytes) {
+          if (typeof wsResetSampleGrid === 'function') wsResetSampleGrid();
+          renderProcessedPreview(processedPdfBytes, { live: false });
+        } else {
+          closePreview();
+        }
+      }
+      _wsSavedResult = null;
       _wsEnteredWithPreview = false;
     }
+    // '💾 저장하고 닫기' — 창을 먼저 닫고 적용을 진행한다.
+    // (예전엔 applyChanges를 await한 뒤 닫아서, 폰트 출력 안전화·평탄화처럼 오래 걸리는
+    //  옵션이 켜져 있으면 "닫기가 안 먹는다"로 보였다. 진행 상황은 메인 화면 토스트로 표시)
     async function saveAndCloseWorkspace() {
       if (processingOptions.bw && !selectedPages.size && !hasAnyActiveLayout()) {
         showError('흑백변환할 페이지를 선택하거나 편집 옵션을 설정하세요.'); return;
       }
+      const needApply = shouldPreview();
+      // 먼저 닫는다 — 적용은 메인 화면에서 이어서 진행.
+      // 적용할 게 없으면(편집 없음) '적용됨'이 아니므로 진입 전 결과를 되살리는 경로로 닫는다.
+      exitEditWorkspace(needApply);
+      if (!needApply) return;
       try {
-        if (shouldPreview()) await applyChanges(); // 편집을 메인에 적용(processedPdfBytes 생성 + 결과 표시)
-        exitEditWorkspace(true);
+        await applyChanges();    // 편집을 메인에 적용(processedPdfBytes 생성 + 결과 표시)
       } catch (e) {
         console.error('작업공간 저장 오류:', e);
         showError('편집 적용 중 오류: ' + (e && e.message ? e.message : String(e)));
@@ -340,11 +373,24 @@
       return {
         proc: { bw: !!processingOptions.bw, inkNorm: !!processingOptions.inkNorm,
                 outline: (typeof _outlineEnabled !== 'undefined') && _outlineEnabled,
+                outlineMode: (typeof _outlineMode !== 'undefined') ? _outlineMode : 'outline',
                 outlineFlatten: !!g('outlineFlatten')?.checked },
+        // ◲ 블리드(매직미러) 옵션 — 예전엔 빠져 있어 최근 작업을 불러와도 블리드가 꺼진 채였다
+        bleed: {
+          enabled: (typeof _bleedEnabled !== 'undefined') && _bleedEnabled,
+          mm: g('bleedGenMm')?.value, crop: !!g('bleedCrop')?.checked,
+        },
+        // 📕 표지 만들기 값 전체 (표지 프리셋과 같은 스냅샷)
+        cover: (typeof captureCoverState === 'function') ? captureCoverState() : null,
         imp: {
           enabled: !!_impEnabled,     // '임포징 포함' 체크 상태까지 재현
           mode: _impMode, bind: _bkBind, cutN: _cutN, cutSides: _cutSides, scale: _impScale,
           fields,
+          // 📖 임포징 프리셋 — 프리셋을 불러온 상태(_impProfile)는 UI 값만으로 재현되지 않는다.
+          // 이게 빠져 있어서 '최근 작업 설정'을 눌러도 제본(임포징) 항목이 통째로 풀렸다.
+          profSel: g('impProfile')?.value || '',
+          profName: (_impProfile && _impProfile._profName) || '',
+          profOpts: _impProfile ? JSON.parse(JSON.stringify(Object.assign({}, _impProfile, { slug: undefined }))) : null,
           // 구버전 앱이 이 프리셋을 읽어도 최소한 동작하도록 예전 키도 함께 기록
           paper: fields.bkPaper || 'auto', gutter: fields.bkGutter || '0', creep: fields.bkCreep || '0',
           margin: fields.impMargin || '0', bleed: fields.impBleed || '0', crop: !!fields.impCrop,
@@ -358,10 +404,20 @@
         ['bw', 'inkNorm'].forEach(k => {
           if (typeof c.proc[k] === 'boolean' && !!processingOptions[k] !== c.proc[k]) toggleOption(k);
         });
-        // ✒ 폰트 아웃라인화 옵션 복원 (체크박스 + 상태 동기)
+        // ✒ 폰트 아웃라인화 옵션 복원 (방식 → 체크박스 순서 — 방식이 먼저여야 안내가 맞다)
+        if (c.proc.outlineMode && typeof setOutlineMode === 'function') setOutlineMode(c.proc.outlineMode);
         if (typeof c.proc.outline === 'boolean' && typeof setOutlineEnabled === 'function') setOutlineEnabled(c.proc.outline);
         if (typeof c.proc.outlineFlatten === 'boolean' && g('outlineFlatten')) g('outlineFlatten').checked = c.proc.outlineFlatten;
       }
+      // ◲ 블리드 복원 (값 먼저, 켜기는 마지막 — setBleedEnabled가 안내 메시지를 띄우므로)
+      if (c.bleed) {
+        if (g('bleedGenMm') && c.bleed.mm !== undefined) g('bleedGenMm').value = c.bleed.mm;
+        if (g('bleedCrop') && typeof c.bleed.crop === 'boolean') g('bleedCrop').checked = c.bleed.crop;
+        if (typeof c.bleed.enabled === 'boolean' && typeof setBleedEnabled === 'function'
+            && !!_bleedEnabled !== c.bleed.enabled) setBleedEnabled(c.bleed.enabled);
+      }
+      // 📕 표지 설정 복원
+      if (c.cover && typeof applyCoverState === 'function') { try { applyCoverState(c.cover); } catch (e) { console.warn('표지 설정 복원 실패:', e); } }
       if (c.imp) {
         const im = c.imp;
         // 값 세팅 도중 impSettingsChanged가 매번 재조립을 예약하지 않도록 가드 (프로파일 적용과 동일 규약)
@@ -392,7 +448,20 @@
           if (typeof onImpPaperChange === 'function') onImpPaperChange();
           const cropOptRow = g('impCropOptRow');
           if (cropOptRow) cropOptRow.style.display = (g('impCrop') && g('impCrop').checked) ? '' : 'none';
-          _impProfile = null;                       // 프리셋은 UI 값 기준(불러온 프로파일 재현 해제)
+          // 📖 임포징 프리셋 재현 — 저장 당시 프리셋을 불러온 상태였다면 그 정규화 옵션을
+          // 그대로 되살린다(UI 값만으로는 재현되지 않는 항목이 있어 제본 설정이 통째로 빠졌었다).
+          _impProfile = null;
+          if (im.profOpts) {
+            _impProfile = im.profOpts;
+            if (im.profSel !== undefined && g('impProfile')) {
+              const sel = g('impProfile');
+              // 이름이 같은 프리셋을 우선 찾고(순서가 바뀌었을 수 있음), 없으면 저장된 인덱스
+              const byName = im.profName
+                ? [...sel.options].find(o => o.textContent === im.profName) : null;
+              sel.value = byName ? byName.value
+                : ([...sel.options].some(o => o.value === im.profSel) ? im.profSel : '');
+            }
+          } else if (g('impProfile')) { g('impProfile').value = ''; }
           if (typeof updateImpSheetReadout === 'function') updateImpSheetReadout();
         } finally { if (hadGuard) _loadingProfile = false; }
         // '임포징 포함' 상태 재현 — 방식이 있어야 켤 수 있다(toggleImpEnabled가 자체 검증)
@@ -513,9 +582,15 @@
     }
     function whSummary() {
       const parts = describeLayoutParts(activeLayoutSettings()).slice(0, 4);
-      if (typeof _impEnabled !== 'undefined' && _impEnabled) parts.push('임포징');
+      if (typeof _impEnabled !== 'undefined' && _impEnabled) {
+        const pn = (typeof _impProfile !== 'undefined' && _impProfile && _impProfile._profName)
+                || (typeof _impMode !== 'undefined' ? _impMode : '');
+        parts.push(pn ? '임포징 (' + pn + ')' : '임포징');
+      }
       if (processingOptions.bw) parts.push('흑백');
+      if (processingOptions.inkNorm) parts.push('잉크정규화');
       if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled) parts.push('블리드');
+      if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled) parts.push('폰트안전화');
       return parts.join(' · ') || '기본 설정';
     }
     function captureDocState() {
@@ -2283,6 +2358,196 @@
       });
     }
 
+
+    // ── 🔍 페이지 크게 보기 — 컬러/흑백 판별용 ──────────────────────────────
+    // 썸네일만으로는 옅은 색(도장·로고·라인)이 컬러인지 눈으로 알기 어렵다.
+    // 원본 페이지를 크게 렌더하고, '컬러 픽셀 표시'로 중성(회색)이 아닌 픽셀만 자홍색으로
+    // 칠해 준다. 감도 1 = 분석기와 같은 기준(|R-G|,|G-B|,|R-B| ≤ 1 이면 회색).
+    let _pvvIdx = -1;              // pageResults 인덱스
+    let _pvvZoomPct = 0;           // 0 = 화면 맞춤, 그 외 = 배율 %
+    let _pvvBase = null;           // 렌더 원본 픽셀 (오버레이 재계산용)
+    let _pvvToken = 0;
+    function pvvOpen(idx) {
+      if (!pageResults.length) return;
+      if (idx == null || idx < 0 || !pageResults[idx]) {
+        // 선택이 있으면 첫 선택 페이지, 없으면 첫 페이지
+        const sel = [...selectedPages].sort((a, b) => a - b);
+        const pn = sel.length ? sel[0] : (pageResults.find(Boolean) || {}).pageNum;
+        idx = pageResults.findIndex(r => r && r.pageNum === pn);
+      }
+      if (idx < 0) return;
+      _pvvIdx = idx;
+      _pvvZoomPct = 0;
+      const modal = document.getElementById('pageViewModal');
+      if (!modal) return;
+      modal.style.display = 'flex';
+      const wrap = document.getElementById('pvvOnlySelWrap');
+      if (wrap) wrap.style.display = selectedPages.size > 1 ? '' : 'none';
+      pvvRender();
+    }
+    function closePageView() {
+      const modal = document.getElementById('pageViewModal');
+      if (modal) modal.style.display = 'none';
+      _pvvBase = null; _pvvIdx = -1;
+      _pvvToken++;   // 진행 중 렌더 취소
+    }
+    function pvvVisible() {
+      const m = document.getElementById('pageViewModal');
+      return !!m && m.style.display !== 'none';
+    }
+    // ◀ ▶ 이동 대상 목록 — '선택한 페이지만'이 켜져 있으면 선택 페이지 안에서만 돈다
+    function pvvNavList() {
+      const valid = pageResults.map((r, i) => ({ r, i })).filter(x => x.r);
+      const onlySel = document.getElementById('pvvOnlySel')?.checked && selectedPages.size > 1;
+      const list = onlySel ? valid.filter(x => selectedPages.has(x.r.pageNum)) : valid;
+      return list.length ? list : valid;
+    }
+    function pvvNav(d) {
+      const list = pvvNavList();
+      let at = list.findIndex(x => x.i === _pvvIdx);
+      if (at < 0) at = 0;
+      const next = list[(at + d + list.length) % list.length];
+      if (!next) return;
+      _pvvIdx = next.i;
+      pvvRender();
+    }
+    function pvvZoom(d) {
+      if (d === 0) _pvvZoomPct = 0;
+      else {
+        const cur = _pvvZoomPct || 100;
+        _pvvZoomPct = Math.max(25, Math.min(600, cur + d * 25));
+      }
+      pvvRender();
+    }
+    function pvvTolChanged() {
+      const v = document.getElementById('pvvTol')?.value || '1';
+      const el = document.getElementById('pvvTolVal');
+      if (el) el.textContent = v;
+      pvvRedraw();
+    }
+    function pvvSyncTitle() {
+      const r = pageResults[_pvvIdx];
+      const t = document.getElementById('pvvTitle');
+      if (!r || !t) return;
+      const list = pvvNavList();
+      const at = list.findIndex(x => x.i === _pvvIdx);
+      const onlySel = document.getElementById('pvvOnlySel')?.checked && selectedPages.size > 1;
+      t.textContent = `${r.pageNum}쪽 / 전체 ${pageResults.filter(Boolean).length}쪽`
+        + (onlySel ? ` · 선택 ${at + 1}/${list.length}` : '');
+      const bw = document.getElementById('pvvBwBtn');
+      if (bw) {
+        const on = selectedPages.has(r.pageNum);
+        bw.classList.toggle('active', on || !!r.appliedBw);
+        bw.textContent = r.appliedBw ? '⬛ 흑백 확정됨' : (on ? '⬛ 흑백변환 선택됨' : '⬛ 흑백변환 선택');
+      }
+      const z = document.getElementById('pvvZoomPct');
+      if (z) z.textContent = _pvvZoomPct ? _pvvZoomPct + '%' : '맞춤';
+    }
+    async function pvvRender() {
+      const r = pageResults[_pvvIdx];
+      const cv = document.getElementById('pvvCanvas');
+      const box = document.getElementById('pvvBody');
+      if (!r || !cv || !box) return;
+      const my = ++_pvvToken;
+      pvvSyncTitle();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      try {
+        if (r.isBlank || r.originalIdx == null || !globalPdfDoc) {
+          const ps = r.pageSize || [595.28, 841.89];
+          const fit = Math.min((box.clientWidth - 40) / ps[0], (box.clientHeight - 40) / ps[1]);
+          const s = Math.max(0.05, fit * (_pvvZoomPct ? _pvvZoomPct / 100 : 1));
+          cv.width = Math.ceil(ps[0] * s * dpr); cv.height = Math.ceil(ps[1] * s * dpr);
+          cv.style.width = Math.round(ps[0] * s) + 'px';
+          cv.style.height = Math.round(ps[1] * s) + 'px';
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+          _pvvBase = null;
+          pvvSetStat(null);
+          return;
+        }
+        const page = await globalPdfDoc.getPage(r.originalIdx + 1);
+        if (my !== _pvvToken) return;
+        const rot = ((((page.rotate || 0) + (r.rotation || 0)) % 360) + 360) % 360;
+        const vp1 = page.getViewport({ scale: 1, rotation: rot });
+        const fit = Math.min((box.clientWidth - 40) / vp1.width, (box.clientHeight - 40) / vp1.height);
+        const cssScale = Math.max(0.05, fit * (_pvvZoomPct ? _pvvZoomPct / 100 : 1));
+        // 렌더 픽셀 상한 — 초대형 페이지에서 캔버스가 폭주하지 않게
+        let renderScale = cssScale * dpr;
+        const maxSide = 4000;
+        const longSide = Math.max(vp1.width, vp1.height) * renderScale;
+        if (longSide > maxSide) renderScale *= maxSide / longSide;
+        const vp = page.getViewport({ scale: renderScale, rotation: rot });
+        cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+        cv.style.width = Math.round(vp1.width * cssScale) + 'px';
+        cv.style.height = Math.round(vp1.height * cssScale) + 'px';
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        try { page.cleanup(); } catch (e) {}
+        if (my !== _pvvToken) return;
+        _pvvBase = ctx.getImageData(0, 0, cv.width, cv.height);
+        pvvRedraw();
+      } catch (e) {
+        console.error('페이지 크게 보기 렌더 실패:', e);
+        pvvSetStat(null);
+      }
+    }
+    // 컬러 픽셀 비율 계산 + (옵션) 자홍색 오버레이
+    function pvvRedraw() {
+      const cv = document.getElementById('pvvCanvas');
+      if (!cv || !_pvvBase) return;
+      const tol = parseInt(document.getElementById('pvvTol')?.value) || 0;
+      const mark = !!document.getElementById('pvvMark')?.checked;
+      const src = _pvvBase.data;
+      const out = new ImageData(new Uint8ClampedArray(src), _pvvBase.width, _pvvBase.height);
+      const d = out.data;
+      let colored = 0, opaque = 0;
+      for (let i = 0; i < src.length; i += 4) {
+        if (src[i + 3] < 8) continue;
+        opaque++;
+        const rr = src[i], gg = src[i + 1], bb = src[i + 2];
+        const isColor = Math.abs(rr - gg) > tol || Math.abs(gg - bb) > tol || Math.abs(rr - bb) > tol;
+        if (!isColor) continue;
+        colored++;
+        if (mark) { d[i] = 255; d[i + 1] = 0; d[i + 2] = 200; }
+      }
+      cv.getContext('2d').putImageData(out, 0, 0);
+      pvvSetStat({ colored, opaque });
+    }
+    function pvvSetStat(s) {
+      const st = document.getElementById('pvvStat');
+      const vd = document.getElementById('pvvVerdict');
+      const r = pageResults[_pvvIdx];
+      if (vd && r) {
+        const isColor = r.isColor && !r.appliedBw;
+        vd.className = 'pvv-verdict ' + (isColor ? 'is-color' : 'is-gray');
+        vd.textContent = r.isBlank ? '빈 페이지' : (r.appliedBw ? '흑백 확정' : (r.isColor ? '🎨 컬러 판정' : '흑백 판정'));
+      }
+      if (!st) return;
+      if (!s || !s.opaque) { st.textContent = ''; return; }
+      const pct = s.colored / s.opaque * 100;
+      st.textContent = s.colored
+        ? `컬러 픽셀 ${s.colored.toLocaleString()}개 (${pct < 0.01 ? '<0.01' : pct.toFixed(2)}%)`
+        : '컬러 픽셀 없음 — 완전한 회색 페이지';
+    }
+    // 창 크기가 바뀌면 '맞춤' 배율을 다시 계산 (뷰어가 열려 있을 때만)
+    let _pvvResizeTimer = null;
+    window.addEventListener('resize', () => {
+      if (!pvvVisible()) return;
+      clearTimeout(_pvvResizeTimer);
+      _pvvResizeTimer = setTimeout(pvvRender, 150);
+    });
+    // 이 페이지를 흑백변환 대상으로 선택/해제 (메인 썸네일 선택과 같은 상태)
+    function pvvToggleBw() {
+      const r = pageResults[_pvvIdx];
+      if (!r || r.isBlank) return;
+      if (r.appliedBw) { showError('이미 흑백으로 확정된 페이지입니다 — 되돌리려면 ⬛ 흑백변환 옵션을 끄세요.'); return; }
+      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+      if (selectedPages.has(r.pageNum)) { if (el) deselectPageEl(r.pageNum, el); else selectedPages.delete(r.pageNum); }
+      else { if (el) selectPageEl(r.pageNum, el); else selectedPages.add(r.pageNum); }
+      updateSelectedCount();
+      pvvSyncTitle();
+    }
+
     function renderPageItem(r, idx) {
       const { pageNum, isColor, isBlank, thumbnail, rotation = 0 } = r;
       const el = document.createElement('div');
@@ -2322,6 +2587,12 @@
       el.addEventListener('click', e => {
         if (e.target.closest('button')) return;
         togglePageSelection(pageNum, el, e);
+      });
+      // 더블클릭 → 🔍 크게 보기 (컬러/흑백 판별). 클릭 2회로 생긴 선택 토글은 서로 상쇄된다.
+      el.addEventListener('dblclick', e => {
+        if (e.target.closest('button')) return;
+        e.preventDefault();
+        pvvOpen(pageResults.findIndex(p => p && p.pageNum === pageNum));
       });
       el.querySelector('.page-btn-del').addEventListener('click', e => {
         e.stopPropagation(); deletePage(idx);
@@ -2476,7 +2747,7 @@
       const dropped = [...e.dataTransfer.files].filter(f =>
         f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name)
       );
-      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) · Adobe(AI·PSD·INDD) 파일만 업로드 가능합니다.'); return; }
+      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) · Adobe(AI·PSD·INDD) · 이미지(PNG·JPG·GIF·BMP·WEBP·TIFF) 파일만 업로드 가능합니다.'); return; }
       hideError(); hideSuccess();
       try {
         const needConvert = dropped.some(f => CONVERT_RE.test(f.name));

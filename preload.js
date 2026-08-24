@@ -56,6 +56,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // '저장 안 한 작업' 상태를 main에 보고 (종료 전 확인용)
   setUnsaved: (dirty) => ipcRenderer.send('app:dirty', !!dirty),
 
+  // 앱 강제 새로고침 (캐시 무시) — 화면·상태가 꼬였을 때 재시작 없이 복구
+  forceReload: () => ipcRenderer.invoke('app:forceReload'),
+  // Ctrl+R·Ctrl+Shift+R를 main이 가로채 전달 — 확인 후 렌더러가 새로고침을 결정
+  onReloadRequest: (cb) => ipcRenderer.on('app:reload-request', () => cb()),
+
   // 사용 끝난 변환 임시 PDF 삭제 요청
   cleanupTempFile: (filePath) => ipcRenderer.invoke('temp:cleanup', filePath),
 

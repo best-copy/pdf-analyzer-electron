@@ -227,47 +227,157 @@ if ($Check) {
 # ============================================================================
 $resGs = '미설치'
 Head '5/6  Ghostscript (잉크 판정 · 폰트 아웃라인화)'
+# 공식 배포처 = Artifex의 GitHub 릴리스. API가 막히면 이 고정 버전으로 내려받는다.
+$GS_FALLBACK_TAG = 'gs10071'
+$GS_RELEASE_API  = 'https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest'
+
 function Find-Gs {
   $c = Get-Command gswin64c.exe -ErrorAction SilentlyContinue
   if ($c) { return $c.Source }
-  $root = 'C:\Program Files\gs'
-  if (Test-Path $root) {
-    $v = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-    if ($v) {
+  # 앱(main.js findGhostscript)과 같은 탐색 규칙 — 표준 설치 폴더의 최신 버전
+  foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+    if (-not $pf) { continue }
+    $root = Join-Path $pf 'gs'
+    if (-not (Test-Path $root)) { continue }
+    $vers = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^gs[\d.]+$' } | Sort-Object Name -Descending
+    foreach ($v in $vers) {
       $exe = Join-Path $v.FullName 'bin\gswin64c.exe'
       if (Test-Path $exe) { return $exe }
     }
   }
   return $null
 }
+# 실제로 실행되는지 확인 — 파일만 있고 MSVC 런타임이 없으면 앱에서 '실행 실패'로 나온다
+function Test-GsRuns($exe) {
+  if (-not $exe -or -not (Test-Path $exe)) { return $false }
+  try { $out = & $exe --version 2>&1; return ($LASTEXITCODE -eq 0 -and "$out" -match '\d') }
+  catch { return $false }
+}
+
+# 설치 파일을 풀어서 배치한다.
+# 왜 이렇게 하나: 최근 배포본(gs10071w64.exe 등)은 NSIS인데도 무인 설치 플래그 /S를 무시하고
+# GUI 마법사를 띄운 채 멈춘다. Ghostscript는 실행 파일 기준 상대경로로 lib/Resource를 찾으므로
+# 레지스트리 등록 없이 폴더만 제자리에 놓으면 정상 동작한다.
+function Install-GsByExtract($installer) {
+  $seven = @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe") |
+           Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+  if (-not $seven) {
+    $c = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($c) { $seven = $c.Source }
+  }
+  if (-not $seven) { return $null }
+  $tmp = Join-Path $env:TEMP ('gsx_' + [Guid]::NewGuid().ToString('N'))
+  try {
+    & $seven x $installer "-o$tmp" -y | Out-Null
+    $srcExe = Join-Path $tmp 'bin\gswin64c.exe'
+    if (-not (Test-Path $srcExe)) { Warn '설치 파일 구조가 예상과 다릅니다 (bin\gswin64c.exe 없음)'; return $null }
+    # 버전 폴더명은 파일명에서 추측하지 말고 실행 파일의 버전 리소스에서 읽는다 (예: 10.07.1)
+    $ver = (Get-Item $srcExe).VersionInfo.ProductVersion
+    if (-not $ver) { $ver = (Get-Item $srcExe).VersionInfo.FileVersion }
+    if (-not $ver) { $ver = 'unknown' }
+    $dest = Join-Path $env:ProgramFiles ('gs\gs' + $ver.Trim())
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    foreach ($d in @('bin', 'lib', 'Resource', 'iccprofiles', 'doc', 'examples')) {
+      if (Test-Path (Join-Path $tmp $d)) { Copy-Item (Join-Path $tmp $d) -Destination $dest -Recurse -Force }
+    }
+    $exe = Join-Path $dest 'bin\gswin64c.exe'
+    if (-not (Test-Path $exe)) { return $null }
+    # MSVC 런타임이 없으면 실행이 안 된다 — 설치 파일에 동봉된 vcredist로 보충
+    if (-not (Test-GsRuns $exe)) {
+      $vc = Join-Path $tmp 'vcredist_x64.exe'
+      if (Test-Path $vc) {
+        Info 'MSVC 런타임(vcredist)을 설치합니다…'
+        try { Start-Process -FilePath $vc -ArgumentList '/install', '/quiet', '/norestart' -Wait } catch {}
+      }
+    }
+    return $exe
+  } catch {
+    Warn "설치 파일 추출 실패: $($_.Exception.Message)"
+    return $null
+  } finally {
+    Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# 공식 배포처에서 64bit 설치 파일을 내려받고 서명을 확인한다 (약 62MB)
+function Get-GsInstaller {
+  $url = $null; $name = $null
+  try {
+    $rel = Invoke-RestMethod -Uri $GS_RELEASE_API -Headers @{ 'User-Agent' = 'pdf-analyzer-setup' } -TimeoutSec 30
+    $a = $rel.assets | Where-Object { $_.name -match '^gs\d+w64\.exe$' } | Select-Object -First 1
+    if ($a) { $url = $a.browser_download_url; $name = $a.name }
+  } catch { Info "최신 버전 조회 실패 — 고정 버전($GS_FALLBACK_TAG)으로 진행합니다." }
+  if (-not $url) {
+    $name = "${GS_FALLBACK_TAG}w64.exe"
+    $url = "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/$GS_FALLBACK_TAG/$name"
+  }
+  $out = Join-Path $env:TEMP $name
+  Info "내려받는 중: $name (약 62MB — 회선에 따라 수십 초 걸립니다)"
+  $prev = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try { Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 900 }
+  catch { Warn "다운로드 실패: $($_.Exception.Message)"; return $null }
+  finally { $ProgressPreference = $prev }
+  # 공식 빌드가 맞는지 서명으로 확인 — 아니면 지운다
+  $sig = Get-AuthenticodeSignature $out
+  if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Artifex Software') {
+    Fail "서명 확인 실패 (상태: $($sig.Status)) — 내려받은 파일을 삭제합니다."
+    Remove-Item $out -Force -ErrorAction SilentlyContinue
+    return $null
+  }
+  OK '서명 확인: Artifex Software, Inc.'
+  return $out
+}
+
 $gs = Find-Gs
-if ($gs) {
+if ($gs -and (Test-GsRuns $gs)) {
   OK "설치됨: $gs"
   $resGs = '설치됨'
+} elseif ($gs) {
+  # 파일은 있는데 실행이 안 되는 경우 — 거의 항상 MSVC 런타임 누락
+  Warn "설치되어 있으나 실행되지 않습니다: $gs"
+  Warn 'MSVC 재배포 패키지(vcredist x64)를 설치하면 해결됩니다.'
+  $resGs = '실행 불가'
 } elseif ($Check) {
   Warn '미설치 — 잉크 판정·폰트 아웃라인화 기능이 동작하지 않습니다'
 } else {
-  # ① 같은 폴더에 설치 파일(gs*.exe)이 있으면 그것으로 조용히 설치
+  # ① 스크립트 폴더에 설치 파일을 동봉했으면 그것을 쓰고, 없으면 공식 배포처에서 내려받는다
+  $installer = $null
+  $downloaded = $false
   $local = Get-ChildItem -Path $PSScriptRoot -Filter 'gs*w64.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $local) { $local = Get-ChildItem -Path $PSScriptRoot -Filter 'gs*.exe' -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $EXENAME } | Select-Object -First 1 }
   if ($local) {
+    $installer = $local.FullName
     Info "동봉된 설치 파일 사용: $($local.Name)"
-    try { Start-Process -FilePath $local.FullName -ArgumentList '/S' -Wait; $gs = Find-Gs } catch { Warn "설치 실행 실패: $($_.Exception.Message)" }
-  }
-  # ② winget으로 설치 (인터넷 다운로드 — 사용자 확인 후)
-  if (-not $gs) {
-    $wg = Get-Command winget -ErrorAction SilentlyContinue
-    if ($wg) {
-      Info 'Ghostscript가 없습니다. winget으로 설치할 수 있습니다(인터넷에서 내려받습니다).'
-      if (Ask '지금 설치할까요?' $true) {
-        try {
-          winget install --id ArtifexSoftware.GhostScript -e --accept-package-agreements --accept-source-agreements
-          $gs = Find-Gs
-        } catch { Warn "winget 설치 실패: $($_.Exception.Message)" }
-      }
+  } else {
+    Info 'Ghostscript가 없습니다. 공식 배포처(Artifex GitHub 릴리스)에서 내려받아 설치할 수 있습니다.'
+    if (Ask '지금 설치할까요?' $true) {
+      $installer = Get-GsInstaller
+      $downloaded = $true
     }
   }
-  if ($gs) { OK "설치 완료: $gs"; $resGs = '설치됨' }
+  if ($installer) {
+    # ② 압축 해제 방식으로 설치한다.
+    #    무인 설치 플래그(/S)를 쓰지 않는 이유: 최근 배포본은 NSIS인데도 /S를 무시하고
+    #    GUI 마법사를 띄운 채 사용자 입력을 기다린다(CPU 0으로 멈춰 있어 무인 설치가
+    #    진행 중인 것처럼 보인다). 확실히 되는 방법을 먼저 쓴다.
+    Info '설치 파일을 풀어서 배치합니다…'
+    $gs = Install-GsByExtract $installer
+    # ③ 7-Zip이 없으면 자동화가 불가능하다 — 마법사를 열어 사용자가 직접 진행
+    if (-not $gs) {
+      Warn '7-Zip이 없어 자동 설치를 할 수 없습니다 (https://www.7-zip.org 설치 후 다시 실행하면 자동으로 끝납니다).'
+      if (Ask '대신 설치 마법사를 열어 직접 진행할까요?' $true) {
+        Info '마법사 창에서 설치를 마친 뒤 이 창으로 돌아오세요…'
+        Start-Process -FilePath $installer -Wait
+        $gs = Find-Gs
+      }
+    }
+    if ($downloaded -and (Test-Path $installer)) {
+      Remove-Item $installer -Force -ErrorAction SilentlyContinue   # 내려받은 설치 파일 정리
+    }
+  }
+  if ($gs -and (Test-GsRuns $gs)) { OK "설치 완료: $gs"; $resGs = '설치됨' }
+  elseif ($gs) { Warn "설치했으나 실행되지 않습니다: $gs (MSVC 런타임 확인 필요)"; $resGs = '실행 불가' }
   else {
     Warn '설치되지 않았습니다 — https://ghostscript.com/releases/gsdnld.html 에서 64bit 버전을 설치하세요.'
     Warn '(없어도 나머지 기능은 정상 동작합니다. 잉크 판정·폰트 아웃라인화만 비활성)'

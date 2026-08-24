@@ -469,7 +469,95 @@
     const OFFICE_RE = /\.(docx?|xlsx?|pptx?)$/i;    // MS Office (Word·Excel·PowerPoint COM)
     const ADOBE_RE  = /\.(psd|indd)$/i;            // Photoshop·InDesign (Adobe COM)
     const AI_RE     = /\.ai$/i;                    // Illustrator (PDF 호환본은 직접, 아니면 COM)
-    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i; // PDF 변환이 필요한 모든 확장자
+    const IMG_RE    = /\.(png|jpe?g|gif|bmp|webp|tiff?|avif)$/i;   // 이미지 — 앱 없이 렌더러에서 1쪽 PDF로
+    const CONVERT_RE = /\.(hwpx?|docx?|xlsx?|pptx?|psd|indd|ai|png|jpe?g|gif|bmp|webp|tiff?|avif)$/i; // PDF 변환이 필요한 모든 확장자
+
+    // ── 🖼 이미지 → 1쪽 PDF ──────────────────────────────────────────────────
+    // 외부 앱 없이 렌더러에서 처리한다. PNG/JPEG는 원본 스트림을 그대로 임베드(무손실·용량 유지),
+    // 그 외(GIF·BMP·WEBP·AVIF)는 Chromium 디코더로 읽어 PNG로 재인코딩한다.
+    // 페이지 크기는 '실제 인쇄 크기' — 파일에 기록된 해상도(PNG pHYs / JPEG JFIF density)를 읽어
+    // px→pt로 환산한다. 기록이 없으면 긴 변 1000px 이상은 스캔·인쇄 원고로 보고 300DPI,
+    // 그 미만(화면 캡처 등)은 96DPI로 가정. 결과가 10~1500mm를 벗어나면 비율 유지로 보정한다.
+    function pngDpi(u8) {
+      if (!(u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4E && u8[3] === 0x47)) return null;
+      let p = 8;
+      while (p + 12 <= u8.length) {
+        const len = ((u8[p] << 24) | (u8[p+1] << 16) | (u8[p+2] << 8) | u8[p+3]) >>> 0;
+        const type = String.fromCharCode(u8[p+4], u8[p+5], u8[p+6], u8[p+7]);
+        if (type === 'pHYs' && len >= 9) {
+          const d = p + 8;
+          const x = ((u8[d] << 24) | (u8[d+1] << 16) | (u8[d+2] << 8) | u8[d+3]) >>> 0;
+          const y = ((u8[d+4] << 24) | (u8[d+5] << 16) | (u8[d+6] << 8) | u8[d+7]) >>> 0;
+          // unit 1 = 미터당 픽셀 → DPI. unit 0(단위 없음)은 가로세로 비율일 뿐이라 쓰지 않는다.
+          if (u8[d+8] === 1 && x > 0 && y > 0) return { x: x * 0.0254, y: y * 0.0254 };
+          return null;
+        }
+        if (type === 'IDAT' || type === 'IEND') return null;
+        p += 12 + len;
+      }
+      return null;
+    }
+    function jpegDpi(u8) {
+      if (!(u8[0] === 0xFF && u8[1] === 0xD8)) return null;
+      let p = 2;
+      while (p + 4 <= u8.length) {
+        if (u8[p] !== 0xFF) { p++; continue; }
+        const m = u8[p+1];
+        if (m === 0xFF) { p++; continue; }                       // 패딩 바이트
+        if (m === 0x01 || (m >= 0xD0 && m <= 0xD9)) { p += 2; continue; }
+        const len = (u8[p+2] << 8) | u8[p+3];
+        if (len < 2) return null;
+        if (m === 0xDA) return null;                             // 스캔 데이터 시작 = 헤더 끝
+        if (m === 0xE0 && len >= 14
+            && u8[p+4] === 0x4A && u8[p+5] === 0x46 && u8[p+6] === 0x49 && u8[p+7] === 0x46 && u8[p+8] === 0x00) {
+          const unit = u8[p+11];
+          const xd = (u8[p+12] << 8) | u8[p+13], yd = (u8[p+14] << 8) | u8[p+15];
+          if (xd > 0 && yd > 0) {
+            if (unit === 1) return { x: xd, y: yd };                 // dots/inch
+            if (unit === 2) return { x: xd * 2.54, y: yd * 2.54 };   // dots/cm
+          }
+          return null;
+        }
+        p += 2 + len;
+      }
+      return null;
+    }
+    // PNG·JPEG 이외 포맷 — 브라우저 디코더로 읽어 PNG 바이트로 재인코딩
+    async function reencodeImageToPng(u8, name) {
+      let bmp;
+      try { bmp = await createImageBitmap(new Blob([u8])); }
+      catch (e) { throw new Error(`'${name}' 이미지를 읽을 수 없습니다 — 지원하지 않는 형식이거나 파일이 손상되었습니다.`); }
+      const cv = document.createElement('canvas');
+      cv.width = bmp.width; cv.height = bmp.height;
+      cv.getContext('2d').drawImage(bmp, 0, 0);
+      if (bmp.close) bmp.close();
+      const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
+      if (!blob) throw new Error(`'${name}' 이미지를 PNG로 변환하지 못했습니다.`);
+      return new Uint8Array(await blob.arrayBuffer());
+    }
+    async function imageToPdfBytes(ab, name) {
+      const u8 = ab instanceof Uint8Array ? ab : new Uint8Array(ab);
+      const doc = await PDFLib.PDFDocument.create();
+      const isPng = u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4E && u8[3] === 0x47;
+      const isJpg = u8[0] === 0xFF && u8[1] === 0xD8;
+      let img, dpi = null;
+      if (isPng)      { img = await doc.embedPng(u8); dpi = pngDpi(u8); }
+      else if (isJpg) { img = await doc.embedJpg(u8); dpi = jpegDpi(u8); }
+      else            { img = await doc.embedPng(await reencodeImageToPng(u8, name)); }
+      const fb = Math.max(img.width, img.height) >= 1000 ? 300 : 96;
+      const dx = dpi && dpi.x > 1 ? dpi.x : fb;
+      const dy = dpi && dpi.y > 1 ? dpi.y : fb;
+      let pw = img.width * 72 / dx, ph = img.height * 72 / dy;
+      const MINPT = 10 * 72 / 25.4, MAXPT = 1500 * 72 / 25.4;
+      const s = Math.max(pw, ph) > MAXPT ? MAXPT / Math.max(pw, ph)
+              : Math.min(pw, ph) < MINPT ? MINPT / Math.min(pw, ph) : 1;
+      pw *= s; ph *= s;
+      const page = doc.addPage([pw, ph]);
+      page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+      // 다른 변환 경로(readFile)와 같은 ArrayBuffer로 반환 — 이후 파이프라인이 동일하게 다룬다
+      const out = await doc.save({ useObjectStreams: false, updateFieldAppearances: false });
+      return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+    }
 
     // ── 최근 파일 (localStorage, 최대 8개) ──────────────────────────────────
     function loadRecentFiles() {
@@ -585,7 +673,11 @@
         try {
           let pdfPath = null;
           let directBytes = null;   // 이미 읽어둔 PDF 바이트 재사용(.ai PDF 호환본)
-          if (HWP_RE.test(it.name)) {
+          if (IMG_RE.test(it.name)) {
+            // 🖼 이미지 — 외부 앱 없이 렌더러에서 1쪽 PDF로 (원본 해상도·실제 인쇄 크기 유지)
+            showLoading(`${it.name} → PDF로 변환 중… (이미지)`);
+            directBytes = await imageToPdfBytes(window.electronAPI.readFile(it.path), it.name);
+          } else if (HWP_RE.test(it.name)) {
             showLoading(`${it.name} → PDF로 변환 중…`);
             pdfPath = await window.electronAPI.convertHwpToPdf(it.path);
           } else if (OFFICE_RE.test(it.name)) {
@@ -1251,8 +1343,34 @@
       else if ((e.key === 'v' || e.key === 'V') && !inField && pageResults.length)                { e.preventDefault(); pastePagesFromClipboard(); }
     });
 
-    // F5: 결과 새로고침 (입력창 포커스 여부와 무관하게 동작 — 브라우저 새로고침 차단)
+    // ── ⟳ 앱 강제 새로고침 (Force Reload) ────────────────────────────────────
+    // 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 렌더러를 캐시 무시로 다시 읽는다.
+    // 열려 있던 문서·편집 내용은 사라지므로 반드시 확인을 받는다.
+    async function forceReloadApp() {
+      const hasWork = !!(originalPdfBytes && pageResults.filter(Boolean).length);
+      const msg = hasWork
+        ? '앱을 새로고침할까요?\n\n열려 있는 문서와 적용하지 않은 편집 내용이 모두 사라집니다.\n(저장하려면 취소 후 ⇩ 다운로드로 저장하세요)'
+        : '앱을 새로고침할까요? (화면·상태를 처음으로 되돌립니다)';
+      if (!confirm(msg)) return;
+      try {
+        if (window.electronAPI && window.electronAPI.setUnsaved) window.electronAPI.setUnsaved(false);
+        if (window.electronAPI && window.electronAPI.forceReload) await window.electronAPI.forceReload();
+        else location.reload();
+      } catch (e) { location.reload(); }
+    }
+
+    if (window.electronAPI && window.electronAPI.onReloadRequest) {
+      window.electronAPI.onReloadRequest(() => forceReloadApp());
+    }
+
+    // F5: 결과 새로고침 / Ctrl+Shift+R: 앱 강제 새로고침
+    // (입력창 포커스 여부와 무관하게 동작 — 브라우저 기본 새로고침은 차단)
     document.addEventListener('keydown', e => {
+      if ((e.key === 'r' || e.key === 'R' || e.key === 'F5') && e.ctrlKey && e.shiftKey) {
+        e.preventDefault();
+        forceReloadApp();
+        return;
+      }
       if (e.key === 'F5' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         refreshResults();
@@ -1261,14 +1379,28 @@
 
     // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)
     document.addEventListener('keydown', e => {
-      // Esc: 전체화면 편집 작업공간 닫기 (입력창 포커스 중에도 동작)
+      // Esc: 크게 보기 → 편집 작업공간 순으로 닫기 (입력창 포커스 중에도 동작)
+      if (e.key === 'Escape' && typeof pvvVisible === 'function' && pvvVisible()) {
+        e.preventDefault(); closePageView(); return;
+      }
       if (e.key === 'Escape' && document.body.classList.contains('edit-fullscreen')) {
         e.preventDefault(); exitEditWorkspace(false); return;
+      }
+      // 크게 보기가 열려 있는 동안은 뷰어 전용 키만 — 뒤의 편집 단축키(삭제·회전 등)는 막는다
+      if (typeof pvvVisible === 'function' && pvvVisible()) {
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+        if (e.key === 'ArrowLeft')  { e.preventDefault(); pvvNav(-1); }
+        else if (e.key === 'ArrowRight') { e.preventDefault(); pvvNav(1); }
+        else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); pvvToggleBw(); }
+        else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); closePageView(); }
+        return;
       }
       if (e.ctrlKey || e.altKey || e.metaKey) return;
       if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
       if (!pageResults.length) return;
       switch (e.key) {
+        case 'v': case 'V': e.preventDefault(); pvvOpen(ctxTargetIdx >= 0 ? ctxTargetIdx : null); break;
         case 't': case 'T': e.preventDefault(); openContentEditor(ctxTargetIdx >= 0 ? ctxTargetIdx : null); break;
         case 'w': case 'W': e.preventDefault(); ctxInsertBlank();  break;
         case 'd': case 'D': e.preventDefault(); ctxDuplicatePage(); break;
@@ -1303,6 +1435,11 @@
     document.addEventListener('keydown',     e => { if (e.key === 'Escape') hideCtxMenu(); });
 
     // 컨텍스트 메뉴 액션 (ctxTargetIdx 또는 마우스오버 썸네일 기준)
+    // 🔍 크게 보기 — 컬러/흑백을 눈으로 판별 (app-ui.js의 pvvOpen)
+    function ctxPageView() {
+      hideCtxMenu();
+      if (typeof pvvOpen === 'function') pvvOpen(ctxTargetIdx);
+    }
     function ctxInsertBlank() {
       hideCtxMenu();
       if (ctxTargetIdx < 0) return;
@@ -1535,6 +1672,8 @@
       if (!applying) {
         processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
       }
+      // 수정이 생겼으니 '📖 임포징 PDF 생성' 1회 잠금도 해제 (다시 생성 가능)
+      if (typeof impGenInvalidate === 'function') impGenInvalidate();
       updateDownloadBtn();
     }
 
@@ -1612,6 +1751,7 @@
       _baseAssembled = null;
       _pvPageCache = new Map();
       _optCache = { sig: null, bytes: null };
+      if (typeof clearImpCache === 'function') clearImpCache();
       releasePreviewDoc();
     }
     // 회전을 뺀 base 키(페이지 순서 + 흑백선택). 회전만 바뀌면 이 키가 동일 → 조립본 재사용.
@@ -1901,6 +2041,9 @@
         if (committed > 0)
           msg += `\n✅ 흑백변환 확정 — 선택은 자동 해제되었고 변환은 유지됩니다. 되돌리려면 ⬛ 흑백변환 체크를 끄세요.`;
         showSuccess(msg);
+        // 🕓 적용 시점의 설정을 최근 작업으로 기록 — 1분 주기 스냅샷만 믿으면
+        // "적용하고 바로 껐을 때" 임포징·블리드·표지 설정이 통째로 빠진 기록이 남는다.
+        if (typeof recordWorkHistory === 'function') { try { recordWorkHistory(); } catch (e) {} }
         // 적용 완료 → 유휴 시간에 다운로드용 최적화본을 미리 생성(다운로드 즉시 저장)
         setTimeout(prewarmOptimizedOutput, 400);
       } catch (err) {
