@@ -411,12 +411,15 @@ if ($Check) {
 #  문서 변환용 외부 프로그램 감지 (설치 대상 아님 — 있으면 그 형식이 열림)
 # ============================================================================
 Head '문서 변환 프로그램 감지 (설치 대상 아님)'
+# ⚠ New-Object -ComObject 로 확인하면 안 된다 — COM 객체를 만드는 행위 자체가
+#    그 프로그램을 '실제로 실행'시킨다. 상태만 점검하는 -Check 에서도 포토샵·인디자인·
+#    한글·오피스가 줄줄이 떠 버리고(수 GB 메모리), 놓아 준 뒤에도 좀비 프로세스가 남는다.
+#    등록된 ProgID가 레지스트리에 있는지만 보면 아무것도 실행하지 않고 같은 판정을 얻는다.
 function Test-Com($progId) {
-  try {
-    $o = New-Object -ComObject $progId -ErrorAction Stop
-    try { [Runtime.InteropServices.Marshal]::ReleaseComObject($o) | Out-Null } catch {}
-    return $true
-  } catch { return $false }
+  foreach ($hive in @('Registry::HKEY_CLASSES_ROOT', 'HKCU:\SOFTWARE\Classes')) {
+    try { if (Test-Path (Join-Path $hive $progId)) { return $true } } catch {}
+  }
+  return $false
 }
 $coms = @(
   @{ n = '한글 (HWP·HWPX)';        id = 'HWPFrame.HwpObject' },
