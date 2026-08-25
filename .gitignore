@@ -2,3 +2,6 @@ node_modules/
 dist/
 mobile/www/
 mobile/android/local.properties
+
+# 시스템 정리 되돌리기용 백업 (PATH·레지스트리) — 저장소에 넣지 않음
+.backup-gs-cleanup/
