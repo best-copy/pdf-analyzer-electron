@@ -38,8 +38,16 @@
       transform: translateY(-2px);
       box-shadow: 0 6px 20px rgba(72,72,74,0.35);
     }
-    .drop-hint { font-size: 1em; color: #6e6e73; margin-bottom: 14px; pointer-events: none; }
-    .drop-sub  { font-size: 0.8em; color: #a1a1a6; margin-top: 10px; pointer-events: none; }
+    .drop-hint { font-size: 1em; color: #6e6e73; margin-bottom: 14px; pointer-events: none; line-height: 1.55; }
+    /* '(여러 파일 가능)' — 같은 글꼴·굵기로 한 단계만 작게 */
+    .drop-hint-sub { font-size: 0.82em; }
+    /* '파일 선택하기' 아래 안내 — 한 가지 글꼴·굵기로 통일하고 더 작게.
+       (강조용 <b>를 쓰면 굵기가 섞여 보여 요청대로 제거하고 font-weight를 고정) */
+    .drop-sub {
+      font-size: 0.68em; color: #a1a1a6; margin-top: 10px; pointer-events: none;
+      font-family: inherit; font-weight: 400; line-height: 1.6;
+    }
+    .drop-sub b, .drop-sub strong { font-weight: 400; }
     .file-input-wrapper { position: relative; display: inline-block; margin: 20px 0; }
     .file-input { position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
     .file-input-label {

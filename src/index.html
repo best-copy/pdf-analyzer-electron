@@ -14,15 +14,15 @@
   <div class="container">
     <div class="header">
       <h1><svg viewBox="0 0 24 24" style="height:1.15em; vertical-align:-0.2em; margin-right:10px;" aria-hidden="true"><g fill="#ffd60a"><path d="M8 2h9l4 4v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" opacity="0.55"/><path d="M4 5h9l4 4v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></g><rect x="4" y="13.5" width="9" height="6" rx="1.4" fill="#1d1d1f"/><text x="8.5" y="18.15" text-anchor="middle" font-size="4" font-weight="800" font-family="Arial, sans-serif" fill="#ffd60a">PDF</text></svg> PDF Editor</h1>
-      <p>PDF · 한글 · MS Office · Adobe 문서 편집 · 컬러/흑백 분석</p>
+      <p>PDF · 한글 · MS Office · Adobe · Image &nbsp;인쇄용 조판하기</p>
     </div>
 
     <div class="upload-section" id="uploadSection">
-      <p class="drop-hint">📂 파일을 여기에 드래그하거나 (여러 파일 동시 가능)</p>
+      <p class="drop-hint">📂 파일을 여기로 드래그<br><span class="drop-hint-sub">(여러 파일 가능)</span></p>
       <div class="file-input-wrapper">
         <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()"><span class="ic">📁</span> 파일 선택하기</button>
       </div>
-      <p class="drop-sub">한글·MS Office·Adobe 문서와 <b>이미지(PNG·JPG·GIF·BMP·WEBP·TIFF)</b>는 자동으로 PDF 변환 후 처리 · 여러 파일은 각각 탭으로 열립니다<br>이미지는 파일에 기록된 해상도(DPI)로 <b>실제 인쇄 크기</b>의 1쪽 PDF가 됩니다 (기록이 없으면 큰 이미지는 300DPI, 작은 이미지는 96DPI)</p>
+      <p class="drop-sub">한글·MS Office·Adobe 문서와 이미지(PNG·JPG·GIF·BMP·WEBP·TIFF)는 자동으로 PDF 변환 후 처리 · 여러 파일은 각각 탭으로 열립니다<br>이미지는 파일에 기록된 해상도(DPI)로 실제 인쇄 크기의 1쪽 PDF가 됩니다 (기록이 없으면 큰 이미지는 300DPI, 작은 이미지는 96DPI)</p>
       <div class="recent-files" id="recentFiles"></div>
       <div class="file-info" id="fileInfo"></div>
       <div class="progress-bar" id="progressBar">
