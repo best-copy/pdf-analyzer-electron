@@ -387,7 +387,17 @@
       const sig = optSignature();
       if (_optCache.sig === sig && _optCache.bytes) return;
       _optPrewarming = true;
-      try { await buildOptimizedOutput(); }
+      try {
+        const bytes = await buildOptimizedOutput();
+        // 폰트 출력 안전화가 켜져 있으면 gs 변환까지 여기서 미리 구워 캐시에 넣는다.
+        // '적용'은 화면을 즉시 보여주고, 다운로드는 이 캐시를 그대로 저장한다(대기 0초).
+        if (_outlineEnabled && optSignature() === sig) {
+          await buildOutlinedBytes(bytes);
+          if (_outlineRasterInfo && _outlineRasterInfo.count) {
+            showSuccess(`🖼 폰트 완전 임베드 준비 완료 — 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 대체 임베드 대신 300DPI 이미지로 굳혔습니다.\n'⇩ 다운로드'를 누르면 이 결과가 그대로 저장됩니다 — 어디서 출력해도 화면과 동일.`);
+          }
+        }
+      }
       catch (e) { console.warn('다운로드 최적화 프리웜 실패:', e); }
       finally { _optPrewarming = false; }
     }
@@ -1926,17 +1936,20 @@
     // 즉시 실행 버튼이 아니라 옵션이므로 프리셋에 저장·복원된다.
     let _outlineEnabled = false;
     // 방식: 'outline'=곡선화(-dNoOutputFonts), 'embed'=폰트 완전 임베드(-dEmbedAllFonts, 비서브셋)
-    let _outlineMode = localStorage.getItem('outlineMode') === 'embed' ? 'embed' : 'outline';
+    // 기본값 = 'embed'(완전 임베드). 실측(한글 40쪽): 곡선화 2.6초·11MB vs 완전 임베드 0.3초·35KB —
+    // 9배 빠르고 용량 증가가 없으며 텍스트 검색·수정도 유지된다. 곡선화는 명시 선택 시에만.
+    let _outlineMode = localStorage.getItem('outlineMode') === 'outline' ? 'outline' : 'embed';
     function setOutlineMode(m) {
       _outlineMode = m === 'embed' ? 'embed' : 'outline';
       try { localStorage.setItem('outlineMode', _outlineMode); } catch (e) {}
       activateChip('olmode', _outlineMode);
-      if (_outlineEnabled) { invalidateProcessed(); outlineOnMessage(); }
+      // 안전화는 다운로드 시점 처리 — 적용 결과(화면)는 그대로 두고 다음 저장부터 반영된다.
+      if (_outlineEnabled) { outlineOnMessage(); setTimeout(prewarmOptimizedOutput, 400); }
     }
     function outlineOnMessage() {
       showSuccess(_outlineMode === 'embed'
-        ? "🔤 폰트 완전 임베드 켜짐 — '✔ 편집 적용' 또는 '⇩ 다운로드' 시 모든 폰트를 파일에 통째로 실어, 다른 PC·출력기에서도 동일하게 인쇄됩니다.\n텍스트 수정·검색은 유지됩니다. (파일에 없고 이 PC에도 없는 폰트는 대체될 수 있음)"
-        : "✒ 폰트 곡선화 켜짐 — '✔ 편집 적용' 또는 '⇩ 다운로드' 시 모든 글자가 곡선으로 변환됩니다.\n⚠ 용량이 크게 늘고 텍스트 수정·검색 불가 — 수정용 원본은 따로 보관하세요.");
+        ? "🔤 폰트 완전 임베드 켜짐 — '⇩ 다운로드'로 저장되는 파일에 모든 폰트를 통째로 실어, 다른 PC·출력기에서도 동일하게 인쇄됩니다.\n텍스트 수정·검색은 유지됩니다. (적용 화면은 그대로 — 모양이 바뀌지 않는 처리라 저장 시점에 반영됩니다)"
+        : "✒ 폰트 곡선화 켜짐 — '⇩ 다운로드'로 저장되는 파일의 모든 글자가 곡선으로 변환됩니다.\n⚠ 용량이 크게 늘고(수십~수백 배) 텍스트 수정·검색 불가 — 수정용 원본은 따로 보관하세요. 빠르고 용량 부담 없는 '폰트 완전 임베드'도 같은 안전 효과를 냅니다.");
     }
     function setOutlineEnabled(on) {
       _outlineEnabled = !!on;
@@ -1946,8 +1959,10 @@
       const mb = document.getElementById('opt-outline');
       if (mb) mb.classList.toggle('active', _outlineEnabled);
       if (typeof updateEsGroupBadges === 'function') updateEsGroupBadges();
-      invalidateProcessed();   // '적용 필요' 상태로 — ✔ 적용 시 반영
-      if (_outlineEnabled) outlineOnMessage();
+      // 예전엔 invalidateProcessed()로 '적용 필요' 상태를 만들었지만, 안전화는 화면 모양을
+      // 바꾸지 않고 저장 직전에만 반영되므로 적용 결과를 버릴 이유가 없다(대용량 재적용 방지).
+      updateDownloadBtn();
+      if (_outlineEnabled) { outlineOnMessage(); setTimeout(prewarmOptimizedOutput, 400); }
     }
     // bytes → gs 아웃라인 변환 바이트 (적용·다운로드 공용)
     // 속도 개선 2단: ① 같은 입력+옵션이면 캐시 재사용(적용→다운로드 재실행 0초)
@@ -3308,13 +3323,22 @@
 
     async function downloadProcessed() {
       if (!processedPdfBytes) { showError('먼저 \'✔ 적용\'을 눌러 수정사항을 적용하거나, 다운로드 버튼을 우클릭해 원본을 저장하세요.'); return; }
-      // 외부 변환 결과(아웃라인·블리드)는 재조립하면 변환이 사라짐 — 그대로 저장
+      // 외부 변환 결과(블리드 등)는 재조립하면 변환이 사라짐 — 그대로 저장
       if (directOutputBytes) {
         try {
-          const saved = await window.electronAPI.saveFile({ defaultName: processedFileName, buffer: directOutputBytes });
-          if (saved) { setDirty(false); showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)'); }
+          let bytes = directOutputBytes;
+          // 폰트 출력 안전화는 저장 직전 단계 — 이 경로에도 동일하게 반영한다
+          // (예전엔 이 분기가 안전화를 통째로 건너뛰어, 블리드 생성 후 저장하면 옵션이 무시됐다)
+          if (_outlineEnabled) {
+            showLoading(_outlineMode === 'embed' ? '폰트 완전 임베드 중… (Ghostscript)' : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
+            bytes = await buildOutlinedBytes(bytes);
+            hideLoading();
+          }
+          const saved = await window.electronAPI.saveFile({ defaultName: processedFileName, buffer: bytes });
+          if (saved) { setDirty(false); showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)' + (_outlineEnabled ? (_outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영') : '')); }
         } catch (err) {
           console.error('다운로드 오류:', err);
+          hideLoading();
           showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
         }
         return;
@@ -3326,8 +3350,11 @@
         // 최종 파일은 용량 최적화 방식으로 새로 생성 (미리보기와 내용 동일)
         let finalBytes = await buildOptimizedOutput(p => updateProgress(p));
         finalBytes = await applyTocBookmarks(finalBytes);   // 목차 북마크 태그가 있으면 최종본에 적용
-        if (_outlineEnabled) {   // 아웃라인 옵션 ON — 재조립 경로에서도 최종 단계로 반영 (화면·파일 일치)
-          showLoading('폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
+        if (_outlineEnabled) {   // 폰트 출력 안전화 ON — 저장 직전 최종 단계로 반영 (모양은 동일)
+          // 적용 직후 프리웜이 이미 구워 뒀으면 캐시 적중으로 즉시 통과한다.
+          showLoading(_outlineMode === 'embed'
+            ? '폰트 완전 임베드 중… (Ghostscript)'
+            : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
           finalBytes = await buildOutlinedBytes(finalBytes, p => updateProgress(Math.round(p * 100)));
         }
         applying = false; updateDownloadBtn();
@@ -3336,7 +3363,14 @@
           defaultName: processedFileName,
           buffer: finalBytes,
         });
-        if (saved) { setDirty(false); showSuccess('PDF를 다운로드했습니다. (용량 최적화 적용)'); }
+        if (saved) {
+          setDirty(false);
+          let m = 'PDF를 다운로드했습니다. (용량 최적화 적용)';
+          if (_outlineEnabled) m += _outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영';
+          if (_outlineEnabled && _outlineRasterInfo && _outlineRasterInfo.count)
+            m += `\n🖼 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 300DPI 이미지로 굳혔습니다.`;
+          showSuccess(m);
+        }
       } catch (err) {
         console.error('다운로드 오류:', err);
         showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
@@ -5391,6 +5425,8 @@
       } catch(e) {
         alert('PDF 변환 오류: ' + e.message); return;
       }
+      // 체험판 만료·미인증이면 메인이 null을 돌려준다(안내 다이얼로그는 메인이 이미 띄움)
+      if (!pdfBuffer) return;
       const customer = (document.getElementById('q-customer').value || '견적서').replace(/[\\/:*?"<>|]/g, '_');
       const date = (document.getElementById('q-date').value || '').replace(/-/g, '');
       const defaultName = `견적서_${customer}_${date}.pdf`;

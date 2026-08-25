@@ -324,7 +324,12 @@
     // (예전엔 applyChanges를 await한 뒤 닫아서, 폰트 출력 안전화·평탄화처럼 오래 걸리는
     //  옵션이 켜져 있으면 "닫기가 안 먹는다"로 보였다. 진행 상황은 메인 화면 토스트로 표시)
     async function saveAndCloseWorkspace() {
-      if (processingOptions.bw && !selectedPages.size && !hasAnyActiveLayout()) {
+      // 임포징·블리드도 단독 수정사항 — 빠져 있으면 "임포징만 켜고 저장하고 닫기"가 거절돼
+      // 창이 닫히지 않거나 임포징 전 결과가 그대로 남았다.
+      const otherMod = hasAnyActiveLayout() || hasContentEdits()
+                     || (typeof _impEnabled !== 'undefined' && _impEnabled)
+                     || (typeof _bleedEnabled !== 'undefined' && _bleedEnabled);
+      if (processingOptions.bw && !selectedPages.size && !otherMod) {
         showError('흑백변환할 페이지를 선택하거나 편집 옵션을 설정하세요.'); return;
       }
       const needApply = shouldPreview();
@@ -2056,6 +2061,11 @@
           if (src && src.length === 1) {
             const r = pnMap.get(src[0]);
             if (r) sig = [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0, (r.isRoman || r.isTocPage) ? 1 : 0, (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
+          } else {
+            // 임포징 시트처럼 원본 1:1 매핑이 없는 페이지 — 결과 바이트 지문(fp)이 같으면
+            // 내용이 완전히 같으므로 이전 캔버스를 그대로 쓴다. 이게 없으면 임포징 미리보기는
+            // 같은 결과를 다시 볼 때마다(적용 후 재렌더·모드 전환) 전 시트를 다시 그렸다.
+            sig = ['imp', pxW, fp, i, total].join('|');
           }
           const cached = sig ? _pvPageCache.get(i) : null;
           let canvas, isColor, pagePtW = 0, pagePtH = 0;   // pt 크기 — 기하 오버레이(여백·제본여백) 계산용
@@ -2880,4 +2890,21 @@
         const b = document.getElementById('printerSetupBtn');
         if (b && !(st && st.installed)) b.style.display = '';
       }).catch(() => {});
+    })();
+
+    // ── 체험판 라이선스 배지 ────────────────────────────────────────────────
+    // 화면 표시 전용이다. 실제 저장·출력 차단은 메인 프로세스의 길목에서 하므로,
+    // 이 코드를 고쳐 배지를 숨겨도 만료된 라이선스로는 파일이 저장되지 않는다.
+    function renderLicenseBadge(st) {
+      const el = document.getElementById('licBadge');
+      if (!el || !st) return;
+      if (st.mode === 'admin') { el.style.display = 'none'; return; }   // 정품(발급자) PC
+      el.style.display = '';
+      el.textContent = (st.canSave ? '체험판 · ' : '⚠ ') + (st.label || '');
+      el.classList.toggle('expired', !st.canSave);
+    }
+    (function initLicenseBadge() {
+      if (!window.electronAPI || !window.electronAPI.licenseStatus) return;
+      window.electronAPI.licenseStatus().then(renderLicenseBadge).catch(() => {});
+      if (window.electronAPI.onLicenseStatus) window.electronAPI.onLicenseStatus(renderLicenseBadge);
     })();

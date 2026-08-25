@@ -4,6 +4,8 @@ const fs   = require('fs');
 const os   = require('os');
 const { execFile, spawn } = require('child_process');
 const remoteServer = require('./remote-server');   // 모바일 연동 LAN 변환 서버
+const license      = require('./license');         // 체험판 1회용 키 (저장·출력 게이트)
+const licenseServer = require('./license-server'); // 활성화 서버 (관리자 PC에서만 구동)
 
 // ── 성능: GPU 가속·래스터화 활성화 (캔버스·PDF 렌더링 가속) ──────────────────
 app.commandLine.appendSwitch('enable-gpu-rasterization');
@@ -353,6 +355,91 @@ function installZoomShortcuts(win) {
   });
 }
 
+// ── 라이선스: 창·IPC·저장 게이트 ────────────────────────────────────────────
+// 저장·출력은 전부 메인 프로세스를 지나므로, 검사도 여기 한 곳에 모은다.
+// 렌더러(화면) 코드를 고쳐도 파일이 밖으로 나가지 못하게 하는 것이 목적.
+let licWin = null;
+function openLicenseWindow(focusAdmin) {
+  if (licWin && !licWin.isDestroyed()) { licWin.focus(); return licWin; }
+  licWin = new BrowserWindow({
+    width: 720, height: 640, title: 'PDF Editor — 체험판 인증',
+    icon: path.join(__dirname, 'src', 'icon.ico'),
+    parent: mainWin && !mainWin.isDestroyed() ? mainWin : undefined,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-license.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: false,
+    },
+  });
+  licWin.loadFile(path.join(__dirname, 'src', 'license.html'));
+  licWin.on('closed', () => {
+    licWin = null;
+    // 창을 닫으면 메인 화면의 배지·버튼 상태를 최신 판정으로 맞춘다
+    pushLicenseStatus();
+  });
+  return licWin;
+}
+function pushLicenseStatus() {
+  const st = license.refresh();
+  BrowserWindow.getAllWindows().forEach(w => {
+    try { w.webContents.send('license:status', st); } catch (e) {}
+  });
+  return st;
+}
+// 저장·출력 길목의 공통 관문. 막을 때는 이유를 다이얼로그로 알리고 인증 창을 띄운다.
+function licenseGate(what) {
+  // status()(캐시)가 아니라 refresh()로 그 자리에서 다시 판정한다 —
+  // 앱을 켜 둔 채 기간이 끝나거나 시계가 바뀐 경우를 저장 시점에 잡아내기 위함.
+  const st = license.refresh();
+  if (st.canSave) return true;
+  const msg = st.mode === 'none'
+    ? `체험 키를 등록해야 ${what}을(를) 저장할 수 있습니다.\n\n발급자에게 받은 키를 인증 창에 입력하세요.`
+    : `${st.reason || '라이선스가 유효하지 않습니다.'}\n\n${what} 저장이 차단되었습니다. (열기·분석·미리보기는 계속 사용할 수 있습니다)`;
+  dialog.showMessageBox(mainWin && !mainWin.isDestroyed() ? mainWin : null, {
+    type: 'warning', title: '체험판 인증 필요', message: st.label || '인증 필요', detail: msg,
+    buttons: ['인증 창 열기', '취소'], defaultId: 0, cancelId: 1, noLink: true,
+  }).then(r => { if (r.response === 0) openLicenseWindow(); });
+  return false;
+}
+
+ipcMain.handle('lic:status',      () => license.refresh());
+ipcMain.handle('lic:hwid',        () => license.hwid());
+ipcMain.handle('lic:savedServer', () => license.savedServer());
+ipcMain.handle('lic:activate',    async (_, { key, server }) => {
+  const r = await license.activate(key, server);
+  pushLicenseStatus();
+  return r;
+});
+ipcMain.handle('lic:recheck',     async () => {
+  const r = await license.recheckIfDue(true);
+  pushLicenseStatus();
+  return r;
+});
+ipcMain.on('lic:close', () => { if (licWin && !licWin.isDestroyed()) licWin.close(); });
+// 관리자(개인키 보유 PC) 전용 — 권한 확인은 license.js 안에서 한다
+ipcMain.handle('lic:admin:issue',        (_, { days, note }) => license.issueKey({ days, note }));
+ipcMain.handle('lic:admin:list',         () => license.listKeys());
+ipcMain.handle('lic:admin:revoke',       (_, { key }) => license.revokeKey(key));
+ipcMain.handle('lic:admin:serverStatus', () => licenseServer.status());
+ipcMain.handle('lic:admin:setServer',    (_, { enabled, port }) => {
+  if (!license.isAdminPC()) return licenseServer.status();
+  return licenseServer.setEnabled(enabled, port);
+});
+ipcMain.handle('lic:admin:lanIps', () => {
+  const out = [];
+  const ifs = os.networkInterfaces();
+  for (const [name, addrs] of Object.entries(ifs)) {
+    for (const a of addrs || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      if (/^169\.254\./.test(a.address) || /virtual|vmware|vbox|wsl|loopback/i.test(name)) continue;
+      out.push(a.address);
+    }
+  }
+  return out;
+});
+// 메인 화면에서 인증 창 열기 (배지 클릭 / Ctrl+Shift+Alt+L)
+ipcMain.handle('lic:open', () => { openLicenseWindow(); return true; });
+
 function createWindow() {
   const win = mainWin = new BrowserWindow({
     width:  1280,
@@ -377,11 +464,32 @@ function createWindow() {
   // Ctrl+R / Ctrl+Shift+R — 기본 메뉴의 새로고침을 가로채 렌더러의 확인 절차를 태운다.
   // (그냥 두면 편집 중이던 문서가 경고 없이 날아간다)
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || !input.control || input.alt) return;
+    if (input.type !== 'keyDown') return;
+    // Ctrl+Shift+Alt+L — 인증·발급 창 (관리자 PC에서는 발급 탭이 함께 열린다)
+    if (input.control && input.shift && input.alt && (input.key === 'l' || input.key === 'L')) {
+      event.preventDefault();
+      openLicenseWindow();
+      return;
+    }
+    if (!input.control || input.alt) return;
     if (input.key === 'r' || input.key === 'R' || input.key === 'F5') {
       event.preventDefault();
       win.webContents.send('app:reload-request');
     }
+  });
+
+  // 렌더러가 blob/data URL 다운로드로 저장 길목을 우회하지 못하게 막는다
+  // (지금 코드엔 그런 경로가 없지만, 화면 코드를 고쳐 넣는 우회를 여기서 차단)
+  win.webContents.session.on('will-download', (e, item) => {
+    if (!license.refresh().canSave) {
+      e.preventDefault();
+      licenseGate(item.getFilename() || '파일');
+    }
+  });
+
+  // 창이 뜨면 현재 라이선스 상태를 화면에 알린다 (배지·안내 표시용)
+  win.webContents.on('did-finish-load', () => {
+    try { win.webContents.send('license:status', license.status()); } catch (e) {}
   });
 
   win.webContents.on('did-finish-load', () => {
@@ -473,6 +581,17 @@ ipcMain.on('editor:close', (event) => {
 });
 
 app.whenReady().then(() => {
+  // 라이선스 먼저 — 저장 게이트가 창보다 앞서 준비돼 있어야 한다
+  license.init({ userDataDir: app.getPath('userData'), appVersion: app.getVersion() });
+  licenseServer.init(license, {
+    load: () => {
+      try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'license-server.json'), 'utf8')); }
+      catch (e) { return { enabled: false, port: licenseServer.PORT_DEFAULT }; }
+    },
+    save: (cfg) => {
+      try { fs.writeFileSync(path.join(app.getPath('userData'), 'license-server.json'), JSON.stringify(cfg, null, 2), 'utf8'); } catch (e) {}
+    },
+  });
   sweepTempConversions(); // 시작 시 이전 세션 변환 임시파일 정리
   initRemoteServer();     // 모바일 연동 서버 (켜짐 설정이면 자동 구동)
   ensureSendToShortcut(); // 탐색기 '보내기' 메뉴 등록 (포터블 실행 시)
@@ -481,6 +600,13 @@ app.whenReady().then(() => {
   initPrintDocNameSources();  // 접수 문서의 '원래 이름' 회수 경로 준비 (로그 / 작업 큐)
   setTimeout(repairPrintWatchdogIfNeeded, 6000);   // 상주 감시자 자동 복구 (프린터 설치 시)
   createWindow();
+  // 인증이 없거나 만료면 인증 창을 함께 띄운다. 앱 자체는 열어 둔다 —
+  // 열기·분석·미리보기는 되고 저장·출력만 막히는 것이 이 체험판의 규칙이다.
+  const st = license.status();
+  if (!st.canSave) setTimeout(() => openLicenseWindow(), 700);
+  // 7일 주기 서버 재확인 — 부팅 직후 한 번, 이후 6시간마다. 실패해도 유예 안에서는 조용히 넘어간다.
+  setTimeout(() => license.recheckIfDue().then(pushLicenseStatus).catch(() => {}), 5000);
+  setInterval(() => license.recheckIfDue().then(pushLicenseStatus).catch(() => {}), 6 * 3600 * 1000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -542,6 +668,15 @@ ipcMain.handle('fonts:list', () => {
 let _gsPath = null;
 function findGhostscript() {
   if (_gsPath) return _gsPath;
+  // ① 앱에 동봉된 런타임을 최우선 — 테스터 PC에 Ghostscript가 없어도 잉크 판정·폰트
+  //    안전화가 그대로 동작한다(설치·다운로드·7-Zip 불필요). 포터블 exe는 실행 시
+  //    resources/ 아래로 풀리므로 process.resourcesPath 기준으로 찾는다.
+  for (const base of [path.join(process.resourcesPath || '', 'gs'), path.join(__dirname, 'vendor', 'gs')]) {
+    try {
+      const exe = path.join(base, 'bin', 'gswin64c.exe');
+      if (fs.existsSync(exe)) { _gsPath = exe; return exe; }
+    } catch (e) {}
+  }
   for (const pf of [process.env['ProgramFiles'], process.env['ProgramFiles(x86)']]) {
     if (!pf) continue;
     const gsRoot = path.join(pf, 'gs');
@@ -725,6 +860,13 @@ ipcMain.handle('hotfolder:start', (_, dir) => {
 ipcMain.handle('hotfolder:stop', () => { clearInterval(_hfTimer); _hfTimer = null; _hfDir = null; _hfBusy.clear(); _hfSizes.clear(); return true; });
 // 렌더러 처리 완료 → 원본·결과 이동 (성공: 완료\, 실패: 실패\ + 사유 텍스트)
 ipcMain.handle('hotfolder:finish', (_, r) => {
+  // 핫폴더 무인 저장도 결과물 반출 — 만료 시 결과를 '완료' 폴더로 내보내지 않는다
+  if (r && r.ok && !license.refresh().canSave) {
+    try { if (r.outTmp && fs.existsSync(r.outTmp)) fs.unlinkSync(r.outTmp); } catch (e) {}
+    _hfBusy.delete(r.srcPath);
+    licenseGate('핫폴더 결과');
+    return false;
+  }
   try {
     const dir = _hfDir;
     if (!dir || !r || !r.srcPath) return false;
@@ -786,13 +928,30 @@ ipcMain.handle('dialog:openFile', async () => {
 // ── IPC: PDF 저장 경로만 반환 (파일 쓰기는 preload에서 fs.writeFileSync 직접 처리)
 // buffer를 IPC로 전달하면 50MB+ PDF 직렬화 과정에서 데이터 손상/잘림이 발생하므로
 // 경로 취득만 main에서, 실제 쓰기는 preload(sandbox:false)에서 수행
+// 같은 이름이 이미 있으면 파일명 끝에 -1, -2 …를 붙여 겹치지 않는 경로를 만든다.
+// (인쇄 실무상 같은 원고를 설정만 바꿔 여러 번 뽑는 일이 잦아, 덮어쓰기 경고보다
+//  자동 번호가 안전하다. 사용자가 다이얼로그에서 이름을 다시 바꾸는 것은 자유.)
+let _lastSaveDir = null;   // 직전에 저장한 폴더 — 중복 검사 기준
+function uniqueSavePath(dir, name) {
+  const ext = path.extname(name);
+  const stem = path.basename(name, ext);
+  let p = path.join(dir, name);
+  for (let i = 1; fs.existsSync(p) && i < 1000; i++) p = path.join(dir, `${stem}-${i}${ext}`);
+  return p;
+}
 ipcMain.handle('dialog:saveFilePath', async (_, { defaultName }) => {
+  if (!licenseGate('PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
+  // 기본 폴더는 직전 저장 폴더(없으면 다운로드 폴더) — 그 폴더 기준으로 중복을 피한 이름을 제안
+  let dir = _lastSaveDir;
+  try { if (!dir || !fs.existsSync(dir)) dir = app.getPath('downloads'); } catch (e) { dir = null; }
+  const defaultPath = dir ? uniqueSavePath(dir, defaultName) : defaultName;
   const { canceled, filePath } = await dialog.showSaveDialog({
     title: 'PDF 저장',
-    defaultPath: defaultName,
+    defaultPath,
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
   });
   if (canceled || !filePath) return null;
+  try { _lastSaveDir = path.dirname(filePath); } catch (e) {}
   return filePath;
 });
 
@@ -832,7 +991,11 @@ async function renderHtmlToPdf(html) {
   }
   return pdfBuffer;
 }
-ipcMain.handle('print:toPDF', (_, html) => renderHtmlToPdf(html));
+ipcMain.handle('print:toPDF', (_, html) => {
+  // 견적서 PDF도 '출력물' — 체험판 만료 시 함께 막는다
+  if (!licenseGate('견적서')) return null;
+  return renderHtmlToPdf(html);
+});
 
 // ── IPC: HWP/HWPX → PDF 변환 (한컴오피스 한글 COM 자동화) ────────────────────
 // 한글은 단일 인스턴스로만 동작하므로 동시 변환 시 충돌 → 큐로 순차 처리.

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>PDF Editor — 체험판 인증</title>
+<style>
+  /* 테마: Black & Yellow (본 앱과 동일 팔레트) */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", sans-serif;
+    background:#f5f5f7; color:#1d1d1f; padding:0; -webkit-font-smoothing:antialiased;
+  }
+  .head { background:#1d1d1f; color:#fff; padding:18px 24px; display:flex; align-items:center; gap:10px; }
+  .head h1 { font-size:1.15em; font-weight:700; letter-spacing:-0.3px; }
+  .head .ic { filter:grayscale(1); }
+  .head .sp { flex:1; }
+  .badge { font-size:0.8em; padding:4px 10px; border-radius:999px; background:#ffd60a; color:#1d1d1f; font-weight:700; }
+  .badge.warn { background:#48484a; color:#fff; }
+  .tabs { display:flex; gap:6px; padding:12px 24px 0; background:#f5f5f7; }
+  .tab { border:none; background:#e8e8ed; color:#48484a; padding:8px 16px; border-radius:8px 8px 0 0;
+         font-size:0.9em; font-weight:600; cursor:pointer; }
+  .tab.active { background:#fff; color:#1d1d1f; box-shadow:0 -1px 0 #ffd60a inset, 0 -3px 0 #ffd60a inset; }
+  .wrap { padding:20px 24px 28px; background:#fff; min-height:340px; }
+  .card { border:1px solid #e8e8ed; border-radius:12px; padding:18px; margin-bottom:14px; }
+  .card h2 { font-size:0.95em; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
+  label { display:block; font-size:0.82em; color:#48484a; margin:10px 0 4px; font-weight:600; }
+  input[type=text], input[type=number] {
+    width:100%; padding:10px 12px; border:1px solid #d2d2d7; border-radius:8px; font-size:0.95em;
+    font-family:inherit; background:#fff;
+  }
+  input:focus { outline:none; border-color:#1d1d1f; box-shadow:0 0 0 3px rgba(255,214,10,0.35); }
+  #key { font-family:Consolas,monospace; letter-spacing:1px; text-transform:uppercase; font-size:1.05em; }
+  .btn { border:none; border-radius:8px; padding:10px 18px; font-size:0.92em; font-weight:700; cursor:pointer;
+         background:#1d1d1f; color:#ffd60a; }
+  .btn:disabled { opacity:0.45; cursor:default; }
+  .btn.sub { background:#e8e8ed; color:#1d1d1f; }
+  .btn.sm { padding:5px 10px; font-size:0.8em; }
+  .row { display:flex; gap:8px; align-items:flex-end; }
+  .row > div { flex:1; }
+  .msg { margin-top:12px; padding:10px 12px; border-radius:8px; font-size:0.86em; white-space:pre-line; display:none; }
+  .msg.ok { background:#fff8db; border:1px solid #ffd60a; display:block; }
+  .msg.err { background:#f5f5f7; border:1px solid #48484a; display:block; }
+  .note { font-size:0.8em; color:#48484a; line-height:1.6; margin-top:8px; }
+  table { width:100%; border-collapse:collapse; font-size:0.82em; margin-top:8px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #e8e8ed; }
+  th { color:#48484a; font-weight:600; }
+  td.k { font-family:Consolas,monospace; font-weight:700; }
+  .st { font-size:0.9em; padding:2px 7px; border-radius:999px; background:#e8e8ed; }
+  .st.a { background:#ffd60a; }
+  .st.r { background:#48484a; color:#fff; }
+  .hide { display:none !important; }
+  .hw { font-family:Consolas,monospace; font-size:0.78em; color:#48484a; word-break:break-all; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <span class="ic">🔑</span><h1>PDF Editor — 체험판 인증</h1>
+    <span class="sp"></span>
+    <span class="badge" id="stBadge">확인 중…</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" id="tabUser" onclick="showTab('user')">체험 키 등록</button>
+    <button class="tab hide" id="tabAdmin" onclick="showTab('admin')">🛠 관리자</button>
+  </div>
+
+  <div class="wrap">
+    <!-- ── 테스터: 키 등록 ─────────────────────────────────────────────── -->
+    <div id="paneUser">
+      <div class="card">
+        <h2>체험 키 등록</h2>
+        <div class="note">발급자에게 받은 키와 서버 주소를 입력하세요. <b>등록은 이 PC에서 한 번만</b> 가능하며,
+          등록 후에는 서버 없이도 만료일까지 사용할 수 있습니다.</div>
+        <label for="key">체험 키</label>
+        <input type="text" id="key" placeholder="PDFE-XXXX-XXXX-XXXX" maxlength="19" autocomplete="off">
+        <label for="server">활성화 서버 주소</label>
+        <input type="text" id="server" placeholder="예: 121.130.10.20:8736">
+        <div style="margin-top:14px; display:flex; gap:8px;">
+          <button class="btn" id="actBtn" onclick="doActivate()">키 등록</button>
+          <button class="btn sub" onclick="doRecheck()">서버 재확인</button>
+          <button class="btn sub" onclick="lic.close()">닫기</button>
+        </div>
+        <div class="msg" id="userMsg"></div>
+      </div>
+      <div class="card">
+        <h2>이 PC 정보</h2>
+        <div class="note">키는 이 기기 지문에 묶입니다. 다른 PC에서는 같은 키를 쓸 수 없습니다.</div>
+        <div class="hw" id="hw">…</div>
+      </div>
+    </div>
+
+    <!-- ── 관리자: 키 발급·서버 ────────────────────────────────────────── -->
+    <div id="paneAdmin" class="hide">
+      <div class="card">
+        <h2>🔑 새 체험 키 발급</h2>
+        <div class="row">
+          <div>
+            <label for="days">사용 기간(일)</label>
+            <input type="number" id="days" value="7" min="1" max="3650">
+          </div>
+          <div style="flex:2">
+            <label for="note">메모 (받는 사람·용도)</label>
+            <input type="text" id="note" placeholder="예: 한빛인쇄 김실장 체험">
+          </div>
+          <button class="btn" onclick="doIssue()">발급</button>
+        </div>
+        <div class="msg" id="admMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>📡 활성화 서버</h2>
+        <div class="note">테스터가 키를 등록할 때만 필요합니다. 공유기에서 이 포트를 포워딩해야 외부에서 접속됩니다.</div>
+        <div class="row">
+          <div>
+            <label for="port">포트</label>
+            <input type="number" id="port" value="8736" min="1024" max="65535">
+          </div>
+          <button class="btn" id="srvBtn" onclick="toggleServer()">서버 켜기</button>
+          <button class="btn sub" onclick="loadServer()">새로고침</button>
+        </div>
+        <div class="note" id="srvInfo"></div>
+      </div>
+
+      <div class="card">
+        <h2>📋 발급 내역</h2>
+        <table id="keyTable">
+          <thead><tr><th>키</th><th>기간</th><th>상태</th><th>메모</th><th>만료</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+<script>
+  function $(id) { return document.getElementById(id); }
+  function showMsg(el, text, ok) { const m = $(el); m.textContent = text; m.className = 'msg ' + (ok ? 'ok' : 'err'); }
+  function fmt(t) { return t ? new Date(t).toLocaleDateString('ko-KR') : '—'; }
+
+  function showTab(which) {
+    $('paneUser').classList.toggle('hide', which !== 'user');
+    $('paneAdmin').classList.toggle('hide', which !== 'admin');
+    $('tabUser').classList.toggle('active', which === 'user');
+    $('tabAdmin').classList.toggle('active', which === 'admin');
+    if (which === 'admin') { loadKeys(); loadServer(); }
+  }
+
+  async function refreshStatus() {
+    const s = await lic.status();
+    const b = $('stBadge');
+    b.textContent = s.label || s.mode;
+    b.className = 'badge' + (s.canSave ? '' : ' warn');
+    if (s.mode === 'admin') { $('tabAdmin').classList.remove('hide'); }
+    $('hw').textContent = await lic.hwid();
+    const srv = await lic.savedServer();
+    if (srv && !$('server').value) $('server').value = srv;
+  }
+
+  // 키 입력 편의: 4자마다 하이픈 자동
+  $('key').addEventListener('input', (e) => {
+    let v = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (v.startsWith('PDFE')) v = v.slice(4);
+    v = v.slice(0, 12);
+    const parts = v.match(/.{1,4}/g) || [];
+    e.target.value = 'PDFE' + (parts.length ? '-' + parts.join('-') : '');
+  });
+
+  async function doActivate() {
+    $('actBtn').disabled = true;
+    showMsg('userMsg', '서버에 확인 중…', true);
+    const r = await lic.activate($('key').value, $('server').value);
+    $('actBtn').disabled = false;
+    if (r.ok) {
+      showMsg('userMsg', `✅ 등록 완료 — ${r.status.label}\n만료: ${fmt(r.status.expiresAt)}\n이제 저장·출력을 포함해 모든 기능을 쓸 수 있습니다. 창을 닫으세요.`, true);
+      refreshStatus();
+    } else {
+      showMsg('userMsg', '⚠ ' + r.error, false);
+    }
+  }
+  async function doRecheck() {
+    showMsg('userMsg', '서버 재확인 중…', true);
+    const r = await lic.recheck();
+    showMsg('userMsg', r.ok ? '✅ 재확인 완료 — 사용 기간이 유지됩니다.' : '⚠ ' + (r.error || '실패'), !!r.ok);
+    refreshStatus();
+  }
+
+  async function doIssue() {
+    const r = await lic.issue($('days').value, $('note').value);
+    if (r.ok) {
+      showMsg('admMsg', `발급 완료 — ${r.key}\n(${r.days}일)  이 키를 테스터에게 전달하세요. 첫 등록 시점부터 기간이 시작됩니다.`, true);
+      $('note').value = '';
+      loadKeys();
+      try { navigator.clipboard.writeText(r.key); } catch (e) {}
+    } else showMsg('admMsg', '⚠ ' + r.error, false);
+  }
+  async function loadKeys() {
+    const r = await lic.list();
+    const tb = $('keyTable').querySelector('tbody');
+    tb.innerHTML = '';
+    (r.keys || []).forEach(k => {
+      const tr = document.createElement('tr');
+      const st = k.status === 'activated' ? '<span class="st a">사용중</span>'
+               : k.status === 'revoked' ? '<span class="st r">취소됨</span>'
+               : '<span class="st">미사용</span>';
+      tr.innerHTML = `<td class="k">${k.key}</td><td>${k.days}일</td><td>${st}</td>`
+        + `<td>${k.note || ''}</td><td>${fmt(k.expiresAt)}</td>`
+        + `<td>${k.status === 'revoked' ? '' : '<button class="btn sub sm">취소</button>'}</td>`;
+      const btn = tr.querySelector('button');
+      if (btn) btn.onclick = async () => {
+        const r2 = await lic.revoke(k.key);
+        showMsg('admMsg', r2.ok ? r2.note : '⚠ ' + r2.error, !!r2.ok);
+        loadKeys();
+      };
+      tb.appendChild(tr);
+    });
+  }
+  async function loadServer() {
+    const s = await lic.serverStatus();
+    $('port').value = s.port;
+    $('srvBtn').textContent = s.running ? '서버 끄기' : '서버 켜기';
+    const ips = await lic.lanIps();
+    $('srvInfo').innerHTML = (s.running
+        ? `🟢 실행 중 — 테스터에게 알려줄 주소: <b>공인IP:${s.port}</b><br>이 PC의 내부 주소: ${ips.map(i => i + ':' + s.port).join(', ')}`
+        : '⚫ 꺼짐 — 테스터가 키를 등록하려면 켜야 합니다.')
+      + (s.lastError ? `<br>⚠ ${s.lastError}` : '')
+      + (s.log && s.log.length ? '<br><br>최근 활동<br>' + s.log.slice(0, 8).map(l => new Date(l.t).toLocaleString('ko-KR') + ' — ' + l.line).join('<br>') : '');
+  }
+  async function toggleServer() {
+    const s = await lic.serverStatus();
+    await lic.setServer(!s.running, $('port').value);
+    loadServer();
+  }
+
+  refreshStatus();
+</script>
+</body>
+</html>

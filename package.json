@@ -1,6 +1,6 @@
 {
   "name": "pdf-analyzer",
-  "version": "3.1.0",
+  "version": "3.7.0",
   "description": "PDF 컬러/흑백 분석 및 변환",
   "author": "일청기획",
   "main": "main.js",
@@ -30,7 +30,14 @@
     "files": [
       "main.js",
       "preload.js",
+      "preload-license.js",
+      "remote-server.js",
+      "license.js",
+      "license-server.js",
       "src/**/*"
+    ],
+    "extraResources": [
+      { "from": "vendor/gs", "to": "gs" }
     ],
     "directories": {
       "output": "dist"

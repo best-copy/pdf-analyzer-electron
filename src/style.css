@@ -1373,3 +1373,15 @@
     .pvv-chk input { accent-color: #ffd60a; width: 14px; height: 14px; cursor: pointer; }
 
 .es-chip:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; background: #f5f5f7; }
+
+    /* ── 체험판 라이선스 배지 (헤더 우측 상단) ────────────────────────────── */
+    .header { position: relative; }
+    .lic-badge {
+      position: absolute; top: 14px; right: 18px;
+      background: #ffd60a; color: #1d1d1f;
+      font-size: 0.72em; font-weight: 700; padding: 5px 12px; border-radius: 999px;
+      cursor: pointer; user-select: none; letter-spacing: -0.2px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    .lic-badge:hover { filter: brightness(1.08); }
+    .lic-badge.expired { background: #48484a; color: #fff; }

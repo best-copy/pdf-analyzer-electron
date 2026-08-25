@@ -1972,7 +1972,12 @@
     async function applyChanges() {
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) return;
       const appliedBwCnt = pageResults.filter(r => r && r.appliedBw).length;
-      if (processingOptions.bw && !selectedPages.size && !appliedBwCnt) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
+      // 흑백변환만 켜고 아무 페이지도 고르지 않은 경우에만 거절한다. 임포징·블리드·편집처럼
+      // 다른 수정이 있으면 그대로 진행 — 예전엔 여기서 반환해 "임포징을 켰는데 적용이 안 되고
+      // 임포징 전 화면이 그대로 남는" 증상이 났다.
+      const otherMod = hasAnyActiveLayout() || hasContentEdits() || impIncluded()
+                     || (typeof _bleedEnabled !== 'undefined' && _bleedEnabled);
+      if (processingOptions.bw && !selectedPages.size && !appliedBwCnt && !otherMod) { showError('흑백변환할 페이지를 선택해 주세요.'); return; }
       try {
         applying = true;
         processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
@@ -2001,24 +2006,20 @@
           updateProgress(88);
           pdfBytes = await buildImposedBytes(pdfBytes, p => updateProgress(88 + Math.round(p * 0.12)));
         }
-        // 폰트 아웃라인화 옵션: 최종 단계로 gs 변환 (다운로드는 이 결과를 그대로 저장)
-        let outlined = false;
-        if (typeof _outlineEnabled !== 'undefined' && _outlineEnabled) {
-          showLoading('폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
-          pdfBytes = await buildOutlinedBytes(pdfBytes, p => updateProgress(Math.round(p * 100)));
-          outlined = true;
-        }
+        // 폰트 출력 안전화(곡선화·완전 임베드)는 '적용' 단계에서 하지 않는다.
+        // gs 변환은 모양을 전혀 바꾸지 않으면서(벡터 무손실) 시간이 오래 걸려(한글 40쪽 곡선화 2.6초,
+        // 200쪽이면 십수 초), 여기서 돌리면 그동안 화면이 이전 상태(임포징 전)로 멈춰 보였다.
+        // → 화면은 조판 결과로 즉시 갱신하고, 안전화는 적용 직후 백그라운드 프리웜
+        //   (prewarmOptimizedOutput)이 미리 구워 두었다가 '⇩ 다운로드'가 그 캐시를 저장한다.
+        const outlineOn = (typeof _outlineEnabled !== 'undefined' && _outlineEnabled);
         const layoutNote = layoutNoteOf()
           + (typeof _bleedEnabled !== 'undefined' && _bleedEnabled ? ` · ◲ 블리드 ${_bleedOpts().mm}mm${_bleedOpts().crop ? '+재단선' : ''}` : '')
           + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '')
-          + (outlined ? (typeof _outlineMode !== 'undefined' && _outlineMode === 'embed'
-              ? ' · 🔤 폰트 완전 임베드' + (typeof _outlineRasterInfo !== 'undefined' && _outlineRasterInfo
-                  ? `\n🖼 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 대체 임베드 대신 300DPI 이미지로 굳혔습니다 — 어디서 출력해도 화면과 동일.`
-                  : '')
-              : ' · ✒ 폰트 곡선화(텍스트→곡선)') : '');
+          + (outlineOn ? (typeof _outlineMode !== 'undefined' && _outlineMode === 'embed'
+              ? ' · 🔤 폰트 완전 임베드(다운로드 시 반영)'
+              : ' · ✒ 폰트 곡선화(다운로드 시 반영)') : '');
 
         processedPdfBytes = pdfBytes;
-        if (outlined) directOutputBytes = pdfBytes;   // 재조립하면 아웃라인이 사라짐 — 그대로 저장
         processedFileName = defaultProcessedName();
         setDirty(true);
         updateProgress(100);

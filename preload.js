@@ -117,4 +117,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendEditorResult: (data) => ipcRenderer.send('editor:save', data),
   // 편집기 → 취소로 닫기 (편집기 창)
   closeEditorWindow: () => ipcRenderer.send('editor:close'),
+
+  // ── 라이선스(체험판) 상태 — 화면 배지·안내 전용. 실제 차단은 메인 프로세스가 한다.
+  // 여기서 true를 돌려주도록 화면 코드를 고쳐도 저장 길목(main)에서 막히므로 의미가 없다.
+  licenseStatus: () => ipcRenderer.invoke('lic:status'),
+  openLicenseWindow: () => ipcRenderer.invoke('lic:open'),
+  onLicenseStatus: (cb) => ipcRenderer.on('license:status', (_, st) => cb(st)),
 });

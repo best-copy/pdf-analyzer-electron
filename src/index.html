@@ -15,6 +15,9 @@
     <div class="header">
       <h1><svg viewBox="0 0 24 24" style="height:1.15em; vertical-align:-0.2em; margin-right:10px;" aria-hidden="true"><g fill="#ffd60a"><path d="M8 2h9l4 4v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" opacity="0.55"/><path d="M4 5h9l4 4v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></g><rect x="4" y="13.5" width="9" height="6" rx="1.4" fill="#1d1d1f"/><text x="8.5" y="18.15" text-anchor="middle" font-size="4" font-weight="800" font-family="Arial, sans-serif" fill="#ffd60a">PDF</text></svg> PDF Editor</h1>
       <p>PDF · 한글 · MS Office · Adobe · Image &nbsp;인쇄용 조판하기</p>
+      <!-- 체험판 배지 — 정품(관리자) PC에서는 표시되지 않는다. 클릭 시 인증 창 -->
+      <div id="licBadge" class="lic-badge" style="display:none" title="클릭하면 체험판 인증 창이 열립니다 (Ctrl+Shift+Alt+L)"
+           onclick="window.electronAPI.openLicenseWindow()"></div>
     </div>
 
     <div class="upload-section" id="uploadSection">
@@ -101,7 +104,7 @@
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
           <button class="opt-btn" id="spreadViewBtn2" onclick="toggleSpreadView()" title="실제 책을 펼친 모양으로 보기 — 1쪽은 오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임. 적용 전 썸네일과 적용 결과 모두에 적용">📖 펼침</button>
           <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
-          <button class="opt-btn" id="opt-outline" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '✔ 적용'·'⇩ 다운로드' 결과의 글자를 곡선으로 바꾸거나(곡선화) 폰트를 통째로 실어(완전 임베드) 다른 PC·출력기에서도 동일하게 인쇄되게 합니다. 방식·평탄화는 좌측 사이드바 '⚙ 처리옵션'에서 선택"><span class="ic">✒</span> 폰트 출력 안전화</button>
+          <button class="opt-btn" id="opt-outline" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '⇩ 다운로드'로 저장하는 파일에 폰트를 통째로 싣거나(완전 임베드) 글자를 곡선으로 바꿔(곡선화) 다른 PC·출력기에서도 동일하게 인쇄되게 합니다. 화면 모양은 그대로. 방식·평탄화는 좌측 사이드바 '⚙ 처리옵션'에서 선택"><span class="ic">✒</span> 폰트 출력 안전화</button>
           <button class="clear-opts-btn" id="clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <span class="action-btn-group">
             <button class="apply-btn" id="applyBtn" onclick="applyChanges()" style="margin-left:0;" disabled>✔ 적용</button>
@@ -242,13 +245,13 @@
             <input type="checkbox" id="esOutline" onchange="setOutlineEnabled(this.checked)"> 폰트 출력 안전화 켜기
           </label>
           <div class="sbp-row2">
-            <button class="sbp-opt active" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
-            <button class="sbp-opt" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
+            <button class="sbp-opt" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
+            <button class="sbp-opt active" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
           </div>
           <label class="sbp-chk" title="투명도 효과를 미리 합성(PDF 1.4) — 구형 출력기(RIP)에서 투명도 사고 방지. 파일이 커질 수 있음">
-            <input type="checkbox" id="outlineFlatten" onchange="if(document.getElementById('esOutline').checked)invalidateProcessed()"> 평탄화 (투명도 미리 합성)
+            <input type="checkbox" id="outlineFlatten" onchange="if(document.getElementById('esOutline').checked)setTimeout(prewarmOptimizedOutput,400)"> 평탄화 (투명도 미리 합성)
           </label>
-          <div class="sbp-note"><b>곡선화</b> = 글자를 곡선 데이터로(용량 수십 배↑·수정 불가) · <b>완전 임베드</b> = 폰트를 통째로 실어(용량 증가 적음·텍스트 유지)</div>
+          <div class="sbp-note"><b>완전 임베드(권장)</b> = 폰트를 통째로 실음 — 빠르고(실측 40쪽 0.3초) 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(같은 문서 2.6초·용량 수십~수백 배↑·수정 불가)</div>
         </div>
       </div>
       <!-- 모바일 연동 서버 — 폰이 이 PC로 HWP/Office/Adobe 변환·잉크판정을 위임 (사무실 WiFi 전용)
