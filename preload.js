@@ -5,7 +5,7 @@ const os   = require('os');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 열기 다이얼로그 — 경로만 반환 (파일 내용은 readFile로 별도 요청)
-  openFile: () => ipcRenderer.invoke('dialog:openFile'),
+  openFile: (opts) => ipcRenderer.invoke('dialog:openFile', opts || {}),
   openCoverFile: () => ipcRenderer.invoke('dialog:openCoverFile'),
   genCoverImage: (opts) => ipcRenderer.invoke('ai:genCoverImage', opts),
   // 📂 표지 핫폴더 — 감시는 메인, 표지 생성은 렌더러
@@ -28,8 +28,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // PDF 저장: 경로는 main에서 다이얼로그로 취득, 파일 쓰기는 여기서 직접 처리
   // (IPC로 대용량 버퍼 전달 시 직렬화 과정에서 손상되므로 fs로 직접 기록)
-  saveFile: async ({ defaultName, buffer }) => {
-    const filePath = await ipcRenderer.invoke('dialog:saveFilePath', { defaultName });
+  saveFile: async ({ defaultName, buffer, kind }) => {
+    const filePath = await ipcRenderer.invoke('dialog:saveFilePath', { defaultName, kind });
     if (!filePath) return false;
     fs.writeFileSync(filePath, Buffer.from(buffer));
     return filePath;
@@ -73,6 +73,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 폰트 아웃라인화 (gs pdfwrite -dNoOutputFonts) — 변환된 임시 PDF 경로 반환
   // opts.flatten = 투명도 평탄화(PDF 1.4, 구형 RIP 대응)
   outlineFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:outlineFonts', pdfPath, opts || {}),
+
+  // 💼 작업 파일(.pdfw) 더블클릭 연결 — HKCU만 사용(관리자 권한 불필요)
+  workAssocStatus:     () => ipcRenderer.invoke('work:assocStatus'),
+  workAssocRegister:   () => ipcRenderer.invoke('work:assocRegister'),
+  workAssocUnregister: () => ipcRenderer.invoke('work:assocUnregister'),
 
   // 가상 프린터 'PDF Editor' 설치 (UAC 승격) — 어떤 앱에서든 인쇄로 문서 전달
   setupPrinter: () => ipcRenderer.invoke('printer:setup'),

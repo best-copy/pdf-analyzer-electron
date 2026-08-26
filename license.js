@@ -176,7 +176,8 @@ function evaluate() {
   return {
     mode: 'licensed', canSave: true, expiresAt: p.exp, key: p.key, daysLeft,
     recheckDue: !!(p.next && now > p.next),
-    label: `체험판 · ${daysLeft}일 남음`,
+    offline: !!p.off,   // 오프라인 코드로 등록 → 서버 재확인 없음(위 next 검사도 통과)
+    label: `체험판${p.off ? '(오프라인)' : ''} · ${daysLeft}일 남음`,
   };
 }
 function status() {
@@ -317,6 +318,107 @@ function revokeKey(key) {
   return { ok: true, note: `취소했습니다. 이미 활성화된 PC는 다음 서버 재확인(최대 ${RECHECK_DAYS + GRACE_DAYS}일 이내) 때 잠깁니다.` };
 }
 
+// ── 활성화 기록(1회용 소진) ─────────────────────────────────────────────────
+// 온라인 서버(/lic/activate)와 오프라인 코드 발급이 **공유하는 단일 판정**이다.
+// 한쪽에만 조건을 추가하면 "서버로는 막히는데 오프라인으로는 뚫리는" 구멍이 생긴다.
+function activateRecord({ key, hwid: hw, host, ver, offline }) {
+  const k = String(key || '').trim().toUpperCase();
+  const h = String(hw || '').trim();
+  if (!/^PDFE(-[A-Z0-9]{4}){3}$/.test(k) || !/^[0-9a-f]{24}$/.test(h)) {
+    return { code: 400, error: '키 또는 기기 정보가 올바르지 않습니다.', fail: true };
+  }
+  const admin = adminData();
+  if (!admin) return { code: 500, error: '서버에 발급 권한이 없습니다.' };
+
+  const db = loadKeys();
+  const row = db.keys.find(x => x.key === k);
+  if (!row) return { code: 404, error: '등록되지 않은 키입니다.', fail: true, log: `거부: 없는 키 ${k}` };
+  if (row.status === 'revoked') {
+    return { code: 403, error: '취소된 키입니다.', revoked: true, log: `거부: 취소된 키 ${k}` };
+  }
+  // 이미 활성화된 키: 같은 PC면 재발급(재설치 대비), 다른 PC면 거부 = 1회용의 핵심
+  if (row.status === 'activated' && row.hwid && row.hwid !== h) {
+    return { code: 409, error: '이미 다른 PC에서 사용된 키입니다. 새 키를 요청하세요.', fail: true,
+             log: `거부: 이미 사용된 키 ${k} — 다른 PC` };
+  }
+
+  const now = Date.now();
+  let logLine;
+  // 만료일은 '최초 활성화 시각 + 발급 일수'로 한 번만 확정한다. 재설치로 기간이 늘어나면 안 된다.
+  if (row.status !== 'activated') {
+    row.status = 'activated';
+    row.hwid = h;
+    row.activatedAt = now;
+    row.expiresAt = now + row.days * DAY;
+    row.host = String(host || '').slice(0, 60);
+    row.ver = String(ver || '').slice(0, 20);
+    if (offline) row.offline = true;
+    logLine = `${offline ? '오프라인 ' : ''}활성화: ${k} · ${row.days}일 · ${row.host || ''}`;
+  } else {
+    logLine = `${offline ? '오프라인 ' : ''}재발급: ${k} · 같은 PC`;
+  }
+  row.lastSeen = now;
+  saveKeys(db);
+
+  const payload = { v: 1, key: k, hwid: h, iat: now, exp: row.expiresAt, note: row.note || '' };
+  // 오프라인 토큰은 서버를 부를 수 없다 → next를 넣지 않아 재확인을 아예 건너뛴다.
+  // 대가로 원격 취소가 닿지 않으므로 오프라인 발급은 기간을 짧게 주는 것이 안전하다.
+  if (offline) payload.off = 1;
+  else payload.next = now + RECHECK_DAYS * DAY;
+
+  return { code: 200, token: signToken(payload, admin.priv), row, log: logLine };
+}
+
+// ── 오프라인 활성화 (서버·포트포워딩 없이 코드 두 번 왕복) ──────────────────
+//   테스터 앱: 키 입력 → '요청 코드' 생성(키 + 기기지문)
+//   관리자 앱: 요청 코드 붙여넣기 → keys.json에 소진 기록 + 서명된 '활성화 코드'
+//   테스터 앱: 활성화 코드 붙여넣기 → 검증 후 저장
+// 1회용 보장은 서버가 아니라 keys.json 기록이 하던 일이므로 그대로 유지된다.
+const REQ_PREFIX = 'PDFEQ1.';
+function reqCrc(raw) { return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 4).toUpperCase(); }
+
+function offlineRequest(key) {
+  const k = String(key || '').trim().toUpperCase();
+  if (!/^PDFE(-[A-Z0-9]{4}){3}$/.test(k)) {
+    return { ok: false, error: '키 형식이 올바르지 않습니다. (예: PDFE-A1B2-C3D4-E5F6)' };
+  }
+  const body = { k, h: hwid(), n: String(os.hostname() || '').slice(0, 40), v: String((_deps && _deps.appVersion) || '') };
+  const raw = b64u(Buffer.from(JSON.stringify(body), 'utf8'));
+  return { ok: true, code: REQ_PREFIX + raw + '.' + reqCrc(raw), hwid: body.h, key: k };
+}
+function parseRequest(code) {
+  const s = String(code || '').replace(/\s+/g, '');
+  if (!s.startsWith(REQ_PREFIX)) return null;
+  const [raw, crc] = s.slice(REQ_PREFIX.length).split('.');
+  if (!raw || !crc || reqCrc(raw) !== crc.toUpperCase()) return null;   // 잘려서 붙여넣은 코드를 잡는다
+  try {
+    const j = JSON.parse(unb64u(raw).toString('utf8'));
+    return (j && j.k && j.h) ? j : null;
+  } catch (e) { return null; }
+}
+// 관리자 PC: 요청 코드 → 활성화 코드(서명 토큰)
+function offlineIssue(code) {
+  if (!isAdminPC()) return { ok: false, error: '이 PC에는 발급 권한(개인키)이 없습니다.' };
+  const q = parseRequest(code);
+  if (!q) return { ok: false, error: '요청 코드를 읽을 수 없습니다 — 코드 전체를 빠짐없이 복사해 붙여넣으세요.' };
+  const r = activateRecord({ key: q.k, hwid: q.h, host: q.n, ver: q.v, offline: true });
+  if (r.code !== 200) return { ok: false, error: r.error };
+  return { ok: true, token: r.token, key: q.k, host: q.n || '', days: r.row.days,
+           expiresAt: r.row.expiresAt, note: r.row.note || '' };
+}
+// 테스터 PC: 활성화 코드 등록
+function offlineActivate(token) {
+  const t = String(token || '').replace(/\s+/g, '');
+  const p = verifyToken(t);
+  if (!p) return { ok: false, error: '활성화 코드가 올바르지 않습니다 — 코드 전체를 빠짐없이 복사해 붙여넣으세요.' };
+  if (p.hwid !== hwid()) return { ok: false, error: '이 활성화 코드는 다른 PC용입니다 — 이 PC에서 만든 요청 코드로 다시 받으세요.' };
+  if (Date.now() > p.exp) return { ok: false, error: '이미 만료된 활성화 코드입니다.' };
+  saveToken(t);
+  writeMark(Date.now());
+  refresh();
+  return { ok: true, status: status() };
+}
+
 function init(deps) {
   _deps = deps;
   _state = null;
@@ -325,6 +427,7 @@ function init(deps) {
 
 module.exports = {
   init, status, refresh, canSave, hwid, activate, recheckIfDue,
+  activateRecord, offlineRequest, offlineIssue, offlineActivate,
   isAdminPC, adminDir, adminPath, keysPath, adminData,
   issueKey, listKeys, revokeKey, loadKeys, saveKeys,
   signToken, verifyToken, savedServer, saveServer,

@@ -747,6 +747,13 @@
     async function openExternalItems(items) {
       try {
         hideError(); hideSuccess();
+        // 💼 작업 파일은 변환 파이프라인을 타지 않는다 — 안에 든 PDF와 상태를 직접 복원한다
+        const work = items.filter(r => /\.pdfw$/i.test(r.name || r.path || ''));
+        if (work.length) {
+          for (const w of work) await openWorkFilePath(w.path);
+          items = items.filter(r => !/\.pdfw$/i.test(r.name || r.path || ''));
+          if (!items.length) return;
+        }
         const needConvert = items.some(r => CONVERT_RE.test(r.name));
         if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
         const fakeFiles = await prepareFiles(items);

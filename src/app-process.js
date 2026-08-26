@@ -6454,3 +6454,582 @@
       return n;
     }
 
+
+    // ── 📖 E-book 시안 (고객 확인용 단일 HTML) ─────────────────────────────────
+    // 아래 <EBOOK-CORE> 구간은 **순수 함수·상수만** 둔다(DOM·앱 전역 참조 금지).
+    // scripts/build-ebook-standalone.js가 이 구간을 그대로 떼어 독립 HTML 도구로 굽는다.
+    // 여기에 앱 전역을 참조하는 코드를 넣으면 독립 도구가 조용히 깨진다.
+    // <EBOOK-CORE>
+
+    // 스프레드(펼침면) 구성 — 0-based 페이지 인덱스, null은 빈 면.
+    // coverSingle: 표지를 단독으로 세워 실제 책과 짝을 맞춘다.
+    // bind='right'(우철)면 펼침면 안의 좌우를 뒤집는다.
+    function ebookSpreads(n, coverSingle, bind) {
+      const out = [];
+      if (n <= 0) return out;
+      let i = 0;
+      if (coverSingle) { out.push([null, 0]); i = 1; }
+      for (; i < n; i += 2) out.push([i, i + 1 < n ? i + 1 : null]);
+      return bind === 'right' ? out.map(s => [s[1], s[0]]) : out;
+    }
+
+    const EBOOK_CSS = `
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Malgun Gothic","맑은 고딕",sans-serif;overflow:hidden}
+.bar{position:fixed;top:0;left:0;right:0;height:52px;background:#000;display:flex;align-items:center;gap:12px;padding:0 16px;z-index:20;border-bottom:1px solid #333}
+.bar .t{font-weight:700;font-size:0.95em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:30vw}
+.bar .spec{font-size:0.78em;color:#9a9a9e;white-space:nowrap}
+.bar .sp{flex:1}
+.b{border:none;border-radius:7px;padding:7px 12px;font-size:0.8em;font-weight:700;cursor:pointer;background:#2c2c2e;color:#f5f5f7;white-space:nowrap}
+.b:hover{background:#3a3a3c}
+.b.on{background:#ffd60a;color:#1d1d1f}
+.stage{position:fixed;top:52px;bottom:56px;left:0;right:0;display:flex;align-items:center;justify-content:center;padding:18px;overflow:auto}
+.spread{display:flex;gap:2px;align-items:flex-start;transition:opacity .18s}
+.spread.turn{opacity:.2}
+.pg{position:relative;background:#fff;box-shadow:0 10px 34px rgba(0,0,0,.55);flex:none}
+.pg.blank{background:#26262a;box-shadow:none}
+.pg img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+.pg .no{position:absolute;bottom:-22px;left:0;right:0;text-align:center;font-size:0.72em;color:#8e8e93}
+.trim{position:absolute;border:1px dashed rgba(255,70,70,.9);pointer-events:none}
+.wm{position:absolute;inset:0;pointer-events:none;background-repeat:repeat;opacity:.15}
+.nav{position:fixed;top:52px;bottom:56px;width:15%;cursor:pointer;z-index:10;opacity:0;transition:opacity .15s;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff}
+.nav:hover{opacity:.8;background:linear-gradient(90deg,rgba(0,0,0,.45),transparent)}
+.nav.r{right:0}
+.nav.r:hover{background:linear-gradient(270deg,rgba(0,0,0,.45),transparent)}
+.foot{position:fixed;bottom:0;left:0;right:0;height:56px;background:#000;border-top:1px solid #333;display:flex;align-items:center;gap:12px;padding:0 16px;z-index:20}
+.foot input[type=range]{flex:1;accent-color:#ffd60a}
+.foot .n{font-size:0.8em;color:#c7c7cc;min-width:104px;text-align:center}
+.note{font-size:0.72em;color:#8e8e93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
+.zoomv{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:40;display:none;align-items:center;justify-content:center;overflow:auto;cursor:zoom-out}
+@media print{body{background:#fff}.bar,.foot,.nav{display:none}}
+`;
+
+    // 뷰어 스크립트 — 이 문자열은 템플릿 리터럴 안으로 들어가지 않지만,
+    // 편집 사고를 막기 위해 백틱과 달러중괄호를 쓰지 않는다.
+    const EBOOK_JS = [
+      '(function(){',
+      'var D=window.__PROOF__, S=D.spreads, V="book", i=0, real=false;',
+      'var stage=document.getElementById("stage"), rng=document.getElementById("rng"), lbl=document.getElementById("lbl");',
+      'var MM=Number(localStorage.getItem("proofMM")||0)||3.7795;',
+      'function imgs(){return V==="book"?D.book:D.sheets;}',
+      'function views(){return V==="book"?S:D.sheets.map(function(_,k){return [k,null];});}',
+      'function fit(sp){',
+      '  var list=imgs(), w=0, h=0;',
+      '  sp.forEach(function(p){ var im=(p==null)?null:list[p]; if(!im)return; w+=im.w; h=Math.max(h,im.h); });',
+      '  if(!w)return 1;',
+      '  return Math.min((stage.clientWidth-40)/w,(stage.clientHeight-46)/h);',
+      '}',
+      'function render(){',
+      '  var L=views(); if(i<0)i=0; if(i>=L.length)i=L.length-1;',
+      '  var sp=L[i]||[], list=imgs(), sc=fit(sp);',
+      '  var d=document.createElement("div"); d.className="spread";',
+      '  sp.forEach(function(p){',
+      '    var im=(p==null)?null:list[p];',
+      '    var box=document.createElement("div"); box.className="pg"+(im?"":" blank");',
+      '    var refW=im?im.w:(list[0]?list[0].w:600), refH=im?im.h:(list[0]?list[0].h:800);',
+      '    var W,H;',
+      '    if(real&&D.meta.mm){ W=D.meta.mm[0]*MM; H=D.meta.mm[1]*MM; }',
+      '    else { W=refW*sc; H=refH*sc; }',
+      '    box.style.width=W+"px"; box.style.height=H+"px";',
+      '    if(im){ var g=new Image(); g.src=im.u; box.appendChild(g); }',
+      '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
+      '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
+      '      t.style.left=(W*q)+"px"; t.style.top=(H*q)+"px"; t.style.width=(W*(1-2*q))+"px"; t.style.height=(H*(1-2*q))+"px";',
+      '      box.appendChild(t); }',
+      '    if(im){ var no=document.createElement("div"); no.className="no";',
+      '      no.textContent=(V==="book")?((p+1)+" 쪽"):((p+1)+" 번째 시트");',
+      '      box.appendChild(no); box.style.cursor="zoom-in"; box.onclick=function(){ zoom(im); }; }',
+      '    d.appendChild(box);',
+      '  });',
+      '  stage.innerHTML=""; stage.appendChild(d);',
+      '  rng.max=String(Math.max(0,L.length-1)); rng.value=String(i);',
+      '  lbl.textContent=(i+1)+" / "+L.length+((V==="book")?" 펼침":" 시트");',
+      '}',
+      'function go(d){ var L=views(), n=i+d; if(n<0||n>=L.length)return;',
+      '  var el=stage.firstChild; if(el)el.classList.add("turn");',
+      '  setTimeout(function(){ i=n; render(); },110); }',
+      'function zoom(im){ var z=document.getElementById("zoomv"), g=new Image();',
+      '  g.src=im.u; g.style.width=Math.min(im.w*2,4000)+"px";',
+      '  z.innerHTML=""; z.appendChild(g); z.style.display="flex"; }',
+      'document.getElementById("zoomv").onclick=function(){ this.style.display="none"; };',
+      'document.getElementById("prev").onclick=function(){ go(-1); };',
+      'document.getElementById("next").onclick=function(){ go(1); };',
+      'rng.oninput=function(){ i=+this.value; render(); };',
+      'document.onkeydown=function(e){',
+      '  if(e.key==="ArrowLeft")go(D.meta.bind==="right"?1:-1);',
+      '  else if(e.key==="ArrowRight")go(D.meta.bind==="right"?-1:1);',
+      '  else if(e.key==="Escape")document.getElementById("zoomv").style.display="none"; };',
+      'var tx=0;',
+      'stage.addEventListener("touchstart",function(e){tx=e.touches[0].clientX;});',
+      'stage.addEventListener("touchend",function(e){var dx=e.changedTouches[0].clientX-tx; if(Math.abs(dx)>50)go(dx<0?1:-1);});',
+      'window.addEventListener("resize",render);',
+      'var tbk=document.getElementById("tabBook"), tsh=document.getElementById("tabSheet");',
+      'if(tsh) tsh.onclick=function(){ if(V==="sheet")return; V="sheet"; i=0;',
+      '  tsh.classList.add("on"); tbk.classList.remove("on"); render(); };',
+      'if(tbk) tbk.onclick=function(){ if(V==="book")return; V="book"; i=0;',
+      '  tbk.classList.add("on"); if(tsh)tsh.classList.remove("on"); render(); };',
+      'var rb=document.getElementById("realBtn"), cal=document.getElementById("calib");',
+      'if(rb) rb.onclick=function(){ real=!real; rb.classList.toggle("on",real);',
+      '  cal.style.display=real?"":"none"; render(); };',
+      'if(cal){ cal.value=String(MM); cal.oninput=function(){ MM=+this.value;',
+      '  try{localStorage.setItem("proofMM",String(MM));}catch(e){} if(real)render(); }; }',
+      'render();',
+      '})();'
+    ].join('\n');
+
+    // 워터마크(반복 대각선 글자)를 SVG data URI로 — 외부 리소스 없이 자체 완결
+    function ebookWatermarkUri(text) {
+      const t = String(text || '시안').replace(/[<>&"']/g, '');
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160">'
+        + '<text x="120" y="92" font-size="30" font-family="sans-serif" fill="#000"'
+        + ' text-anchor="middle" transform="rotate(-24 120 92)">' + t + '</text></svg>';
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    }
+
+    // 시안 HTML 조립 — 이미지까지 전부 인라인된 단일 파일을 문자열로 돌려준다.
+    //   data = { title, meta:{ mm:[w,h], spec, date, by, bind }, book:[{u,w,h}],
+    //            sheets:[{u,w,h}], opts:{ watermark, wmText, trimPct, coverSingle } }
+    function buildEbookProofHtml(data) {
+      const esc = s => String(s == null ? '' : s)
+        .replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const book = data.book || [];
+      const sheets = data.sheets || [];
+      const meta = data.meta || {};
+      const opts = data.opts || {};
+      const payload = {
+        book, sheets,
+        spreads: ebookSpreads(book.length, opts.coverSingle !== false, meta.bind),
+        meta: { mm: meta.mm || null, bind: meta.bind || 'left' },
+        opts: { wm: opts.watermark ? ebookWatermarkUri(opts.wmText) : '', trimPct: +opts.trimPct || 0 },
+      };
+      const hasSheets = sheets.length > 0;
+      // 닫는 스크립트 태그가 문자열 안에 있으면 브라우저가 거기서 스크립트를 끊는다 → 반드시 이스케이프
+      // (이 주석에도 그 태그를 그대로 쓰면 안 된다 — 독립 도구로 구울 때 같은 사고가 난다)
+      const json = JSON.stringify(payload).replace(/<\//g, '<\\/');
+      return '<!DOCTYPE html>\n<html lang="ko"><head><meta charset="UTF-8">'
+        + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        + '<title>' + esc(data.title || '출력 시안') + '</title><style>' + EBOOK_CSS + '</style></head><body>'
+        + '<div class="bar">'
+        +   '<span class="t">' + esc(data.title || '출력 시안') + '</span>'
+        +   '<span class="spec">' + esc(meta.spec || '') + '</span>'
+        +   '<span class="sp"></span>'
+        +   '<button class="b on" id="tabBook">책 넘김</button>'
+        +   (hasSheets ? '<button class="b" id="tabSheet">인쇄 대수</button>' : '')
+        +   '<button class="b" id="realBtn" title="모니터에서 실제 인쇄 크기로 봅니다">실제 크기</button>'
+        +   '<input type="range" id="calib" min="2.5" max="6" step="0.02"'
+        +   ' style="display:none;width:110px" title="자로 잰 길이와 맞도록 조절하세요">'
+        + '</div>'
+        + '<div class="nav" id="prev">‹</div><div class="nav r" id="next">›</div>'
+        + '<div class="stage" id="stage"></div>'
+        + '<div class="foot">'
+        +   '<span class="n" id="lbl"></span>'
+        +   '<input type="range" id="rng" min="0" value="0">'
+        +   '<span class="note">' + esc(meta.date || '') + (meta.by ? ' · ' + esc(meta.by) : '')
+        +   ' · 화면 색상은 참고용이며 실제 인쇄색과 다를 수 있습니다</span>'
+        + '</div>'
+        + '<div class="zoomv" id="zoomv"></div>'
+        + '<scr' + 'ipt>window.__PROOF__=' + json + ';</scr' + 'ipt>'
+        + '<scr' + 'ipt>' + EBOOK_JS + '</scr' + 'ipt>'
+        + '</body></html>';
+    }
+    // </EBOOK-CORE>
+
+    // ── E-book 시안 생성 (앱 연결부) ───────────────────────────────────────────
+    // 위 코어는 순수 함수, 여기부터는 앱 상태·DOM·pdf.js를 쓰는 연결부다.
+    let _ebOpts = { dpi: 150, wm: true, sheets: true, bind: 'left', trim: true };
+
+    function setEbDpi(v) {
+      _ebOpts.dpi = v;
+      document.querySelectorAll('[data-ebdpi]').forEach(b =>
+        b.classList.toggle('active', +b.dataset.ebdpi === v));
+      updateEbNote();
+    }
+    function setEbBind(v) {
+      _ebOpts.bind = v;
+      document.querySelectorAll('[data-ebbind]').forEach(b =>
+        b.classList.toggle('active', b.dataset.ebbind === v));
+    }
+    // 예상 용량 — 실측 계수(A4 기준 페이지당 대략 dpi²에 비례)로 어림한다. 과장 없이 보수적으로.
+    function updateEbNote() {
+      const el = document.getElementById('ebNote');
+      if (!el) return;
+      const n = (typeof pageResults !== 'undefined' ? pageResults : []).filter(Boolean).length;
+      if (!n) { el.textContent = '문서를 열면 예상 용량이 표시됩니다.'; return; }
+      const perPageKb = Math.round(120 * Math.pow(_ebOpts.dpi / 150, 2));
+      const mb = (n * perPageKb) / 1024;
+      el.textContent = `${n}쪽 · 예상 용량 약 ${mb < 1 ? Math.round(mb * 1024) + 'KB' : mb.toFixed(1) + 'MB'}`
+        + (mb > 20 ? ' — 메일 첨부 한도를 넘을 수 있습니다(화질을 낮추세요)' : '');
+    }
+
+    // PDF 바이트 → 페이지별 JPEG data URI 배열
+    async function ebookRenderPages(bytes, dpi, onProgress) {
+      const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      const out = [];
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
+      try {
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const vp = page.getViewport({ scale: dpi / 72 });
+          canvas.width = Math.max(1, Math.round(vp.width));
+          canvas.height = Math.max(1, Math.round(vp.height));
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          out.push({ u: canvas.toDataURL('image/jpeg', 0.82), w: canvas.width, h: canvas.height });
+          page.cleanup();
+          if (onProgress) onProgress(Math.round(i / pdf.numPages * 100));
+          await uiYield(60);   // 수십 쪽에서도 화면이 멈추지 않게
+        }
+        // 첫 페이지 실제 치수(mm) — 시안의 '실제 크기' 보기와 사양 표기에 쓴다
+        const p1 = await pdf.getPage(1);
+        const v1 = p1.getViewport({ scale: 1 });
+        const mm = [Math.round(v1.width * 25.4 / 72), Math.round(v1.height * 25.4 / 72)];
+        p1.cleanup();
+        return { pages: out, mm };
+      } finally {
+        try { await pdf.destroy(); } catch (e) {}
+        canvas.width = canvas.height = 0;
+      }
+    }
+
+    async function generateEbookProof() {
+      if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요.'); return; }
+      const btn = document.getElementById('ebGenBtn');
+      if (btn) btn.disabled = true;
+      showLoading('📖 E-book 시안 만드는 중…');
+      try {
+        // 책 넘김용 = 임포징 직전 최종 결과(다운로드본과 동일 경로) — 고객이 받을 완성물 그대로
+        updateProgress(5);
+        let bookBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.25)));
+        bookBytes = await applyBleedStage(bookBytes);
+        updateProgress(28);
+
+        const dpi = _ebOpts.dpi;
+        const book = await ebookRenderPages(bookBytes, dpi, p => updateProgress(28 + Math.round(p * 0.42)));
+
+        // 인쇄 대수(임포징 시트) — 임포징이 설정돼 있을 때만
+        let sheets = { pages: [] };
+        const wantSheets = _ebOpts.sheets && _impEnabled;
+        if (wantSheets) {
+          const sheetBytes = await buildImposedBytes(bookBytes, p => updateProgress(70 + Math.round(p * 0.08)));
+          sheets = await ebookRenderPages(sheetBytes, Math.min(dpi, 120),
+            p => updateProgress(78 + Math.round(p * 0.16)));
+        }
+        updateProgress(95);
+
+        // 블리드가 있으면 재단선 위치(트림)를 비율로 넘긴다 — 시안에 '여기까지 잘림' 안내선
+        const bleedMm = _bleedEnabled ? (+_bleedOpts().mm || 0) : 0;
+        const trimPct = (_ebOpts.trim && bleedMm > 0 && book.mm[0]) ? (bleedMm / book.mm[0]) : 0;
+
+        const rawName = (activeTabId && tabs.has(activeTabId) && tabs.get(activeTabId).fileName)
+                        || originalFileName || '문서';
+        const base = rawName.replace(/\.[^.]+$/, '');
+        const specBits = [`${book.mm[0]}×${book.mm[1]}mm`, `${book.pages.length}쪽`];
+        if (wantSheets) specBits.push(`인쇄 ${sheets.pages.length}시트`);
+        if (bleedMm > 0) specBits.push(`블리드 ${bleedMm}mm`);
+
+        const html = buildEbookProofHtml({
+          title: base + ' 출력 시안',
+          meta: {
+            mm: book.mm, bind: _ebOpts.bind, spec: specBits.join(' · '),
+            date: new Date().toLocaleDateString('ko-KR'), by: '일청기획',
+          },
+          book: book.pages,
+          sheets: sheets.pages,
+          opts: { watermark: _ebOpts.wm, wmText: '시안', trimPct, coverSingle: true },
+        });
+
+        updateProgress(100);
+        hideLoading();
+        const buf = new TextEncoder().encode(html);
+        const saved = await window.electronAPI.saveFile({
+          defaultName: `${base}_시안.html`, buffer: buf, kind: 'html',
+        });
+        if (!saved) return;
+        const mb = (buf.length / 1048576).toFixed(1);
+        showSuccess(`📖 E-book 시안 생성 완료 — ${book.pages.length}쪽`
+          + (wantSheets ? ` + 인쇄 대수 ${sheets.pages.length}시트` : '')
+          + ` · ${mb}MB\n`
+          + `파일 하나로 끝나므로 그대로 메일·카톡에 첨부하면 됩니다 — 고객은 더블클릭만 하면 브라우저에서 열립니다.\n`
+          + `→ 넘기기: 화면 좌우 클릭 또는 ←/→ 키 · 페이지 클릭하면 확대 · [실제 크기]로 인쇄 크기 확인`);
+      } catch (e) {
+        hideLoading();
+        showError('시안 생성 실패: ' + (e && e.message ? e.message : e));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    // ── 💼 작업 파일(.pdfw) — 상황 그대로 저장하고 그대로 다시 여는 컨테이너 ──
+    // 아래 <WORKFILE-CORE> 구간은 **순수 함수만** 둔다(DOM·앱 전역 참조 금지) — 노드에서 단독 검증한다.
+    //
+    // 파일 배치
+    //   'PDFEDITWORK1\n'  14바이트 매직
+    //   u32LE             매니페스트(JSON, utf8) 길이
+    //   JSON              { v, savedAt, doc, state, entries:[{ k, name, len }] }
+    //   블롭들            entries 순서대로 이어붙임 (원본 PDF·내부편집 결과 등)
+    // ZIP을 쓰지 않는 이유: PDF는 이미 압축돼 있어 이득이 없고, 의존성 없이 한 파일로 끝나는 편이
+    // 깨졌을 때 진단하기도 쉽다(앞 14바이트만 보면 우리 파일인지 안다).
+    // <WORKFILE-CORE>
+    const WORK_MAGIC = 'PDFEDITWORK1\n';
+
+    function packWorkFile(manifest, blobs) {
+      const enc = new TextEncoder();
+      const list = (blobs || []).map(b => (b instanceof Uint8Array ? b : new Uint8Array(b)));
+      const man = Object.assign({}, manifest);
+      man.entries = (man.entries || []).map((e, i) => Object.assign({}, e, { len: list[i] ? list[i].length : 0 }));
+      if (man.entries.length !== list.length) throw new Error('entries와 blobs 개수가 다릅니다.');
+      const magic = enc.encode(WORK_MAGIC);
+      const json = enc.encode(JSON.stringify(man));
+      let total = magic.length + 4 + json.length;
+      list.forEach(b => { total += b.length; });
+      const out = new Uint8Array(total);
+      let p = 0;
+      out.set(magic, p); p += magic.length;
+      new DataView(out.buffer).setUint32(p, json.length, true); p += 4;
+      out.set(json, p); p += json.length;
+      list.forEach(b => { out.set(b, p); p += b.length; });
+      return out;
+    }
+
+    function unpackWorkFile(bytes) {
+      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      const dec = new TextDecoder();
+      const magic = WORK_MAGIC;
+      if (u8.length < magic.length + 4 || dec.decode(u8.slice(0, magic.length)) !== magic) {
+        throw new Error('이 앱의 작업 파일(.pdfw)이 아닙니다.');
+      }
+      let p = magic.length;
+      const jsonLen = new DataView(u8.buffer, u8.byteOffset).getUint32(p, true); p += 4;
+      if (jsonLen <= 0 || p + jsonLen > u8.length) throw new Error('작업 파일이 손상되었습니다(정보 영역).');
+      let man;
+      try { man = JSON.parse(dec.decode(u8.slice(p, p + jsonLen))); }
+      catch (e) { throw new Error('작업 파일이 손상되었습니다(정보 해석 실패).'); }
+      p += jsonLen;
+      const blobs = [];
+      for (const e of (man.entries || [])) {
+        const len = +e.len || 0;
+        if (p + len > u8.length) throw new Error('작업 파일이 손상되었습니다(내용이 잘렸습니다).');
+        blobs.push(u8.slice(p, p + len));
+        p += len;
+      }
+      return { manifest: man, blobs };
+    }
+
+    // 저장 시각·구성 요약 — 열기 전에 무엇이 들었는지 사람에게 보여주기 위한 한 줄
+    function describeWorkFile(man) {
+      if (!man) return '';
+      const d = man.doc || {};
+      const bits = [d.name || '문서'];
+      if (d.pages) bits.push(d.pages + '쪽');
+      const edits = (man.entries || []).filter(e => e.k === 'edit').length;
+      if (edits) bits.push('내부편집 ' + edits + '쪽');
+      if (man.savedAt) bits.push(new Date(man.savedAt).toLocaleString('ko-KR'));
+      return bits.join(' · ');
+    }
+    // </WORKFILE-CORE>
+
+    // ── 작업 파일 저장/열기 (앱 연결부) ────────────────────────────────────────
+    // 저장 = 원본 PDF + 설정(편집·처리·임포징·블리드·표지) + 문서 상태(순서·회전·빈페이지·
+    //        흑백확정·선택·개별보정) + 내부편집 결과 + 견적 항목을 한 파일에.
+    // 열기 = 그 PDF를 평소 경로대로 분석한 뒤 위 상태를 그대로 되씌운다.
+    function workFileBaseName() {
+      const raw = (activeTabId && tabs.has(activeTabId) && tabs.get(activeTabId).fileName)
+                  || originalFileName || '문서';
+      return raw.replace(/\.[^.]+$/, '');
+    }
+
+    // 파일 쓰기와 분리 — 저장 다이얼로그 없이 바이트만 만들 수 있어야 검증이 가능하다.
+    function buildWorkFileBytes() {
+        const entries = [], blobs = [];
+        entries.push({ k: 'pdf', name: workFileBaseName() + '.pdf' });
+        blobs.push(new Uint8Array(originalPdfBytes));
+
+        // 페이지 내부편집 결과(편집된 단일페이지 PDF)도 함께 — 이게 빠지면 열었을 때 편집이 사라진다
+        const edits = [];
+        if (typeof contentEdits !== 'undefined' && contentEdits && contentEdits.size) {
+          contentEdits.forEach((v, oi) => {
+            if (!v || !v.bytes) return;
+            edits.push({ oi, model: v.model || [], rev: v.rev || 0 });
+            entries.push({ k: 'edit', name: 'edit_' + oi });
+            blobs.push(new Uint8Array(v.bytes));
+          });
+        }
+
+        const manifest = {
+          v: 1,
+          savedAt: Date.now(),
+          doc: {
+            name: workFileBaseName(),
+            file: (activeTabId && tabs.has(activeTabId) && tabs.get(activeTabId).fileName) || '',
+            pages: pageResults.filter(Boolean).length,
+            size: originalPdfBytes.byteLength,
+          },
+          state: {
+            // 설정은 프로파일·최근작업과 같은 스냅샷을 쓴다(한 곳만 고치면 셋 다 따라오게)
+            data: JSON.parse(JSON.stringify(
+              Object.assign(presetFromSettings(activeLayoutSettings()), captureExtraPreset()))),
+            // editSettings 통째 — 챕터별 설정(byChapter)·적용범위(scope)·개별보정까지 그대로
+            editSettings: editSettings ? JSON.parse(JSON.stringify(editSettings)) : null,
+            docState: captureDocState(),
+            quote: (typeof quoteItems !== 'undefined' && quoteItems) ? JSON.parse(JSON.stringify(quoteItems)) : [],
+            edits,
+          },
+          entries,
+        };
+
+        return { bytes: packWorkFile(manifest, blobs), manifest, edits: edits.length };
+    }
+
+    async function saveWorkFile() {
+      if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요 — 저장할 작업이 없습니다.'); return; }
+      try {
+        const { bytes, manifest, edits } = buildWorkFileBytes();
+        const saved = await window.electronAPI.saveFile({
+          defaultName: workFileBaseName() + '.pdfw', buffer: bytes, kind: 'pdfw',
+        });
+        if (!saved) return;
+        const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
+        showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(bytes.length / 1048576).toFixed(1)}MB`
+          + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
+          + `\n이 파일을 더블클릭하면 지금 이 상태 그대로 다시 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
+          + (others ? `\n※ 다른 탭 ${others}개는 담기지 않습니다 — 탭마다 따로 저장하세요.` : ''));
+      } catch (e) {
+        showError('작업 저장 실패: ' + (e && e.message ? e.message : e));
+      }
+    }
+
+    // 작업 파일로 여는 중 표시 — 분석 완료 후 뜨는 '지난 작업 기록' 안내를 억제한다
+    let _openingWorkFile = false;
+    // 작업 파일 열기 — 바이트를 받아 새 탭으로 분석한 뒤 상태를 되씌운다.
+    async function openWorkFileBytes(bytes, srcLabel) {
+      let un;
+      try { un = unpackWorkFile(bytes); }
+      catch (e) { showError((e && e.message) || '작업 파일을 읽을 수 없습니다.'); return false; }
+      const { manifest, blobs } = un;
+      const pdfAt = (manifest.entries || []).findIndex(e => e.k === 'pdf');
+      if (pdfAt < 0 || !blobs[pdfAt]) { showError('작업 파일 안에 원본 PDF가 없습니다.'); return false; }
+
+      hideError(); hideSuccess();
+      showLoading('💼 작업 파일을 여는 중…');
+      _openingWorkFile = true;
+      try {
+        const pdfBytes = blobs[pdfAt];
+        const fake = {
+          name: (manifest.doc && manifest.doc.file) || ((manifest.doc && manifest.doc.name) || '문서') + '.pdf',
+          size: pdfBytes.length, type: 'application/pdf',
+          arrayBuffer: () => Promise.resolve(pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.length)),
+        };
+        // 반드시 새 탭으로 — startLoad를 쓰면 열려 있는 문서에 '챕터'로 합쳐져 버린다
+        const tab = createTab(fake);
+        activateTab(tab.id);
+        await analyzePDF(fake, tab);
+        if (!isTabReady(tab)) { hideLoading(); showError('작업 파일의 PDF를 분석하지 못했습니다.'); return false; }
+
+        const st = manifest.state || {};
+        // 1) 설정(편집·처리·임포징·블리드·표지) — 프로파일 적용과 같은 경로
+        if (st.data) applyPresetData(JSON.parse(JSON.stringify(st.data)));
+        // 2) editSettings 통째 되씌우기 — 챕터별 설정·적용범위·개별보정까지 복원
+        if (st.editSettings && editSettings) {
+          Object.keys(editSettings).forEach(k => { delete editSettings[k]; });
+          Object.assign(editSettings, JSON.parse(JSON.stringify(st.editSettings)));
+          tab.editSettings = editSettings;
+        }
+        // 3) 내부편집 결과 복원 (썸네일·캐시는 아래 refresh에서 다시 만들어진다)
+        let editN = 0;
+        if (st.edits && st.edits.length) {
+          const editBlobs = [];
+          (manifest.entries || []).forEach((e, i) => { if (e.k === 'edit') editBlobs.push(blobs[i]); });
+          st.edits.forEach((e, i) => {
+            if (!editBlobs[i]) return;
+            contentEdits.set(e.oi, { model: e.model || [], bytes: editBlobs[i], rev: e.rev || 0 });
+            editN++;
+          });
+          tab.contentEdits = contentEdits;
+        }
+        // 4) 문서 상태(순서·회전·빈페이지·흑백확정·선택·개별보정)
+        const full = st.docState ? restoreDocState(st.docState) : false;
+        // 5) 견적 항목
+        if (st.quote && typeof quoteItems !== 'undefined') {
+          quoteItems.length = 0;
+          st.quote.forEach(q => quoteItems.push(q));
+        }
+        if (typeof syncEditUI === 'function') syncEditUI();
+        if (typeof clearProcessCaches === 'function') clearProcessCaches();
+        if (typeof rerenderPages === 'function') rerenderPages();
+        if (typeof syncSidebarPanel === 'function') syncSidebarPanel();
+        if (typeof scheduleLivePreview === 'function') scheduleLivePreview();
+
+        hideLoading();
+        showSuccess(`💼 작업을 이어서 엽니다 — ${describeWorkFile(manifest)}`
+          + `\n설정·페이지 순서·회전·선택${editN ? ' · 내부편집 ' + editN + '쪽' : ''}까지 저장 시점 그대로 복원했습니다.`
+          + (full ? '' : '\n※ 페이지 상태 일부는 복원하지 못했습니다(문서가 바뀐 것으로 보입니다) — 설정만 적용했습니다.'));
+        return true;
+      } catch (e) {
+        hideLoading();
+        showError('작업 파일 열기 실패: ' + (e && e.message ? e.message : e));
+        return false;
+      } finally {
+        // 분석 완료 알림(600ms 지연)이 지나간 뒤에 풀어야 복원 안내가 덮이지 않는다
+        setTimeout(() => { _openingWorkFile = false; }, 1500);
+      }
+    }
+
+    // 경로에서 열기 (더블클릭·드래그·최근 파일)
+    async function openWorkFilePath(p) {
+      try {
+        const buf = window.electronAPI.readFile(p);
+        return await openWorkFileBytes(new Uint8Array(buf), p);
+      } catch (e) {
+        showError('작업 파일을 읽을 수 없습니다: ' + (e && e.message ? e.message : e));
+        return false;
+      }
+    }
+
+    // 사이드바 [📂 작업 열기] — 파일 다이얼로그
+    async function pickWorkFile() {
+      const picked = await window.electronAPI.openFile({ kind: 'pdfw' });
+      if (!picked || !picked.length) return;
+      await openWorkFilePath(picked[0].path || picked[0]);
+    }
+
+    // ── 💼 작업 파일 더블클릭 연결 (사이드바 버튼) ────────────────────────────
+    // 레지스트리는 HKCU만 건드린다(관리자 권한 불필요). 되돌리기도 같은 버튼에서.
+    async function refreshWorkAssoc() {
+      const btn = document.getElementById('workAssocBtn');
+      const note = document.getElementById('workNote');
+      if (!btn || !window.electronAPI.workAssocStatus) return null;
+      const st = await window.electronAPI.workAssocStatus();
+      btn.textContent = st.registered ? '🔗 더블클릭 연결 해제' : '🔗 더블클릭 연결 등록';
+      btn.title = st.registered
+        ? '.pdfw 더블클릭 연결을 해제합니다 (작업 파일 자체는 그대로).'
+        : '탐색기에서 .pdfw 파일을 더블클릭하면 이 앱이 바로 열도록 연결합니다 (관리자 권한 불필요)';
+      if (note && st.registered) {
+        note.textContent = '✅ .pdfw 더블클릭 연결됨 — 탐색기에서 작업 파일을 바로 열 수 있습니다.';
+      }
+      return st;
+    }
+    async function toggleWorkAssoc() {
+      const st = await refreshWorkAssoc();
+      if (!st) return;
+      if (st.registered) {
+        if (!confirm('.pdfw 더블클릭 연결을 해제할까요?\n(저장해 둔 작업 파일은 그대로 남고, 앱 안에서 여는 것도 계속 됩니다)')) return;
+        await window.electronAPI.workAssocUnregister();
+        await refreshWorkAssoc();
+        showSuccess('🔗 더블클릭 연결을 해제했습니다.');
+        return;
+      }
+      if (!confirm('.pdfw 작업 파일을 이 앱으로 열도록 등록할까요?\n\n'
+        + '• 현재 사용자 계정에만 등록됩니다 (관리자 권한 불필요)\n'
+        + '• 다른 파일 형식(PDF 등)의 연결은 건드리지 않습니다\n'
+        + '• 같은 버튼으로 언제든 해제할 수 있습니다')) return;
+      const r = await window.electronAPI.workAssocRegister();
+      await refreshWorkAssoc();
+      if (r && r.ok && r.registered) {
+        showSuccess('🔗 연결 완료 — 이제 .pdfw 작업 파일을 탐색기에서 더블클릭하면 이 앱이 그 시점 그대로 엽니다.'
+          + (r.packaged ? '' : '\n※ 지금은 개발 실행(electron.exe)이라 그 실행 파일에 연결됐습니다 — 배포본에서 다시 등록하세요.'));
+      } else {
+        showError('연결 등록 실패: ' + ((r && r.error) || '알 수 없는 오류'));
+      }
+    }

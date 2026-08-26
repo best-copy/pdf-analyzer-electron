@@ -2,10 +2,11 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const remoteServer = require('./remote-server');   // 모바일 연동 LAN 변환 서버
 const license      = require('./license');         // 체험판 1회용 키 (저장·출력 게이트)
 const licenseServer = require('./license-server'); // 활성화 서버 (관리자 PC에서만 구동)
+const licenseTunnel = require('./license-tunnel'); // 외부 접속 터널 (cloudflared)
 
 // ── 성능: GPU 가속·래스터화 활성화 (캔버스·PDF 렌더링 가속) ──────────────────
 app.commandLine.appendSwitch('enable-gpu-rasterization');
@@ -19,7 +20,8 @@ let forceClose  = false;
 
 // ── 외부 실행 인자로 받은 문서 열기 (목차 검증기 '이어서 작업' 연동) ─────────
 // 실행: "PDF 분석기.exe 문서.pdf" — 시작 시 인자의 문서를 바로 연다.
-const OPEN_DOC_RE = /\.(pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i;
+// pdfw = 💼 작업 파일(원본 PDF + 작업 상태가 한 파일에) — 더블클릭하면 그 시점 그대로 열린다
+const OPEN_DOC_RE = /\.(pdfw|pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i;
 
 function docPathsFrom(argv) {
   return argv
@@ -61,6 +63,58 @@ function ensureSendToShortcut() {
     shell.writeShortcutLink(lnk, { target: process.execPath, description: 'PDF 분석기로 열기' });
   } catch (e) { console.warn('보내기 메뉴 등록 실패:', e); }
 }
+
+// ── 💼 작업 파일(.pdfw) 더블클릭 연결 ───────────────────────────────────────
+// HKCU만 건드리므로 관리자 권한이 필요 없다(HKLM·assoc/ftype은 승격이 필요).
+// 포터블 앱이라 실행 경로가 바뀔 수 있어, 등록 상태를 현재 exe 기준으로 확인한다.
+const WORK_PROGID = 'PDFEditor.Work';
+function regQuery(key, name) {
+  try {
+    const out = execFileSync('reg', ['query', key].concat(name ? ['/ve'] : []), {
+      windowsHide: true, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const m = out.match(/REG_SZ\s+(.+)/);
+    return m ? m[1].trim() : '';
+  } catch (e) { return ''; }
+}
+function workAssocStatus() {
+  const cmd = regQuery(`HKCU\\Software\\Classes\\${WORK_PROGID}\\shell\\open\\command`, true);
+  const ext = regQuery(`HKCU\\Software\\Classes\\.pdfw`, true);
+  return {
+    registered: !!cmd && cmd.includes(process.execPath) && ext === WORK_PROGID,
+    current: cmd,
+    exe: process.execPath,
+    packaged: app.isPackaged,
+  };
+}
+function registerWorkAssoc() {
+  const exe = process.execPath;
+  const run = (args) => execFileSync('reg', args, { windowsHide: true, timeout: 8000, stdio: 'ignore' });
+  try {
+    run(['add', `HKCU\\Software\\Classes\\.pdfw`, '/ve', '/t', 'REG_SZ', '/d', WORK_PROGID, '/f']);
+    run(['add', `HKCU\\Software\\Classes\\${WORK_PROGID}`, '/ve', '/t', 'REG_SZ', '/d', 'PDF 분석기 작업 파일', '/f']);
+    run(['add', `HKCU\\Software\\Classes\\${WORK_PROGID}\\DefaultIcon`, '/ve', '/t', 'REG_SZ', '/d', `"${exe}",0`, '/f']);
+    run(['add', `HKCU\\Software\\Classes\\${WORK_PROGID}\\shell\\open\\command`, '/ve', '/t', 'REG_SZ', '/d', `"${exe}" "%1"`, '/f']);
+    // 탐색기에 아이콘·연결 변경을 알린다 (없으면 재로그인 전까지 반영이 늦다)
+    try {
+      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+        'Add-Type -MemberDefinition \'[DllImport("shell32.dll")] public static extern void SHChangeNotify(int e,uint f,IntPtr a,IntPtr b);\' -Name S -Namespace W; [W.S]::SHChangeNotify(0x8000000,0,[IntPtr]::Zero,[IntPtr]::Zero)'],
+        { windowsHide: true, timeout: 15000, stdio: 'ignore' });
+    } catch (e) {}
+    return Object.assign({ ok: true }, workAssocStatus());
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+function unregisterWorkAssoc() {
+  const run = (args) => { try { execFileSync('reg', args, { windowsHide: true, timeout: 8000, stdio: 'ignore' }); } catch (e) {} };
+  run(['delete', `HKCU\\Software\\Classes\\.pdfw`, '/f']);
+  run(['delete', `HKCU\\Software\\Classes\\${WORK_PROGID}`, '/f']);
+  return Object.assign({ ok: true }, workAssocStatus());
+}
+ipcMain.handle('work:assocStatus', () => workAssocStatus());
+ipcMain.handle('work:assocRegister', () => registerWorkAssoc());
+ipcMain.handle('work:assocUnregister', () => unregisterWorkAssoc());
 
 // ── 가상 프린터 'PDF Editor' — 어떤 앱에서든 인쇄로 이 앱에 문서 전달 ────────
 // Microsoft Print To PDF 드라이버 + 고정 파일 포트. 포트 파일이 갱신되면
@@ -415,6 +469,13 @@ ipcMain.handle('lic:recheck',     async () => {
   pushLicenseStatus();
   return r;
 });
+// 오프라인 등록 — 서버에 닿지 않는 테스터용(요청 코드 ↔ 활성화 코드 왕복)
+ipcMain.handle('lic:offlineRequest',  (_, { key }) => license.offlineRequest(key));
+ipcMain.handle('lic:offlineActivate', (_, { token }) => {
+  const r = license.offlineActivate(token);
+  pushLicenseStatus();
+  return r;
+});
 ipcMain.on('lic:close', () => { if (licWin && !licWin.isDestroyed()) licWin.close(); });
 // 관리자(개인키 보유 PC) 전용 — 권한 확인은 license.js 안에서 한다
 ipcMain.handle('lic:admin:issue',        (_, { days, note }) => license.issueKey({ days, note }));
@@ -436,6 +497,17 @@ ipcMain.handle('lic:admin:lanIps', () => {
     }
   }
   return out;
+});
+ipcMain.handle('lic:admin:offlineIssue', (_, { code }) => license.offlineIssue(code));
+// 외부 접속 터널 — 포트포워딩이 안 되는 회선에서 활성화 서버를 열어준다
+ipcMain.handle('lic:admin:tunnelStatus', () => licenseTunnel.status());
+ipcMain.handle('lic:admin:tunnel', async (_, { on, port }) => {
+  if (!license.isAdminPC()) return licenseTunnel.status();
+  return on ? await licenseTunnel.start(port) : licenseTunnel.stop();
+});
+ipcMain.handle('lic:admin:tunnelInstall', async () => {
+  if (!license.isAdminPC()) return { ok: false, error: '권한 없음' };
+  return await licenseTunnel.install();
 });
 // 메인 화면에서 인증 창 열기 (배지 클릭 / Ctrl+Shift+Alt+L)
 ipcMain.handle('lic:open', () => { openLicenseWindow(); return true; });
@@ -614,6 +686,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', sweepTempConversions); // 종료 시에도 한 번 더 정리
 app.on('will-quit', stopPrintJobPoller);   // 인쇄 작업 감시 프로세스 정리(상주했다면)
+app.on('will-quit', () => { try { licenseTunnel.stop(); } catch (e) {} }); // cloudflared 자식 프로세스 정리
 
 // 렌더러 → '저장 안 한 작업' 상태 보고
 ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });
@@ -903,7 +976,17 @@ ipcMain.handle('dialog:openCoverFile', async () => {
   return (canceled || !filePaths.length) ? null : filePaths[0];
 });
 
-ipcMain.handle('dialog:openFile', async () => {
+ipcMain.handle('dialog:openFile', async (_e, opts) => {
+  // kind:'pdfw' — 💼 작업 파일 전용 다이얼로그 (그 외에는 지금까지처럼 문서·이미지 전체)
+  if (opts && opts.kind === 'pdfw') {
+    const r = await dialog.showOpenDialog({
+      title: '작업 파일 열기',
+      filters: [{ name: 'PDF Editor 작업 파일', extensions: ['pdfw'] }],
+      properties: ['openFile'],
+    });
+    if (r.canceled || !r.filePaths.length) return [];
+    return r.filePaths.map(fp => ({ path: fp, name: path.basename(fp) }));
+  }
   const { canceled, filePaths } = await dialog.showOpenDialog({
     title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe · 이미지)',
     filters: [
@@ -939,16 +1022,21 @@ function uniqueSavePath(dir, name) {
   for (let i = 1; fs.existsSync(p) && i < 1000; i++) p = path.join(dir, `${stem}-${i}${ext}`);
   return p;
 }
-ipcMain.handle('dialog:saveFilePath', async (_, { defaultName }) => {
-  if (!licenseGate('PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
+ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind }) => {
+  // kind:'html' — E-book 시안 등 PDF가 아닌 산출물. 없으면 지금까지처럼 PDF로 동작한다.
+  const isHtml = kind === 'html';
+  const isWork = kind === 'pdfw';
+  if (!licenseGate(isHtml ? '시안 HTML' : isWork ? '작업 파일' : 'PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
   // 기본 폴더는 직전 저장 폴더(없으면 다운로드 폴더) — 그 폴더 기준으로 중복을 피한 이름을 제안
   let dir = _lastSaveDir;
   try { if (!dir || !fs.existsSync(dir)) dir = app.getPath('downloads'); } catch (e) { dir = null; }
   const defaultPath = dir ? uniqueSavePath(dir, defaultName) : defaultName;
   const { canceled, filePath } = await dialog.showSaveDialog({
-    title: 'PDF 저장',
+    title: isHtml ? '시안 HTML 저장' : isWork ? '작업 파일 저장' : 'PDF 저장',
     defaultPath,
-    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    filters: isHtml ? [{ name: 'HTML 시안', extensions: ['html'] }]
+           : isWork ? [{ name: 'PDF Editor 작업 파일', extensions: ['pdfw'] }]
+                    : [{ name: 'PDF', extensions: ['pdf'] }],
   });
   if (canceled || !filePath) return null;
   try { _lastSaveDir = path.dirname(filePath); } catch (e) {}

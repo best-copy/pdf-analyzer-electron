@@ -22,13 +22,33 @@
   .tab.active { background:#fff; color:#1d1d1f; box-shadow:0 -1px 0 #ffd60a inset, 0 -3px 0 #ffd60a inset; }
   .wrap { padding:20px 24px 28px; background:#fff; min-height:340px; }
   .card { border:1px solid #e8e8ed; border-radius:12px; padding:18px; margin-bottom:14px; }
-  .card h2 { font-size:0.95em; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
+  /* 제목·요약줄의 이모지는 무채색으로 (본문 글자색은 이미 무채색이라 영향 없음) */
+  .card h2 { font-size:0.95em; margin-bottom:10px; display:flex; align-items:center; gap:6px; filter:grayscale(1); }
   label { display:block; font-size:0.82em; color:#48484a; margin:10px 0 4px; font-weight:600; }
   input[type=text], input[type=number] {
     width:100%; padding:10px 12px; border:1px solid #d2d2d7; border-radius:8px; font-size:0.95em;
     font-family:inherit; background:#fff;
   }
-  input:focus { outline:none; border-color:#1d1d1f; box-shadow:0 0 0 3px rgba(255,214,10,0.35); }
+  input:focus, textarea:focus { outline:none; border-color:#1d1d1f; box-shadow:0 0 0 3px rgba(255,214,10,0.35); }
+  textarea {
+    width:100%; padding:10px 12px; border:1px solid #d2d2d7; border-radius:8px;
+    font-family:Consolas,monospace; font-size:0.8em; line-height:1.5; resize:vertical;
+    word-break:break-all; background:#fff; color:#1d1d1f;
+  }
+  textarea[readonly] { background:#f5f5f7; }
+  .step { font-size:0.82em; font-weight:700; color:#1d1d1f; margin:12px 0 4px; }
+  .step b { background:#ffd60a; border-radius:999px; padding:1px 7px; margin-right:5px; }
+  /* 접이식 섹션 — 이제 잘 쓰지 않는 서버 방식은 여기에 넣어 둔다 */
+  .fold { border:1px solid #e8e8ed; border-radius:12px; margin-bottom:14px; background:#fbfbfd; }
+  .fold > summary {
+    cursor:pointer; padding:12px 18px; font-size:0.86em; font-weight:600; color:#48484a;
+    list-style:none; user-select:none; border-radius:12px; filter:grayscale(1);
+  }
+  .fold > summary::-webkit-details-marker { display:none; }
+  .fold > summary::before { content:'▸ '; color:#48484a; }
+  .fold[open] > summary::before { content:'▾ '; }
+  .fold[open] > summary { border-bottom:1px solid #e8e8ed; border-radius:12px 12px 0 0; }
+  .fold-in { padding:4px 18px 18px; }
   #key { font-family:Consolas,monospace; letter-spacing:1px; text-transform:uppercase; font-size:1.05em; }
   .btn { border:none; border-radius:8px; padding:10px 18px; font-size:0.92em; font-weight:700; cursor:pointer;
          background:#1d1d1f; color:#ffd60a; }
@@ -67,21 +87,45 @@
   <div class="wrap">
     <!-- ── 테스터: 키 등록 ─────────────────────────────────────────────── -->
     <div id="paneUser">
+      <!-- 기본 경로: 코드 두 번 왕복으로 등록 (인터넷·서버 불필요) -->
       <div class="card">
-        <h2>체험 키 등록</h2>
-        <div class="note">발급자에게 받은 키와 서버 주소를 입력하세요. <b>등록은 이 PC에서 한 번만</b> 가능하며,
-          등록 후에는 서버 없이도 만료일까지 사용할 수 있습니다.</div>
-        <label for="key">체험 키</label>
+        <h2>🔑 체험 키 등록</h2>
+        <div class="note">발급자에게 받은 <b>체험 키</b>를 넣고 <b>요청 코드</b>를 만들어 발급자에게 보내세요(카톡·이메일 무엇이든).
+          받은 <b>활성화 코드</b>를 붙여넣으면 끝입니다. <b>등록은 이 PC에서 한 번만</b> 가능합니다.</div>
+
+        <div class="step"><b>1</b>체험 키를 입력하고 요청 코드를 만드세요</div>
         <input type="text" id="key" placeholder="PDFE-XXXX-XXXX-XXXX" maxlength="19" autocomplete="off">
-        <label for="server">활성화 서버 주소</label>
-        <input type="text" id="server" placeholder="예: 121.130.10.20:8736">
-        <div style="margin-top:14px; display:flex; gap:8px;">
-          <button class="btn" id="actBtn" onclick="doActivate()">키 등록</button>
-          <button class="btn sub" onclick="doRecheck()">서버 재확인</button>
+        <div style="display:flex; gap:8px; margin:10px 0 6px;">
+          <button class="btn" onclick="makeReq()">요청 코드 만들기</button>
+          <button class="btn sub" id="copyReqBtn" onclick="copyReq()" disabled>복사</button>
+        </div>
+        <textarea id="reqCode" rows="3" readonly placeholder="여기에 요청 코드가 표시됩니다 — 전체를 복사해 발급자에게 보내세요."></textarea>
+
+        <div class="step"><b>2</b>발급자에게 받은 활성화 코드를 붙여넣으세요</div>
+        <textarea id="actCode" rows="4" placeholder="받은 활성화 코드 전체를 붙여넣으세요 (줄바꿈이 섞여도 됩니다)"></textarea>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <button class="btn" id="offBtn" onclick="doOfflineActivate()">활성화 코드 등록</button>
           <button class="btn sub" onclick="lic.close()">닫기</button>
         </div>
-        <div class="msg" id="userMsg"></div>
+        <div class="msg" id="offMsg"></div>
+        <div class="note">인터넷 연결이 없어도 됩니다. 등록 후에는 만료일까지 그대로 사용됩니다.</div>
       </div>
+
+      <!-- 예전 방식(활성화 서버 직접 접속) — 방화벽 때문에 대부분 막히므로 접어둔다 -->
+      <details class="fold">
+        <summary>🌐 서버로 등록 (활성화 서버에 직접 접속되는 경우에만)</summary>
+        <div class="fold-in">
+          <div class="note">발급자의 활성화 서버 주소를 아는 경우에만 쓰세요. 회사·학교 방화벽에서는 대개 막힙니다.</div>
+          <label for="server">활성화 서버 주소</label>
+          <input type="text" id="server" placeholder="예: 121.130.10.20:8736">
+          <div style="margin-top:12px; display:flex; gap:8px;">
+            <button class="btn sub" id="actBtn" onclick="doActivate()">키 등록</button>
+            <button class="btn sub" onclick="doRecheck()">서버 재확인</button>
+          </div>
+          <div class="msg" id="userMsg"></div>
+        </div>
+      </details>
+
       <div class="card">
         <h2>이 PC 정보</h2>
         <div class="note">키는 이 기기 지문에 묶입니다. 다른 PC에서는 같은 키를 쓸 수 없습니다.</div>
@@ -108,18 +152,49 @@
       </div>
 
       <div class="card">
-        <h2>📡 활성화 서버</h2>
-        <div class="note">테스터가 키를 등록할 때만 필요합니다. 공유기에서 이 포트를 포워딩해야 외부에서 접속됩니다.</div>
-        <div class="row">
-          <div>
-            <label for="port">포트</label>
-            <input type="number" id="port" value="8736" min="1024" max="65535">
-          </div>
-          <button class="btn" id="srvBtn" onclick="toggleServer()">서버 켜기</button>
-          <button class="btn sub" onclick="loadServer()">새로고침</button>
+        <h2>🔌 오프라인 활성화 코드 발급</h2>
+        <div class="note">테스터가 보낸 <b>요청 코드</b>를 붙여넣으면 그 PC 전용 <b>활성화 코드</b>가 만들어집니다.
+          서버·포트포워딩이 필요 없습니다. 키 소진(1회용) 기록은 서버를 쓸 때와 똑같이 남습니다.</div>
+        <textarea id="offReq" rows="3" placeholder="테스터가 보낸 요청 코드(PDFEQ1....)를 붙여넣으세요"></textarea>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <button class="btn" onclick="doOfflineIssue()">활성화 코드 만들기</button>
+          <button class="btn sub" id="copyTokBtn" onclick="copyTok()" disabled>복사</button>
         </div>
-        <div class="note" id="srvInfo"></div>
+        <textarea id="offTok" rows="4" readonly placeholder="여기에 활성화 코드가 표시됩니다 — 전체를 테스터에게 보내세요." style="margin-top:8px;"></textarea>
+        <div class="msg" id="offAdmMsg"></div>
+        <div class="note">⚠ 오프라인으로 발급한 라이선스는 서버 재확인을 하지 않아 <b>원격 취소가 닿지 않습니다.</b>
+          기간을 짧게(7~14일) 주는 것이 안전합니다.</div>
       </div>
+
+      <!-- 서버·터널: 방화벽이 막힌 환경에서는 쓸 일이 없으므로 접어둔다 -->
+      <details class="fold" id="foldSrv">
+        <summary>📡 활성화 서버 · 🌐 외부 접속 터널 (자동 등록이 되는 환경에서만)</summary>
+        <div class="fold-in">
+          <div class="note">테스터가 <b>서버로 직접 등록</b>할 때만 필요합니다. 공유기 포트포워딩이 되어야 하고,
+            회사·학교 방화벽에서는 대개 막힙니다. 막혀 있다면 위의 <b>오프라인 활성화 코드 발급</b>만 쓰면 됩니다.</div>
+          <div class="row">
+            <div>
+              <label for="port">포트</label>
+              <input type="number" id="port" value="8736" min="1024" max="65535">
+            </div>
+            <button class="btn sub" id="srvBtn" onclick="toggleServer()">서버 켜기</button>
+            <button class="btn sub" onclick="loadServer()">새로고침</button>
+          </div>
+          <div class="note" id="srvInfo"></div>
+
+          <div class="step" style="margin-top:16px;">🌐 외부 접속 터널 (cloudflared)</div>
+          <div class="note">공유기 포트포워딩·공인IP 없이 위 서버를 외부에 열어줍니다(아웃바운드 연결만 사용).
+            <b>서버가 켜져 있어야</b> 의미가 있습니다.</div>
+          <div style="margin-top:10px; display:flex; gap:8px;">
+            <button class="btn sub" id="tunBtn" onclick="toggleTunnel()">터널 켜기</button>
+            <button class="btn sub" id="tunCopyBtn" onclick="copyTun()" disabled>주소 복사</button>
+            <button class="btn sub" id="tunInstBtn" onclick="installTunnel()">cloudflared 설치</button>
+          </div>
+          <div class="note" id="tunInfo"></div>
+          <div class="note">⚠ 무료 임시 주소는 <b>껐다 켜면 바뀝니다.</b> 그 주소로 등록한 테스터는
+            7일 재확인에 실패하고 3일 유예 뒤 잠깁니다 — 장기 사용은 오프라인 등록을 권합니다.</div>
+        </div>
+      </details>
 
       <div class="card">
         <h2>📋 발급 내역</h2>
@@ -141,7 +216,7 @@
     $('paneAdmin').classList.toggle('hide', which !== 'admin');
     $('tabUser').classList.toggle('active', which === 'user');
     $('tabAdmin').classList.toggle('active', which === 'admin');
-    if (which === 'admin') { loadKeys(); loadServer(); }
+    if (which === 'admin') { loadKeys(); loadServer(); loadTunnel(); }
   }
 
   async function refreshStatus() {
@@ -173,9 +248,47 @@
       showMsg('userMsg', `✅ 등록 완료 — ${r.status.label}\n만료: ${fmt(r.status.expiresAt)}\n이제 저장·출력을 포함해 모든 기능을 쓸 수 있습니다. 창을 닫으세요.`, true);
       refreshStatus();
     } else {
-      showMsg('userMsg', '⚠ ' + r.error, false);
+      // 연결 자체가 안 되는 상황이면 오프라인 등록으로 안내한다(포트포워딩 실패가 흔하다)
+      const net = /연결|시간 초과|ECONN|EHOSTUNREACH|ETIMEDOUT|주소/.test(r.error || '');
+      showMsg('userMsg', '⚠ ' + r.error + (net ? '\n\n👉 서버에 닿지 않으면 위의 [🔑 체험 키 등록]에서 요청 코드를 만들어 발급자에게 보내세요 — 서버 없이 등록됩니다.' : ''), false);
     }
   }
+  // ── 오프라인 등록 (테스터) ──────────────────────────────────────────────
+  // 복사: 창이 포커스를 잃으면 clipboard API가 거부되므로 execCommand로 한 번 더 시도하고,
+  // 그래도 실패하면 "선택해뒀으니 Ctrl+C" 로 정직하게 안내한다.
+  function copyText(id) {
+    const t = $(id);
+    if (!t.value) return false;
+    t.focus(); t.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    try { navigator.clipboard.writeText(t.value).then(() => {}, () => {}); } catch (e) {}
+    return ok;
+  }
+  function copyHint(ok) { return ok ? '클립보드에 복사됐습니다.' : '선택해 두었으니 Ctrl+C로 복사하세요.'; }
+
+  async function makeReq() {
+    const r = await lic.offlineRequest($('key').value);
+    if (!r.ok) { showMsg('offMsg', '⚠ ' + r.error, false); return; }
+    $('reqCode').value = r.code;
+    $('copyReqBtn').disabled = false;
+    const ok = copyText('reqCode');
+    showMsg('offMsg', '요청 코드를 만들었습니다 — ' + copyHint(ok)
+      + '\n전체를 발급자에게 보내고, 받은 활성화 코드를 아래 2단계에 붙여넣으세요.', true);
+  }
+  function copyReq() { showMsg('offMsg', copyHint(copyText('reqCode')), true); }
+  async function doOfflineActivate() {
+    $('offBtn').disabled = true;
+    const r = await lic.offlineActivate($('actCode').value);
+    $('offBtn').disabled = false;
+    if (r.ok) {
+      showMsg('offMsg', `✅ 등록 완료 — ${r.status.label}\n만료: ${fmt(r.status.expiresAt)}\n이제 저장·출력을 포함해 모든 기능을 쓸 수 있습니다. 창을 닫으세요.`, true);
+      refreshStatus();
+    } else {
+      showMsg('offMsg', '⚠ ' + r.error, false);
+    }
+  }
+
   async function doRecheck() {
     showMsg('userMsg', '서버 재확인 중…', true);
     const r = await lic.recheck();
@@ -228,6 +341,51 @@
     const s = await lic.serverStatus();
     await lic.setServer(!s.running, $('port').value);
     loadServer();
+  }
+
+  // ── 오프라인 코드 발급 (관리자) ─────────────────────────────────────────
+  async function doOfflineIssue() {
+    const r = await lic.offlineIssue($('offReq').value);
+    if (!r.ok) { showMsg('offAdmMsg', '⚠ ' + r.error, false); $('offTok').value = ''; $('copyTokBtn').disabled = true; return; }
+    $('offTok').value = r.token;
+    $('copyTokBtn').disabled = false;
+    const ok = copyText('offTok');
+    showMsg('offAdmMsg', `발급 완료 — ${r.key} · ${r.days}일${r.host ? ' · ' + r.host : ''}\n만료: ${fmt(r.expiresAt)}\n`
+      + '활성화 코드 ' + copyHint(ok) + ' 전체를 테스터에게 보내 [오프라인 등록] 2단계에 붙여넣게 하세요.', true);
+    loadKeys();
+  }
+  function copyTok() { showMsg('offAdmMsg', copyHint(copyText('offTok')), true); }
+
+  // ── 외부 접속 터널 ──────────────────────────────────────────────────────
+  let _tunUrl = '';
+  function paintTunnel(s) {
+    _tunUrl = s.url || '';
+    $('tunBtn').textContent = s.running ? '터널 끄기' : '터널 켜기';
+    $('tunCopyBtn').disabled = !s.url;
+    $('tunInstBtn').classList.toggle('hide', !!s.installed);
+    $('tunInfo').innerHTML = (s.running && s.url
+        ? `🟢 열림 — 테스터에게 알려줄 주소: <b>${s.url}</b> (포트 없이 이 주소 그대로)`
+        : s.installed ? '⚫ 꺼짐' : '⚫ cloudflared가 설치되어 있지 않습니다.')
+      + (s.lastError ? `<br>⚠ ${s.lastError}` : '');
+  }
+  async function loadTunnel() { paintTunnel(await lic.tunnelStatus()); }
+  async function toggleTunnel() {
+    const s = await lic.tunnelStatus();
+    $('tunBtn').disabled = true;
+    $('tunInfo').textContent = s.running ? '터널 닫는 중…' : '터널 여는 중… (최대 25초)';
+    const r = await lic.tunnel(!s.running, $('port').value);
+    $('tunBtn').disabled = false;
+    paintTunnel(r);
+  }
+  function copyTun() { try { navigator.clipboard.writeText(_tunUrl); } catch (e) {} }
+  async function installTunnel() {
+    if (!confirm('winget으로 cloudflared를 설치합니다. 계속할까요?\n(Cloudflare 공식 패키지, 1~2분 소요)')) return;
+    $('tunInstBtn').disabled = true;
+    $('tunInfo').textContent = 'cloudflared 설치 중… (1~2분)';
+    const r = await lic.tunnelInstall();
+    $('tunInstBtn').disabled = false;
+    if (!r.ok) { $('tunInfo').textContent = '⚠ ' + r.error; return; }
+    loadTunnel();
   }
 
   refreshStatus();

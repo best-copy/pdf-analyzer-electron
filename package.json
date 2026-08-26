@@ -34,10 +34,14 @@
       "remote-server.js",
       "license.js",
       "license-server.js",
+      "license-tunnel.js",
       "src/**/*"
     ],
     "extraResources": [
-      { "from": "vendor/gs", "to": "gs" }
+      {
+        "from": "vendor/gs",
+        "to": "gs"
+      }
     ],
     "directories": {
       "output": "dist"

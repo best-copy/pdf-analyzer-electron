@@ -709,6 +709,9 @@
     // 문서 분석 완료 시 호출 — 같은 문서의 지난 작업이 있으면 안내 + 편집 버튼 강조
     function notifyWorkHistory() {
       renderWorkHistory();
+      // 💼 작업 파일로 연 직후에는 알리지 않는다 — 이미 그 상태로 복원했는데
+      // "지난 작업이 기록되어 있습니다"가 복원 안내를 덮어써 혼란만 준다.
+      if (typeof _openingWorkFile !== 'undefined' && _openingWorkFile) return;
       const h = workHistory().find(whIsSameDoc);
       if (!h) return;
       showSuccess(`🕓 이 문서의 지난 작업(${whFmt(h.ts)} · ${h.summary})이 기록되어 있습니다.`
@@ -2319,6 +2322,9 @@
       g('sbGray').textContent  = grayscalePagesEl.textContent;
       g('sbPct').textContent   = colorPercentEl.textContent;
       g('sbSel').textContent   = `${selectedPages.size}개 선택됨`;
+      if (typeof updateEbNote === 'function') updateEbNote();   // 📖 시안 예상 용량
+      const wsb = g('workSaveBtn');
+      if (wsb) wsb.disabled = !originalPdfBytes;                // 💼 문서가 있어야 작업 저장
       g('sb-opt-bw').classList.toggle('active', !!processingOptions.bw);
       const sbInk = g('sb-opt-inkNorm');
       if (sbInk) sbInk.classList.toggle('active', !!processingOptions.inkNorm);
@@ -2754,6 +2760,13 @@
     uploadSection.addEventListener('drop', async e => {
       e.preventDefault();
       uploadSection.classList.remove('drag-over');
+      // 💼 작업 파일을 떨어뜨리면 저장된 상태 그대로 복원한다 (분석 파이프라인을 타지 않음)
+      const works = [...e.dataTransfer.files].filter(f => /\.pdfw$/i.test(f.name));
+      if (works.length) {
+        hideError(); hideSuccess();
+        for (const w of works) await openWorkFilePath(window.electronAPI.getPathForFile(w));
+        return;
+      }
       const dropped = [...e.dataTransfer.files].filter(f =>
         f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name)
       );
@@ -2907,4 +2920,9 @@
       if (!window.electronAPI || !window.electronAPI.licenseStatus) return;
       window.electronAPI.licenseStatus().then(renderLicenseBadge).catch(() => {});
       if (window.electronAPI.onLicenseStatus) window.electronAPI.onLicenseStatus(renderLicenseBadge);
+    })();
+
+    // 💼 작업 파일 더블클릭 연결 상태를 버튼 라벨에 반영 (등록/해제 토글)
+    (function initWorkAssocBtn() {
+      if (typeof refreshWorkAssoc === 'function') { try { refreshWorkAssoc(); } catch (e) {} }
     })();

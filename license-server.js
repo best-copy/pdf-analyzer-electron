@@ -71,58 +71,16 @@ function readBody(req, limit) {
 }
 
 // ── 활성화 ──────────────────────────────────────────────────────────────────
+// 판정·소진 기록·서명은 license.js의 activateRecord 한 곳에 있다(오프라인 발급과 공유).
+// 여기서는 HTTP 옷만 입힌다 — 규칙을 여기에 또 쓰면 두 경로가 갈라진다.
 function doActivate(body, ip) {
-  const key = String(body.key || '').trim().toUpperCase();
-  const hw  = String(body.hwid || '').trim();
-  if (!/^PDFE(-[A-Z0-9]{4}){3}$/.test(key) || !/^[0-9a-f]{24}$/.test(hw)) {
-    noteFail(ip);
-    return { code: 400, body: { error: '키 또는 기기 정보가 올바르지 않습니다.' } };
-  }
-  const admin = _lic.adminData();
-  if (!admin) return { code: 500, body: { error: '서버에 발급 권한이 없습니다.' } };
-
-  const db = _lic.loadKeys();
-  const row = db.keys.find(k => k.key === key);
-  if (!row) {
-    noteFail(ip);
-    log(`거부: 없는 키 ${key} (${ip})`);
-    return { code: 404, body: { error: '등록되지 않은 키입니다.' } };
-  }
-  if (row.status === 'revoked') {
-    log(`거부: 취소된 키 ${key} (${ip})`);
-    return { code: 403, body: { error: '취소된 키입니다.', revoked: true } };
-  }
-  // 이미 활성화된 키: 같은 PC면 재발급(재설치·앱 재설정 대비), 다른 PC면 거부 = 1회용의 핵심
-  if (row.status === 'activated' && row.hwid && row.hwid !== hw) {
-    noteFail(ip);
-    log(`거부: 이미 사용된 키 ${key} — 다른 PC (${ip})`);
-    return { code: 409, body: { error: '이미 다른 PC에서 사용된 키입니다. 새 키를 요청하세요.' } };
-  }
-
-  const now = Date.now();
-  // 만료일은 '최초 활성화 시각 + 발급 일수'로 한 번만 확정한다. 재설치로 기간이 늘어나면 안 된다.
-  if (row.status !== 'activated') {
-    row.status = 'activated';
-    row.hwid = hw;
-    row.activatedAt = now;
-    row.expiresAt = now + row.days * DAY;
-    row.host = String(body.host || '').slice(0, 60);
-    row.ver = String(body.ver || '').slice(0, 20);
-    log(`활성화: ${key} · ${row.days}일 · ${row.host || ip}`);
-  } else {
-    log(`재발급: ${key} · 같은 PC (${ip})`);
-  }
-  row.lastSeen = now;
-  _lic.saveKeys(db);
-
-  const token = _lic.signToken({
-    v: 1, key, hwid: hw,
-    iat: now,
-    exp: row.expiresAt,
-    next: now + _lic.RECHECK_DAYS * _lic.DAY,
-    note: row.note || '',
-  }, admin.priv);
-  return { code: 200, body: { token } };
+  const r = _lic.activateRecord({ key: body.key, hwid: body.hwid, host: body.host, ver: body.ver });
+  if (r.fail) noteFail(ip);
+  if (r.log) log(`${r.log} (${ip})`);
+  if (r.code === 200) return { code: 200, body: { token: r.token } };
+  const out = { error: r.error };
+  if (r.revoked) out.revoked = true;
+  return { code: r.code, body: out };
 }
 
 // ── 재확인 ──────────────────────────────────────────────────────────────────
