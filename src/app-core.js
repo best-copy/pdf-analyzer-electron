@@ -44,6 +44,10 @@
     const HISTORY_LIMIT    = 1000; // 보관 스냅샷 최대 개수 (사실상 무제한)
     let processedPdfBytes  = null; // '적용'으로 생성된 결과 PDF (다운로드 대기)
     let processedFileName  = '';
+    // processedPdfBytes를 만든 시점의 파이프라인 시그니처(optSignature). 편집 모드의
+    // 실시간 미리보기도 '적용'과 완전히 같은 파이프라인으로 결과 바이트를 만들므로,
+    // 이 값이 지금 설정과 같으면 '저장하고 닫기'가 전체 재조립을 건너뛰고 그 결과를 쓴다.
+    let _processedSig      = null;
     // 아웃라인·블리드 등 외부 변환 결과를 '그대로' 저장해야 하는 경우의 바이트.
     // 세팅되어 있으면 다운로드가 파이프라인 재조립(buildOptimizedOutput)을 건너뛴다 —
     // 재조립하면 gs 아웃라인 등 파이프라인 밖 변환이 사라지는 화면·파일 불일치가 생김.
@@ -1093,6 +1097,8 @@
       // 분석 완료 → 유휴 시간에 잉크 정규화 변환을 미리 수행(적용 즉시화)
       setTimeout(() => { if (typeof prewarmInkNorm === 'function') prewarmInkNorm(); }, 1200);
       // 🕓 같은 문서의 지난 작업이 기록되어 있으면 안내 (분석 성공 메시지 뒤에 표시되게 지연)
+      // 📐 방향이 다른 페이지(세로 원고 속 가로 원고) 자동 맞춤 — 안내보다 먼저 처리한다
+      setTimeout(() => { if (typeof maybeAutoOrientAfterAnalyze === 'function') maybeAutoOrientAfterAnalyze(); }, 400);
       setTimeout(() => { if (typeof notifyWorkHistory === 'function') notifyWorkHistory(); }, 600);
     }
 
@@ -1248,6 +1254,8 @@
       const count = selectedPages.size;
       selectedCountEl.textContent = `${count}개 선택됨`;
       invalidateProcessed();
+      // 선택한 페이지의 흑백변환을 미리 구워 둔다 — '적용'에서 기다리는 시간을 없앤다
+      if (processingOptions.bw && count > 0) scheduleBwPrewarm();
       syncSidebarPanel();
       if (typeof refreshPreviewMarks === 'function') refreshPreviewMarks();
       // 미리보기가 켜져 있으면 선택 변경을 실제 흑백변환으로 즉시 반영(캐시로 빠름)
@@ -1674,10 +1682,15 @@
       const b = document.getElementById(id);
       if (b) b.classList.toggle('btn-busy', !!on);
     }
+    // 적용 버튼 3형제(메인·좌측 사이드바·편집 패널)를 한꺼번에 진행 표시
+    function setApplyBusy(on) {
+      ['applyBtn', 'sb-applyBtn', 'esApplyBtn'].forEach(id => setBtnBusy(id, on));
+    }
 
     function invalidateProcessed() {
       if (!applying) {
         processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
+        _processedSig = null;
       }
       // 수정이 생겼으니 '📖 임포징 PDF 생성' 1회 잠금도 해제 (다시 생성 가능)
       if (typeof impGenInvalidate === 'function') impGenInvalidate();
@@ -1705,8 +1718,8 @@
       }
       invalidateProcessed();
       if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
-      // 잉크 정규화를 켜면 유휴 시간에 미리 변환 시작
-      if (key === 'inkNorm' && processingOptions.inkNorm) setTimeout(prewarmInkNorm, 300);
+      // 잉크 정규화·흑백변환을 켜면 유휴 시간에 미리 변환 시작 (적용 대기시간 제거)
+      if (processingOptions[key]) scheduleBwPrewarm(300);
     }
 
     function clearOptions() {
@@ -1750,6 +1763,10 @@
     let _baseAssembled = null; // { key, outDoc, pages:[{page,baseAngle}], stats, validCount }
     // 다운로드용 최적화본 캐시 (buildOptimizedOutput 결과; 프리웜으로 미리 채움)
     let _optCache = { sig: null, bytes: null };
+    // 다운로드용 base(페이지 복사 + 흑백/잉크 변환) 캐시 — 키는 baseSignature()(순서·회전·
+    // 흑백선택·내부편집 rev). 편집 옵션이나 임포징 옵션만 바꿨을 때는 base가 그대로인데도
+    // 매번 전 페이지를 다시 변환하고 있었다(64쪽 사진 원고에서 4.5초 CPU를 반복).
+    let _optBaseCache = { sig: null, bytes: null, stats: null };
     function clearProcessCaches() {
       _baseCache = { sig: null, bytes: null, stats: null };
       _bwCache = new Map();
@@ -1758,6 +1775,8 @@
       _baseAssembled = null;
       _pvPageCache = new Map();
       _optCache = { sig: null, bytes: null };
+      _optBaseCache = { sig: null, bytes: null, stats: null };
+      _srcDocCache = { bytes: null, promise: null };
       if (typeof clearImpCache === 'function') clearImpCache();
       releasePreviewDoc();
     }
@@ -1791,58 +1810,94 @@
       return !!processingOptions.inkNorm && !r.isColor;
     }
 
-    // 필요한 흑백 페이지들을 캐시에 채움(없는 것만 병렬 변환). srcDoc는 1회 로드.
+    // ── 원본 PDF의 pdf-lib 문서 공유 캐시 ────────────────────────────────────
+    // '적용' 한 번에 PDFDocument.load(originalPdfBytes)가 세 번(흑백변환·조립·다운로드 base)
+    // 일어나 큰 원고에서는 파싱만 반복해 수 초를 잡아먹었다. copyPages는 소스를 수정하지 않고
+    // (변환은 언제나 복사본 위에서 한다) 원본 바이트는 문서가 바뀌기 전까지 불변이므로 하나를
+    // 공유해도 안전하다. 바이트 객체가 바뀌면(다른 탭·새 문서) 자동으로 다시 로드된다.
+    let _srcDocCache = { bytes: null, promise: null };
+    function getSourceDoc() {
+      if (_srcDocCache.bytes !== originalPdfBytes || !_srcDocCache.promise) {
+        const p = PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+        // 실패한 promise가 캐시에 눌러앉지 않게 정리
+        p.catch(() => { if (_srcDocCache.promise === p) _srcDocCache = { bytes: null, promise: null }; });
+        _srcDocCache = { bytes: originalPdfBytes, promise: p };
+      }
+      return _srcDocCache.promise;
+    }
+
+    // 필요한 흑백 페이지들을 캐시에 채움(없는 것만 병렬 변환). srcDoc는 공유 캐시에서.
     async function ensureBwConverted(indices, stats, onProgress) {
       const todo = indices.filter(i => !_bwCache.has(i));
       if (!todo.length) { if (onProgress) onProgress(92); return; }
       // 회색 판정 페이지는 Dot Gain 보정을 걸지 않는다(0 강제) — 이미 회색인 페이지의
       // 밝기가 변하는 부작용 방지. 컬러 페이지만 UI에서 선택한 Dot Gain을 적용.
       const colorOf = new Map(pageResults.filter(r => r && !r.isBlank).map(r => [r.originalIdx, !!r.isColor]));
-      const src = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
-      // 1) 각 페이지를 개별 tmp 문서로 복사 (src 동시 접근 방지 위해 순차)
-      //    내부편집이 있는 페이지는 원본 대신 '편집된 단일페이지'를 소스로 삼아 흑백 변환한다.
-      const tmps = [];
-      for (const idx of todo) {
-        const tmp = await PDFLib.PDFDocument.create();
-        const editedDoc = await getEditedPageDoc(idx);
-        const [pg] = editedDoc ? await tmp.copyPages(editedDoc, [0])
-                               : await tmp.copyPages(src, [idx]);
-        tmp.addPage(pg);
-        tmps.push({ idx, tmp });
+      const src = await getSourceDoc();
+      // 1) 대상 페이지를 **한 문서(batch)로 한 번에** 복사한다.
+      //    예전에는 페이지마다 독립 문서를 만들어 복사했다 → 여러 쪽이 같은 이미지·폰트를 쓰면
+      //    그 리소스가 쪽 수만큼 복제되고, 같은 이미지를 쪽 수만큼 다시 디코드·그레이화·재인코드했다
+      //    (사진 카탈로그에서 흑백변환·잉크정규화가 유난히 느렸던 진짜 이유).
+      //    한 문서에 모으면 리소스가 공유되므로 공용 이미지는 딱 한 번만 변환된다 —
+      //    이미 DeviceGray가 된 XObject는 두 번째 페이지에서 그대로 건너뛰기 때문.
+      //    (다운로드 경로 buildBaseOptimized가 예전부터 쓰던 방식과 같다)
+      const batch = await PDFLib.PDFDocument.create();
+      const pageAt = new Map();                        // originalIdx → batch 안 페이지 인덱스
+      const edited = todo.filter(i => contentEdits && contentEdits.has(i));
+      const plain  = todo.filter(i => !(contentEdits && contentEdits.has(i)));
+      if (plain.length) {
+        const copied = await batch.copyPages(src, plain);
+        copied.forEach((pg, k) => { batch.addPage(pg); pageAt.set(plain[k], batch.getPageCount() - 1); });
       }
-      // 2) 변환은 CPU 코어 수만큼 병렬
+      // 내부편집이 있는 페이지는 원본 대신 '편집된 단일페이지'를 소스로 삼아 흑백 변환한다.
+      for (const idx of edited) {
+        const editedDoc = await getEditedPageDoc(idx);
+        const [pg] = editedDoc ? await batch.copyPages(editedDoc, [0]) : await batch.copyPages(src, [idx]);
+        batch.addPage(pg);
+        pageAt.set(idx, batch.getPageCount() - 1);
+      }
+      // 2) 변환은 CPU 코어 수만큼 병렬. 단, Dot Gain 오버라이드는 문서 단위(WeakMap)라
+      //    컬러 페이지(UI 설정 적용)와 회색 판정 페이지(0 강제)를 순서대로 나눠 돌린다.
       const SEM = Math.max(navigator.hardwareConcurrency || 4, 4);
       let sem = SEM; const q = [];
       const wait = () => sem > 0 ? (sem--, Promise.resolve()) : new Promise(r => q.push(r));
       const rel = () => { if (q.length) q.shift()(); else sem++; };
       let done = 0;
-      await Promise.all(tmps.map(({ idx, tmp }) => (async () => {
+      const runBatch = (list, dgOverride) => Promise.all(list.map(idx => (async () => {
         await wait();
         try {
-          try { await convertPageToGrayscaleVector(tmp, 0, stats, colorOf.get(idx) ? undefined : 0); }
+          try { await convertPageToGrayscaleVector(batch, pageAt.get(idx), stats, dgOverride); }
           catch (e) { if (stats) { stats.errors++; stats.errPages.push(idx + 1); } console.error(`페이지 ${idx + 1} 변환 오류:`, e); }
-          _bwCache.set(idx, tmp);
-          // 캐시 상한(FIFO) — 페이지당 단일페이지 PDFDocument가 상주하므로 초대형 문서에서
-          // 메모리가 무한히 늘지 않게 오래된 항목부터 해제(재요청 시 다시 변환됨)
-          if (_bwCache.size > 800) { const k = _bwCache.keys().next().value; _bwCache.delete(k); }
-        } finally { done++; if (onProgress) onProgress(10 + done / tmps.length * 80); rel(); }
+        } finally { done++; if (onProgress) onProgress(10 + done / todo.length * 80); rel(); }
       })()));
+      await runBatch(todo.filter(i => colorOf.get(i)), undefined);   // 컬러 → UI Dot Gain
+      await runBatch(todo.filter(i => !colorOf.get(i)), 0);          // 회색 → Dot Gain 미적용
+      // 3) 캐시에는 '어느 문서의 몇 번째 페이지인지'를 담는다(문서는 여러 페이지가 공유)
+      for (const idx of todo) {
+        _bwCache.set(idx, { doc: batch, idx: pageAt.get(idx) });
+        // 캐시 상한(FIFO) — 변환된 페이지가 계속 상주하므로 초대형 문서에서 메모리가
+        // 무한히 늘지 않게 오래된 항목부터 해제(재요청 시 다시 변환됨)
+        if (_bwCache.size > 800) { const k = _bwCache.keys().next().value; _bwCache.delete(k); }
+      }
     }
-    // ── 잉크 정규화 프리웜 ──────────────────────────────────────────────────
-    // 분석이 끝나면 유휴 시간에 흑백 판정 페이지들을 미리 _bwCache로 변환해 두어
-    // '적용'을 눌렀을 때 변환 없이 즉시 조립되게 한다. 탭이 바뀌면 결과는 폐기.
+    // ── 흑백·잉크 정규화 프리웜 ─────────────────────────────────────────────
+    // 분석이 끝나면(그리고 흑백 선택이 바뀌면) 유휴 시간에 변환 대상 페이지들을 미리
+    // _bwCache로 변환해 두어 '적용'을 눌렀을 때 변환 없이 즉시 조립되게 한다.
+    // 대상 판정은 isBwTarget 하나로 통일 — 잉크 정규화 페이지뿐 아니라 사용자가 고른
+    // 흑백변환 페이지도 미리 굽는다(예전엔 선택 페이지는 '적용'을 누른 뒤에야 변환됐다).
+    // 탭이 바뀌면 결과는 폐기.
     let _inkPrewarmPromise = null;
     function prewarmInkNorm() {
       if (_inkPrewarmPromise || applying) return;
-      if (!processingOptions.inkNorm || !originalPdfBytes) return;
-      const idxs = pageResults.filter(r => r && !r.isBlank && !r.isColor)
+      if (!originalPdfBytes) return;
+      const idxs = pageResults.filter(r => r && !r.isBlank && isBwTarget(r))
                               .map(r => r.originalIdx)
                               .filter(i => i != null && !_bwCache.has(i));
       if (!idxs.length) return;
       const tabAtStart = activeTabId;
       _inkPrewarmPromise = (async () => {
         try { await ensureBwConverted(idxs, null, null); }
-        catch (e) { console.warn('잉크 정규화 프리웜 실패:', e); }
+        catch (e) { console.warn('흑백·잉크 정규화 프리웜 실패:', e); }
         finally {
           _inkPrewarmPromise = null;
           // 프리웜 도중 탭이 바뀌었으면 엉뚱한 문서의 캐시가 섞였을 수 있음 → 전체 폐기
@@ -1851,6 +1906,14 @@
           else setTimeout(() => { if (typeof prewarmOptimizedOutput === 'function') prewarmOptimizedOutput(); }, 500);
         }
       })();
+    }
+
+    // 흑백 선택·옵션이 바뀌면 잠깐 기다렸다가(연속 클릭 흡수) 프리웜을 다시 돌린다.
+    // 이미 변환된 페이지는 캐시 적중으로 건너뛰므로 추가 선택분만 구워진다.
+    let _bwPrewarmTimer = null;
+    function scheduleBwPrewarm(delay) {
+      clearTimeout(_bwPrewarmTimer);
+      _bwPrewarmTimer = setTimeout(() => { try { prewarmInkNorm(); } catch (e) {} }, delay || 700);
     }
 
     async function buildBaseProcessed(onProgress) {
@@ -1884,7 +1947,7 @@
       stats.converted = bwIdx.length;
       if (bwIdx.length) await ensureBwConverted(bwIdx, stats, onProgress);
 
-      const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+      const srcDoc = await getSourceDoc();
       const outDoc = await PDFLib.PDFDocument.create();
       // 비변환·비편집 원본 페이지는 일괄 copyPages로 리소스 공유 (파일 크기 최소화)
       const isEdited = r => !r.isBlank && contentEdits.has(r.originalIdx);
@@ -1898,12 +1961,23 @@
         const ed = await getEditedPageDoc(r.originalIdx);
         if (ed) { const [pg] = await outDoc.copyPages(ed, [0]); editMap.set(r.originalIdx, pg); }
       }
-      // 변환 페이지는 캐시된 단일페이지 doc에서 복사 (흑백 소스는 편집본이 있으면 편집본)
+      // 변환 페이지는 캐시된 변환 문서에서 복사 (흑백 소스는 편집본이 있으면 편집본).
+      // 같은 변환 문서에서 온 페이지들은 한 번의 copyPages로 함께 가져온다 — 페이지마다
+      // 따로 부르면 공용 이미지·폰트가 페이지 수만큼 복제돼 결과 파일이 부풀었다.
       const bwMap = new Map();
+      const byConvDoc = new Map();
       for (const r of valid) {
-        if (!isBw(r)) continue;
+        if (!isBw(r) || bwMap.has(r.originalIdx)) continue;
         const conv = _bwCache.get(r.originalIdx);
-        if (conv) { const [pg] = await outDoc.copyPages(conv, [0]); bwMap.set(r.originalIdx, pg); }
+        if (!conv) continue;
+        bwMap.set(r.originalIdx, null);                     // 자리 예약(같은 원본 중복 방지)
+        let g = byConvDoc.get(conv.doc);
+        if (!g) { g = []; byConvDoc.set(conv.doc, g); }
+        g.push({ oi: r.originalIdx, idx: conv.idx });
+      }
+      for (const [doc, list] of byConvDoc) {
+        const pgs = await outDoc.copyPages(doc, list.map(x => x.idx));
+        pgs.forEach((pg, k) => bwMap.set(list[k].oi, pg));
       }
       // 순서대로 조립 + 회전 (baseAngle=원본 /Rotate를 기록해 두면 이후 회전만 바뀔 때
       // outDoc을 재사용해 setRotation→재저장만으로 처리 가능)
@@ -1911,7 +1985,7 @@
       for (const r of valid) {
         let page;
         if (r.isBlank) page = outDoc.addPage(r.pageSize || [595.28, 841.89]);
-        else if (isBw(r) && bwMap.has(r.originalIdx)) page = outDoc.addPage(bwMap.get(r.originalIdx));
+        else if (isBw(r) && bwMap.get(r.originalIdx)) page = outDoc.addPage(bwMap.get(r.originalIdx));
         else if (isEdited(r) && editMap.has(r.originalIdx)) page = outDoc.addPage(editMap.get(r.originalIdx));
         else page = outDoc.addPage(origMap.get(r.originalIdx));
         const baseAngle = (page.getRotation && page.getRotation().angle) || 0;
@@ -1988,6 +2062,9 @@
       try {
         applying = true;
         processedPdfBytes = null; processedFileName = ''; directOutputBytes = null;
+        // 적용 중에는 버튼이 전부 비활성이라 "눌러도 안 먹는다"로 보였다 —
+        // 적용 버튼에 진행 스윕을 걸어 '지금 만드는 중'임이 버튼 자체에서 보이게 한다.
+        setApplyBusy(true);
         updateDownloadBtn();
         const bwMode = processingOptions.bw && (selectedPages.size > 0 || appliedBwCnt > 0);
         const inkCnt = processingOptions.inkNorm ? pageResults.filter(r => r && !r.isBlank && !r.isColor).length : 0;
@@ -1996,6 +2073,7 @@
                   : 'PDF 생성 중...');
         progressBar.style.display = 'block'; updateProgress(0);
 
+        const sigAtStart = (typeof optSignature === 'function') ? optSignature() : null;   // 조립 중 설정이 바뀌면 재사용 표식을 남기지 않는다
         const base = await buildBaseProcessed(p => updateProgress(typeof _impEnabled !== 'undefined' && _impEnabled ? Math.round(p * 0.85) : p));
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
@@ -2028,6 +2106,7 @@
 
         processedPdfBytes = pdfBytes;
         processedFileName = defaultProcessedName();
+        _processedSig = (sigAtStart && optSignature() === sigAtStart) ? sigAtStart : null;
         setDirty(true);
         updateProgress(100);
         renderProcessedPreview(pdfBytes);
@@ -2060,6 +2139,7 @@
         showError('처리 중 오류: ' + (err && err.message ? err.message : String(err)));
       } finally {
         applying = false;
+        setApplyBusy(false);
         updateDownloadBtn();
         hideLoading();
         progressBar.style.display = 'none';

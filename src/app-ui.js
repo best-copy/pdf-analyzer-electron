@@ -333,16 +333,44 @@
         showError('흑백변환할 페이지를 선택하거나 편집 옵션을 설정하세요.'); return;
       }
       const needApply = shouldPreview();
-      // 먼저 닫는다 — 적용은 메인 화면에서 이어서 진행.
-      // 적용할 게 없으면(편집 없음) '적용됨'이 아니므로 진입 전 결과를 되살리는 경로로 닫는다.
+      // 편집 모드의 실시간 미리보기가 이미 지금 설정 그대로의 전체 결과를 만들어 두었다면
+      // (표본 미리보기가 아니고, 그 뒤로 설정이 바뀌지도 않았다면) 그것이 곧 '적용 결과'다.
+      // 예전에는 여기서 무조건 applyChanges를 다시 돌려, 임포징 200시트를 방금 조립해 놓고도
+      // 메인으로 나오자마자 같은 조립을 처음부터 한 번 더 했다 — 그동안 적용·다운로드 버튼이
+      // 모두 잠긴 채 수십 초가 흐르는 것이 "나오면 버튼이 죽는다"의 실제 원인이었다.
+      const reusable = needApply && !!processedPdfBytes && !applying
+        && !_liveRunning && !_livePvPending && !_liveQueued
+        && typeof optSignature === 'function' && _processedSig === optSignature();
       exitEditWorkspace(needApply);
       if (!needApply) return;
+      if (reusable) { adoptLivePreviewResult(); return; }
       try {
         await applyChanges();    // 편집을 메인에 적용(processedPdfBytes 생성 + 결과 표시)
       } catch (e) {
         console.error('작업공간 저장 오류:', e);
         showError('편집 적용 중 오류: ' + (e && e.message ? e.message : String(e)));
       }
+    }
+    // 편집 모드에서 만들어 둔 결과를 '적용 결과'로 그대로 승격한다 — 재조립 없음.
+    // 바이트는 applyChanges가 만드는 것과 동일한 파이프라인 산출물이라 결과물 차이가 없다.
+    function adoptLivePreviewResult() {
+      processedFileName = defaultProcessedName();
+      setDirty(true);
+      // 흑백변환 확정(commit) — applyChanges와 동일 규약(선택은 해제, 변환은 유지)
+      let committed = 0;
+      if (processingOptions.bw && selectedPages.size) {
+        pageResults.forEach(r => { if (r && !r.isBlank && selectedPages.has(r.pageNum) && !r.appliedBw) { r.appliedBw = true; committed++; } });
+        commitClearSelection();
+      }
+      updateDownloadBtn();
+      renderProcessedPreview(processedPdfBytes, { live: false });   // 화면만 정식 해상도로 다시
+      const layoutNote = layoutNoteOf()
+        + (typeof _bleedEnabled !== 'undefined' && _bleedEnabled ? ` · ◲ 블리드 ${_bleedOpts().mm}mm${_bleedOpts().crop ? '+재단선' : ''}` : '')
+        + (typeof impositionNoteOf === 'function' ? impositionNoteOf() : '');
+      showSuccess(`적용 완료! 편집 모드에서 만든 결과를 그대로 가져왔습니다${layoutNote} — '⇩ 다운로드'를 눌러 저장하세요.`
+        + (committed ? `\n✅ 흑백변환 확정 — 선택은 자동 해제되었고 변환은 유지됩니다.` : ''));
+      if (typeof recordWorkHistory === 'function') { try { recordWorkHistory(); } catch (e) {} }
+      setTimeout(prewarmOptimizedOutput, 400);
     }
     // 편집이 하나도 없을 때 작업공간 오른쪽에 원본 페이지를 그대로 보여준다(빈 화면 방지).
     function showWorkspaceBasePreview() {
@@ -604,6 +632,10 @@
           oi: r.isBlank ? null : r.originalIdx, blank: !!r.isBlank, rot: r.rotation || 0,
           chapter: r.chapter || '', bw: !!r.appliedBw, roman: !!r.isRoman,
           ps: r.isBlank ? (r.pageSize || null) : undefined,
+          // 📑 목차: 생성된 목차 페이지 표식과 북마크 제목도 함께 — 빠지면 다시 열었을 때
+          // 목차 페이지가 평범한 본문으로 돌아가 로마자 번호·PDF 북마크가 사라진다.
+          toc: r.isTocPage ? 1 : undefined,
+          tt: r.tocTitle || undefined,
         })),
         selected: [...selectedPages],
         pageAdjust: (editSettings && editSettings.pageAdjust) ? JSON.parse(JSON.stringify(editSettings.pageAdjust)) : {},
@@ -688,7 +720,8 @@
           } else {
             const r = byOi.get(o.oi);
             if (!r) return false;
-            next.push(Object.assign({}, r, { rotation: o.rot || 0, chapter: o.chapter || '', appliedBw: !!o.bw, isRoman: !!o.roman }));
+            next.push(Object.assign({}, r, { rotation: o.rot || 0, chapter: o.chapter || '', appliedBw: !!o.bw, isRoman: !!o.roman,
+              isTocPage: !!o.toc, tocTitle: o.tt || undefined }));
           }
         }
         if (typeof pushHistory === 'function') pushHistory();   // Ctrl+Z 복귀 지점
@@ -2016,6 +2049,7 @@
       const note = document.getElementById('previewNote');
       if (!section || !grid || !bytes) return;
       const myToken = ++previewRenderToken;
+      stopLazyPreviewRender();   // 이전 렌더가 배경에서 채우는 중이면 먼저 멈춘다
       // 캔버스 폭(작을수록 빠름). 펼침 모드는 표시 폭(560px × 펼침%)에 맞춘 고해상도로.
       const spreadK = (typeof _spreadZoomPct !== 'undefined' ? _spreadZoomPct : 100) / 100;
       const pxW = grid.classList.contains('pv-spread')
@@ -2049,68 +2083,95 @@
         // 흑백 선택된다 → 임포징 포함 상태에서는 1:1 매핑 자체를 쓰지 않는다.
         const canSelect = srcMap.length === total && !impIncluded();
         const pvCells = [];
+        // ── 보이는 것부터 그린다(지연 렌더) ────────────────────────────────
+        // 예전에는 전 페이지를 다 그린 뒤에야 화면을 교체해서, 임포징 150시트면 조작 한 번에
+        // 12초씩 걸렸다(실측: 시트당 79ms, 그 대부분이 이미지 디코드라 해상도를 낮춰도 안 줄었다).
+        // 이제는 셀 자리만 먼저 깔아 즉시 교체하고, 화면에 보이는 셀부터 그린 뒤 나머지를
+        // 배경에서 채운다. 그리는 총량과 화질은 그대로다 — 기다리는 순서만 바꾼 것.
         let colorCount = 0;
-        // 1:1(비N-up) 페이지는 (해상도·레이아웃설정·원본페이지·회전·흑백선택)이 그대로면
-        // 이전 렌더의 캔버스를 재사용 — 한 페이지만 회전해도 나머지 전체를 다시 그리지 않는다.
-        // 캔버스 캐시 키에 임포징 상태(impSignature)를 포함 — editSettings에는 임포징 옵션이
-        // 없어서, 이게 빠지면 임포징을 바꿔도 이전 캔버스를 재사용해 옛 모양이 남는다.
+        const colorKnown = new Set();          // 실제로 그려서 컬러 여부를 확인한 페이지
+        // 1:1 페이지의 캔버스 캐시 키에 쓰는 레이아웃 지문 — 임포징 상태(impSignature)를 포함해야
+        // 임포징만 바꿨을 때 옛 캔버스가 남지 않는다.
         const layoutSig = JSON.stringify(editSettings) + impSignature();
         const pnMap = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r]));
         const pvPageCacheNext = new Map();
-        for (let i = 1; i <= total; i++) {
-          if (myToken !== previewRenderToken) return;
+        const sigOf = (i) => {
           const src = canSelect ? srcMap[i - 1] : null;
-          let sig = null;
           if (src && src.length === 1) {
             const r = pnMap.get(src[0]);
-            if (r) sig = [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0, (r.isRoman || r.isTocPage) ? 1 : 0, (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
-          } else {
-            // 임포징 시트처럼 원본 1:1 매핑이 없는 페이지 — 결과 바이트 지문(fp)이 같으면
-            // 내용이 완전히 같으므로 이전 캔버스를 그대로 쓴다. 이게 없으면 임포징 미리보기는
-            // 같은 결과를 다시 볼 때마다(적용 후 재렌더·모드 전환) 전 시트를 다시 그렸다.
-            sig = ['imp', pxW, fp, i, total].join('|');
+            if (r) return [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0,
+                           (r.isRoman || r.isTocPage) ? 1 : 0,
+                           (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
+            return null;
           }
+          // 임포징 시트처럼 원본 1:1 매핑이 없는 페이지 — 결과 바이트 지문(fp)이 같으면 내용도 같다
+          return ['imp', pxW, fp, i, total].join('|');
+        };
+        // 자리 크기용 기준 치수(1페이지) — 시트는 크기가 같으므로 이걸로 자리를 잡고,
+        // 실제로 그릴 때 그 페이지의 진짜 치수로 바로잡는다.
+        let refW = 0, refH = 0;
+        try {
+          const p1 = await pdf.getPage(1);
+          const v1 = p1.getViewport({ scale: 1 });
+          refW = v1.width; refH = v1.height;
+        } catch (e) {}
+        if (myToken !== previewRenderToken) return;
+
+        const cellsByIdx = new Map();          // i → { cell, canvas, sbCanvas, sbItem }
+        for (let i = 1; i <= total; i++) {
+          const src = canSelect ? srcMap[i - 1] : null;
+          const sig = sigOf(i);
           const cached = sig ? _pvPageCache.get(i) : null;
-          let canvas, isColor, pagePtW = 0, pagePtH = 0;   // pt 크기 — 기하 오버레이(여백·제본여백) 계산용
-          if (cached && cached.sig === sig) {
-            canvas = document.createElement('canvas');
+          const hit = !!(cached && cached.sig === sig);
+          const selected = !!(src && src.length && src.every(pn => selectedPages.has(pn)));
+
+          const canvas = document.createElement('canvas');
+          canvas.className = 'pv-canvas';
+          let pagePtW = 0, pagePtH = 0, isColor = null;
+          if (hit) {
             canvas.width = cached.w; canvas.height = cached.h;
             canvas.getContext('2d').drawImage(cached.canvas, 0, 0);
             isColor = cached.isColor;
             pagePtW = cached.pw || 0; pagePtH = cached.ph || 0;
+            pvPageCacheNext.set(i, cached);
+            if (isColor) colorCount++;
+            colorKnown.add(i);
           } else {
-            const page = await pdf.getPage(i);
-            const vp1 = page.getViewport({ scale: 1 });
-            const vp = page.getViewport({ scale: pxW / vp1.width });
-            canvas = document.createElement('canvas');
-            canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-            await page.render({ canvasContext: canvas.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
-            if (myToken !== previewRenderToken) return;
-            isColor = canvasIsColor(canvas);
-            pagePtW = vp1.width; pagePtH = vp1.height;
+            // 아직 안 그린 자리 — 이전 그림이 있으면 흐리게 보여주고(pv-stale), 없으면 빈 자리
+            const prev = _pvPageCache.get(i);
+            if (prev && prev.canvas) {
+              canvas.width = prev.w; canvas.height = prev.h;
+              canvas.getContext('2d').drawImage(prev.canvas, 0, 0);
+              pagePtW = prev.pw || 0; pagePtH = prev.ph || 0;
+            } else if (refW > 0) {
+              canvas.width = Math.max(1, Math.round(pxW));
+              canvas.height = Math.max(1, Math.round(pxW * refH / refW));
+              const c2 = canvas.getContext('2d');
+              c2.fillStyle = '#fff'; c2.fillRect(0, 0, canvas.width, canvas.height);
+              pagePtW = refW; pagePtH = refH;
+            }
           }
-          if (sig) pvPageCacheNext.set(i, { sig, canvas, w: canvas.width, h: canvas.height, isColor, pw: pagePtW, ph: pagePtH });
-          if (isColor) colorCount++;
-          const selected = !!(src && src.length && src.every(pn => selectedPages.has(pn)));
-          // 메인 셀
-          canvas.className = 'pv-canvas';
-          const cell = document.createElement('div'); cell.className = 'pv-cell' + (selected ? ' pv-selected' : '');
+
+          const cell = document.createElement('div');
+          cell.className = 'pv-cell' + (selected ? ' pv-selected' : '') + (hit ? '' : ' pv-pending');
           if (pagePtW > 0) { cell.dataset.pw = pagePtW; cell.dataset.ph = pagePtH; }
           const num = document.createElement('div'); num.className = 'pv-num'; num.textContent = i;
           cell.append(canvas, num); mainFrag.appendChild(cell);
+
           // 사이드바 미니 썸네일 (메인과 동일 모양으로 다운스케일)
           const sc = document.createElement('canvas');
-          const sbw = 104, sbh = Math.max(1, Math.round(canvas.height * sbw / canvas.width));
+          const sbw = 104, sbh = Math.max(1, Math.round(canvas.height * sbw / Math.max(1, canvas.width)));
           sc.width = sbw; sc.height = sbh;
-          sc.getContext('2d').drawImage(canvas, 0, 0, sbw, sbh);
+          if (canvas.width) sc.getContext('2d').drawImage(canvas, 0, 0, sbw, sbh);
           sc.style.cssText = 'width:100%;height:auto;display:block;border-radius:3px;';
           const sbItem = document.createElement('div');
-          sbItem.className = 'sb-item' + (isColor ? ' sb-color-page' : ' sb-mono-page') + (selected ? ' sb-selected' : '');
+          sbItem.className = 'sb-item' + (isColor === true ? ' sb-color-page' : isColor === false ? ' sb-mono-page' : '')
+                           + (selected ? ' sb-selected' : '');
           sbItem.appendChild(sc);
           const sn = document.createElement('div'); sn.className = 'sb-num'; sn.textContent = i;
           sbItem.appendChild(sn);
           sbFrag.appendChild(sbItem);
-          // 클릭 → 해당 페이지 흑백 선택 토글 (조판 시 시트의 원본 페이지 전부)
+
           if (src) {
             const handler = () => togglePreviewSelect(src);
             cell.addEventListener('click', handler);
@@ -2119,7 +2180,6 @@
             pvCells.push({ cell, sbItem, src });
           }
           // 우클릭 → 원본 페이지 1:1 매칭(N-up 미적용)일 때만 기존 컨텍스트 메뉴 재사용
-          // (회전·삭제·빈 페이지 삽입 — 조판 미리보기 중에도 편집 가능하도록)
           if (src && src.length === 1) {
             const pageNum = src[0];
             const ctxHandler = e => {
@@ -2130,8 +2190,7 @@
             cell.addEventListener('contextmenu', ctxHandler);
             sbItem.addEventListener('contextmenu', ctxHandler);
           }
-          // 큰 문서에서도 UI가 멈추지 않게 가끔 양보
-          if (opts.live && i % 8 === 0) await new Promise(r => setTimeout(r));
+          if (!hit) cellsByIdx.set(i, { cell, canvas, sbCanvas: sc, sbItem, sig });
         }
         if (myToken !== previewRenderToken) return;
         _pvPageCache = pvPageCacheNext;
@@ -2154,8 +2213,21 @@
         note.textContent = '';
         setAnalysisGridVisible(false);
         section.style.display = 'block';
-        // 출력 결과 기준으로 컬러/흑백 통계 갱신
+        // 출력 결과 기준 컬러/흑백 통계 — 아직 안 그린 셀이 있으면 그려지는 대로 채워진다
         setStatCounts(total, colorCount);
+        // 화면에 보이는 셀부터 그리고, 나머지는 배경에서 이어서 채운다(총 작업량·화질은 동일)
+        if (cellsByIdx.size) {
+          keepPdf = true;
+          runLazyPreviewRender({
+            pdf, bytes, byteLen: bytes.length, myToken, pxW, cellsByIdx, cache: pvPageCacheNext, grid, note, total,
+            onColor: (i, isColor) => {
+              if (colorKnown.has(i)) return;
+              colorKnown.add(i);
+              if (isColor) colorCount++;
+              setStatCounts(total, colorCount);
+            },
+          });
+        }
       } catch (e) {
         console.error('미리보기 렌더 실패:', e);
       } finally {
@@ -2164,8 +2236,140 @@
         if (pdf && !keepPdf) { try { await pdf.destroy(); } catch (e) {} }
       }
     }
+
+    // ── 미리보기 지연 렌더 엔진 ────────────────────────────────────────────────
+    // 화면에 보이는 셀 → 가까운 셀 → 나머지 순으로 그린다. 중간에 새 렌더가 시작되면
+    // (previewRenderToken 변경) 즉시 멈춘다. 그리는 내용·해상도는 예전과 완전히 동일하다.
+    // 그리는 순서만 바꾼 것이므로 결과물·화질에는 영향이 없다.
+    let _lazyStop = null;                       // 진행 중인 지연 렌더 중단 함수
+    const LAZY_MARGIN = 600;                    // 화면 밖 이만큼(px)까지는 미리 그려 둔다
+
+    // ── 병렬 렌더 ──────────────────────────────────────────────────────────────
+    // 실측: pdf.js는 이미지 디코드를 자기 워커에서 하므로, 같은 바이트로 문서를 K개 띄우면
+    // 거의 선형으로 빨라진다(32시트 2,508ms → 2개 1,339 / 3개 1,009 / 4개 847ms).
+    // 대신 문서마다 PDF 바이트 사본을 가지므로 큰 출력에서는 개수를 줄여 메모리를 지킨다.
+    function previewPoolSize(byteLen, jobs) {
+      if (jobs < 8) return 1;                   // 몇 장 안 되면 문서 띄우는 값이 더 든다
+      const cores = navigator.hardwareConcurrency || 4;
+      const mb = (byteLen || 0) / 1048576;
+      let k = mb <= 30 ? 4 : mb <= 80 ? 3 : mb <= 200 ? 2 : 1;
+      k = Math.min(k, Math.max(1, Math.floor(cores / 4)), Math.ceil(jobs / 4));
+      return Math.max(1, k);
+    }
+
+    function stopLazyPreviewRender() { if (_lazyStop) { _lazyStop(); _lazyStop = null; } }
+
+    function runLazyPreviewRender(ctx) {
+      stopLazyPreviewRender();
+      const { pdf, bytes, byteLen, myToken, pxW, cellsByIdx, cache, grid, note, total, onColor } = ctx;
+      let cancelled = false;
+      let observer = null;
+      const pending = new Set(cellsByIdx.keys());
+      const priority = [];                      // 화면에 들어온 셀 (먼저 그린다)
+      _lazyStop = () => {
+        cancelled = true;
+        if (observer) { try { observer.disconnect(); } catch (e) {} }
+      };
+
+      // 보이는 셀을 우선순위 큐에 넣는다 — 스크롤하면 그 위치가 즉시 앞줄로 온다
+      try {
+        observer = new IntersectionObserver((entries) => {
+          for (const en of entries) {
+            if (!en.isIntersecting) continue;
+            const i = +en.target.dataset.pvIdx;
+            if (pending.has(i) && !priority.includes(i)) priority.unshift(i);
+          }
+        }, { root: null, rootMargin: LAZY_MARGIN + 'px 0px' });
+        cellsByIdx.forEach((c, i) => { c.cell.dataset.pvIdx = i; observer.observe(c.cell); });
+      } catch (e) { observer = null; }
+
+      const nextIndex = () => {
+        while (priority.length) {
+          const i = priority.shift();
+          if (pending.has(i)) return i;
+        }
+        return pending.size ? pending.values().next().value : null;
+      };
+
+      let doneCount = 0;
+      const totalToDraw = pending.size;
+      const extraDocs = [];
+      const releaseExtras = async () => {
+        while (extraDocs.length) { const d = extraDocs.pop(); try { await d.destroy(); } catch (e) {} }
+      };
+
+      const drawLoop = async (doc) => {
+        while (!cancelled && pending.size) {
+          if (myToken !== previewRenderToken) break;
+          const i = nextIndex();
+          if (i == null) break;
+          pending.delete(i);
+          const c = cellsByIdx.get(i);
+          if (!c || !c.cell.isConnected) continue;
+          try {
+            const page = await doc.getPage(i);
+            if (cancelled || myToken !== previewRenderToken) break;
+            const vp1 = page.getViewport({ scale: 1 });
+            const vp = page.getViewport({ scale: pxW / vp1.width });
+            const off = document.createElement('canvas');
+            off.width = Math.ceil(vp.width); off.height = Math.ceil(vp.height);
+            await page.render({ canvasContext: off.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
+            if (cancelled || myToken !== previewRenderToken) break;
+            const isColor = canvasIsColor(off);
+            // 자리 잡아둔 캔버스에 실제 그림을 옮겨 담는다(요소 교체 없이 → 스크롤 위치 유지)
+            const cv = c.canvas;
+            cv.width = off.width; cv.height = off.height;
+            cv.getContext('2d').drawImage(off, 0, 0);
+            c.cell.classList.remove('pv-pending');
+            c.cell.dataset.pw = vp1.width; c.cell.dataset.ph = vp1.height;
+            // 사이드바 미니 썸네일도 같이 갱신
+            const sbw = 104, sbh = Math.max(1, Math.round(off.height * sbw / off.width));
+            c.sbCanvas.width = sbw; c.sbCanvas.height = sbh;
+            c.sbCanvas.getContext('2d').drawImage(off, 0, 0, sbw, sbh);
+            c.sbItem.classList.toggle('sb-color-page', isColor);
+            c.sbItem.classList.toggle('sb-mono-page', !isColor);
+            cache.set(i, { sig: c.sig, canvas: off, w: off.width, h: off.height, isColor, pw: vp1.width, ph: vp1.height });
+            if (onColor) onColor(i, isColor);
+            page.cleanup();
+          } catch (e) {
+            if (!cancelled) console.warn('미리보기 페이지 렌더 실패:', i, e);
+          }
+          doneCount++;
+          if (note && pending.size) note.textContent = `미리보기 채우는 중… ${doneCount}/${totalToDraw}`;
+          else if (note) note.textContent = '';
+          // 화면 조작이 끊기지 않게 매 페이지마다 양보 (배경 채우기는 낮은 우선순위)
+          await new Promise(r => setTimeout(r));
+        }
+      };
+
+      (async () => {
+        const loops = [drawLoop(pdf)];
+        // 병렬 문서는 보이는 셀을 먼저 띄운 뒤에 만든다 — 첫 화면이 늦어지지 않게.
+        const k = previewPoolSize(byteLen, totalToDraw);
+        if (k > 1) {
+          (async () => {
+            for (let n = 1; n < k; n++) {
+              if (cancelled || myToken !== previewRenderToken || !pending.size) break;
+              try {
+                const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+                if (cancelled || myToken !== previewRenderToken) { try { await doc.destroy(); } catch (e) {} break; }
+                extraDocs.push(doc);
+                loops.push(drawLoop(doc));
+              } catch (e) { break; }
+            }
+          })();
+        }
+        // 새로 합류하는 루프까지 모두 끝날 때까지 기다린다
+        while (loops.length) { const cur = loops.splice(0); await Promise.all(cur); }
+        await releaseExtras();
+        if (observer) { try { observer.disconnect(); } catch (e) {} }
+        if (!cancelled && note && myToken === previewRenderToken) note.textContent = '';
+        if (typeof updateGeometryOverlays === 'function' && !cancelled) updateGeometryOverlays();
+      })();
+    }
     function closePreview() {
       previewRenderToken++; // 진행 중 렌더 취소
+      stopLazyPreviewRender();
       releasePreviewDoc();  // 상주 pdf.js 문서 해제(메모리 회수)
       _pvCells = [];
       const s = document.getElementById('previewSection');
@@ -2325,14 +2529,21 @@
       if (typeof updateEbNote === 'function') updateEbNote();   // 📖 시안 예상 용량
       const wsb = g('workSaveBtn');
       if (wsb) wsb.disabled = !originalPdfBytes;                // 💼 문서가 있어야 작업 저장
+      const ebb = g('ebGenBtn');
+      if (ebb) ebb.disabled = !originalPdfBytes;                // 📖 문서가 있어야 시안 생성
       g('sb-opt-bw').classList.toggle('active', !!processingOptions.bw);
       const sbInk = g('sb-opt-inkNorm');
       if (sbInk) sbInk.classList.toggle('active', !!processingOptions.inkNorm);
       // 좌측 패널 적용/다운로드 버튼 상태는 직접 계산 (상단 툴바 버튼은 제거됨 — 여기와 오른쪽 편집 패널로 통합)
+      // 판정은 메인 버튼(updateDownloadBtn)과 **같은 조건**이어야 한다 — 임포징·블리드·
+      // 폰트 안전화가 빠져 있어서, 임포징만 켠 상태에서 좌측 '✔ 적용'만 회색으로 남았다.
       const anyActive = Object.values(processingOptions).some(v => v);
       const hasMod = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0
                      || (typeof hasAnyActiveLayout === 'function' && hasAnyActiveLayout())
-                     || (typeof hasContentEdits === 'function' && hasContentEdits()));
+                     || (typeof hasContentEdits === 'function' && hasContentEdits())
+                     || (typeof impIncluded === 'function' && impIncluded())
+                     || (typeof _bleedEnabled !== 'undefined' && _bleedEnabled)
+                     || (typeof _outlineEnabled !== 'undefined' && _outlineEnabled));
       const upToDate = !!processedPdfBytes;
       g('sb-applyBtn').disabled    = applying || !hasMod || upToDate;
       g('sb-downloadBtn').disabled = applying || !originalPdfBytes;

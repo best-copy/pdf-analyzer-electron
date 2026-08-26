@@ -44,10 +44,27 @@
       const note = document.getElementById('previewNote');
       if (sec && sec.style.display !== 'none' && note) note.textContent = '갱신 중…';
       clearTimeout(_livePvTimer);
-      // 임포징 포함 상태는 시트 재조립 비용이 커서(전체 페이지 의존) 디바운스를 늘린다 —
-      // 슬라이더·숫자칸을 연속으로 만질 때 중간 단계마다 전체 조립하는 낭비를 없앤다.
+      // 슬라이더를 잡고 있는 동안(또는 숫자칸을 연타하는 동안)에는 갱신을 미룬다.
+      // 중간 단계마다 전체 조립·렌더를 돌리면 손을 떼기 전까지 계속 밀린다 → 놓을 때 1회만.
+      if (_uiInteracting) { _livePvPending = true; return; }
+      // 임포징 포함 상태는 시트 재조립 비용이 커서(전체 페이지 의존) 디바운스를 늘린다.
       _livePvTimer = setTimeout(runLivePreview, _impEnabled ? 420 : 120);
     }
+    // ── 조작 중 갱신 보류 ──────────────────────────────────────────────────────
+    // 범위 슬라이더는 드래그하는 내내 input 이벤트를 쏟아낸다. 잡고 있는 동안에는 예약만
+    // 해 두고, 놓는 순간 한 번만 반영한다(품질·결과는 동일, 중간 계산만 없앤다).
+    let _uiInteracting = false, _livePvPending = false;
+    function endUiInteraction() {
+      if (!_uiInteracting) return;
+      _uiInteracting = false;
+      if (_livePvPending) { _livePvPending = false; scheduleLivePreview(); }
+    }
+    document.addEventListener('pointerdown', (e) => {
+      const t = e.target;
+      if (t && t.tagName === 'INPUT' && t.type === 'range') _uiInteracting = true;
+    }, true);
+    ['pointerup', 'pointercancel', 'blur'].forEach(ev =>
+      document.addEventListener(ev, endUiInteraction, true));
     async function runLivePreview() {
       if (applying || _liveRunning) { _liveQueued = true; return; }
       if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }
@@ -55,6 +72,9 @@
       // 캐시가 히트하는 짧은 갱신에선 깜빡이지 않도록, 200ms 넘게 걸릴 때만 '처리중' 상태창 표시
       let loadingShown = false;
       const loadingTimer = setTimeout(() => { loadingShown = true; showLoading('편집 내용 반영 중...'); }, 200);
+      // 조립을 시작하는 시점의 설정 지문 — 조립 도중 사용자가 값을 바꿨다면 결과 바이트는
+      // 이미 낡은 것이므로 '저장하고 닫기'가 재사용하지 못하게 표식을 남기지 않는다.
+      const sigAtStart = optSignature();
       try {
         const base = await buildBaseProcessed();
         let pdfBytes = base.bytes;
@@ -73,6 +93,9 @@
         processedPdfBytes = pdfBytes;
         directOutputBytes = null;   // 파이프라인 결과 — 다운로드는 재조립 경로 사용
         processedFileName = defaultProcessedName();
+        // 이 결과가 어떤 설정으로 만들어졌는지 기록 — '💾 저장하고 닫기'가 같은 설정이면
+        // 똑같은 파이프라인을 한 번 더 돌리지 않고 이 결과를 그대로 쓴다(임포징 재조립 생략).
+        _processedSig = (optSignature() === sigAtStart) ? sigAtStart : null;
         setDirty(true);
         updateDownloadBtn();
         await renderProcessedPreview(pdfBytes, { live: true });
@@ -273,7 +296,15 @@
     // 모든 페이지를 한 번에 copyPages(리소스 공유)하고 선택 페이지만 제자리 변환해
     // 파일 크기를 최소화한다. (변환은 이 순간 한 번만 수행)
     async function buildBaseOptimized(onProgress) {
-      const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0));
+      // base는 편집 옵션·임포징 옵션과 무관하다(페이지 순서·회전·흑백변환·내부편집만 반영).
+      // 그래서 baseSignature()로 캐시해 두면 여백 1mm·거터 1mm 같은 조작에서 전 페이지
+      // 재변환을 통째로 건너뛴다. 캐시 무효화는 clearProcessCaches 한 곳에서만.
+      const cacheSig = baseSignature();
+      if (_optBaseCache.sig === cacheSig && _optBaseCache.bytes) {
+        if (onProgress) onProgress(100);
+        return { bytes: _optBaseCache.bytes, stats: _optBaseCache.stats };
+      }
+      const srcDoc = await getSourceDoc();   // 공유 캐시(적용 경로와 같은 문서) — 반복 파싱 제거
       const outDoc = await PDFLib.PDFDocument.create();
       const valid  = pageResults.filter(Boolean);
       if (onProgress) onProgress(5);
@@ -320,7 +351,10 @@
         await runBatch(toConvert.filter(x => !x.r.isColor), 0);          // 회색 → Dot Gain 미적용
       }
       if (onProgress) onProgress(94);
-      return { bytes: await outDoc.save({ useObjectStreams: false, updateFieldAppearances: false }), stats };
+      const outBytes = await outDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+      // 저장 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않는다 — 낡은 base가 남는 사고 방지
+      if (baseSignature() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
+      return { bytes: outBytes, stats };
     }
     // 다운로드용 최종 바이트 (용량 최적화 base + 레이아웃 변환)
     // 결과를 상태 시그니처로 캐시 — 적용 직후 백그라운드 프리웜(prewarmOptimizedOutput)이
@@ -6875,6 +6909,10 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
             docState: captureDocState(),
             quote: (typeof quoteItems !== 'undefined' && quoteItems) ? JSON.parse(JSON.stringify(quoteItems)) : [],
             edits,
+            // 저장 시점에 '✔ 적용'까지 마친 상태였는지. 열 때 이 표식이 있으면 같은
+            // 파이프라인을 다시 돌려 적용 결과 화면·다운로드 가능 상태까지 복원한다.
+            // (예전엔 설정만 되살아나 "적용이 풀린 채" 열려, 작업 파일을 저장한 의미가 없었다)
+            applied: !!processedPdfBytes,
           },
           entries,
         };
@@ -6893,6 +6931,7 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
         showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(bytes.length / 1048576).toFixed(1)}MB`
           + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
+          + (manifest.state.applied ? ' · 적용 상태 포함' : '')
           + `\n이 파일을 더블클릭하면 지금 이 상태 그대로 다시 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
           + (others ? `\n※ 다른 탭 ${others}개는 담기지 않습니다 — 탭마다 따로 저장하세요.` : ''));
       } catch (e) {
@@ -6959,12 +6998,25 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         if (typeof clearProcessCaches === 'function') clearProcessCaches();
         if (typeof rerenderPages === 'function') rerenderPages();
         if (typeof syncSidebarPanel === 'function') syncSidebarPanel();
-        if (typeof scheduleLivePreview === 'function') scheduleLivePreview();
+        // 아래에서 곧바로 전체 적용을 돌릴 상태면 실시간 미리보기는 예약하지 않는다(이중 조립 방지)
+        if (!st.applied && typeof scheduleLivePreview === 'function') scheduleLivePreview();
 
         hideLoading();
-        showSuccess(`💼 작업을 이어서 엽니다 — ${describeWorkFile(manifest)}`
+        const restoreMsg = `💼 작업을 이어서 엽니다 — ${describeWorkFile(manifest)}`
           + `\n설정·페이지 순서·회전·선택${editN ? ' · 내부편집 ' + editN + '쪽' : ''}까지 저장 시점 그대로 복원했습니다.`
-          + (full ? '' : '\n※ 페이지 상태 일부는 복원하지 못했습니다(문서가 바뀐 것으로 보입니다) — 설정만 적용했습니다.'));
+          + (full ? '' : '\n※ 페이지 상태 일부는 복원하지 못했습니다(문서가 바뀐 것으로 보입니다) — 설정만 적용했습니다.');
+        // 저장 당시 '✔ 적용'까지 마친 작업이면 여기서 같은 파이프라인을 그대로 다시 돌린다.
+        // 작업 파일의 존재 이유가 "그 시점 그대로"인데, 설정만 복원하고 멈추면 사용자가
+        // 매번 '✔ 적용'을 다시 눌러야 해서 새로 여는 것과 다를 바가 없었다.
+        if (st.applied) {
+          showSuccess(restoreMsg + '\n⏳ 저장 시점의 적용 결과를 다시 만드는 중…');
+          try { await applyChanges(); }
+          catch (e) { console.warn('작업 파일 자동 적용 실패:', e); }
+          showSuccess(restoreMsg
+            + `\n✔ 저장 시점의 적용 결과까지 복원했습니다 — 바로 '⇩ 다운로드'로 저장하면 됩니다.`);
+        } else {
+          showSuccess(restoreMsg);
+        }
         return true;
       } catch (e) {
         hideLoading();
@@ -7032,4 +7084,134 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       } else {
         showError('연결 등록 실패: ' + ((r && r.error) || '알 수 없는 오류'));
       }
+    }
+
+    // ── 📐 가로 페이지 자동 세로 맞춤 ──────────────────────────────────────────
+    // 세로 원고에 가로 원고가 섞여 있으면 임포징·인쇄에서 한 장만 눕게 된다.
+    // 아크로뱃에서 일일이 돌려 저장할 필요 없이, 앱이 방향이 다른 페이지만 90° 돌려 맞춘다.
+    // 회전은 기존 페이지별 회전(r.rotation)을 그대로 쓰므로 미리보기·적용·다운로드·임포징에
+    // 자동으로 함께 반영되고, Ctrl+Z로 되돌릴 수 있다.
+    const AUTO_ORIENT_KEY = 'autoOrientPages';
+    function autoOrientCfg() {
+      try {
+        const c = JSON.parse(localStorage.getItem(AUTO_ORIENT_KEY) || '{}');
+        return { on: c.on !== false, dir: c.dir === 'right' ? 'right' : 'left' };   // 기본: 켜짐 · 왼쪽 90°
+      } catch (e) { return { on: true, dir: 'left' }; }
+    }
+    function saveAutoOrientCfg(c) {
+      try { localStorage.setItem(AUTO_ORIENT_KEY, JSON.stringify(c)); } catch (e) {}
+    }
+    function setAutoOrient(on) {
+      const c = autoOrientCfg(); c.on = !!on; saveAutoOrientCfg(c); syncAutoOrientUI();
+    }
+    function setAutoOrientDir(dir) {
+      const c = autoOrientCfg(); c.dir = dir === 'right' ? 'right' : 'left'; saveAutoOrientCfg(c); syncAutoOrientUI();
+    }
+    function syncAutoOrientUI() {
+      const c = autoOrientCfg();
+      const chk = document.getElementById('esAutoOrient');
+      if (chk && chk.checked !== c.on) chk.checked = c.on;
+      document.querySelectorAll('[data-aodir]').forEach(b =>
+        b.classList.toggle('active', b.dataset.aodir === c.dir));
+      const info = document.getElementById('esAutoOrientInfo');
+      if (!info) return;
+      if (!pageResults.filter(Boolean).length) { info.textContent = '문서를 열면 방향이 다른 페이지를 알려줍니다.'; return; }
+      const s = countMisorientedPages();
+      info.textContent = !s.base ? '페이지 방향을 판단할 수 없습니다.'
+        : s.n ? `대부분 ${s.base === 'portrait' ? '세로' : '가로'}인데 방향이 다른 페이지가 ${s.n}쪽 있습니다.`
+              : `모든 페이지가 ${s.base === 'portrait' ? '세로' : '가로'}로 방향이 같습니다.`;
+    }
+
+    // 화면에 보이는 방향(원본 /Rotate + 앱에서 건 회전까지 반영)
+    function pageDisplayOrient(r) {
+      if (!r) return null;
+      let w, h;
+      if (r.isBlank) { const s = r.pageSize || [595.28, 841.89]; w = s[0]; h = s[1]; }
+      else if (r.pageWpt) { w = r.pageWpt; h = r.pageHpt; }        // pdf.js 뷰포트 = /Rotate 반영 크기
+      else if (r.thumbW) { w = r.thumbW; h = r.thumbH; }           // 폴백: 썸네일 픽셀
+      else return null;
+      const rot = ((((r.rotation || 0) % 360) + 360) % 360);
+      if (rot === 90 || rot === 270) { const t = w; w = h; h = t; }
+      if (w > h * 1.02) return 'landscape';
+      if (h > w * 1.02) return 'portrait';
+      return 'square';                                             // 정사각형에 가까우면 건드리지 않는다
+    }
+    // 문서의 다수 방향 — 이걸 기준으로 소수 페이지만 돌린다
+    function docMajorOrient(list) {
+      let p = 0, l = 0;
+      (list || []).forEach(r => {
+        const o = pageDisplayOrient(r);
+        if (o === 'portrait') p++; else if (o === 'landscape') l++;
+      });
+      if (!p && !l) return null;
+      return l > p ? 'landscape' : 'portrait';                     // 동수면 세로 기준
+    }
+    // 방향이 다른 페이지 수 (안내·버튼 활성화용)
+    function countMisorientedPages() {
+      const valid = pageResults.filter(Boolean);
+      const base = docMajorOrient(valid);
+      if (!base) return { base: null, n: 0, total: valid.length };
+      let n = 0;
+      valid.forEach(r => { const o = pageDisplayOrient(r); if (o && o !== 'square' && o !== base) n++; });
+      return { base, n, total: valid.length };
+    }
+
+    // 실제 적용 — silent=true면 안내 문구를 띄우지 않는다(문서 열 때 자동 실행용은 따로 안내)
+    function autoOrientPages(dir, silent) {
+      const valid = pageResults.filter(Boolean);
+      if (!valid.length) { if (!silent) showError('먼저 PDF를 열어주세요.'); return { n: 0 }; }
+      const { base, n } = countMisorientedPages();
+      if (!base || !n) {
+        if (!silent) showSuccess('모든 페이지 방향이 이미 같습니다 — 돌릴 페이지가 없습니다.');
+        return { n: 0, base };
+      }
+      const d = (dir || autoOrientCfg().dir) === 'right' ? 90 : 270;   // 왼쪽 90° = 270(시계 기준)
+      if (typeof pushHistory === 'function') pushHistory();
+      const targets = [];
+      valid.forEach(r => {
+        const o = pageDisplayOrient(r);
+        if (!o || o === 'square' || o === base) return;
+        r.rotation = ((((r.rotation || 0) + d) % 360) + 360) % 360;
+        targets.push(r.pageNum);
+      });
+      if (typeof renderAllPages === 'function') renderAllPages(pageResults);
+      if (typeof renderSidebar === 'function') renderSidebar(pageResults);
+      if (typeof setPageEdited === 'function') setPageEdited();
+      else { pageEdited = true; processedPdfBytes = null; }
+      if (typeof updateDownloadBtn === 'function') updateDownloadBtn();
+      if (typeof updateUndoBtn === 'function') updateUndoBtn();
+      if (typeof syncAutoOrientUI === 'function') syncAutoOrientUI();
+      const dirName = d === 270 ? '왼쪽' : '오른쪽';
+      if (!silent) {
+        showSuccess(`📐 ${targets.length}쪽을 ${dirName} 90° 회전해 ${base === 'portrait' ? '세로' : '가로'}로 맞췄습니다`
+          + ` — ${targets.slice(0, 12).join(', ')}${targets.length > 12 ? ' …' : ''}쪽\n`
+          + `이제 임포징·인쇄에서 다른 페이지와 같은 방향으로 나옵니다. (되돌리기 Ctrl+Z)`);
+      }
+      scheduleLivePreview();
+      return { n: targets.length, base, pages: targets, dir: dirName };
+    }
+
+    // 문서 분석이 끝났을 때 자동 실행 (설정이 켜져 있고, 방향이 섞여 있을 때만)
+    function maybeAutoOrientAfterAnalyze() {
+      try {
+        // 작업 파일(.pdfw)로 복원하는 중이면 저장된 회전을 존중한다 — 끼어들지 않는다
+        if (typeof _openingWorkFile !== 'undefined' && _openingWorkFile) return;
+        const cfg = autoOrientCfg();
+        const info = countMisorientedPages();
+        syncAutoOrientUI();
+        if (!info.n) return;
+        if (!cfg.on) {
+          showSuccess(`📐 방향이 다른 페이지 ${info.n}쪽이 있습니다`
+            + ` (${info.base === 'portrait' ? '대부분 세로인데 가로' : '대부분 가로인데 세로'} 페이지).\n`
+            + `✏ 편집 → '📐 가로 페이지 자동 세로 맞춤'을 누르면 한 번에 맞춥니다.`);
+          return;
+        }
+        const r = autoOrientPages(cfg.dir, true);
+        if (r.n) {
+          showSuccess(`📐 방향이 다른 ${r.n}쪽을 ${r.dir} 90° 회전해 자동으로 맞췄습니다`
+            + ` (${r.pages.slice(0, 12).join(', ')}${r.pages.length > 12 ? ' …' : ''}쪽).\n`
+            + `임포징·인쇄에서 다른 페이지와 같은 방향으로 나옵니다. 되돌리려면 Ctrl+Z,`
+            + ` 이 자동 기능을 끄려면 ✏ 편집 → '📐 자동 세로 맞춤' 체크를 해제하세요.`);
+        }
+      } catch (e) { console.warn('자동 방향 맞춤 실패:', e); }
     }

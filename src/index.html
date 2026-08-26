@@ -577,6 +577,21 @@
 
 
     <!-- 1. 크기 / 배율 -->
+    <!-- 📐 가로 페이지 자동 세로 맞춤 — 세로 원고에 섞인 가로 원고를 90° 돌려 방향을 통일 -->
+    <div class="es-section" id="secAutoOrient">
+      <div class="es-section-title"><span class="ic">📐</span> 페이지 방향 맞춤</div>
+      <div class="es-hint" id="esAutoOrientInfo" style="margin:2px 0 8px;">방향이 다른 페이지를 찾는 중…</div>
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:#d1d1d6;" title="문서를 열 때 방향이 다른 페이지(대부분 세로인데 가로인 쪽 등)를 자동으로 90° 돌려 맞춥니다. Ctrl+Z로 되돌릴 수 있습니다">
+        <input type="checkbox" id="esAutoOrient" checked style="accent-color:#ffd60a; width:15px; height:15px;" onchange="setAutoOrient(this.checked)"> 열 때 자동으로 방향 맞춤
+      </label>
+      <div class="es-row" style="margin-top:6px;">
+        <span class="es-label">회전 방향</span>
+        <button class="es-chip active" data-aodir="left" onclick="setAutoOrientDir('left')" title="가로 페이지를 반시계 방향으로 90° 돌립니다 (아크로뱃의 '왼쪽으로 회전'과 같음)">↺ 왼쪽 90°</button>
+        <button class="es-chip" data-aodir="right" onclick="setAutoOrientDir('right')" title="가로 페이지를 시계 방향으로 90° 돌립니다">↻ 오른쪽 90°</button>
+      </div>
+      <button class="es-chip" style="width:100%; margin-top:8px;" onclick="autoOrientPages()" title="지금 바로 방향이 다른 페이지만 골라 90° 회전합니다">📐 지금 방향 맞추기</button>
+    </div>
+
     <div class="es-section" id="secScale">
       <div class="es-section-title"><span class="ic">📐</span> 크기 · 배율</div>
       <div class="es-btngroup">

@@ -945,6 +945,13 @@
     .sbp-apply:not(:disabled):hover { background: #ffdf3a !important; }
     .sbp-dl    { background: #1d1d1f; border-color: rgba(255,255,255,0.2); color: #ffd60a; }
     .sbp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* 색은 '지금 실제로 되는 것'에만 — 비활성 버튼은 노랑을 벗고 회색으로 돌아간다.
+       (노랑이 항상 켜져 있으면 어떤 버튼이 지금 유효한지 한눈에 구분되지 않는다) */
+    .sbp-apply:disabled {
+      background: #1c1c1e; border-color: rgba(255,255,255,0.14); color: #8e8e93; opacity: 0.6;
+    }
+    /* 다운로드: 적용본이 없으면(btn-dim) 노랑 글자를 빼고 회색으로 — 우클릭 원본 저장은 계속 가능 */
+    .sbp-dl:disabled, .sbp-dl.btn-dim { color: #8e8e93; border-color: rgba(255,255,255,0.14); }
     /* 적용 전이라 적용본은 없지만, 우클릭으로 원본 저장이 가능한 상태 표시 */
     .btn-dim:not(:disabled) { opacity: 0.55; cursor: pointer; }
     /* '적용 필요' 강조 — 자동 반영이 꺼져 있어 설정만 바뀌고 화면은 그대로인 상태.
@@ -1282,6 +1289,13 @@
        grayscale은 쓰지 않는다: 컬러 페이지가 회색으로 보여 "컬러 표시가 풀렸다"로 오인됨
        (흐림 + 번호 옆 '클릭하면 반영' 문구만으로 스테일 표시는 충분) */
     .pv-cell.pv-stale .pv-canvas { opacity: 0.45; }
+    /* 아직 그리기 전인 셀 — 자리는 잡혀 있고 곧 채워진다(지연 렌더) */
+    .pv-cell.pv-pending .pv-canvas { opacity: 0.35; background: #fff; }
+    .pv-cell.pv-pending::after {
+      content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 22px;
+      background: repeating-linear-gradient(-45deg, rgba(0,0,0,0.035) 0 8px, transparent 8px 16px);
+      pointer-events: none;
+    }
     .pv-cell.pv-stale .pv-num::after { content: ' · 클릭하면 반영'; color: #aeaeb2; font-weight: 400; }
     /* 📖 펼침 보기 — 실제 책을 펼친 모양: 1쪽=오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임.
        열 폭 상한으로 과확대 방지(화질), 중앙 정렬. 목적이 '펼침에서 이어지는 이미지 확인'
@@ -1334,6 +1348,9 @@
 
 /* ── 버튼 진행효과: 장시간 작업 중 노란 스윕 애니메이션 + 클릭 잠금 ─────────── */
 .btn-busy { position: relative; overflow: hidden; pointer-events: none; opacity: .75; }
+/* 작업 중에는 비활성이어도 흐려지지 않게 — '죽은 버튼'이 아니라 '만드는 중'으로 보여야 한다 */
+.btn-busy:disabled { opacity: .8; }
+.sbp-apply.btn-busy:disabled { background: #ffd60a; border-color: #ffd60a; color: #1d1d1f; opacity: .8; }
 .btn-busy::after {
   content: ''; position: absolute; inset: 0; border-radius: inherit;
   background: linear-gradient(90deg, transparent 20%, rgba(255, 214, 10, .45) 50%, transparent 80%);
