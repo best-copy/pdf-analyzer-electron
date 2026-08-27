@@ -69,6 +69,20 @@ ck('워터마크 SVG 인라인', html.includes('data:image/svg+xml'));
 ck('페이로드에 스프레드 포함', /"spreads":\[\[null,0\],\[1,2\]/.test(html.replace(/\s/g, '')));
 ck('재단선 비율 전달', /"trimPct":0\.014/.test(html));
 
+console.log('\n[3-b] 뷰어 구성요소 (책 넘김·페이지 목록·쪽 이동)');
+ck('왼쪽 페이지 목록 자리', html.includes('id="rail"') && html.includes('id="railBtn"'));
+ck('쪽 이동 입력·버튼', html.includes('id="jump"') && html.includes('id="jumpBtn"') && html.includes('id="jlbl"'));
+ck('책 느낌 토글', html.includes('id="paperBtn"'));
+ck('낱장 넘김(rotateY) 코드 포함', html.includes('rotateY(') && html.includes('preserve-3d'));
+ck('책등 그늘·종이 두께 스타일', html.includes('.gut{') && html.includes('.edge{'));
+// localStorage는 file:·data: 환경에서 접근 자체가 예외를 던진다 —
+// 감싸지 않으면 뷰어 스크립트가 첫 줄에서 죽어 화면이 통째로 빈다(실제로 그랬다).
+ck('localStorage 첫 접근이 try로 감싸짐', html.includes('try{ MM=Number(localStorage')
+   && !html.includes('var MM=Number(localStorage'));
+// 낱장을 미디어쿼리로 숨기면 윈도우 '애니메이션 표시'를 끈 PC에서 넘김이 아예 안 보인다
+ck('reduced-motion으로 낱장을 숨기지 않음',
+   !/prefers-reduced-motion[^}]*\\.leaf{display:none/.test(html));
+
 console.log('\n[4] 스크립트 조기 종료 방어');
 // 페이로드 문자열에 </script>가 들어가면 브라우저가 거기서 스크립트를 끊는다 → 뷰어 전체가 죽는다
 const evil = buildEbookProofHtml({

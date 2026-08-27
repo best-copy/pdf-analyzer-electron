@@ -6509,106 +6509,271 @@
 
     const EBOOK_CSS = `
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Malgun Gothic","맑은 고딕",sans-serif;overflow:hidden}
+body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Malgun Gothic","맑은 고딕",sans-serif;overflow:hidden}
 .bar{position:fixed;top:0;left:0;right:0;height:52px;background:#000;display:flex;align-items:center;gap:12px;padding:0 16px;z-index:20;border-bottom:1px solid #333}
-.bar .t{font-weight:700;font-size:0.95em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:30vw}
+.bar .t{font-weight:700;font-size:0.95em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26vw}
 .bar .spec{font-size:0.78em;color:#9a9a9e;white-space:nowrap}
 .bar .sp{flex:1}
 .b{border:none;border-radius:7px;padding:7px 12px;font-size:0.8em;font-weight:700;cursor:pointer;background:#2c2c2e;color:#f5f5f7;white-space:nowrap}
 .b:hover{background:#3a3a3c}
 .b.on{background:#ffd60a;color:#1d1d1f}
-.stage{position:fixed;top:52px;bottom:56px;left:0;right:0;display:flex;align-items:center;justify-content:center;padding:18px;overflow:auto}
-.spread{display:flex;gap:2px;align-items:flex-start;transition:opacity .18s}
+/* ── 왼쪽 페이지 썸네일 목록 ── */
+.rail{position:fixed;top:52px;bottom:56px;left:0;width:152px;background:#101012;border-right:1px solid #2c2c2e;overflow-y:auto;padding:10px 10px 20px;z-index:15;display:none}
+.railon .rail{display:block}
+.rail::-webkit-scrollbar{width:9px}
+.rail::-webkit-scrollbar-thumb{background:#3a3a3c;border-radius:5px}
+.ri{position:relative;margin-bottom:9px;cursor:pointer;border:2px solid transparent;border-radius:4px;overflow:hidden;background:#fff;box-shadow:0 3px 10px rgba(0,0,0,.5)}
+.ri img{display:block;width:100%;height:auto}
+.ri:hover{border-color:#5a5a5e}
+.ri.on{border-color:#ffd60a}
+.ri .rn{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.62);color:#f5f5f7;font-size:10.5px;text-align:center;padding:2px 0;font-weight:700}
+/* 책상 위에 책을 올려 둔 느낌 — 가운데가 밝고 가장자리로 갈수록 어두워진다 */
+.stage{position:fixed;top:52px;bottom:56px;left:0;right:0;display:flex;align-items:center;justify-content:center;padding:26px;overflow:auto;background:radial-gradient(ellipse at 50% 40%,#2b2b30 0%,#161618 62%,#0d0d0f 100%)}
+.railon .stage{left:152px}
+.spread{position:relative;display:flex;align-items:flex-start;perspective:2800px;transition:opacity .18s}
 .spread.turn{opacity:.2}
-.pg{position:relative;background:#fff;box-shadow:0 10px 34px rgba(0,0,0,.55);flex:none}
-.pg.blank{background:#26262a;box-shadow:none}
+.pg{position:relative;background:#fff;flex:none;box-shadow:0 14px 34px rgba(0,0,0,.5)}
 .pg img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+.pg.blank{background:rgba(255,255,255,.04);box-shadow:none}
 .pg .no{position:absolute;bottom:-22px;left:0;right:0;text-align:center;font-size:0.72em;color:#8e8e93}
 .trim{position:absolute;border:1px dashed rgba(255,70,70,.9);pointer-events:none}
 .wm{position:absolute;inset:0;pointer-events:none;background-repeat:repeat;opacity:.15}
-.nav{position:fixed;top:52px;bottom:56px;width:15%;cursor:pointer;z-index:10;opacity:0;transition:opacity .15s;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff}
+/* ── 책 느낌(body.paper) ── 색을 정확히 봐야 할 때는 툴바에서 끌 수 있다 ── */
+.paper .spread{filter:drop-shadow(0 22px 28px rgba(0,0,0,.55))}
+.paper .pg{box-shadow:none}
+.paper .pg.l{border-radius:3px 0 0 3px}
+.paper .pg.r{border-radius:0 3px 3px 0}
+/* 책등(gutter) 그늘 — 실제 책은 안쪽이 접혀 어둡다 */
+.gut{position:absolute;top:0;bottom:0;pointer-events:none;display:none}
+.paper .gut{display:block}
+/* 넘긴 쪽·남은 쪽이 쌓인 두께 — 읽어갈수록 왼쪽이 두꺼워진다 */
+.edge{position:absolute;pointer-events:none;display:none;border-radius:2px;background:repeating-linear-gradient(90deg,#f6f6f2 0 1px,#c8c8c2 1px 2px);box-shadow:0 10px 18px rgba(0,0,0,.45)}
+.paper .edge{display:block}
+/* 넘어가는 낱장 — 앞면/뒷면을 가진 실제 종이 한 장 */
+.leaf{position:absolute;transform-style:preserve-3d;z-index:9;pointer-events:none}
+.leaf .fc{position:absolute;inset:0;overflow:hidden;background:#fff;backface-visibility:hidden;-webkit-backface-visibility:hidden;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.leaf .fc img{display:block;width:100%;height:100%;object-fit:contain}
+.leaf .bk{transform:rotateY(180deg)}
+.leaf .sh{position:absolute;inset:0;background:#000;pointer-events:none}
+.nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;opacity:0;transition:opacity .15s;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff}
 .nav:hover{opacity:.8;background:linear-gradient(90deg,rgba(0,0,0,.45),transparent)}
-.nav.r{right:0}
+.railon .nav{left:152px}
+.nav.r{left:auto;right:0}
+.railon .nav.r{left:auto}
 .nav.r:hover{background:linear-gradient(270deg,rgba(0,0,0,.45),transparent)}
 .foot{position:fixed;bottom:0;left:0;right:0;height:56px;background:#000;border-top:1px solid #333;display:flex;align-items:center;gap:12px;padding:0 16px;z-index:20}
 .foot input[type=range]{flex:1;accent-color:#ffd60a}
 .foot .n{font-size:0.8em;color:#c7c7cc;min-width:104px;text-align:center}
-.note{font-size:0.72em;color:#8e8e93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
+.jump{width:64px;background:#1c1c1e;color:#f5f5f7;border:1px solid #3a3a3c;border-radius:6px;padding:6px 8px;font-size:0.8em;text-align:center}
+.jlbl{font-size:0.76em;color:#8e8e93;white-space:nowrap}
+.note{font-size:0.72em;color:#8e8e93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw}
 .zoomv{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:40;display:none;align-items:center;justify-content:center;overflow:auto;cursor:zoom-out}
-@media print{body{background:#fff}.bar,.foot,.nav{display:none}}
+@media print{body{background:#fff}.bar,.foot,.nav,.rail,.edge{display:none}.stage{left:0}.paper .spread{filter:none}}
+/* 넘김 효과를 끄고 싶으면 툴바의 '📕 책 느낌'을 끄면 된다.
+   (예전에 여기서 prefers-reduced-motion으로 낱장을 숨겼더니, 윈도우 '애니메이션 표시'를
+    꺼 둔 PC에서는 책 넘김이 아예 안 보였다 — 실제로 이 개발 PC가 그 설정이었다) */
 `;
 
     // 뷰어 스크립트 — 이 문자열은 템플릿 리터럴 안으로 들어가지 않지만,
     // 편집 사고를 막기 위해 백틱과 달러중괄호를 쓰지 않는다.
     const EBOOK_JS = [
       '(function(){',
-      'var D=window.__PROOF__, S=D.spreads, V="book", i=0, real=false;',
+      'var D=window.__PROOF__, S=D.spreads, V="book", i=0, real=false, paper=true, rail=true, anim=0;',
       'var stage=document.getElementById("stage"), rng=document.getElementById("rng"), lbl=document.getElementById("lbl");',
-      'var MM=Number(localStorage.getItem("proofMM")||0)||3.7795;',
+      'var railEl=document.getElementById("rail"), jump=document.getElementById("jump"), jlbl=document.getElementById("jlbl");',
+      '// localStorage는 data:·일부 브라우저의 file:에서 접근 자체가 예외를 던진다 —',
+      '// 감싸지 않으면 뷰어 스크립트가 첫 줄에서 죽어 화면이 통째로 비었다.',
+      'var MM=3.7795;',
+      'try{ MM=Number(localStorage.getItem("proofMM")||0)||3.7795; }catch(e){}',
+      'var RTL=(D.meta.bind==="right");',
+      'try{ paper=(localStorage.getItem("proofPaper")!=="0"); rail=(localStorage.getItem("proofRail")!=="0"); }catch(e){}',
       'function imgs(){return V==="book"?D.book:D.sheets;}',
       'function views(){return V==="book"?S:D.sheets.map(function(_,k){return [k,null];});}',
       'function fit(sp){',
       '  var list=imgs(), w=0, h=0;',
       '  sp.forEach(function(p){ var im=(p==null)?null:list[p]; if(!im)return; w+=im.w; h=Math.max(h,im.h); });',
       '  if(!w)return 1;',
-      '  return Math.min((stage.clientWidth-40)/w,(stage.clientHeight-46)/h);',
+      '  // 뷰포트 크기를 못 얻는 환경(0×0 미리보기·인쇄 스냅샷)에서 음수 배율이 나오면',
+      '  // 페이지 상자가 0으로 찌그러져 화면이 빈 것처럼 보인다 → 최소 배율을 보장한다.',
+      '  var sc=Math.min((stage.clientWidth-70)/w,(stage.clientHeight-56)/h);',
+      '  return (isFinite(sc)&&sc>0.02)?sc:1;',
+      '}',
+      '// 그 페이지가 들어 있는 펼침면 번호 (없으면 -1)',
+      'function viewOfPage(p){ var Ls=views();',
+      '  for(var k=0;k<Ls.length;k++){ if(Ls[k][0]===p||Ls[k][1]===p) return k; } return -1; }',
+      '// 왼쪽 썸네일 목록 — 책 보기는 쪽마다, 인쇄 대수 보기는 시트마다 한 칸',
+      'function buildRail(){',
+      '  if(!railEl)return;',
+      '  var list=imgs(); railEl.innerHTML="";',
+      '  list.forEach(function(im,p){',
+      '    var d=document.createElement("div"); d.className="ri"; d.setAttribute("data-p",String(p));',
+      '    var g=new Image(); g.src=im.u; g.loading="lazy"; g.alt="";',
+      '    var n=document.createElement("div"); n.className="rn";',
+      '    n.textContent=(V==="book")?((p+1)+" 쪽"):((p+1)+" 시트");',
+      '    d.appendChild(g); d.appendChild(n);',
+      '    d.onclick=function(){ var k=viewOfPage(p); if(k>=0&&k!==i){ go(k-i); } };',
+      '    railEl.appendChild(d);',
+      '  });',
+      '  markRail();',
+      '}',
+      '// 지금 보고 있는 펼침면의 쪽을 목록에서 표시 + 화면 안으로 스크롤',
+      'function markRail(){',
+      '  if(!railEl)return;',
+      '  var sp=views()[i]||[], first=null;',
+      '  var kids=railEl.children;',
+      '  for(var k=0;k<kids.length;k++){',
+      '    var p=+kids[k].getAttribute("data-p");',
+      '    var on=(sp[0]===p||sp[1]===p);',
+      '    kids[k].classList.toggle("on",on);',
+      '    if(on&&first===null)first=kids[k];',
+      '  }',
+      '  if(first&&first.scrollIntoView){',
+      '    var rt=railEl.getBoundingClientRect(), ft=first.getBoundingClientRect();',
+      '    if(ft.top<rt.top||ft.bottom>rt.bottom)first.scrollIntoView({block:"nearest"});',
+      '  }',
+      '}',
+      '// 책 두께 — 넘긴 쪽(왼쪽)·남은 쪽(오른쪽)이 쌓인 종이 묶음.',
+      '// 쪽수가 아니라 「전체 중 몇 번째」 비율로 두께를 잡는다 — 얇은 책도 넘길수록',
+      '// 왼쪽이 두꺼워지는 것이 눈에 보인다(쪽수 비례로 하면 12쪽짜리는 티가 안 났다).',
+      'function edge(n,tot,H,left){',
+      '  var t=Math.max(2,Math.min(20,3+16*(n/Math.max(1,tot-1))));',
+      '  var e=document.createElement("div"); e.className="edge";',
+      '  e.style.width=t+"px"; e.style.top="5px"; e.style.height=Math.max(0,H-10)+"px";',
+      '  if(left)e.style.left=(-t)+"px"; else e.style.right=(-t)+"px";',
+      '  return e;',
       '}',
       'function render(){',
-      '  var L=views(); if(i<0)i=0; if(i>=L.length)i=L.length-1;',
-      '  var sp=L[i]||[], list=imgs(), sc=fit(sp);',
-      '  var d=document.createElement("div"); d.className="spread";',
-      '  sp.forEach(function(p){',
+      '  var Ls=views(); if(i<0)i=0; if(i>=Ls.length)i=Ls.length-1;',
+      '  var sp=Ls[i]||[], list=imgs(), sc=fit(sp), book=(V==="book");',
+      '  var d=document.createElement("div"); d.className="spread"; var maxH=0;',
+      '  sp.forEach(function(p,k){',
       '    var im=(p==null)?null:list[p];',
-      '    var box=document.createElement("div"); box.className="pg"+(im?"":" blank");',
+      '    if(!book&&!im)return;',
+      '    var box=document.createElement("div"); box.className="pg "+(k?"r":"l")+(im?"":" blank");',
       '    var refW=im?im.w:(list[0]?list[0].w:600), refH=im?im.h:(list[0]?list[0].h:800);',
       '    var W,H;',
       '    if(real&&D.meta.mm){ W=D.meta.mm[0]*MM; H=D.meta.mm[1]*MM; }',
       '    else { W=refW*sc; H=refH*sc; }',
-      '    box.style.width=W+"px"; box.style.height=H+"px";',
+      '    box.style.width=W+"px"; box.style.height=H+"px"; if(H>maxH)maxH=H;',
       '    if(im){ var g=new Image(); g.src=im.u; box.appendChild(g); }',
       '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
       '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
       '      t.style.left=(W*q)+"px"; t.style.top=(H*q)+"px"; t.style.width=(W*(1-2*q))+"px"; t.style.height=(H*(1-2*q))+"px";',
       '      box.appendChild(t); }',
+      '    if(book){ var gu=document.createElement("div"); gu.className="gut"; gu.style.width="7%";',
+      '      if(k){ gu.style.left="0"; gu.style.background="linear-gradient(to left,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
+      '      else { gu.style.right="0"; gu.style.background="linear-gradient(to right,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
+      '      box.appendChild(gu); }',
       '    if(im){ var no=document.createElement("div"); no.className="no";',
-      '      no.textContent=(V==="book")?((p+1)+" 쪽"):((p+1)+" 번째 시트");',
+      '      no.textContent=book?((p+1)+" 쪽"):((p+1)+" 번째 시트");',
       '      box.appendChild(no); box.style.cursor="zoom-in"; box.onclick=function(){ zoom(im); }; }',
       '    d.appendChild(box);',
       '  });',
+      '  if(book&&maxH){ var a=RTL?(Ls.length-1-i):i, b=RTL?i:(Ls.length-1-i);',
+      '    d.appendChild(edge(a,Ls.length,maxH,true)); d.appendChild(edge(b,Ls.length,maxH,false)); }',
       '  stage.innerHTML=""; stage.appendChild(d);',
-      '  rng.max=String(Math.max(0,L.length-1)); rng.value=String(i);',
-      '  lbl.textContent=(i+1)+" / "+L.length+((V==="book")?" 펼침":" 시트");',
+      '  rng.max=String(Math.max(0,Ls.length-1)); rng.value=String(i);',
+      '  lbl.textContent=(i+1)+" / "+Ls.length+(book?" 펼침":" 시트");',
+      '  markRail();',
       '}',
-      'function go(d){ var L=views(), n=i+d; if(n<0||n>=L.length)return;',
-      '  var el=stage.firstChild; if(el)el.classList.add("turn");',
-      '  setTimeout(function(){ i=n; render(); },110); }',
+      '// 낱장의 한 면(앞/뒤) — 뒷면은 180도 돌려 붙인다',
+      'function face(p,list,back){',
+      '  var im=(p==null)?null:list[p];',
+      '  var f=document.createElement("div"); f.className="fc"+(back?" bk":"");',
+      '  if(im){ var g=new Image(); g.src=im.u; f.appendChild(g);',
+      '    if(D.opts.wm){ var w=document.createElement("div"); w.className="wm"; w.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; f.appendChild(w); } }',
+      '  var sh=document.createElement("div"); sh.className="sh"; sh.style.opacity=back?"0.42":"0"; f.appendChild(sh);',
+      '  return f;',
+      '}',
+      '// 넘기기 — 실제 책처럼 낱장 한 장이 책등을 축으로 돌아간다.',
+      '// 여러 장을 건너뛸 때(썸네일·쪽 이동)는 맨 위 한 장만 넘어가는 것으로 보여 준다.',
+      'function go(d){',
+      '  var Ls=views(), n=i+d; if(!d||n<0||n>=Ls.length||anim)return;',
+      '  if(V!=="book"||!paper){ var el=stage.firstChild; if(el)el.classList.add("turn");',
+      '    setTimeout(function(){ i=n; render(); },110); return; }',
+      '  var from=Ls[i]||[], to=Ls[n]||[], list=imgs();',
+      '  var leafR=(RTL?(d<0):(d>0));',
+      '  var cur=stage.firstChild, srcBox=cur?cur.children[leafR?1:0]:null;',
+      '  var r=srcBox?{l:srcBox.offsetLeft,t:srcBox.offsetTop,w:srcBox.offsetWidth,h:srcBox.offsetHeight}:null;',
+      '  var fi=from[leafR?1:0], bi=to[leafR?0:1];',
+      '  i=n; render();',
+      '  if(!r)return;',
+      '  var lf=document.createElement("div"); lf.className="leaf";',
+      '  lf.style.left=r.l+"px"; lf.style.top=r.t+"px"; lf.style.width=r.w+"px"; lf.style.height=r.h+"px";',
+      '  lf.style.transformOrigin=(leafR?"left":"right")+" center";',
+      '  lf.style.transform="rotateY(0deg)";',
+      '  var front=face(fi,list,false), back=face(bi,list,true);',
+      '  lf.appendChild(front); lf.appendChild(back);',
+      '  stage.firstChild.appendChild(lf); anim=1;',
+      '  var fs=front.lastChild, bs=back.lastChild;',
+      '  requestAnimationFrame(function(){ requestAnimationFrame(function(){',
+      '    lf.style.transition="transform .52s cubic-bezier(.36,.06,.31,1)";',
+      '    lf.style.transform="rotateY("+(leafR?-180:180)+"deg)";',
+      '    fs.style.transition="opacity .52s"; bs.style.transition="opacity .52s";',
+      '    fs.style.opacity="0.42"; bs.style.opacity="0";',
+      '  }); });',
+      '  setTimeout(function(){ if(lf.parentNode)lf.parentNode.removeChild(lf); anim=0; },580);',
+      '}',
+      '// 쪽 번호로 바로 이동 (책 보기=쪽, 인쇄 대수 보기=시트 번호)',
+      'function goPage(v){',
+      '  var list=imgs(); v=Math.round(v);',
+      '  if(!v||v<1||v>list.length)return false;',
+      '  var k=viewOfPage(v-1); if(k<0)return false;',
+      '  if(k!==i)go(k-i);',
+      '  return true;',
+      '}',
       'function zoom(im){ var z=document.getElementById("zoomv"), g=new Image();',
       '  g.src=im.u; g.style.width=Math.min(im.w*2,4000)+"px";',
       '  z.innerHTML=""; z.appendChild(g); z.style.display="flex"; }',
       'document.getElementById("zoomv").onclick=function(){ this.style.display="none"; };',
-      'document.getElementById("prev").onclick=function(){ go(-1); };',
-      'document.getElementById("next").onclick=function(){ go(1); };',
-      'rng.oninput=function(){ i=+this.value; render(); };',
+      'document.getElementById("prev").onclick=function(){ go(RTL?1:-1); };',
+      'document.getElementById("next").onclick=function(){ go(RTL?-1:1); };',
+      'rng.oninput=function(){ var n=+this.value; if(n!==i){ if(anim){i=n;render();} else go(n-i); } };',
+      'if(jump){ jump.onkeydown=function(e){ if(e.key==="Enter"){ if(!goPage(+this.value))this.select(); } };',
+      '  jump.onchange=function(){ goPage(+this.value); }; }',
+      'var jb=document.getElementById("jumpBtn");',
+      'if(jb) jb.onclick=function(){ if(jump&&!goPage(+jump.value))jump.select(); };',
       'document.onkeydown=function(e){',
-      '  if(e.key==="ArrowLeft")go(D.meta.bind==="right"?1:-1);',
-      '  else if(e.key==="ArrowRight")go(D.meta.bind==="right"?-1:1);',
+      '  if(e.target&&e.target.tagName==="INPUT")return;',
+      '  if(e.key==="ArrowLeft")go(RTL?1:-1);',
+      '  else if(e.key==="ArrowRight")go(RTL?-1:1);',
+      '  else if(e.key==="Home"){ i=0; render(); }',
+      '  else if(e.key==="End"){ i=views().length-1; render(); }',
       '  else if(e.key==="Escape")document.getElementById("zoomv").style.display="none"; };',
       'var tx=0;',
       'stage.addEventListener("touchstart",function(e){tx=e.touches[0].clientX;});',
-      'stage.addEventListener("touchend",function(e){var dx=e.changedTouches[0].clientX-tx; if(Math.abs(dx)>50)go(dx<0?1:-1);});',
+      'stage.addEventListener("touchend",function(e){var dx=e.changedTouches[0].clientX-tx;',
+      '  if(Math.abs(dx)>50)go((dx<0?1:-1)*(RTL?-1:1));});',
       'window.addEventListener("resize",render);',
       'var tbk=document.getElementById("tabBook"), tsh=document.getElementById("tabSheet");',
-      'if(tsh) tsh.onclick=function(){ if(V==="sheet")return; V="sheet"; i=0;',
-      '  tsh.classList.add("on"); tbk.classList.remove("on"); render(); };',
-      'if(tbk) tbk.onclick=function(){ if(V==="book")return; V="book"; i=0;',
-      '  tbk.classList.add("on"); if(tsh)tsh.classList.remove("on"); render(); };',
+      'function setView(v){ V=v; i=0; buildRail(); render();',
+      '  if(jump){ jump.value=""; jump.max=String(imgs().length); }',
+      '  if(jlbl) jlbl.textContent=(v==="book"?"쪽":"시트")+" 이동"; }',
+      'if(tsh) tsh.onclick=function(){ if(V==="sheet")return;',
+      '  tsh.classList.add("on"); tbk.classList.remove("on"); setView("sheet"); };',
+      'if(tbk) tbk.onclick=function(){ if(V==="book")return;',
+      '  tbk.classList.add("on"); if(tsh)tsh.classList.remove("on"); setView("book"); };',
       'var rb=document.getElementById("realBtn"), cal=document.getElementById("calib");',
       'if(rb) rb.onclick=function(){ real=!real; rb.classList.toggle("on",real);',
       '  cal.style.display=real?"":"none"; render(); };',
       'if(cal){ cal.value=String(MM); cal.oninput=function(){ MM=+this.value;',
       '  try{localStorage.setItem("proofMM",String(MM));}catch(e){} if(real)render(); }; }',
+      'var pb=document.getElementById("paperBtn");',
+      'document.body.classList.toggle("paper",paper);',
+      'if(pb){ pb.classList.toggle("on",paper);',
+      '  pb.onclick=function(){ paper=!paper; pb.classList.toggle("on",paper);',
+      '    document.body.classList.toggle("paper",paper);',
+      '    try{localStorage.setItem("proofPaper",paper?"1":"0");}catch(e){} render(); }; }',
+      'var rlb=document.getElementById("railBtn");',
+      'document.body.classList.toggle("railon",rail);',
+      'if(rlb){ rlb.classList.toggle("on",rail);',
+      '  rlb.onclick=function(){ rail=!rail; rlb.classList.toggle("on",rail);',
+      '    document.body.classList.toggle("railon",rail);',
+      '    try{localStorage.setItem("proofRail",rail?"1":"0");}catch(e){} render(); }; }',
+      'if(jump) jump.max=String(imgs().length);',
+      'buildRail();',
       'render();',
-      '})();'
+      '})();',
     ].join('\n');
 
     // 워터마크(반복 대각선 글자)를 SVG data URI로 — 외부 리소스 없이 자체 완결
@@ -6649,15 +6814,21 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         +   '<span class="sp"></span>'
         +   '<button class="b on" id="tabBook">책 넘김</button>'
         +   (hasSheets ? '<button class="b" id="tabSheet">인쇄 대수</button>' : '')
+        +   '<button class="b on" id="railBtn" title="왼쪽 페이지 목록 보이기/숨기기">📑 페이지 목록</button>'
+        +   '<button class="b on" id="paperBtn" title="종이·책등 그늘·두께 등 책 느낌 효과 — 색을 정확히 볼 때는 끄세요">📕 책 느낌</button>'
         +   '<button class="b" id="realBtn" title="모니터에서 실제 인쇄 크기로 봅니다">실제 크기</button>'
         +   '<input type="range" id="calib" min="2.5" max="6" step="0.02"'
         +   ' style="display:none;width:110px" title="자로 잰 길이와 맞도록 조절하세요">'
         + '</div>'
         + '<div class="nav" id="prev">‹</div><div class="nav r" id="next">›</div>'
+        + '<div class="rail" id="rail"></div>'
         + '<div class="stage" id="stage"></div>'
         + '<div class="foot">'
         +   '<span class="n" id="lbl"></span>'
         +   '<input type="range" id="rng" min="0" value="0">'
+        +   '<span class="jlbl" id="jlbl">쪽 이동</span>'
+        +   '<input type="number" class="jump" id="jump" min="1" placeholder="번호" title="쪽 번호를 넣고 Enter — 그 쪽이 있는 펼침면으로 바로 이동합니다">'
+        +   '<button class="b" id="jumpBtn">이동</button>'
         +   '<span class="note">' + esc(meta.date || '') + (meta.by ? ' · ' + esc(meta.by) : '')
         +   ' · 화면 색상은 참고용이며 실제 인쇄색과 다를 수 있습니다</span>'
         + '</div>'
@@ -6786,7 +6957,7 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           + (wantSheets ? ` + 인쇄 대수 ${sheets.pages.length}시트` : '')
           + ` · ${mb}MB\n`
           + `파일 하나로 끝나므로 그대로 메일·카톡에 첨부하면 됩니다 — 고객은 더블클릭만 하면 브라우저에서 열립니다.\n`
-          + `→ 넘기기: 화면 좌우 클릭 또는 ←/→ 키 · 페이지 클릭하면 확대 · [실제 크기]로 인쇄 크기 확인`);
+          + `→ 넘기기: 화면 좌우 클릭 또는 ←/→ 키 (실제 책처럼 낱장이 넘어갑니다) · 페이지 클릭하면 확대\n→ 왼쪽 [📑 페이지 목록]에서 원하는 쪽을 바로 누르거나, 아래 '쪽 이동'에 번호를 넣고 Enter\n→ [실제 크기]로 인쇄 크기 확인 · 색을 정확히 볼 때는 [📕 책 느낌]을 끄세요`);
       } catch (e) {
         hideLoading();
         showError('시안 생성 실패: ' + (e && e.message ? e.message : e));
