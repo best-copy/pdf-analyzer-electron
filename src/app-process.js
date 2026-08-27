@@ -6891,6 +6891,19 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           });
         }
 
+        // 🔑 최종 적용 결과 PDF 자체를 담는다 — 다시 열 때 파이프라인을 다시 돌리지 않고
+        // 저장된 그 결과를 그대로 화면에 띄우고 바로 다운로드할 수 있게 하기 위함.
+        // (설정만 담고 열 때 재계산하면 큰 원고에서 수십 초를 다시 기다려야 했다)
+        if (processedPdfBytes) {
+          entries.push({ k: 'result', name: (processedFileName || workFileBaseName() + '.pdf') });
+          blobs.push(new Uint8Array(processedPdfBytes));
+        }
+        // 블리드·아웃라인처럼 '그대로 저장해야 하는' 외부 변환 결과가 있으면 그것도 함께
+        if (processedPdfBytes && typeof directOutputBytes !== 'undefined' && directOutputBytes) {
+          entries.push({ k: 'direct', name: 'direct.pdf' });
+          blobs.push(new Uint8Array(directOutputBytes));
+        }
+
         const manifest = {
           v: 1,
           savedAt: Date.now(),
@@ -6909,10 +6922,11 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
             docState: captureDocState(),
             quote: (typeof quoteItems !== 'undefined' && quoteItems) ? JSON.parse(JSON.stringify(quoteItems)) : [],
             edits,
-            // 저장 시점에 '✔ 적용'까지 마친 상태였는지. 열 때 이 표식이 있으면 같은
-            // 파이프라인을 다시 돌려 적용 결과 화면·다운로드 가능 상태까지 복원한다.
-            // (예전엔 설정만 되살아나 "적용이 풀린 채" 열려, 작업 파일을 저장한 의미가 없었다)
+            // 저장 시점에 '✔ 적용'까지 마친 상태였는지 + 그때의 저장 파일명.
+            // 적용본 자체(entries의 k:'result')가 함께 들어 있어 열 때 그대로 보여준다.
+            // (구버전 작업 파일은 적용본 없이 이 표식만 있다 → 그 경우에만 다시 적용해 복원)
             applied: !!processedPdfBytes,
+            resultName: processedPdfBytes ? (processedFileName || '') : '',
           },
           entries,
         };
@@ -6931,7 +6945,7 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
         showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(bytes.length / 1048576).toFixed(1)}MB`
           + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
-          + (manifest.state.applied ? ' · 적용 상태 포함' : '')
+          + (manifest.state.applied ? ' · 적용본 포함' : '')
           + `\n이 파일을 더블클릭하면 지금 이 상태 그대로 다시 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
           + (others ? `\n※ 다른 탭 ${others}개는 담기지 않습니다 — 탭마다 따로 저장하세요.` : ''));
       } catch (e) {
@@ -7008,8 +7022,24 @@ body{background:#1d1d1f;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         // 저장 당시 '✔ 적용'까지 마친 작업이면 여기서 같은 파이프라인을 그대로 다시 돌린다.
         // 작업 파일의 존재 이유가 "그 시점 그대로"인데, 설정만 복원하고 멈추면 사용자가
         // 매번 '✔ 적용'을 다시 눌러야 해서 새로 여는 것과 다를 바가 없었다.
-        if (st.applied) {
-          showSuccess(restoreMsg + '\n⏳ 저장 시점의 적용 결과를 다시 만드는 중…');
+        const resAt = (manifest.entries || []).findIndex(e => e.k === 'result');
+        const dirAt = (manifest.entries || []).findIndex(e => e.k === 'direct');
+        if (resAt >= 0 && blobs[resAt]) {
+          // 저장된 적용본을 그대로 — 재계산 없음. 화면·다운로드 모두 저장 시점 그대로다.
+          processedPdfBytes = blobs[resAt];
+          processedFileName = st.resultName || defaultProcessedName();
+          directOutputBytes = (dirAt >= 0 && blobs[dirAt]) ? blobs[dirAt] : null;
+          _processedSig = (typeof optSignature === 'function') ? optSignature() : null;
+          setDirty(true);
+          updateDownloadBtn();
+          await renderProcessedPreview(processedPdfBytes, { live: false });
+          showSuccess(restoreMsg
+            + `\n✔ 마지막으로 적용한 결과 그대로 열었습니다 — 바로 '⇩ 다운로드'로 저장하면 됩니다.`);
+          // 다운로드용 최적화본은 유휴 시간에 미리 구워 둔다(저장 버튼 대기 0초)
+          setTimeout(() => { if (typeof prewarmOptimizedOutput === 'function') prewarmOptimizedOutput(); }, 800);
+        } else if (st.applied) {
+          // 구버전 작업 파일 — 적용본이 안 들어 있으므로 같은 설정으로 한 번 만들어 준다
+          showSuccess(restoreMsg + '\n⏳ 저장 시점의 적용 결과를 다시 만드는 중… (구버전 작업 파일)');
           try { await applyChanges(); }
           catch (e) { console.warn('작업 파일 자동 적용 실패:', e); }
           showSuccess(restoreMsg
