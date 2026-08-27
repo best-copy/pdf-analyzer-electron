@@ -6517,23 +6517,30 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .b{border:none;border-radius:7px;padding:7px 12px;font-size:0.8em;font-weight:700;cursor:pointer;background:#2c2c2e;color:#f5f5f7;white-space:nowrap}
 .b:hover{background:#3a3a3c}
 .b.on{background:#ffd60a;color:#1d1d1f}
-/* ── 왼쪽 페이지 썸네일 목록 ── */
-.rail{position:fixed;top:52px;bottom:56px;left:0;width:152px;background:#101012;border-right:1px solid #2c2c2e;overflow-y:auto;padding:10px 10px 20px;z-index:15;display:none}
+/* ── 왼쪽 페이지 목록 — 한 줄에 펼침면(두 쪽) ── */
+.rail{position:fixed;top:52px;bottom:56px;left:0;width:206px;background:#101012;border-right:1px solid #2c2c2e;overflow-y:scroll;padding:10px 8px 20px;z-index:15;display:none}
 .railon .rail{display:block}
 .rail::-webkit-scrollbar{width:9px}
 .rail::-webkit-scrollbar-thumb{background:#3a3a3c;border-radius:5px}
-.ri{position:relative;margin-bottom:9px;cursor:pointer;border:2px solid transparent;border-radius:4px;overflow:hidden;background:#fff;box-shadow:0 3px 10px rgba(0,0,0,.5)}
-.ri img{display:block;width:100%;height:auto}
+.ri{display:flex;gap:2px;margin-bottom:9px;cursor:pointer;border:2px solid transparent;border-radius:4px;padding:1px}
+.rp{position:relative;flex:1 1 0;min-width:0;background:#fff;box-shadow:0 3px 10px rgba(0,0,0,.5)}
+.rp.empty{background:rgba(255,255,255,.05);box-shadow:none}
+.rp img{display:block;width:100%;height:auto}
 .ri:hover{border-color:#5a5a5e}
 .ri.on{border-color:#ffd60a}
-.ri .rn{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.62);color:#f5f5f7;font-size:10.5px;text-align:center;padding:2px 0;font-weight:700}
-/* 책상 위에 책을 올려 둔 느낌 — 가운데가 밝고 가장자리로 갈수록 어두워진다 */
-.stage{position:fixed;top:52px;bottom:56px;left:0;right:0;display:flex;align-items:center;justify-content:center;padding:26px;overflow:auto;background:radial-gradient(ellipse at 50% 40%,#2b2b30 0%,#161618 62%,#0d0d0f 100%)}
-.railon .stage{left:152px}
-.spread{position:relative;display:flex;align-items:flex-start;perspective:2800px;transition:opacity .18s}
-.spread.turn{opacity:.2}
+.rp .rn{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.62);color:#f5f5f7;font-size:10px;text-align:center;padding:2px 0;font-weight:700}
+/* 책상 위에 책을 올려 둔 느낌 — 가운데가 밝고 가장자리로 갈수록 어두워진다.
+   무대는 넘김 중에 스크롤바가 생겼다 사라지며 화면이 좌우로 떨리지 않도록 고정한다
+   (맞춤 배율이라 항상 화면 안에 들어온다). 실제 크기 모드에서만 스크롤을 허용하고,
+   그때도 scrollbar-gutter로 자리를 미리 비워 두어 흔들리지 않게 한다.
+   touch-action:none — 손가락으로 페이지를 끌 때 화면이 같이 스크롤되지 않게. */
+.stage{position:fixed;top:52px;bottom:56px;left:0;right:0;display:flex;align-items:center;justify-content:center;padding:26px;overflow:hidden;touch-action:none;background:radial-gradient(ellipse at 50% 40%,#2b2b30 0%,#161618 62%,#0d0d0f 100%)}
+.realsize .stage{overflow:auto;scrollbar-gutter:stable both-edges}
+.railon .stage{left:206px}
+.dragging,.dragging .pg{cursor:grabbing}
+.spread{position:relative;display:flex;align-items:flex-start;perspective:2600px}
 .pg{position:relative;background:#fff;flex:none;box-shadow:0 14px 34px rgba(0,0,0,.5)}
-.pg img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+.pg img{display:block;width:100%;height:100%;object-fit:contain;background:#fff;-webkit-user-drag:none;user-select:none}
 .pg.blank{background:rgba(255,255,255,.04);box-shadow:none}
 .pg .no{position:absolute;bottom:-22px;left:0;right:0;text-align:center;font-size:0.72em;color:#8e8e93}
 .trim{position:absolute;border:1px dashed rgba(255,70,70,.9);pointer-events:none}
@@ -6543,21 +6550,21 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .paper .pg{box-shadow:none}
 .paper .pg.l{border-radius:3px 0 0 3px}
 .paper .pg.r{border-radius:0 3px 3px 0}
-/* 책등(gutter) 그늘 — 실제 책은 안쪽이 접혀 어둡다 */
 .gut{position:absolute;top:0;bottom:0;pointer-events:none;display:none}
 .paper .gut{display:block}
-/* 넘긴 쪽·남은 쪽이 쌓인 두께 — 읽어갈수록 왼쪽이 두꺼워진다 */
-.edge{position:absolute;pointer-events:none;display:none;border-radius:2px;background:repeating-linear-gradient(90deg,#f6f6f2 0 1px,#c8c8c2 1px 2px);box-shadow:0 10px 18px rgba(0,0,0,.45)}
-.paper .edge{display:block}
-/* 넘어가는 낱장 — 앞면/뒷면을 가진 실제 종이 한 장 */
+/* ── 넘어가는 낱장 ──
+   한 장을 세로로 여러 조각(.st)으로 자르고 경첩처럼 이어 붙였다. 책등 쪽 조각이 주 회전을
+   맡고 바깥으로 갈수록 조금씩 더 돌아, 넘기는 동안 종이가 활처럼 휘었다가 다시 펴진다.
+   조각마다 앞면(.sfc)과 뒷면(.sbc)이 있고, 그림은 배경 이미지를 조각 폭만큼 밀어 붙인다. */
 .leaf{position:absolute;transform-style:preserve-3d;z-index:9;pointer-events:none}
-.leaf .fc{position:absolute;inset:0;overflow:hidden;background:#fff;backface-visibility:hidden;-webkit-backface-visibility:hidden;box-shadow:0 12px 30px rgba(0,0,0,.5)}
-.leaf .fc img{display:block;width:100%;height:100%;object-fit:contain}
-.leaf .bk{transform:rotateY(180deg)}
-.leaf .sh{position:absolute;inset:0;background:#000;pointer-events:none}
-.nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;opacity:0;transition:opacity .15s;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff}
+.st{position:absolute;top:0;transform-style:preserve-3d;will-change:transform}
+.sfc{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:#fff no-repeat;overflow:hidden}
+.sbc{transform:rotateY(180deg)}
+.stsh,.stgu{position:absolute;inset:0;pointer-events:none;will-change:opacity}
+.stwm{position:absolute;inset:0;background-repeat:repeat;opacity:.15;pointer-events:none}
+.nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;opacity:0;transition:opacity .15s;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff;touch-action:none}
 .nav:hover{opacity:.8;background:linear-gradient(90deg,rgba(0,0,0,.45),transparent)}
-.railon .nav{left:152px}
+.railon .nav{left:206px}
 .nav.r{left:auto;right:0}
 .railon .nav.r{left:auto}
 .nav.r:hover{background:linear-gradient(270deg,rgba(0,0,0,.45),transparent)}
@@ -6567,11 +6574,55 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .jump{width:64px;background:#1c1c1e;color:#f5f5f7;border:1px solid #3a3a3c;border-radius:6px;padding:6px 8px;font-size:0.8em;text-align:center}
 .jlbl{font-size:0.76em;color:#8e8e93;white-space:nowrap}
 .note{font-size:0.72em;color:#8e8e93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw}
-.zoomv{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:40;display:none;align-items:center;justify-content:center;overflow:auto;cursor:zoom-out}
-@media print{body{background:#fff}.bar,.foot,.nav,.rail,.edge{display:none}.stage{left:0}.paper .spread{filter:none}}
-/* 넘김 효과를 끄고 싶으면 툴바의 '📕 책 느낌'을 끄면 된다.
-   (예전에 여기서 prefers-reduced-motion으로 낱장을 숨겼더니, 윈도우 '애니메이션 표시'를
-    꺼 둔 PC에서는 책 넘김이 아예 안 보였다 — 실제로 이 개발 PC가 그 설정이었다) */
+/* 🔍 확대 보기 — 핀치(손가락 두 개)·휠로 키우고 끌어서 옮긴다. 화면 밖으로 밀려나 못 보는
+   영역이 없도록 위치를 항상 화면 안으로 되돌린다(zClamp). */
+.zoomv{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:40;display:none;overflow:hidden;touch-action:none}
+.zimg{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;user-select:none;-webkit-user-drag:none}
+.zx{position:absolute;top:10px;right:12px;z-index:2;width:42px;height:42px;border-radius:21px;
+  background:rgba(255,255,255,.16);color:#fff;font-size:19px;font-weight:700;display:flex;
+  align-items:center;justify-content:center;cursor:pointer;user-select:none}
+.zx:hover{background:rgba(255,255,255,.28)}
+.zhint{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:2;background:rgba(0,0,0,.62);
+  color:#f5f5f7;font-size:12px;font-weight:600;padding:7px 13px;border-radius:16px;pointer-events:none;
+  white-space:nowrap;max-width:94vw;overflow:hidden;text-overflow:ellipsis;transition:opacity .4s}
+/* 손가락으로 잡고 끄는 안내 — 처음 한 번만 보여 주고 사라진다 */
+.hint{position:fixed;left:50%;bottom:74px;transform:translateX(-50%);z-index:25;max-width:94vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:rgba(0,0,0,.72);
+  color:#f5f5f7;font-size:0.78em;font-weight:600;padding:8px 14px;border-radius:20px;pointer-events:none;transition:opacity .5s}
+/* ── 작은 화면(휴대폰) ── */
+@media (max-width:760px){
+  .bar{height:46px;gap:7px;padding:0 9px}
+  .bar .spec,.note{display:none}
+  .bar .t{max-width:34vw;font-size:0.85em}
+  .b{padding:6px 8px;font-size:0.72em}
+  .stage,.nav,.rail{top:46px}
+  .stage{padding:10px}
+  .rail{width:132px;padding:7px 5px 16px}
+  .railon .stage,.railon .nav{left:132px}
+  .foot{gap:8px;padding:0 9px}
+  .foot .n{min-width:78px;font-size:0.74em}
+  .jump{width:56px}
+  .nav{width:22%}
+}
+/* ── 📱 모바일용으로 만든 시안(body.mob) — 화면을 최대한 책에 내준다 ── */
+.mob .stage{padding:6px}
+.mob .pg .no{display:none}
+.paper .pg.s{border-radius:3px}
+/* 몰입 보기 — 가로로 눕히고 잠시 두면 막대가 숨어 책만 남는다(화면을 누르면 다시 나옴) */
+.bar,.foot{transition:transform .25s,opacity .25s}
+.mob.immersive .bar{transform:translateY(-100%);opacity:0;pointer-events:none}
+.mob.immersive .foot{transform:translateY(100%);opacity:0;pointer-events:none}
+.mob.immersive .stage,.mob.immersive .nav{top:0;bottom:0}
+.mob.immersive .rail{display:none}
+/* 가로로 눕힌 휴대폰처럼 높이가 낮을 때는 위아래 막대도 줄인다 */
+@media (max-height:560px){
+  .hint{display:none}
+  .mob .bar{height:40px}
+  .mob .foot{height:44px}
+  .mob .stage,.mob .nav,.mob .rail{top:40px;bottom:44px}
+  .mob .hint{bottom:56px}
+  .mob .foot .n{min-width:70px}
+}
+@media print{body{background:#fff}.bar,.foot,.nav,.rail,.hint{display:none}.stage{left:0}.paper .spread{filter:none}}
 `;
 
     // 뷰어 스크립트 — 이 문자열은 템플릿 리터럴 안으로 들어가지 않지만,
@@ -6582,139 +6633,296 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'var stage=document.getElementById("stage"), rng=document.getElementById("rng"), lbl=document.getElementById("lbl");',
       'var railEl=document.getElementById("rail"), jump=document.getElementById("jump"), jlbl=document.getElementById("jlbl");',
       '// localStorage는 data:·일부 브라우저의 file:에서 접근 자체가 예외를 던진다 —',
-      '// 감싸지 않으면 뷰어 스크립트가 첫 줄에서 죽어 화면이 통째로 비었다.',
+      '// 감싸지 않으면 뷰어 스크립트가 첫 줄에서 죽어 화면이 통째로 빈다.',
       'var MM=3.7795;',
       'try{ MM=Number(localStorage.getItem("proofMM")||0)||3.7795; }catch(e){}',
       'var RTL=(D.meta.bind==="right");',
-      'try{ paper=(localStorage.getItem("proofPaper")!=="0"); rail=(localStorage.getItem("proofRail")!=="0"); }catch(e){}',
+      'var NARROW=(window.innerWidth||9999)<760;   // 휴대폰 폭',
+      'rail=!(NARROW||D.meta.target==="mobile");   // 좁은 화면·모바일용은 책이 우선 — 목록은 버튼으로 펼친다',
+      'try{ paper=(localStorage.getItem("proofPaper")!=="0");',
+      '  var rv=localStorage.getItem("proofRail"); if(rv!==null)rail=(rv!=="0"); }catch(e){}',
+      '// 넘김 연출 값 — 조각 수, 자동 넘김 시간, 휘는 정도(도)',
+      'var STRIPS=16, TURN_MS=1200, CURL=130;',
+      '// 보는 기기 — mobile로 만든 시안은 가로일 때 두 쪽을 화면 가득, 세로일 때 한 쪽씩 보여 준다.',
+      'var TG=(D.meta.target==="mobile")?"mobile":"web", MOB=(TG==="mobile"), single=false;',
       'function imgs(){return V==="book"?D.book:D.sheets;}',
-      'function views(){return V==="book"?S:D.sheets.map(function(_,k){return [k,null];});}',
+      'function views(){',
+      '  if(V!=="book")return D.sheets.map(function(_,k){return [k,null];});',
+      '  return single?D.book.map(function(_,k){return [k];}):S;',
+      '}',
+      '// 지금 보고 있는 대표 쪽 — 한 쪽 보기와 펼침 보기를 오갈 때 자리를 잃지 않게 한다',
+      'function curPage(){ var sp=views()[i]||[]; return (sp[0]!=null)?sp[0]:(sp[1]!=null?sp[1]:0); }',
       'function fit(sp){',
-      '  var list=imgs(), w=0, h=0;',
-      '  sp.forEach(function(p){ var im=(p==null)?null:list[p]; if(!im)return; w+=im.w; h=Math.max(h,im.h); });',
-      '  if(!w)return 1;',
+      '  // 빈 면(표지 맞은편 등)도 화면에서는 한 쪽 자리를 차지한다 — 폭 계산에서 빼면',
+      '  // 배율이 두 배로 잡혀 좁은 화면에서 책이 화면 밖으로 잘린다.',
+      '  var list=imgs(), book=(V==="book"), f=list[0];',
+      '  var rw=f?f.w:600, rh=f?f.h:800, w=0, h=0;',
+      '  sp.forEach(function(p){ var im=(p==null)?null:list[p];',
+      '    if(im){ w+=im.w; h=Math.max(h,im.h); }',
+      '    else if(book){ w+=rw; h=Math.max(h,rh); } });',
+      '  if(!w){ w=rw*(book?2:1); h=rh; }',
       '  // 뷰포트 크기를 못 얻는 환경(0×0 미리보기·인쇄 스냅샷)에서 음수 배율이 나오면',
       '  // 페이지 상자가 0으로 찌그러져 화면이 빈 것처럼 보인다 → 최소 배율을 보장한다.',
-      '  var sc=Math.min((stage.clientWidth-70)/w,(stage.clientHeight-56)/h);',
+      '  var px=MOB?18:70, py=MOB?16:56;   // 모바일은 여백을 줄여 화면을 꽉 채운다',
+      '  var sc=Math.min((stage.clientWidth-px)/w,(stage.clientHeight-py)/h);',
       '  return (isFinite(sc)&&sc>0.02)?sc:1;',
       '}',
-      '// 그 페이지가 들어 있는 펼침면 번호 (없으면 -1)',
       'function viewOfPage(p){ var Ls=views();',
       '  for(var k=0;k<Ls.length;k++){ if(Ls[k][0]===p||Ls[k][1]===p) return k; } return -1; }',
-      '// 왼쪽 썸네일 목록 — 책 보기는 쪽마다, 인쇄 대수 보기는 시트마다 한 칸',
+      '// 왼쪽 목록 — 화면과 똑같이 펼침면(두 쪽)을 한 줄에. 아무 쪽이나 누르면 그 펼침면으로.',
       'function buildRail(){',
       '  if(!railEl)return;',
-      '  var list=imgs(); railEl.innerHTML="";',
-      '  list.forEach(function(im,p){',
-      '    var d=document.createElement("div"); d.className="ri"; d.setAttribute("data-p",String(p));',
-      '    var g=new Image(); g.src=im.u; g.loading="lazy"; g.alt="";',
-      '    var n=document.createElement("div"); n.className="rn";',
-      '    n.textContent=(V==="book")?((p+1)+" 쪽"):((p+1)+" 시트");',
-      '    d.appendChild(g); d.appendChild(n);',
-      '    d.onclick=function(){ var k=viewOfPage(p); if(k>=0&&k!==i){ go(k-i); } };',
-      '    railEl.appendChild(d);',
+      '  var list=imgs(), Ls=views(); railEl.innerHTML="";',
+      '  Ls.forEach(function(sp,k){',
+      '    var row=document.createElement("div"); row.className="ri"; row.setAttribute("data-v",String(k));',
+      '    sp.forEach(function(p){',
+      '      var im=(p==null)?null:list[p];',
+      '      if(!im&&V!=="book")return;',
+      '      var cell=document.createElement("div"); cell.className="rp"+(im?"":" empty");',
+      '      if(im){ var g=new Image(); g.src=im.u; g.loading="lazy"; g.alt=""; cell.appendChild(g);',
+      '        var n=document.createElement("div"); n.className="rn";',
+      '        n.textContent=(V==="book")?((p+1)+" 쪽"):((p+1)+" 시트"); cell.appendChild(n); }',
+      '      else if(list[0]){',
+      '        // 빈 면(표지 맞은편)의 높이는 옆 칸과 같아야 한다. 퍼센트 padding은 칸이 아니라',
+      '        // **줄 전체 폭**을 기준으로 잡혀 두 배로 길어졌다(표지 줄만 아래에 흰 여백이 생김).',
+      '        cell.style.aspectRatio=list[0].w+" / "+list[0].h;',
+      '      }',
+      '      row.appendChild(cell);',
+      '    });',
+      '    row.onclick=function(){ if(k!==i)go(k-i); };',
+      '    railEl.appendChild(row);',
       '  });',
       '  markRail();',
       '}',
-      '// 지금 보고 있는 펼침면의 쪽을 목록에서 표시 + 화면 안으로 스크롤',
       'function markRail(){',
       '  if(!railEl)return;',
-      '  var sp=views()[i]||[], first=null;',
-      '  var kids=railEl.children;',
+      '  var kids=railEl.children, cur=null;',
       '  for(var k=0;k<kids.length;k++){',
-      '    var p=+kids[k].getAttribute("data-p");',
-      '    var on=(sp[0]===p||sp[1]===p);',
+      '    var on=(+kids[k].getAttribute("data-v")===i);',
       '    kids[k].classList.toggle("on",on);',
-      '    if(on&&first===null)first=kids[k];',
+      '    if(on)cur=kids[k];',
       '  }',
-      '  if(first&&first.scrollIntoView){',
-      '    var rt=railEl.getBoundingClientRect(), ft=first.getBoundingClientRect();',
-      '    if(ft.top<rt.top||ft.bottom>rt.bottom)first.scrollIntoView({block:"nearest"});',
+      '  if(cur&&cur.scrollIntoView){',
+      '    var rt=railEl.getBoundingClientRect(), ft=cur.getBoundingClientRect();',
+      '    if(ft.top<rt.top||ft.bottom>rt.bottom)cur.scrollIntoView({block:"nearest"});',
       '  }',
       '}',
-      '// 책 두께 — 넘긴 쪽(왼쪽)·남은 쪽(오른쪽)이 쌓인 종이 묶음.',
-      '// 쪽수가 아니라 「전체 중 몇 번째」 비율로 두께를 잡는다 — 얇은 책도 넘길수록',
-      '// 왼쪽이 두꺼워지는 것이 눈에 보인다(쪽수 비례로 하면 12쪽짜리는 티가 안 났다).',
-      'function edge(n,tot,H,left){',
-      '  var t=Math.max(2,Math.min(20,3+16*(n/Math.max(1,tot-1))));',
-      '  var e=document.createElement("div"); e.className="edge";',
-      '  e.style.width=t+"px"; e.style.top="5px"; e.style.height=Math.max(0,H-10)+"px";',
-      '  if(left)e.style.left=(-t)+"px"; else e.style.right=(-t)+"px";',
-      '  return e;',
-      '}',
-      'function render(){',
-      '  var Ls=views(); if(i<0)i=0; if(i>=Ls.length)i=Ls.length-1;',
-      '  var sp=Ls[i]||[], list=imgs(), sc=fit(sp), book=(V==="book");',
-      '  var d=document.createElement("div"); d.className="spread"; var maxH=0;',
+      '// 펼침면 그리기 — 넘기는 동안에는 「지금 쪽 + 드러날 쪽」을 섞은 짝을 그린다.',
+      '// (목적지 펼침면을 통째로 깔면, 넘기기 시작하는 순간 반대쪽 페이지가 툭 바뀌어 보인다)',
+      'function drawSpread(sp){',
+      '  var list=imgs(), sc=fit(sp), book=(V==="book");',
+      '  var d=document.createElement("div"); d.className="spread";',
       '  sp.forEach(function(p,k){',
       '    var im=(p==null)?null:list[p];',
-      '    if(!book&&!im)return;',
-      '    var box=document.createElement("div"); box.className="pg "+(k?"r":"l")+(im?"":" blank");',
+      '    if((!book||single)&&!im)return;',
+      '    var box=document.createElement("div"); box.className="pg "+(single?"s":(k?"r":"l"))+(im?"":" blank");',
       '    var refW=im?im.w:(list[0]?list[0].w:600), refH=im?im.h:(list[0]?list[0].h:800);',
       '    var W,H;',
       '    if(real&&D.meta.mm){ W=D.meta.mm[0]*MM; H=D.meta.mm[1]*MM; }',
       '    else { W=refW*sc; H=refH*sc; }',
-      '    box.style.width=W+"px"; box.style.height=H+"px"; if(H>maxH)maxH=H;',
-      '    if(im){ var g=new Image(); g.src=im.u; box.appendChild(g); }',
+      '    box.style.width=W+"px"; box.style.height=H+"px";',
+      '    if(im){ var g=new Image(); g.src=im.u; g.draggable=false; box.appendChild(g); }',
       '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
       '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
       '      t.style.left=(W*q)+"px"; t.style.top=(H*q)+"px"; t.style.width=(W*(1-2*q))+"px"; t.style.height=(H*(1-2*q))+"px";',
       '      box.appendChild(t); }',
-      '    if(book){ var gu=document.createElement("div"); gu.className="gut"; gu.style.width="7%";',
+      '    if(book&&!single){ var gu=document.createElement("div"); gu.className="gut"; gu.style.width="7%";',
       '      if(k){ gu.style.left="0"; gu.style.background="linear-gradient(to left,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
       '      else { gu.style.right="0"; gu.style.background="linear-gradient(to right,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
       '      box.appendChild(gu); }',
       '    if(im){ var no=document.createElement("div"); no.className="no";',
       '      no.textContent=book?((p+1)+" 쪽"):((p+1)+" 번째 시트");',
-      '      box.appendChild(no); box.style.cursor="zoom-in"; box.onclick=function(){ zoom(im); }; }',
+      '      box.appendChild(no);',
+      '      // 모바일 가로 보기에서는 눌러도 확대하지 않는다 — 넘기려고 짚었을 뿐인데',
+      '      // 화면이 커져 버려 불편하다. (누르면 숨었던 막대만 돌아온다)',
+      '      var noZoom=(MOB&&!single);',
+      '      box.style.cursor=noZoom?"default":"zoom-in";',
+      '      box.onclick=function(){ if(dragMoved||noZoom)return; zoom(im); }; }',
       '    d.appendChild(box);',
       '  });',
-      '  if(book&&maxH){ var a=RTL?(Ls.length-1-i):i, b=RTL?i:(Ls.length-1-i);',
-      '    d.appendChild(edge(a,Ls.length,maxH,true)); d.appendChild(edge(b,Ls.length,maxH,false)); }',
       '  stage.innerHTML=""; stage.appendChild(d);',
+      '  return d;',
+      '}',
+      'function render(){',
+      '  var Ls=views(); if(i<0)i=0; if(i>=Ls.length)i=Ls.length-1;',
+      '  drawSpread(Ls[i]||[]);',
       '  rng.max=String(Math.max(0,Ls.length-1)); rng.value=String(i);',
-      '  lbl.textContent=(i+1)+" / "+Ls.length+(book?" 펼침":" 시트");',
+      '  lbl.textContent=(i+1)+" / "+Ls.length+(V!=="book"?" 시트":(single?" 쪽":" 펼침"));',
       '  markRail();',
       '}',
-      '// 낱장의 한 면(앞/뒤) — 뒷면은 180도 돌려 붙인다',
-      'function face(p,list,back){',
-      '  var im=(p==null)?null:list[p];',
-      '  var f=document.createElement("div"); f.className="fc"+(back?" bk":"");',
-      '  if(im){ var g=new Image(); g.src=im.u; f.appendChild(g);',
-      '    if(D.opts.wm){ var w=document.createElement("div"); w.className="wm"; w.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; f.appendChild(w); } }',
-      '  var sh=document.createElement("div"); sh.className="sh"; sh.style.opacity=back?"0.42":"0"; f.appendChild(sh);',
-      '  return f;',
+      '// 조각 한 면 — 이미지에서 자기 몫(slice)만 보이도록 배경을 밀어 붙인다.',
+      '// 뒷면(back)은 rotateY(180deg)이라 조각 안에서 좌우가 뒤집히는데, 낱장 전체가 다시',
+      '// 뒤집히면서 상쇄되므로 slice 번호만 반대편에서 세면 그림이 정확히 맞는다.',
+      'function grad(a,b,rev){',
+      '  return "linear-gradient(90deg,rgba(0,0,0,"+(rev?b:a)+"),rgba(0,0,0,"+(rev?a:b)+"))";',
       '}',
-      '// 넘기기 — 실제 책처럼 낱장 한 장이 책등을 축으로 돌아간다.',
-      '// 여러 장을 건너뛸 때(썸네일·쪽 이동)는 맨 위 한 장만 넘어가는 것으로 보여 준다.',
-      'function go(d){',
-      '  var Ls=views(), n=i+d; if(!d||n<0||n>=Ls.length||anim)return;',
-      '  if(V!=="book"||!paper){ var el=stage.firstChild; if(el)el.classList.add("turn");',
-      '    setTimeout(function(){ i=n; render(); },110); return; }',
-      '  var from=Ls[i]||[], to=Ls[n]||[], list=imgs();',
-      '  var leafR=(RTL?(d<0):(d>0));',
-      '  var cur=stage.firstChild, srcBox=cur?cur.children[leafR?1:0]:null;',
-      '  var r=srcBox?{l:srcBox.offsetLeft,t:srcBox.offsetTop,w:srcBox.offsetWidth,h:srcBox.offsetHeight}:null;',
-      '  var fi=from[leafR?1:0], bi=to[leafR?0:1];',
-      '  i=n; render();',
-      '  if(!r)return;',
+      'function stripFace(im,slice,W,H,w,back,u0,u1,rev){',
+      '  var d=document.createElement("div"); d.className="sfc"+(back?" sbc":"");',
+      '  if(im){ d.style.backgroundImage="url(\\""+im.u+"\\")";',
+      '    d.style.backgroundSize=W+"px "+H+"px";',
+      '    d.style.backgroundPosition=(-slice*w)+"px 0"; }',
+      '  if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="stwm";',
+      '    wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")";',
+      '    wm.style.backgroundPosition=(-slice*w)+"px 0"; d.appendChild(wm); }',
+      '  // 그늘 모양(조각을 가로지르는 농도 변화)은 여기서 한 번만 굽는다 —',
+      '  // 프레임마다는 투명도만 바꿔 CSS 재파싱 없이 부드럽게 흐른다.',
+      '  var sh=document.createElement("div"); sh.className="stsh";',
+      '  sh.style.background=grad(0.26+0.74*u0,0.26+0.74*u1,rev); sh.style.opacity="0";',
+      '  d.appendChild(sh);',
+      '  var gu=null, g0=gutAt(u0), g1=gutAt(u1);',
+      '  if(g0>0||g1>0){   // 책등 그늘은 안쪽 조각에만 필요하다',
+      '    gu=document.createElement("div"); gu.className="stgu";',
+      '    gu.style.background=grad(g0,g1,rev); gu.style.opacity="0";',
+      '    d.appendChild(gu);',
+      '  }',
+      '  return {el:d, sh:sh, gu:gu};',
+      '}',
+      '// 낱장 만들기 — 경첩으로 이어진 조각 사슬(부모의 끝에 자식이 붙는다)',
+      'function buildLeaf(r,fi,bi,hingeLeft,list){',
       '  var lf=document.createElement("div"); lf.className="leaf";',
       '  lf.style.left=r.l+"px"; lf.style.top=r.t+"px"; lf.style.width=r.w+"px"; lf.style.height=r.h+"px";',
-      '  lf.style.transformOrigin=(leafR?"left":"right")+" center";',
-      '  lf.style.transform="rotateY(0deg)";',
-      '  var front=face(fi,list,false), back=face(bi,list,true);',
-      '  lf.appendChild(front); lf.appendChild(back);',
-      '  stage.firstChild.appendChild(lf); anim=1;',
-      '  var fs=front.lastChild, bs=back.lastChild;',
-      '  requestAnimationFrame(function(){ requestAnimationFrame(function(){',
-      '    lf.style.transition="transform .52s cubic-bezier(.36,.06,.31,1)";',
-      '    lf.style.transform="rotateY("+(leafR?-180:180)+"deg)";',
-      '    fs.style.transition="opacity .52s"; bs.style.transition="opacity .52s";',
-      '    fs.style.opacity="0.42"; bs.style.opacity="0";',
-      '  }); });',
-      '  setTimeout(function(){ if(lf.parentNode)lf.parentNode.removeChild(lf); anim=0; },580);',
+      '  var W=r.w, H=r.h, w=W/STRIPS, ov=0.8;   // ov = 조각 이음매가 벌어져 보이지 않게 겹치는 폭',
+      '  var fim=(fi==null)?null:list[fi], bim=(bi==null)?null:list[bi];',
+      '  var parent=lf, strips=[];',
+      '  for(var k=0;k<STRIPS;k++){',
+      '    var st=document.createElement("div"); st.className="st";',
+      '    st.style.width=(w+ov)+"px"; st.style.height=H+"px";',
+      '    st.style.transformOrigin=(hingeLeft?"left":"right")+" center";',
+      '    st.style.left=(k===0?(hingeLeft?0:(W-w-ov)):(hingeLeft?w:-w))+"px";',
+      '    var u0=k/STRIPS, u1=(k+1)/STRIPS;',
+      '    var f=stripFace(fim,(hingeLeft?k:(STRIPS-1-k)),W,H,w,false,u0,u1,!hingeLeft);',
+      '    var b=stripFace(bim,(hingeLeft?(STRIPS-1-k):k),W,H,w,true,u0,u1,hingeLeft);',
+      '    st.appendChild(f.el); st.appendChild(b.el);',
+      '    parent.appendChild(st); parent=st;',
+      '    strips.push({el:st, fs:f.sh, bs:b.sh, fg:f.gu, bg:b.gu});',
+      '  }',
+      '  return {el:lf, strips:strips};',
       '}',
-      '// 쪽 번호로 바로 이동 (책 보기=쪽, 인쇄 대수 보기=시트 번호)',
+      '// 진행도 p(0~1)에 맞춰 낱장의 자세를 잡는다 — 시간으로 굴리든(자동), 손으로 끌든(드래그) 같은 함수.',
+      '// 책등 조각이 주 회전을 맡고 바깥 조각일수록 조금씩 더 돌아 종이가 활처럼 휜다.',
+      '// 책등 그늘은 넘어가는 낱장에도 이어져야 한다. 아래 펼침면에만 그리면 낱장이 지나가는',
+      '// 동안 가운데 음영이 사라졌다 다시 나타나 눈에 거슬린다. 낱장이 책등에서 들릴수록',
+      '// 앞면의 그늘은 옅어지고(1-p), 반대편에 내려앉는 뒷면의 그늘은 짙어진다(p) — 그래서',
+      '// 시작·끝 순간의 농도가 아래 페이지와 정확히 같아 이어짐이 끊기지 않는다.',
+      'var GUTS=0.30;',
+      'function gutAt(u){ return Math.max(0,1-u/0.09); }   // 책등에서 페이지 폭의 9%까지',
+      '// 휨은 **책 안쪽(책등 쪽)에 몰아준다** — 실제로 책장을 넘기면 바깥은 거의 평평한 채로',
+      '// 제본 근처가 크게 휜다. 바깥쪽에 몰면 종이가 스스로 말려 붙어 사라진 것처럼 보였다.',
+      '// 가중치는 제곱으로 감소(∝(n-k)^2) — 선형보다 책등 쪽에 훨씬 더 몰린다.',
+      'function poseLeaf(T,p){',
+      '  var st=T.leaf.strips, n=st.length;',
+      '  var S=0; for(var q=1;q<n;q++)S+=(n-q)*(n-q);',
+      '  var pp=Math.max(0,Math.min(1,p));',
+      '  // 휨은 시작과 끝에서 더 빨리 잦아들어야 자연스럽다. 그냥 사인이면 다 넘어갈 무렵에도',
+      '  // 아직 40도쯤 휜 채로 내려앉아 마지막에 펄럭이는 느낌이 났다 → 사인에 지수(1.8)를 줘',
+      '  // 가운데는 그대로 크게 휘고 양 끝에서는 부드럽게 펴지도록 한다.',
+      '  var m=180*p, c=CURL*Math.pow(Math.sin(Math.PI*pp),1.8);',
+      '  var fb=0.46*p, bb=0.42*(1-p);',
+      '  var gf=GUTS*(1-p), gb=GUTS*p;',
+      '  for(var k=0;k<n;k++){',
+      '    var s=st[k];',
+      '    var a=(k===0)?m:(c*(n-k)*(n-k)/S);',
+      '    s.el.style.transform="rotateY("+(T.sign*a)+"deg)";',
+      '    s.fs.style.opacity=fb; s.bs.style.opacity=bb;',
+      '    if(s.fg)s.fg.style.opacity=gf;',
+      '    if(s.bg)s.bg.style.opacity=gb;',
+      '  }',
+      '}',
+      '// 사인 이징 — 세제곱보다 중간 속도가 완만해 천천히 넘길 때 더 자연스럽다.',
+      'function ease(x){ return 0.5-0.5*Math.cos(Math.PI*Math.max(0,Math.min(1,x))); }',
+      '// 넘김 시작 — 아래에는 「지금 쪽 + 드러날 쪽」을 깔고, 그 위에 낱장 한 장을 얹는다.',
+      '// d>0이면 다음, d<0이면 이전. 만들지 못하면 null.',
+      'function beginTurn(d){',
+      '  var Ls=views(), n=i+d;',
+      '  if(!d||n<0||n>=Ls.length)return null;',
+      '  var from=Ls[i]||[], to=Ls[n]||[], list=imgs();',
+      '  var leafR=(RTL?(d<0):(d>0));            // 넘어가는 쪽이 화면 오른쪽 면인가',
+      '  var mixed=single?[to[0]]:(leafR?[from[0],to[1]]:[to[0],from[1]]);',
+      '  var sp=drawSpread(mixed);',
+      '  var box=single?sp.children[0]:sp.children[leafR?1:0];',
+      '  if(!box)return null;',
+      '  var r={l:box.offsetLeft,t:box.offsetTop,w:box.offsetWidth,h:box.offsetHeight};',
+      '  if(!r.w)return null;',
+      '  var leaf=buildLeaf(r,(single?from[0]:from[leafR?1:0]),(single?to[0]:to[leafR?0:1]),leafR,list);',
+      '  sp.appendChild(leaf.el);',
+      '  var T={leaf:leaf,sign:(leafR?-1:1),leafR:leafR,n:n,w:r.w};',
+      '  poseLeaf(T,0);',
+      '  return T;',
+      '}',
+      '// 낱장을 p0에서 p1까지 굴린 뒤 마무리 — 끝까지 넘겼으면 그 펼침면으로 확정, 아니면 원래대로.',
+      'function settle(T,p0,p1,ms){',
+      '  anim=1; var t0=0;',
+      '  function frame(now){',
+      '    if(!t0)t0=now;',
+      '    var t=Math.min(1,(now-t0)/Math.max(60,ms));',
+      '    poseLeaf(T,p0+(p1-p0)*ease(t));',
+      '    if(t<1){ requestAnimationFrame(frame); return; }',
+      '    if(p1>=1)i=T.n;',
+      '    anim=0; render();',
+      '  }',
+      '  requestAnimationFrame(frame);',
+      '}',
+      'function go(d){',
+      '  var Ls=views(), n=i+d; if(!d||n<0||n>=Ls.length||anim||drag)return;',
+      '  // 책 느낌을 끈 상태에서는 연출 없이 곧바로 교체한다 — 흐려졌다 나타나는 처리가',
+      '  // 깜박임처럼 보여 눈이 피로했다.',
+      '  if(V!=="book"||!paper){ i=n; render(); return; }',
+      '  var T=beginTurn(d); if(!T){ i=n; render(); return; }',
+      '  settle(T,0,1,TURN_MS);',
+      '}',
+      '// ── 손으로 잡고 끄는 넘김 (마우스 좌클릭 드래그 · 모바일 터치) ─────────────',
+      '// 페이지를 잡아 끄는 동안 낱장이 손끝을 그대로 따라오고, 놓으면 그 지점에서',
+      '// 이어서 넘어가거나(많이 끌었거나 빠르게 튕겼으면) 제자리로 돌아간다.',
+      'var drag=null, dragMoved=false, navTap=false;',
+      'function inUI(t){ while(t&&t!==document.body){',
+      '  if(t.classList&&(t.classList.contains("bar")||t.classList.contains("foot")||',
+      '     t.classList.contains("rail")||t.classList.contains("zoomv")))return true;',
+      '  t=t.parentNode; } return false; }',
+      'function dragProgress(x){',
+      '  var dx=x-drag.x0;',
+      '  var p=(drag.T?(drag.T.leafR?-dx:dx):(drag.dir>0?-dx:dx))/drag.w;',
+      '  return Math.max(0,Math.min(1,p));',
+      '}',
+      'document.addEventListener("pointerdown",function(e){',
+      '  if(e.button!==0||anim||drag||inUI(e.target))return;',
+      '  if(zImg)return;   // 확대 보기 중에는 페이지를 끌지 않는다 (style.display는 처음에 빈 값이라 쓰면 안 된다)',
+      '  var sp=stage.firstChild; if(!sp)return;',
+      '  var b=sp.getBoundingClientRect(); if(!b.width)return;',
+      '  // 어느 쪽을 잡았는지로 방향 결정 — 오른쪽 면을 잡으면 다음, 왼쪽 면을 잡으면 이전',
+      '  var grabR=(e.clientX>=b.left+b.width/2);',
+      '  var d=grabR?(RTL?-1:1):(RTL?1:-1);',
+      '  var Ls=views(), n=i+d; if(n<0||n>=Ls.length)return;',
+      '  dragMoved=false;',
+      '  var onNav=!!(e.target&&e.target.classList&&e.target.classList.contains("nav"));',
+      '  drag={x0:e.clientX,y0:e.clientY,t0:Date.now(),dir:d,T:null,w:b.width/2,p:0,id:e.pointerId,nav:onNav};',
+      '  if(V==="book"&&paper){ drag.T=beginTurn(d); if(drag.T)drag.w=drag.T.w; }',
+      '  document.body.classList.add("dragging");',
+      '},true);',
+      'document.addEventListener("pointermove",function(e){',
+      '  if(!drag||e.pointerId!==drag.id)return;',
+      '  if(!dragMoved&&Math.abs(e.clientX-drag.x0)<5&&Math.abs(e.clientY-drag.y0)<5)return;',
+      '  dragMoved=true; hideHint();',
+      '  drag.p=dragProgress(e.clientX);',
+      '  if(drag.T)poseLeaf(drag.T,drag.p);',
+      '  e.preventDefault();',
+      '});',
+      'function endDrag(e){',
+      '  if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;',
+      '  var T=drag.T, p=drag.p, ms=Math.max(1,Date.now()-drag.t0);',
+      '  var flick=(Math.abs((e?e.clientX:drag.x0)-drag.x0)/ms)>0.55;   // 빠르게 튕겼는가',
+      '  var done=dragMoved?(p>0.32||(flick&&p>0.06)):!!drag.nav;   // 넘김 표시를 톡 누르면 그대로 넘긴다',
+      '  if(!dragMoved&&drag.nav){ navTap=true; setTimeout(function(){ navTap=false; },400); }',
+      '  var dir=drag.dir, n=i+dir;',
+      '  document.body.classList.remove("dragging");',
+      '  drag=null;',
+      '  if(T){ settle(T,p,done?1:0,done?(1-p)*TURN_MS*0.8:p*TURN_MS*0.7); }',
+      '  else if(done&&n>=0&&n<views().length){ i=n; render(); }',
+      '  if(!dragMoved){ immersive(false); armImmersive(); }   // 톡 누르면 막대 복귀',
+      '  else armImmersive();',
+      '  setTimeout(function(){ dragMoved=false; },0);   // 끌고 나서 놓을 때 확대가 열리지 않게',
+      '}',
+      'document.addEventListener("pointerup",endDrag);',
+      'document.addEventListener("pointercancel",endDrag);',
       'function goPage(v){',
       '  var list=imgs(); v=Math.round(v);',
       '  if(!v||v<1||v>list.length)return false;',
@@ -6722,12 +6930,84 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  if(k!==i)go(k-i);',
       '  return true;',
       '}',
-      'function zoom(im){ var z=document.getElementById("zoomv"), g=new Image();',
-      '  g.src=im.u; g.style.width=Math.min(im.w*2,4000)+"px";',
-      '  z.innerHTML=""; z.appendChild(g); z.style.display="flex"; }',
-      'document.getElementById("zoomv").onclick=function(){ this.style.display="none"; };',
-      'document.getElementById("prev").onclick=function(){ go(RTL?1:-1); };',
-      'document.getElementById("next").onclick=function(){ go(RTL?-1:1); };',
+      '// ── 🔍 확대 보기 ─────────────────────────────────────────────────────',
+      '// 처음에는 한 쪽 전체가 화면에 다 들어오고(못 보는 구석이 없다), 거기서',
+      '// 손가락 두 개(핀치)·휠·두 번 두드리기로 키운 뒤 끌어서 원하는 곳을 본다.',
+      'var zv=document.getElementById("zoomv");',
+      'var zImg=null, zIm=null, zS=1, zMin=1, zMax=8, zX=0, zY=0;',
+      'function zApply(){ if(zImg)zImg.style.transform="translate("+zX+"px,"+zY+"px) scale("+zS+")"; }',
+      'function zClamp(){',
+      '  var vw=zv.clientWidth, vh=zv.clientHeight, w=zIm.w*zS, h=zIm.h*zS;',
+      '  zX=(w<=vw)?(vw-w)/2:Math.min(0,Math.max(vw-w,zX));',
+      '  zY=(h<=vh)?(vh-h)/2:Math.min(0,Math.max(vh-h,zY));',
+      '}',
+      'function zFit(){',
+      '  var vw=zv.clientWidth, vh=zv.clientHeight;',
+      '  zMin=Math.min((vw-16)/zIm.w,(vh-16)/zIm.h); if(!(zMin>0))zMin=1;',
+      '  zMax=zMin*10; zS=zMin; zClamp(); zApply();',
+      '}',
+      'function zZoomAt(cx,cy,ns){',
+      '  ns=Math.max(zMin,Math.min(zMax,ns));',
+      '  var k=ns/zS; zX=cx-(cx-zX)*k; zY=cy-(cy-zY)*k; zS=ns; zClamp(); zApply();',
+      '}',
+      'function zoom(im){',
+      '  zIm=im; zv.innerHTML="";',
+      '  zImg=new Image(); zImg.className="zimg"; zImg.src=im.u; zImg.draggable=false;',
+      '  zImg.style.width=im.w+"px"; zImg.style.height=im.h+"px";',
+      '  zv.appendChild(zImg);',
+      '  var x=document.createElement("div"); x.className="zx"; x.textContent="✕";',
+      '  x.onclick=function(e){ e.stopPropagation(); zClose(); }; zv.appendChild(x);',
+      '  var hn=document.createElement("div"); hn.className="zhint";',
+      '  hn.textContent="손가락 두 개로 벌리면 확대 · 끌어서 이동 · 두 번 두드리면 원래대로 · ✕ 닫기";',
+      '  zv.appendChild(hn); setTimeout(function(){ hn.style.opacity="0"; },3500);',
+      '  zv.style.display="block"; zFit();',
+      '}',
+      'function zClose(){ zv.style.display="none"; zv.innerHTML=""; zImg=null; zIm=null; }',
+      'var zpts={}, zN=0, zLastD=0, zMoved=false;',
+      'zv.addEventListener("pointerdown",function(e){',
+      '  if(!zImg)return;',
+      '  zpts[e.pointerId]={x:e.clientX,y:e.clientY}; zN++; zLastD=0; zMoved=false;',
+      '  if(zv.setPointerCapture){ try{ zv.setPointerCapture(e.pointerId); }catch(err){} }',
+      '  e.preventDefault();',
+      '});',
+      'zv.addEventListener("pointermove",function(e){',
+      '  if(!zImg||!zpts[e.pointerId])return;',
+      '  var ids=Object.keys(zpts), r=zv.getBoundingClientRect();',
+      '  if(ids.length===1){',
+      '    var p=zpts[e.pointerId], dx=e.clientX-p.x, dy=e.clientY-p.y;',
+      '    if(Math.abs(dx)>3||Math.abs(dy)>3)zMoved=true;',
+      '    zX+=dx; zY+=dy; p.x=e.clientX; p.y=e.clientY; zClamp(); zApply();',
+      '  } else {',
+      '    zpts[e.pointerId].x=e.clientX; zpts[e.pointerId].y=e.clientY; zMoved=true;',
+      '    var a=zpts[ids[0]], b=zpts[ids[1]];',
+      '    var d=Math.sqrt((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y));',
+      '    var mx=(a.x+b.x)/2-r.left, my=(a.y+b.y)/2-r.top;',
+      '    if(zLastD>0&&d>0)zZoomAt(mx,my,zS*(d/zLastD));',
+      '    zLastD=d;',
+      '  }',
+      '  e.preventDefault();',
+      '});',
+      'function zEnd(e){',
+      '  if(!zpts[e.pointerId])return;',
+      '  delete zpts[e.pointerId]; zLastD=0;',
+      '  // 확대하지 않은 상태에서 그냥 톡 누르면 닫는다(끌었을 때는 닫지 않는다)',
+      '  if(!Object.keys(zpts).length&&!zMoved&&zS<=zMin*1.02)zClose();',
+      '}',
+      'zv.addEventListener("pointerup",zEnd);',
+      'zv.addEventListener("pointercancel",zEnd);',
+      'zv.addEventListener("wheel",function(e){',
+      '  if(!zImg)return; e.preventDefault();',
+      '  var r=zv.getBoundingClientRect();',
+      '  zZoomAt(e.clientX-r.left,e.clientY-r.top,zS*(e.deltaY<0?1.18:1/1.18));',
+      '},{passive:false});',
+      'zv.addEventListener("dblclick",function(e){',
+      '  if(!zImg)return; var r=zv.getBoundingClientRect();',
+      '  if(zS>zMin*1.05)zFit(); else zZoomAt(e.clientX-r.left,e.clientY-r.top,zMin*3);',
+      '});',
+      'window.addEventListener("resize",function(){ if(zImg)zFit(); });',
+      '// 넘김 표시 클릭 — 포인터로 이미 처리했으면(navTap) 두 번 넘어가지 않게 건너뛴다',
+      'document.getElementById("prev").onclick=function(){ if(!dragMoved&&!navTap)go(RTL?1:-1); };',
+      'document.getElementById("next").onclick=function(){ if(!dragMoved&&!navTap)go(RTL?-1:1); };',
       'rng.oninput=function(){ var n=+this.value; if(n!==i){ if(anim){i=n;render();} else go(n-i); } };',
       'if(jump){ jump.onkeydown=function(e){ if(e.key==="Enter"){ if(!goPage(+this.value))this.select(); } };',
       '  jump.onchange=function(){ goPage(+this.value); }; }',
@@ -6739,12 +7019,34 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  else if(e.key==="ArrowRight")go(RTL?-1:1);',
       '  else if(e.key==="Home"){ i=0; render(); }',
       '  else if(e.key==="End"){ i=views().length-1; render(); }',
-      '  else if(e.key==="Escape")document.getElementById("zoomv").style.display="none"; };',
-      'var tx=0;',
-      'stage.addEventListener("touchstart",function(e){tx=e.touches[0].clientX;});',
-      'stage.addEventListener("touchend",function(e){var dx=e.changedTouches[0].clientX-tx;',
-      '  if(Math.abs(dx)>50)go((dx<0?1:-1)*(RTL?-1:1));});',
-      'window.addEventListener("resize",render);',
+      '  else if(e.key==="Escape")zClose(); };',
+      '// 가로↔세로가 바뀌면 한 쪽 보기/펼침 보기를 갈아탄다 — 보던 쪽은 유지.',
+      'function updateMode(){',
+      '  document.body.classList.toggle("mob",MOB);',
+      '  var want=(MOB&&V==="book"&&window.innerHeight>window.innerWidth);',
+      '  if(want===single)return false;',
+      '  var p0=curPage();',
+      '  single=want;',
+      '  document.body.classList.toggle("single",single);',
+      '  var k=viewOfPage(p0); i=(k<0?0:k);',
+      '  buildRail();',
+      '  return true;',
+      '}',
+      '// 가로로 눕힌 휴대폰에서 2.5초간 손을 떼면 막대를 감춘다 — 두 쪽이 화면을 거의 가득 채운다.',
+      'var IMM=false, immT=null;',
+      'function immersive(on){',
+      '  if(!MOB||on===IMM)return;',
+      '  IMM=on; document.body.classList.toggle("immersive",on);',
+      '  if(!drag&&!anim)render();',
+      '}',
+      'function armImmersive(){',
+      '  if(!MOB)return;',
+      '  clearTimeout(immT);',
+      '  if(window.innerHeight>560){ immersive(false); return; }   // 세로일 때는 그대로 둔다',
+      '  immT=setTimeout(function(){ immersive(true); },2500);',
+      '}',
+      'window.addEventListener("resize",function(){ if(drag||anim)return; updateMode(); render(); armImmersive(); });',
+      'window.addEventListener("orientationchange",function(){ setTimeout(function(){ if(drag||anim)return; updateMode(); render(); },120); });',
       'var tbk=document.getElementById("tabBook"), tsh=document.getElementById("tabSheet");',
       'function setView(v){ V=v; i=0; buildRail(); render();',
       '  if(jump){ jump.value=""; jump.max=String(imgs().length); }',
@@ -6755,9 +7057,36 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  tbk.classList.add("on"); if(tsh)tsh.classList.remove("on"); setView("book"); };',
       'var rb=document.getElementById("realBtn"), cal=document.getElementById("calib");',
       'if(rb) rb.onclick=function(){ real=!real; rb.classList.toggle("on",real);',
+      '  document.body.classList.toggle("realsize",real);   // 이때만 무대 스크롤 허용',
       '  cal.style.display=real?"":"none"; render(); };',
       'if(cal){ cal.value=String(MM); cal.oninput=function(){ MM=+this.value;',
       '  try{localStorage.setItem("proofMM",String(MM));}catch(e){} if(real)render(); }; }',
+      '// 전체화면 — 휴대폰 가로 보기에서 특히 유용하다(브라우저 주소창까지 사라진다).',
+      'var fsb=document.getElementById("fsBtn");',
+      'if(fsb){',
+      '  var root=document.documentElement;',
+      '  var canFs=!!(root.requestFullscreen||root.webkitRequestFullscreen);',
+      '  if(!canFs)fsb.style.display="none";',
+      '  else{',
+      '    fsb.onclick=function(){',
+      '      try{',
+      '        if(document.fullscreenElement||document.webkitFullscreenElement){',
+      '          (document.exitFullscreen||document.webkitExitFullscreen).call(document);',
+      '        } else {',
+      '          (root.requestFullscreen||root.webkitRequestFullscreen).call(root);',
+      '        }',
+      '      }catch(e){}',
+      '    };',
+      '    var syncFs=function(){',
+      '      var on=!!(document.fullscreenElement||document.webkitFullscreenElement);',
+      '      fsb.classList.toggle("on",on);',
+      '      fsb.textContent=on?"⛶ 전체화면 해제":"⛶ 전체화면";',
+      '      setTimeout(function(){ if(!drag&&!anim){ updateMode(); render(); armImmersive(); } },80);',
+      '    };',
+      '    document.addEventListener("fullscreenchange",syncFs);',
+      '    document.addEventListener("webkitfullscreenchange",syncFs);',
+      '  }',
+      '}',
       'var pb=document.getElementById("paperBtn");',
       'document.body.classList.toggle("paper",paper);',
       'if(pb){ pb.classList.toggle("on",paper);',
@@ -6770,9 +7099,22 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  rlb.onclick=function(){ rail=!rail; rlb.classList.toggle("on",rail);',
       '    document.body.classList.toggle("railon",rail);',
       '    try{localStorage.setItem("proofRail",rail?"1":"0");}catch(e){} render(); }; }',
+      '// 처음 열었을 때 한 번만 조작 안내 (한 번 넘기면 사라지고, 다시 열어도 안 나온다)',
+      'var hintEl=null;',
+      'function hideHint(){ if(!hintEl)return; hintEl.style.opacity="0";',
+      '  var h=hintEl; hintEl=null; setTimeout(function(){ if(h.parentNode)h.parentNode.removeChild(h); },600);',
+      '  try{localStorage.setItem("proofHint","1");}catch(e){} }',
+      'try{ if(localStorage.getItem("proofHint")!=="1"){',
+      '  hintEl=document.createElement("div"); hintEl.className="hint";',
+      '  hintEl.textContent="페이지를 잡고 끌어 보세요 — 종이처럼 넘어갑니다 (좌우 클릭·←/→ 키도 가능)";',
+      '  document.body.appendChild(hintEl);',
+      '  setTimeout(hideHint,7000);',
+      '} }catch(e){}',
       'if(jump) jump.max=String(imgs().length);',
+      'updateMode();',
       'buildRail();',
       'render();',
+      'armImmersive();',
       '})();',
     ].join('\n');
 
@@ -6798,7 +7140,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       const payload = {
         book, sheets,
         spreads: ebookSpreads(book.length, opts.coverSingle !== false, meta.bind),
-        meta: { mm: meta.mm || null, bind: meta.bind || 'left' },
+        meta: { mm: meta.mm || null, bind: meta.bind || 'left', target: meta.target === 'mobile' ? 'mobile' : 'web' },
         opts: { wm: opts.watermark ? ebookWatermarkUri(opts.wmText) : '', trimPct: +opts.trimPct || 0 },
       };
       const hasSheets = sheets.length > 0;
@@ -6816,6 +7158,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         +   (hasSheets ? '<button class="b" id="tabSheet">인쇄 대수</button>' : '')
         +   '<button class="b on" id="railBtn" title="왼쪽 페이지 목록 보이기/숨기기">📑 페이지 목록</button>'
         +   '<button class="b on" id="paperBtn" title="종이·책등 그늘·두께 등 책 느낌 효과 — 색을 정확히 볼 때는 끄세요">📕 책 느낌</button>'
+        +   '<button class="b" id="fsBtn" title="전체화면으로 보기 (휴대폰은 가로로 눕히면 화면 가득)">⛶ 전체화면</button>'
         +   '<button class="b" id="realBtn" title="모니터에서 실제 인쇄 크기로 봅니다">실제 크기</button>'
         +   '<input type="range" id="calib" min="2.5" max="6" step="0.02"'
         +   ' style="display:none;width:110px" title="자로 잰 길이와 맞도록 조절하세요">'
@@ -6841,13 +7184,20 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 
     // ── E-book 시안 생성 (앱 연결부) ───────────────────────────────────────────
     // 위 코어는 순수 함수, 여기부터는 앱 상태·DOM·pdf.js를 쓰는 연결부다.
-    let _ebOpts = { dpi: 150, wm: true, sheets: true, bind: 'left', trim: true };
+    // 기본값 = 고화질·좌철·부가 표시 없음(워터마크·인쇄대수·재단선). 필요할 때만 켠다.
+    let _ebOpts = { dpi: 200, wm: false, sheets: false, bind: 'left', trim: false, target: 'web' };
 
     function setEbDpi(v) {
       _ebOpts.dpi = v;
       document.querySelectorAll('[data-ebdpi]').forEach(b =>
         b.classList.toggle('active', +b.dataset.ebdpi === v));
       updateEbNote();
+    }
+    // 보는 기기 — web: PC 기준(목록 펼친 채 시작) / mobile: 휴대폰 기준(가로=두 쪽 가득, 세로=한 쪽씩)
+    function setEbTarget(v) {
+      _ebOpts.target = v;
+      document.querySelectorAll('[data-ebtarget]').forEach(b =>
+        b.classList.toggle('active', b.dataset.ebtarget === v));
     }
     function setEbBind(v) {
       _ebOpts.bind = v;
@@ -6937,7 +7287,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         const html = buildEbookProofHtml({
           title: base + ' 출력 시안',
           meta: {
-            mm: book.mm, bind: _ebOpts.bind, spec: specBits.join(' · '),
+            mm: book.mm, bind: _ebOpts.bind, spec: specBits.join(' · '), target: _ebOpts.target,
             date: new Date().toLocaleDateString('ko-KR'), by: '일청기획',
           },
           book: book.pages,
@@ -6957,7 +7307,10 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           + (wantSheets ? ` + 인쇄 대수 ${sheets.pages.length}시트` : '')
           + ` · ${mb}MB\n`
           + `파일 하나로 끝나므로 그대로 메일·카톡에 첨부하면 됩니다 — 고객은 더블클릭만 하면 브라우저에서 열립니다.\n`
-          + `→ 넘기기: 화면 좌우 클릭 또는 ←/→ 키 (실제 책처럼 낱장이 넘어갑니다) · 페이지 클릭하면 확대\n→ 왼쪽 [📑 페이지 목록]에서 원하는 쪽을 바로 누르거나, 아래 '쪽 이동'에 번호를 넣고 Enter\n→ [실제 크기]로 인쇄 크기 확인 · 색을 정확히 볼 때는 [📕 책 느낌]을 끄세요`);
+          + `→ 넘기기: 페이지를 잡고 끌면(휴대폰은 손가락으로) 종이처럼 넘어갑니다 · 화면 좌우 클릭·←/→ 키도 가능\n→ 페이지를 누르면 확대 · [📑 페이지 목록]에서 바로 이동하거나 아래 '쪽 이동'에 번호를 넣고 Enter\n→ [실제 크기]로 인쇄 크기 확인 · 색을 정확히 볼 때는 [📕 책 느낌]을 끄세요`
+          + (_ebOpts.target === 'mobile'
+              ? `\n📱 모바일용으로 만들었습니다 — 폰을 눕히면 두 쪽이 화면 가득(잠시 두면 위아래 막대가 숨습니다), 세우면 한 쪽씩 크게 보입니다.`
+              : `\n💻 일반 웹용입니다 — 폰에서 볼 고객이 많으면 '📱 모바일용'으로 다시 만들어 보내세요.`));
       } catch (e) {
         hideLoading();
         showError('시안 생성 실패: ' + (e && e.message ? e.message : e));

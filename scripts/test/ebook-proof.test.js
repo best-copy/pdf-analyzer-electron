@@ -74,7 +74,66 @@ ck('왼쪽 페이지 목록 자리', html.includes('id="rail"') && html.includes
 ck('쪽 이동 입력·버튼', html.includes('id="jump"') && html.includes('id="jumpBtn"') && html.includes('id="jlbl"'));
 ck('책 느낌 토글', html.includes('id="paperBtn"'));
 ck('낱장 넘김(rotateY) 코드 포함', html.includes('rotateY(') && html.includes('preserve-3d'));
-ck('책등 그늘·종이 두께 스타일', html.includes('.gut{') && html.includes('.edge{'));
+ck('책등 그늘 스타일', html.includes('.gut{'));
+// 좌우에 남은 종이가 쌓인 효과는 뺐다(사용자 요청) — 다시 들어오면 이 검사가 잡는다
+ck('종이 두께 효과 없음', !html.includes('.edge{') && !html.includes('function edge('));
+// 전체화면 버튼 — 휴대폰 가로 보기에서 화면을 통째로 쓴다
+ck('전체화면 버튼', html.includes('id="fsBtn"') && html.includes('requestFullscreen'));
+// 프레임마다 그라데이션 문자열을 새로 만들면 CSS 재파싱으로 끊긴다 — 투명도만 바꾼다
+ck('넘김 중에는 투명도만 갱신', html.includes('.stgu') && html.includes('s.fs.style.opacity=fb')
+   && !html.includes('function shade(el,a,b,rev)'));
+// 휨은 책등 쪽에 몰아준다(제곱 감소)
+ck('휨이 책등 쪽에 몰림', html.includes('c*(n-k)*(n-k)/S'));
+// 목록의 빈 면 높이는 퍼센트 padding(줄 폭 기준)이 아니라 비율로 잡아야 옆 칸과 같아진다
+ck('목록 빈 칸 높이 = 옆 칸', html.includes('cell.style.aspectRatio') && !html.includes('cell.style.paddingTop'));
+// 모바일 가로에서는 눌러도 확대되지 않는다
+ck('모바일 가로 확대 없음', html.includes('var noZoom=(MOB&&!single)'));
+// 확대 보기는 핀치·끌기로 어디든 볼 수 있어야 한다(처음엔 한 쪽 전체가 보이고, 가장자리까지 닿음)
+ck('핀치줌 확대 보기', html.includes('function zFit(') && html.includes('function zClamp(')
+   && html.includes('function zZoomAt(') && html.includes('.zimg{'));
+ck('확대 보기 닫기 수단', html.includes('.zx{') && html.includes('function zClose('));
+// 넘김은 천천히·완만하게 (사인 이징)
+ck('넘김 1200ms', html.includes('TURN_MS=1200'));
+ck('사인 이징', html.includes('0.5-0.5*Math.cos(Math.PI'));
+// 끝에서 휨이 남아 있으면 내려앉을 때 펄럭인다 — 사인에 지수를 줘 양 끝에서 빨리 펴지게 한다
+ck('내려앉을 때 부드럽게', html.includes('Math.pow(Math.sin(Math.PI*pp),1.8)'));
+// style.display는 처음에 빈 문자열이라 '열림' 판정에 쓰면 드래그가 아예 안 된다(실제로 그랬다)
+ck('확대 열림 판정은 요소로', html.includes('if(zImg)return;') && !html.includes('zv.style.display!=="none")return'));
+// 넘김 표시를 클릭해도 넘어가야 한다(누르는 순간 낱장이 잡히므로 클릭만으로는 되돌아갔었다)
+ck('넘김 표시 클릭으로 넘김', html.includes('drag.nav') && html.includes('navTap'));
+// 낱장은 여러 조각(.st)을 경첩처럼 이어 붙여 휘게 만든다 — 한 판때기로 돌면 뻣뻣해 보인다
+ck('낱장이 조각으로 휘는 구조', html.includes('.st{') && html.includes('.sfc{') && html.includes('.sbc{')
+   && html.includes('function buildLeaf') && html.includes('CURL'));
+// 넘김 중 스크롤바가 생겼다 사라지면 화면이 좌우로 떨린다 → 무대는 고정, 실제 크기 모드만 스크롤
+ck('무대 고정(떨림 방지)', /\.stage\{[^}]*overflow:hidden/.test(html)
+   && html.includes('.realsize .stage{overflow:auto'));
+// 책 느낌을 끄면 연출 없이 곧바로 교체돼야 한다(흐려졌다 나타나면 깜박임으로 보인다)
+ck('책 느낌 끄면 즉시 교체', html.includes('if(V!=="book"||!paper){ i=n; render(); return; }'));
+// 목록은 화면과 같이 펼침면(두 쪽)을 한 줄에
+ck('목록이 펼침면 두 쪽 구성', html.includes('.rp{') && html.includes('data-v'));
+// 손으로 잡고 끄는 넘김(마우스·터치 공용) — 포인터 이벤트 한 벌로 처리한다
+ck('드래그로 넘기기', html.includes('pointerdown') && html.includes('pointermove')
+   && html.includes('pointerup') && html.includes('function poseLeaf'));
+ck('끄는 동안 화면이 스크롤되지 않게', /\.stage\{[^}]*touch-action:none/.test(html));
+// 넘기는 동안 아래에는 「지금 쪽 + 드러날 쪽」을 깐다 — 목적지 펼침면을 통째로 깔면
+// 반대쪽 페이지가 시작하자마자 툭 바뀐다
+ck('넘김 중 섞인 펼침면', html.includes('function beginTurn') && html.includes('mixed'));
+// 책등 그늘이 낱장에도 이어져야 가운데 음영이 사라졌다 나타나지 않는다
+ck('책등 그늘이 낱장에도 이어짐', html.includes('gutAt') && html.includes('GUTS'));
+// 빈 면도 화면에서 한 쪽 자리를 차지한다 — 폭 계산에서 빼면 좁은 화면에서 책이 잘린다
+ck('빈 면도 폭 계산에 포함', html.includes('else if(book){ w+=rw;'));
+ck('휴대폰 화면 대응', html.includes('@media (max-width:760px)') && html.includes('NARROW'));
+// 📱 모바일용으로 만들면 세로=한 쪽씩, 가로=두 쪽 가득(막대 자동 숨김)
+ck('보는 기기 기본은 웹용', /"target":"web"/.test(html));
+ck('한 쪽씩 보기·몰입 보기 코드', html.includes('single') && html.includes('immersive')
+   && html.includes('.mob .stage'));
+const mob = buildEbookProofHtml({
+  title: 'm', meta: { mm: [210, 297], bind: 'left', target: 'mobile' },
+  book: [img, img, img], sheets: [], opts: {},
+});
+ck('모바일용으로 표시됨', /"target":"mobile"/.test(mob));
+ck('엉뚱한 값은 웹용으로', /"target":"web"/.test(buildEbookProofHtml({
+  title: 'x', meta: { target: '이상한값' }, book: [img], opts: {} })));
 // localStorage는 file:·data: 환경에서 접근 자체가 예외를 던진다 —
 // 감싸지 않으면 뷰어 스크립트가 첫 줄에서 죽어 화면이 통째로 빈다(실제로 그랬다).
 ck('localStorage 첫 접근이 try로 감싸짐', html.includes('try{ MM=Number(localStorage')

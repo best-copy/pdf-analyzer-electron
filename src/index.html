@@ -259,22 +259,26 @@
         <div class="sbp-title"><span class="ic">📖</span> E-book 시안 (고객 확인용)</div>
         <div class="sbp-opts">
           <div class="sbp-row2">
+            <button class="sbp-opt active" data-ebtarget="web" onclick="setEbTarget('web')" title="PC·노트북에서 보기 좋게 — 왼쪽 페이지 목록을 펼친 채로 시작합니다">💻 일반 웹용</button>
+            <button class="sbp-opt" data-ebtarget="mobile" onclick="setEbTarget('mobile')" title="휴대폰에 맞춤 — 가로로 눕히면 두 쪽이 화면 가득, 세로로 세우면 한 쪽씩 크게 봅니다">📱 모바일용</button>
+          </div>
+          <div class="sbp-row2">
             <button class="sbp-opt" data-ebdpi="100" onclick="setEbDpi(100)" title="용량이 가장 작습니다 — 페이지수가 많거나 메일 첨부용">가벼움</button>
-            <button class="sbp-opt active" data-ebdpi="150" onclick="setEbDpi(150)" title="실무 기본 — 글자·이미지 확인에 충분">표준</button>
-            <button class="sbp-opt" data-ebdpi="200" onclick="setEbDpi(200)" title="세밀한 글자까지 확대 확인 — 용량이 커집니다">고화질</button>
+            <button class="sbp-opt" data-ebdpi="150" onclick="setEbDpi(150)" title="실무 기본 — 글자·이미지 확인에 충분">표준</button>
+            <button class="sbp-opt active" data-ebdpi="200" onclick="setEbDpi(200)" title="세밀한 글자까지 확대 확인 — 용량이 커집니다">고화질</button>
           </div>
           <div class="sbp-row2">
             <button class="sbp-opt active" data-ebbind="left" onclick="setEbBind('left')" title="가로쓰기 책 — 왼쪽에서 오른쪽으로 넘김">좌철(가로쓰기)</button>
             <button class="sbp-opt" data-ebbind="right" onclick="setEbBind('right')" title="세로쓰기·일본식 — 오른쪽에서 왼쪽으로 넘김">우철(세로쓰기)</button>
           </div>
           <label class="sbp-chk" title="'시안' 글자를 연하게 겹쳐 인쇄 원본으로 쓰이는 것을 막습니다">
-            <input type="checkbox" id="ebWm" checked onchange="_ebOpts.wm=this.checked"> 워터마크 '시안' 넣기
+            <input type="checkbox" id="ebWm" onchange="_ebOpts.wm=this.checked"> 워터마크 '시안' 넣기
           </label>
           <label class="sbp-chk" title="임포징이 켜져 있으면 인쇄용 시트(앞뒷면)도 함께 담아 토글로 볼 수 있게 합니다">
-            <input type="checkbox" id="ebSheets" checked onchange="_ebOpts.sheets=this.checked"> 인쇄 대수(임포징 시트) 함께 담기
+            <input type="checkbox" id="ebSheets" onchange="_ebOpts.sheets=this.checked"> 인쇄 대수(임포징 시트) 함께 담기
           </label>
           <label class="sbp-chk" title="블리드가 있을 때 '여기까지 잘립니다' 안내선을 표시합니다">
-            <input type="checkbox" id="ebTrim" checked onchange="_ebOpts.trim=this.checked"> 재단선 안내 표시
+            <input type="checkbox" id="ebTrim" onchange="_ebOpts.trim=this.checked"> 재단선 안내 표시
           </label>
           <button class="sbp-btn sbp-apply" id="ebGenBtn" onclick="generateEbookProof()" title="현재 작업 결과를 고객이 브라우저에서 책처럼 넘겨볼 수 있는 HTML 파일 하나로 만듭니다">📖 E-book 시안 생성</button>
           <div class="sbp-note" id="ebNote">문서를 열면 예상 용량이 표시됩니다.</div>

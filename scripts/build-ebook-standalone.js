@@ -45,8 +45,14 @@ const UI = `
     <label>화질
       <select id="dpi">
         <option value="100">가벼움 (100dpi)</option>
-        <option value="150" selected>표준 (150dpi)</option>
-        <option value="200">고화질 (200dpi)</option>
+        <option value="150">표준 (150dpi)</option>
+        <option value="200" selected>고화질 (200dpi)</option>
+      </select>
+    </label>
+    <label>보는 기기
+      <select id="target">
+        <option value="web" selected>💻 일반 웹용 (PC·노트북)</option>
+        <option value="mobile">📱 모바일용 (가로=두 쪽, 세로=한 쪽씩)</option>
       </select>
     </label>
     <label>제본
@@ -55,7 +61,7 @@ const UI = `
         <option value="right">우철 (세로쓰기)</option>
       </select>
     </label>
-    <label class="chk"><input type="checkbox" id="wm" checked> 워터마크 '시안' 넣기</label>
+    <label class="chk"><input type="checkbox" id="wm"> 워터마크 '시안' 넣기</label>
     <label class="chk"><input type="checkbox" id="cover" checked> 표지를 단독 페이지로</label>
     <label>재단선 안내 <input type="number" id="bleed" value="0" min="0" max="20" step="0.5" title="블리드(도련) mm — 0이면 표시하지 않습니다"> mm</label>
   </div>
@@ -111,7 +117,7 @@ $('go').onclick = async function () {
     var html = buildEbookProofHtml({
       title: $('title').value || (_name + ' 출력 시안'),
       meta: {
-        mm: book.mm, bind: $('bind').value,
+        mm: book.mm, bind: $('bind').value, target: $('target').value,
         spec: book.mm[0] + '×' + book.mm[1] + 'mm · ' + book.pages.length + '쪽',
         date: new Date().toLocaleDateString('ko-KR'), by: '',
       },
