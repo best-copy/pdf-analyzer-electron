@@ -6642,7 +6642,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'try{ paper=(localStorage.getItem("proofPaper")!=="0");',
       '  var rv=localStorage.getItem("proofRail"); if(rv!==null)rail=(rv!=="0"); }catch(e){}',
       '// 넘김 연출 값 — 조각 수, 자동 넘김 시간, 휘는 정도(도)',
-      'var STRIPS=16, TURN_MS=1200, CURL=130;',
+      '// BEND = 휨의 최대 비율(바깥 끝 각도 대비). 0.7이면 가운데에서 약 65도쯤 휜다.',
+      'var STRIPS=18, TURN_MS=1300, BEND=0.7;',
       '// 보는 기기 — mobile로 만든 시안은 가로일 때 두 쪽을 화면 가득, 세로일 때 한 쪽씩 보여 준다.',
       'var TG=(D.meta.target==="mobile")?"mobile":"web", MOB=(TG==="mobile"), single=false;',
       'function imgs(){return V==="book"?D.book:D.sheets;}',
@@ -6811,25 +6812,38 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '// 가중치는 제곱으로 감소(∝(n-k)^2) — 선형보다 책등 쪽에 훨씬 더 몰린다.',
       'function poseLeaf(T,p){',
       '  var st=T.leaf.strips, n=st.length;',
-      '  var S=0; for(var q=1;q<n;q++)S+=(n-q)*(n-q);',
       '  var pp=Math.max(0,Math.min(1,p));',
-      '  // 휨은 시작과 끝에서 더 빨리 잦아들어야 자연스럽다. 그냥 사인이면 다 넘어갈 무렵에도',
-      '  // 아직 40도쯤 휜 채로 내려앉아 마지막에 펄럭이는 느낌이 났다 → 사인에 지수(1.8)를 줘',
-      '  // 가운데는 그대로 크게 휘고 양 끝에서는 부드럽게 펴지도록 한다.',
-      '  var m=180*p, c=CURL*Math.pow(Math.sin(Math.PI*pp),1.8);',
-      '  var fb=0.46*p, bb=0.42*(1-p);',
+      '  // 휨 곡선(요청 기준점): 50%에서 100도로 가장 크게 휘고, 65%에서 80도를 지난 뒤',
+      '  // 80%부터 빠르게 펴져 착지 직전에는 평평하다(넘기고 난 다음 동작이 과하지 않게).',
+      '  // 바깥쪽 끝은 0→180도로만 나아간다(E). 되돌아오는 구간이 없어야 튕기는 느낌이 없다.',
+      '  // 휨은 그 각도의 **비율**로 준다 — 잘라 낼 필요가 없어(항상 c<E) 기울기가 꺾이지 않고,',
+      '  // 시작·끝에서 저절로 0이 되어 억지로 휘었다 갑자기 펴지는 구간이 생기지 않는다.',
+      '  var E=180*p;',
+      '  var c=E*BEND*Math.pow(Math.sin(Math.PI*pp),1.6);',
+      '  var m=E-c;               // 책등 쪽은 휜 만큼 뒤에 남는다',
+      '  // 조각별 분배 — 얇은 종이는 한곳이 접히지 않고 전체가 고르게 휜다(완만한 원호).',
+      '  // 다만 휨의 중심은 **책등 쪽**에 둔다: u에 0.45 지수를 줘 최대 지점을 u=0.22 근처로 당기고,',
+      '  // 바닥값 0.35로 나머지 부분도 조금씩 휘게 해 접힌 자국이 생기지 않게 한다.',
+      '  var W=[], S=0;',
+      '  for(var q=1;q<n;q++){ W[q]=0.35+0.65*Math.sin(Math.PI*Math.pow(q/n,0.45)); S+=W[q]; }',
+      '  if(!(S>0))S=1;',
+
+      '  var fb=0.34*p, bb=0.30*(1-p);',
       '  var gf=GUTS*(1-p), gb=GUTS*p;',
       '  for(var k=0;k<n;k++){',
       '    var s=st[k];',
-      '    var a=(k===0)?m:(c*(n-k)*(n-k)/S);',
+      '    var a=(k===0)?m:(c*W[k]/S);',
       '    s.el.style.transform="rotateY("+(T.sign*a)+"deg)";',
       '    s.fs.style.opacity=fb; s.bs.style.opacity=bb;',
       '    if(s.fg)s.fg.style.opacity=gf;',
       '    if(s.bg)s.bg.style.opacity=gb;',
       '  }',
       '}',
-      '// 사인 이징 — 세제곱보다 중간 속도가 완만해 천천히 넘길 때 더 자연스럽다.',
-      'function ease(x){ return 0.5-0.5*Math.cos(Math.PI*Math.max(0,Math.min(1,x))); }',
+      '// 속도 곡선 — 사인 이징만 쓰면 가운데가 평균의 1.57배까지 빨라져 "천천히 시작하다가',
+      '// 중간에 확 넘어가는" 느낌이 난다. 직선과 반반 섞어 가운데 속도를 1.29배로 낮췄다',
+      '// (시작·끝은 여전히 부드럽고, 전체적으로 고르게 흐른다).',
+      'function ease(x){ var t=Math.max(0,Math.min(1,x));',
+      '  return 0.5*t + 0.5*(0.5-0.5*Math.cos(Math.PI*t)); }',
       '// 넘김 시작 — 아래에는 「지금 쪽 + 드러날 쪽」을 깔고, 그 위에 낱장 한 장을 얹는다.',
       '// d>0이면 다음, d<0이면 이전. 만들지 못하면 null.',
       'function beginTurn(d){',
@@ -7598,46 +7612,6 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       const picked = await window.electronAPI.openFile({ kind: 'pdfw' });
       if (!picked || !picked.length) return;
       await openWorkFilePath(picked[0].path || picked[0]);
-    }
-
-    // ── 💼 작업 파일 더블클릭 연결 (사이드바 버튼) ────────────────────────────
-    // 레지스트리는 HKCU만 건드린다(관리자 권한 불필요). 되돌리기도 같은 버튼에서.
-    async function refreshWorkAssoc() {
-      const btn = document.getElementById('workAssocBtn');
-      const note = document.getElementById('workNote');
-      if (!btn || !window.electronAPI.workAssocStatus) return null;
-      const st = await window.electronAPI.workAssocStatus();
-      btn.textContent = st.registered ? '🔗 더블클릭 연결 해제' : '🔗 더블클릭 연결 등록';
-      btn.title = st.registered
-        ? '.pdfw 더블클릭 연결을 해제합니다 (작업 파일 자체는 그대로).'
-        : '탐색기에서 .pdfw 파일을 더블클릭하면 이 앱이 바로 열도록 연결합니다 (관리자 권한 불필요)';
-      if (note && st.registered) {
-        note.textContent = '✅ .pdfw 더블클릭 연결됨 — 탐색기에서 작업 파일을 바로 열 수 있습니다.';
-      }
-      return st;
-    }
-    async function toggleWorkAssoc() {
-      const st = await refreshWorkAssoc();
-      if (!st) return;
-      if (st.registered) {
-        if (!confirm('.pdfw 더블클릭 연결을 해제할까요?\n(저장해 둔 작업 파일은 그대로 남고, 앱 안에서 여는 것도 계속 됩니다)')) return;
-        await window.electronAPI.workAssocUnregister();
-        await refreshWorkAssoc();
-        showSuccess('🔗 더블클릭 연결을 해제했습니다.');
-        return;
-      }
-      if (!confirm('.pdfw 작업 파일을 이 앱으로 열도록 등록할까요?\n\n'
-        + '• 현재 사용자 계정에만 등록됩니다 (관리자 권한 불필요)\n'
-        + '• 다른 파일 형식(PDF 등)의 연결은 건드리지 않습니다\n'
-        + '• 같은 버튼으로 언제든 해제할 수 있습니다')) return;
-      const r = await window.electronAPI.workAssocRegister();
-      await refreshWorkAssoc();
-      if (r && r.ok && r.registered) {
-        showSuccess('🔗 연결 완료 — 이제 .pdfw 작업 파일을 탐색기에서 더블클릭하면 이 앱이 그 시점 그대로 엽니다.'
-          + (r.packaged ? '' : '\n※ 지금은 개발 실행(electron.exe)이라 그 실행 파일에 연결됐습니다 — 배포본에서 다시 등록하세요.'));
-      } else {
-        showError('연결 등록 실패: ' + ((r && r.error) || '알 수 없는 오류'));
-      }
     }
 
     // ── 📐 가로 페이지 자동 세로 맞춤 ──────────────────────────────────────────

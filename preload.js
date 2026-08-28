@@ -75,9 +75,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   outlineFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:outlineFonts', pdfPath, opts || {}),
 
   // 💼 작업 파일(.pdfw) 더블클릭 연결 — HKCU만 사용(관리자 권한 불필요)
-  workAssocStatus:     () => ipcRenderer.invoke('work:assocStatus'),
-  workAssocRegister:   () => ipcRenderer.invoke('work:assocRegister'),
-  workAssocUnregister: () => ipcRenderer.invoke('work:assocUnregister'),
 
   // 가상 프린터 'PDF Editor' 설치 (UAC 승격) — 어떤 앱에서든 인쇄로 문서 전달
   setupPrinter: () => ipcRenderer.invoke('printer:setup'),

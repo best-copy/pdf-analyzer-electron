@@ -82,8 +82,8 @@ ck('전체화면 버튼', html.includes('id="fsBtn"') && html.includes('requestF
 // 프레임마다 그라데이션 문자열을 새로 만들면 CSS 재파싱으로 끊긴다 — 투명도만 바꾼다
 ck('넘김 중에는 투명도만 갱신', html.includes('.stgu') && html.includes('s.fs.style.opacity=fb')
    && !html.includes('function shade(el,a,b,rev)'));
-// 휨은 책등 쪽에 몰아준다(제곱 감소)
-ck('휨이 책등 쪽에 몰림', html.includes('c*(n-k)*(n-k)/S'));
+// 조각별 분배는 가중치 W로 준다(자세한 성질은 아래 '고르게 휘는 분배'에서 확인)
+ck('조각별 분배 사용', html.includes('c*W[k]/S'));
 // 목록의 빈 면 높이는 퍼센트 padding(줄 폭 기준)이 아니라 비율로 잡아야 옆 칸과 같아진다
 ck('목록 빈 칸 높이 = 옆 칸', html.includes('cell.style.aspectRatio') && !html.includes('cell.style.paddingTop'));
 // 모바일 가로에서는 눌러도 확대되지 않는다
@@ -93,17 +93,86 @@ ck('핀치줌 확대 보기', html.includes('function zFit(') && html.includes('
    && html.includes('function zZoomAt(') && html.includes('.zimg{'));
 ck('확대 보기 닫기 수단', html.includes('.zx{') && html.includes('function zClose('));
 // 넘김은 천천히·완만하게 (사인 이징)
-ck('넘김 1200ms', html.includes('TURN_MS=1200'));
-ck('사인 이징', html.includes('0.5-0.5*Math.cos(Math.PI'));
-// 끝에서 휨이 남아 있으면 내려앉을 때 펄럭인다 — 사인에 지수를 줘 양 끝에서 빨리 펴지게 한다
-ck('내려앉을 때 부드럽게', html.includes('Math.pow(Math.sin(Math.PI*pp),1.8)'));
+// 넘김 시간도 다듬는 값 — 숫자 대신 '느긋한 범위'만 본다(너무 빠르면 목적에 어긋난다)
+ck('넘김이 느긋한 범위', (() => { var t=+(html.match(/TURN_MS=(\d+)/)||[0,0])[1];
+  return t>=900 && t<=2500; })(), (html.match(/TURN_MS=(\d+)/)||[])[1]);
+// 속도 곡선: 가운데가 너무 빠르면 "확 넘어가는" 느낌이 난다 — 최고 속도를 평균의 1.4배 이내로
+ck('속도 곡선이 고르다', (() => {
+  var ez = function (x) { var t = Math.max(0, Math.min(1, x)); return 0.5*t + 0.5*(0.5-0.5*Math.cos(Math.PI*t)); };
+  var mx = 0, prev = 0, h = 0.002;
+  for (var x = h; x <= 1; x += h) { var v = (ez(x) - prev) / h; if (v > mx) mx = v; prev = ez(x); }
+  return Math.abs(ez(0)) < 1e-9 && Math.abs(ez(1)-1) < 1e-9 && mx < 1.4;
+})());
+ck('이징 코드 반영', html.includes('0.5*t + 0.5*(0.5-0.5*Math.cos(Math.PI*t))'));
+// 휨은 **바깥 끝 각도의 비율**로 준다 — 잘라내기(clamp)가 없어 기울기가 꺾이지 않는다.
+// 세기는 계속 다듬는 값이라 숫자를 박지 않고, 실제 상수를 읽어 성질만 본다.
+var BENDV = +(html.match(/BEND=([\d\.]+)/) || [0, 0])[1];
+ck('휨 상수 읽힘', BENDV > 0 && BENDV < 1, BENDV);
+var bend = function (p) { return 180 * p * BENDV * Math.pow(Math.sin(Math.PI * p), 1.6); };
+ck('시작·끝에서 휨이 0', bend(0) === 0 && Math.abs(bend(1)) < 1e-9);
+ck('가운데에서 충분히 휜다', bend(0.5) > 45 && bend(0.6) > 45, [bend(0.5), bend(0.6)]);
+ck('착지 직전에는 거의 평평', bend(0.95) < 10, bend(0.95));
+// 억지로 휘었다 갑자기 펴지면 끊겨 보인다 — 진행 1%당 휨 변화가 완만해야 한다
+ck('휨 변화가 완만(끊김 없음)', (() => {
+  var mx = 0, prev = bend(0);
+  for (var i = 1; i <= 100; i++) { var b = bend(i / 100); mx = Math.max(mx, Math.abs(b - prev)); prev = b; }
+  return mx < 3.0;
+})(), (() => { var mx = 0, prev = bend(0);
+  for (var i = 1; i <= 100; i++) { var b = bend(i / 100); mx = Math.max(mx, Math.abs(b - prev)); prev = b; }
+  return +mx.toFixed(2); })());
+// 한 번만 부풀었다 가라앉아야 한다(오르내림이 여러 번이면 펄럭인다)
+ck('휨은 한 번만 부푼다', (() => {
+  var dir = 0, flips = 0, prev = bend(0);
+  for (var i = 1; i <= 200; i++) {
+    var b = bend(i / 200), d = Math.sign(b - prev);
+    if (d !== 0 && d !== dir) { if (dir !== 0) flips++; dir = d; }
+    prev = b;
+  }
+  return flips <= 1;
+})());
+// 바깥쪽 끝 각도는 0→180으로 **단조 증가** — 넘었다가 되돌아오면 한 번 튕겨 보인다
+ck('바운스 없음(바깥끝 단조 증가)', (() => {
+  var prev = -1;
+  for (var i = 0; i <= 200; i++) { var E = 180 * (i / 200); if (E < prev - 1e-6) return false; prev = E; }
+  return true;
+})());
+ck('바깥끝 각도 모델', html.includes('var E=180*p') && html.includes('var m=E-c;')
+   && !html.includes('if(c>E)c=E;'));
+// 얇은 종이는 한곳이 접히지 않는다 — 조각별 분배(W)를 실제로 계산해 성질을 본다.
+// (좁은 가우시안으로 한곳에 몰면 접힌 자국처럼 보였다 — 그 형태는 금지)
+ck('가우시안 집중 분배 아님', !html.includes('Math.exp(-dq*dq)'));
+var wExpr = (html.match(/W\[q\]=([^;]+);/) || [0, ''])[1];
+ck('분배식 읽힘', !!wExpr, wExpr);
+var wf = wExpr ? new Function('u', 'return ' + wExpr.split('q/n').join('u') + ';') : null;
+ck('분배가 매끄럽고 한곳에 몰리지 않음', (() => {
+  if (!wf) return false;
+  var mn = Infinity, mx = 0;
+  for (var i = 1; i < 100; i++) { var v = wf(i / 100); if (!(v > 0)) return false; mn = Math.min(mn, v); mx = Math.max(mx, v); }
+  return mx / mn < 6;      // 최대/최소 6배 이내 = 접힌 자국이 아니라 완만한 곡면
+})());
+// 휨의 중심(누적 절반 지점)은 책등 쪽(0.25~0.48)에 있어야 한다 — 가운데(0.5)면 어색하다고 했다
+ck('휨 중심이 책등 쪽', (() => {
+  if (!wf) return false;
+  var n = 18, W = [], S = 0, q;
+  for (q = 1; q < n; q++) { W[q] = wf(q / n); S += W[q]; }
+  var acc = 0;
+  for (q = 1; q < n; q++) { acc += W[q]; if (acc >= S / 2) return (q / n) >= 0.25 && (q / n) <= 0.48; }
+  return false;
+})(), (() => {
+  if (!wf) return null;
+  var n = 18, W = [], S = 0, q;
+  for (q = 1; q < n; q++) { W[q] = wf(q / n); S += W[q]; }
+  var acc = 0;
+  for (q = 1; q < n; q++) { acc += W[q]; if (acc >= S / 2) return +(q / n).toFixed(2); }
+  return null;
+})());
 // style.display는 처음에 빈 문자열이라 '열림' 판정에 쓰면 드래그가 아예 안 된다(실제로 그랬다)
 ck('확대 열림 판정은 요소로', html.includes('if(zImg)return;') && !html.includes('zv.style.display!=="none")return'));
 // 넘김 표시를 클릭해도 넘어가야 한다(누르는 순간 낱장이 잡히므로 클릭만으로는 되돌아갔었다)
 ck('넘김 표시 클릭으로 넘김', html.includes('drag.nav') && html.includes('navTap'));
 // 낱장은 여러 조각(.st)을 경첩처럼 이어 붙여 휘게 만든다 — 한 판때기로 돌면 뻣뻣해 보인다
 ck('낱장이 조각으로 휘는 구조', html.includes('.st{') && html.includes('.sfc{') && html.includes('.sbc{')
-   && html.includes('function buildLeaf') && html.includes('CURL'));
+   && html.includes('function buildLeaf') && html.includes('BEND'));
 // 넘김 중 스크롤바가 생겼다 사라지면 화면이 좌우로 떨린다 → 무대는 고정, 실제 크기 모드만 스크롤
 ck('무대 고정(떨림 방지)', /\.stage\{[^}]*overflow:hidden/.test(html)
    && html.includes('.realsize .stage{overflow:auto'));

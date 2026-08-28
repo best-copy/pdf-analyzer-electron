@@ -3135,5 +3135,4 @@
 
     // 💼 작업 파일 더블클릭 연결 상태를 버튼 라벨에 반영 (등록/해제 토글)
     (function initWorkAssocBtn() {
-      if (typeof refreshWorkAssoc === 'function') { try { refreshWorkAssoc(); } catch (e) {} }
     })();
