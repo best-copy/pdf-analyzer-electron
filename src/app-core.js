@@ -670,6 +670,16 @@
     // (변환 계열은 모두 단일 인스턴스라 순차 변환)
     // 한 파일이 실패해도 전체가 중단되지 않는다 — 실패 항목은 _failedImports에 모아
     // '다시 시도' 버튼을 노출하고, 성공한 파일들만 반환한다.
+    // 저장 다이얼로그의 기본 폴더를 '문서를 연 폴더'로 (main의 _lastSaveDir)
+    function reportSaveDir(filePath) {
+      try {
+        const s = String(filePath);
+        const cut = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
+        const dir = cut > 0 ? s.slice(0, cut) : '';
+        if (dir && window.electronAPI.setSaveDir) window.electronAPI.setSaveDir(dir);
+      } catch (e) { }
+    }
+
     async function prepareFiles(items) {
       const out = [];
       const failed = [];
@@ -717,7 +727,7 @@
                 return buf;
               }),
           });
-          if (it.path) addRecentFile(it);   // 성공한 파일만 최근 목록에 기록
+          if (it.path) { addRecentFile(it); reportSaveDir(it.path); }   // 최근 목록 + 저장 기본 폴더
         } catch (e) {
           console.error('파일 준비 실패:', it.name, e);
           failed.push({ name: it.name, path: it.path, reason: (e && e.message) || String(e) });
@@ -732,6 +742,8 @@
         const result = await window.electronAPI.openFile();
         if (!result || !result.length) return;
         hideError(); hideSuccess();
+        // 2개 이상이면 순서 지정 화면을 먼저 — 순서를 정하고 하나로 합쳐 열 수 있다
+        if (result.length > 1) { showOpenOrderDialog(result); return; }
         const needConvert = result.some(r => CONVERT_RE.test(r.name));
         if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
         // preload의 readFile()로 파일을 직접 읽어 File-like 객체 생성
@@ -748,7 +760,7 @@
 
     // ── 외부에서 넘어온 문서 열기 (실행 인자 · 목차 검증기 '이어서 작업') ────
     // 다이얼로그 경로와 같은 파이프라인(prepareFiles → startLoad)을 탄다.
-    async function openExternalItems(items) {
+    async function openExternalItems(items, opts) {
       try {
         hideError(); hideSuccess();
         // 💼 작업 파일은 변환 파이프라인을 타지 않는다 — 안에 든 PDF와 상태를 직접 복원한다
@@ -762,7 +774,10 @@
         if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
         const fakeFiles = await prepareFiles(items);
         if (needConvert) hideLoading();
-        if (fakeFiles.length) startLoad(fakeFiles);
+        if (!fakeFiles.length) return;
+        // 순서 지정에서 '하나로 합쳐 열기'를 고르면 파일별 챕터를 유지한 합본으로 연다
+        if (opts && opts.merge && fakeFiles.length > 1) { await openMergedAsChapters(fakeFiles); return; }
+        startLoad(fakeFiles);
       } catch (e) {
         hideLoading();
         showError('외부 파일 열기 오류: ' + (e && e.message ? e.message : String(e)));
@@ -782,49 +797,178 @@
     let _orderItems = [];
     function showOpenOrderDialog(items) {
       _orderItems = items.slice();
+      _orderSel = -1;
       renderOrderRows();
+      restoreOrderPanelSize();
       document.getElementById('orderModal').style.display = 'block';
     }
+    // 창 크기(가로·세로 각각)는 사용자가 늘린 대로 기억한다 — 화면보다 커도 그대로 복원
+    const ORD_MIN_W = 380, ORD_MIN_H = 300, ORD_MAX = 8000;
+    function restoreOrderPanelSize() {
+      const el = document.getElementById('orderPanel');
+      if (!el) return;
+      try {
+        const sz = JSON.parse(localStorage.getItem('orderPanelSize') || 'null');
+        if (sz && sz.w >= ORD_MIN_W && sz.h >= ORD_MIN_H) {
+          el.style.width = Math.min(sz.w, ORD_MAX) + 'px';
+          el.style.height = Math.min(sz.h, ORD_MAX) + 'px';
+        }
+      } catch (e) { }
+      bindOrderResize(el);
+    }
+    function saveOrderPanelSize(el) {
+      try { localStorage.setItem('orderPanelSize', JSON.stringify({ w: el.offsetWidth, h: el.offsetHeight })); } catch (e) { }
+    }
+    // 우측 가장자리(가로) · 하단 가장자리(세로) · 우하단 모서리(동시)를 끌어 크기 조절.
+    // CSS resize는 모서리에서만 잡히므로 직접 구현한다. 화면보다 크게도 늘릴 수 있고,
+    // 그때는 모달 오버레이(overflow:auto)가 스크롤된다.
+    function bindOrderResize(el) {
+      if (!el || el._gripBound) return;
+      el._gripBound = true;
+      let mode = '', sx = 0, sy = 0, sw = 0, sh = 0;
+      const onMove = e => {
+        if (!mode) return;
+        if (mode !== 'b') el.style.width = Math.max(ORD_MIN_W, Math.min(ORD_MAX, sw + (e.clientX - sx))) + 'px';
+        if (mode !== 'r') el.style.height = Math.max(ORD_MIN_H, Math.min(ORD_MAX, sh + (e.clientY - sy))) + 'px';
+      };
+      const onUp = () => {
+        if (!mode) return;
+        mode = '';
+        el.classList.remove('resizing');
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        saveOrderPanelSize(el);
+      };
+      el.querySelectorAll('.ord-grip').forEach(g => {
+        g.addEventListener('pointerdown', e => {
+          e.preventDefault();
+          mode = g.dataset.grip; sx = e.clientX; sy = e.clientY;
+          sw = el.offsetWidth; sh = el.offsetHeight;
+          el.classList.add('resizing');
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+        });
+        // 더블클릭 = 기본 크기로 되돌리기
+        g.addEventListener('dblclick', () => {
+          el.style.width = '560px';
+          el.style.height = Math.round(window.innerHeight * 0.66) + 'px';
+          saveOrderPanelSize(el);
+        });
+      });
+    }
+    let _orderSel = -1;                       // 선택된 파일(옮길 대상) — 통합 ▲▼의 기준
     function renderOrderRows() {
       const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
       document.getElementById('orderRows').innerHTML = _orderItems.map((it, i) => `
-        <div class="ord-row" draggable="true" data-i="${i}" style="display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #e8e8ed; border-radius:8px; margin-bottom:6px; background:#fff; cursor:grab;">
-          <span style="font-weight:700; color:#ffd60a; background:#1d1d1f; border-radius:6px; min-width:26px; text-align:center; padding:2px 0; font-size:12px;">${i + 1}</span>
-          <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px;" title="${esc(it.path || '')}">${esc(it.name)}</span>
-          <button onclick="moveOrderItem(${i},-1)" ${i === 0 ? 'disabled' : ''} style="border:1px solid #d2d2d7; background:#fff; border-radius:6px; cursor:pointer; padding:2px 8px;">▲</button>
-          <button onclick="moveOrderItem(${i},1)" ${i === _orderItems.length - 1 ? 'disabled' : ''} style="border:1px solid #d2d2d7; background:#fff; border-radius:6px; cursor:pointer; padding:2px 8px;">▼</button>
+        <div class="ord-row${i === _orderSel ? ' sel' : ''}" draggable="true" data-i="${i}" onclick="selectOrderRow(${i})">
+          <span class="ord-num">${i + 1}</span>
+          <span class="ord-name" title="${esc(it.path || '')}">${esc(it.name)}</span>
         </div>`).join('');
+      syncOrderToolbar();
     }
-    function moveOrderItem(i, d) {
-      const j = i + d;
-      if (j < 0 || j >= _orderItems.length) return;
-      [_orderItems[i], _orderItems[j]] = [_orderItems[j], _orderItems[i]];
+    function syncOrderToolbar() {
+      const has = _orderSel >= 0 && _orderSel < _orderItems.length;
+      const info = document.getElementById('ordSelInfo');
+      if (info) info.textContent = has
+        ? `${_orderSel + 1}번 · ${_orderItems[_orderSel].name}`
+        : '옮길 파일을 선택하세요';
+      if (info) info.classList.toggle('on', has);
+      const dis = (id, off) => { const b = document.getElementById(id); if (b) b.disabled = off; };
+      dis('ordTop', !has || _orderSel === 0);
+      dis('ordUp', !has || _orderSel === 0);
+      dis('ordDown', !has || _orderSel === _orderItems.length - 1);
+      dis('ordBottom', !has || _orderSel === _orderItems.length - 1);
+    }
+    function selectOrderRow(i) {
+      _orderSel = (_orderSel === i) ? -1 : i;   // 다시 누르면 선택 해제
+      document.querySelectorAll('#orderRows .ord-row').forEach((r, k) => r.classList.toggle('sel', k === _orderSel));
+      syncOrderToolbar();
+    }
+    // 선택된 파일을 d칸 이동 (±999 = 맨 위/맨 아래). 연속 클릭으로 몇 칸이든 자유 이동.
+    function moveOrderSel(d) {
+      if (_orderSel < 0) return;
+      const to = Math.max(0, Math.min(_orderItems.length - 1, _orderSel + d));
+      if (to === _orderSel) return;
+      const it = _orderItems.splice(_orderSel, 1)[0];
+      _orderItems.splice(to, 0, it);
+      _orderSel = to;                            // 선택은 파일을 따라간다
       renderOrderRows();
+      const row = document.querySelector(`#orderRows .ord-row[data-i="${to}"]`);
+      if (row) row.scrollIntoView({ block: 'nearest' });
     }
+    // 옛 호출부 호환 (i번째를 d칸)
+    function moveOrderItem(i, d) { _orderSel = i; moveOrderSel(d); }
     function sortOrderItems() {
+      const cur = _orderSel >= 0 ? _orderItems[_orderSel] : null;
       _orderItems.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true, sensitivity: 'base' }));
+      _orderSel = cur ? _orderItems.indexOf(cur) : -1;
       renderOrderRows();
     }
-    function confirmOpenOrder() {
+    function confirmOpenOrder(merge) {
       document.getElementById('orderModal').style.display = 'none';
-      openExternalItems(_orderItems.slice());
+      openExternalItems(_orderItems.slice(), { merge: !!merge });
     }
-    // 행 드래그로 순서 변경 (컨테이너 위임 1회 바인딩 — 임포징 프로파일 목록과 같은 패턴)
+    // 마우스 드래그로 자유 이동 — 행 사이(중점 기준)에 끼워 넣는다. 컨테이너 위임 1회 바인딩.
     (function bindOrderDnD() {
       const box = document.getElementById('orderRows');
       if (!box) return;
       let from = -1;
-      box.addEventListener('dragstart', e => { const r = e.target.closest('.ord-row'); if (!r) return; from = +r.dataset.i; e.dataTransfer.effectAllowed = 'move'; });
-      box.addEventListener('dragover', e => e.preventDefault());
+      const clearMarks = () => box.querySelectorAll('.ord-row').forEach(r => r.classList.remove('drop-before', 'drop-after'));
+      // 커서 위치가 들어갈 자리(0..length)
+      const dropIndex = e => {
+        const rows = [...box.querySelectorAll('.ord-row')];
+        for (let k = 0; k < rows.length; k++) {
+          const b = rows[k].getBoundingClientRect();
+          if (e.clientY < b.top + b.height / 2) return k;
+        }
+        return rows.length;
+      };
+      box.addEventListener('dragstart', e => {
+        const r = e.target.closest('.ord-row'); if (!r) return;
+        from = +r.dataset.i; _orderSel = from;
+        r.classList.add('dragging'); syncOrderToolbar();
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(from)); } catch (_) { }
+      });
+      box.addEventListener('dragover', e => {
+        if (from < 0) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+        const at = dropIndex(e);
+        const rows = [...box.querySelectorAll('.ord-row')];
+        clearMarks();
+        if (at < rows.length) rows[at].classList.add('drop-before');
+        else if (rows.length) rows[rows.length - 1].classList.add('drop-after');
+      });
+      box.addEventListener('dragleave', e => { if (!box.contains(e.relatedTarget)) clearMarks(); });
       box.addEventListener('drop', e => {
         e.preventDefault();
-        const r = e.target.closest('.ord-row');
-        if (!r || from < 0) return;
-        const to = +r.dataset.i;
-        if (to !== from) { const it = _orderItems.splice(from, 1)[0]; _orderItems.splice(to, 0, it); renderOrderRows(); }
+        if (from < 0) return;
+        let at = dropIndex(e);
+        if (at > from) at--;                     // 자기 자신을 빼낸 뒤의 인덱스
+        clearMarks();
+        if (at !== from) {
+          const it = _orderItems.splice(from, 1)[0];
+          _orderItems.splice(at, 0, it);
+          _orderSel = at;
+        }
         from = -1;
+        renderOrderRows();
       });
+      box.addEventListener('dragend', () => { from = -1; clearMarks(); box.querySelectorAll('.dragging').forEach(r => r.classList.remove('dragging')); });
     })();
+    // 키보드: ↑↓ 선택 이동, Ctrl+↑↓/Home/End 로 실제 이동
+    document.addEventListener('keydown', e => {
+      const m = document.getElementById('orderModal');
+      if (!m || m.style.display === 'none' || !_orderItems.length) return;
+      const step = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+      if (step) {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) moveOrderSel(step);
+        else { _orderSel = Math.max(0, Math.min(_orderItems.length - 1, (_orderSel < 0 ? (step > 0 ? -1 : _orderItems.length) : _orderSel) + step)); renderOrderRows(); const r = document.querySelector(`#orderRows .ord-row[data-i="${_orderSel}"]`); if (r) r.scrollIntoView({ block: 'nearest' }); }
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'Home' || e.key === 'End')) {
+        e.preventDefault(); moveOrderSel(e.key === 'Home' ? -999 : 999);
+      } else if (e.key === 'Escape') { m.style.display = 'none'; }
+    });
 
     // 분석이 끝나 챕터로 합칠 수 있는 상태인지
     function isTabReady(t) {
@@ -856,6 +1000,47 @@
       for (let i = 1; i < files.length; i++) {
         const tab = createTab(files[i]);
         analyzePDF(files[i], tab);
+      }
+    }
+
+    // ── 📚 여러 파일을 정한 순서대로 한 문서(챕터 분리)로 합쳐 열기 ──────────
+    // 파일마다 chapters 항목({name,start,count})을 남겨, 열린 뒤에도 어디까지가
+    // 어느 파일인지 구분되고 다운로드하면 하나의 PDF로 저장된다.
+    async function openMergedAsChapters(files) {
+      try {
+        hideError(); hideSuccess();
+        showLoading(`${files.length}개 파일을 하나의 문서로 합치는 중…`);
+        const mergedDoc = await PDFLib.PDFDocument.create();
+        const chapters = [];
+        let startPage = 1;
+        for (const f of files) {
+          const ab = await f.arrayBuffer();
+          const src = await PDFLib.PDFDocument.load(ab.slice(0));
+          const idx = src.getPageIndices();
+          const copied = await mergedDoc.copyPages(src, idx);
+          copied.forEach(pg => mergedDoc.addPage(pg));
+          chapters.push({ name: f.name, start: startPage, count: idx.length });
+          startPage += idx.length;
+          await uiYield();
+        }
+        const bytes = await mergedDoc.save();
+        hideLoading();
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const file = {
+          name: `${files[0].name.replace(/.[^.]+$/, '')}_합본.pdf`,
+          size: bytes.byteLength, type: 'application/pdf',
+          arrayBuffer: () => Promise.resolve(buf.slice(0)),
+        };
+        const tab = createTab(file);
+        tab.chapters = chapters;
+        activateTab(tab.id);
+        await analyzePDF(file, tab);
+        showSuccess(`${files.length}개 파일을 정한 순서대로 한 문서로 합쳤습니다 (총 ${startPage - 1}쪽 · 파일별 챕터 유지).
+이어서 편집·흑백변환·임포징을 하고, 다운로드하면 하나의 PDF로 저장됩니다.`);
+      } catch (e) {
+        hideLoading();
+        showError('합쳐 열기 오류: ' + (e && e.message ? e.message : String(e)));
+        console.error('openMergedAsChapters 오류:', e);
       }
     }
 

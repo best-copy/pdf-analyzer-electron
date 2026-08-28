@@ -969,7 +969,11 @@ ipcMain.handle('dialog:openFile', async (_e, opts) => {
 // 같은 이름이 이미 있으면 파일명 끝에 -1, -2 …를 붙여 겹치지 않는 경로를 만든다.
 // (인쇄 실무상 같은 원고를 설정만 바꿔 여러 번 뽑는 일이 잦아, 덮어쓰기 경고보다
 //  자동 번호가 안전하다. 사용자가 다이얼로그에서 이름을 다시 바꾸는 것은 자유.)
-let _lastSaveDir = null;   // 직전에 저장한 폴더 — 중복 검사 기준
+let _lastSaveDir = null;   // 저장 다이얼로그 기본 폴더 — 문서를 연 폴더 → 이후엔 직전 저장 폴더
+// 렌더러가 문서를 열면 그 파일이 있던 폴더를 저장 기본 위치로 삼는다 ("해당 폴더에 저장")
+ipcMain.on('app:docDir', (_e, dir) => {
+  try { if (dir && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) _lastSaveDir = dir; } catch (e) {}
+});
 function uniqueSavePath(dir, name) {
   const ext = path.extname(name);
   const stem = path.basename(name, ext);
@@ -982,7 +986,7 @@ ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind }) => {
   const isHtml = kind === 'html';
   const isWork = kind === 'pdfw';
   if (!licenseGate(isHtml ? '시안 HTML' : isWork ? '작업 파일' : 'PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
-  // 기본 폴더는 직전 저장 폴더(없으면 다운로드 폴더) — 그 폴더 기준으로 중복을 피한 이름을 제안
+  // 기본 폴더 = 문서를 연 폴더(app:docDir) → 그 뒤로는 직전 저장 폴더, 둘 다 없으면 다운로드
   let dir = _lastSaveDir;
   try { if (!dir || !fs.existsSync(dir)) dir = app.getPath('downloads'); } catch (e) { dir = null; }
   const defaultPath = dir ? uniqueSavePath(dir, defaultName) : defaultName;

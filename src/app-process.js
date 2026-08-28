@@ -7600,6 +7600,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     async function openWorkFilePath(p) {
       try {
         const buf = window.electronAPI.readFile(p);
+        reportSaveDir(p);                      // 작업 파일이 있던 폴더를 저장 기본 위치로
         return await openWorkFileBytes(new Uint8Array(buf), p);
       } catch (e) {
         showError('작업 파일을 읽을 수 없습니다: ' + (e && e.message ? e.message : e));

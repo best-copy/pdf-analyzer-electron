@@ -1402,3 +1402,83 @@
     }
     .lic-badge:hover { filter: brightness(1.08); }
     .lic-badge.expired { background: #48484a; color: #fff; }
+
+    /* 패널 — 가로·세로를 각각 마음대로 늘릴 수 있다(우하단 손잡이). 크기는 기억됨 */
+    #orderPanel {
+      position: relative;
+      width: 560px; height: 66vh;
+      min-width: 380px; min-height: 300px;
+      max-width: none; max-height: none;  /* 화면보다 크게도 키울 수 있다(모달이 스크롤) */
+      margin: 6vh auto;
+      background: #fff; border-radius: 14px;
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,.4);
+    }
+    /* 크기 조절 손잡이 — 우측 가장자리(가로) · 하단 가장자리(세로) · 우하단 모서리 */
+    .ord-grip { position: absolute; z-index: 3; background: transparent; }
+    .ord-grip-r { top: 0; right: 0; width: 8px; height: 100%; cursor: ew-resize; }
+    .ord-grip-b { left: 0; bottom: 0; height: 8px; width: 100%; cursor: ns-resize; }
+    .ord-grip-c { right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; }
+    .ord-grip-r:hover, .ord-grip-b:hover { background: rgba(255,214,10,.55); }
+    /* 우하단 모서리에 잡는 자리 표시(빗금) */
+    .ord-grip-c::after {
+      content: ''; position: absolute; right: 3px; bottom: 3px; width: 11px; height: 11px;
+      background:
+        linear-gradient(135deg, transparent 44%, #c7c7cc 44%, #c7c7cc 56%, transparent 56%),
+        linear-gradient(135deg, transparent 74%, #c7c7cc 74%, #c7c7cc 86%, transparent 86%);
+    }
+    #orderPanel.resizing { user-select: none; }
+    #orderTitleBar {
+      background: #1d1d1f; color: #ffd60a; padding: 12px 12px 12px 18px;
+      font-weight: 700; display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto;
+    }
+    #ordClose {
+      background: none; border: 0; color: #f5f5f7; font-size: 18px; line-height: 1;
+      cursor: pointer; padding: 2px 8px; border-radius: 8px;
+    }
+    #ordClose:hover { background: #48484a; color: #ffd60a; }
+    #orderBody { padding: 14px 18px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+    #orderFooter {
+      padding: 12px 30px 12px 18px;   /* 오른쪽 여유 = 크기조절 손잡이 자리 */ border-top: 1px solid #e8e8ed; flex: 0 0 auto;
+      display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+    }
+    /* 하단 버튼은 항상 한 줄 — 줄바꿈·줄어듦 없이 */
+    .ord-foot { flex: 0 0 auto; white-space: nowrap; }
+
+    /* ── 📚 열 순서 정하기 모달 — 통합 ▲▼ 이동 + 마우스 드래그 ─────────────── */
+    #orderToolbar {
+      position: sticky; top: 0; z-index: 2;
+      display: flex; align-items: center; gap: 6px;
+      background: #1d1d1f; border-radius: 10px;
+      padding: 8px 10px; margin-bottom: 10px;
+    }
+    #ordSelInfo {
+      color: #86868b; font-size: 12.5px; font-weight: 600;
+      max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #ordSelInfo.on { color: #ffd60a; }
+    .ord-move {
+      min-width: 38px; height: 30px; font-size: 14px; font-weight: 700;
+      border: 1px solid #48484a; background: #2c2c2e; color: #ffd60a;
+      border-radius: 8px; cursor: pointer; line-height: 1;
+    }
+    .ord-move:hover:not(:disabled) { background: #ffd60a; color: #1d1d1f; border-color: #ffd60a; }
+    .ord-move:active:not(:disabled) { transform: translateY(1px); }
+    .ord-move:disabled { opacity: .32; cursor: default; color: #86868b; }
+    .ord-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; margin-bottom: 6px;
+      border: 1px solid #e8e8ed; border-radius: 8px; background: #fff;
+      cursor: grab; user-select: none;
+    }
+    .ord-row:hover { border-color: #d2d2d7; background: #fafafa; }
+    .ord-row.sel { border-color: #1d1d1f; background: #fffbe6; box-shadow: 0 0 0 2px #ffd60a inset; }
+    .ord-row.dragging { opacity: .45; }
+    .ord-row.drop-before { box-shadow: 0 -3px 0 0 #ffd60a; }
+    .ord-row.drop-after  { box-shadow: 0  3px 0 0 #ffd60a; }
+    .ord-num {
+      font-weight: 700; color: #ffd60a; background: #1d1d1f; border-radius: 6px;
+      min-width: 26px; text-align: center; padding: 2px 0; font-size: 12px;
+    }
+    .ord-row.sel .ord-num { background: #ffd60a; color: #1d1d1f; }
+    .ord-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }

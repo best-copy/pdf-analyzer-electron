@@ -53,6 +53,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
 
+  // 방금 연 문서가 있던 폴더 — 저장 다이얼로그 기본 위치로 쓰인다
+  setSaveDir: (dir) => ipcRenderer.send('app:docDir', dir),
+
   // '저장 안 한 작업' 상태를 main에 보고 (종료 전 확인용)
   setUnsaved: (dirty) => ipcRenderer.send('app:dirty', !!dirty),
 

@@ -1252,19 +1252,34 @@
   </div>
 
   <!-- 여러 문서 열 순서 지정 모달 — 보내기·다중 전달 시 순서 확정 후 챕터로 병합 -->
-  <div id="orderModal" style="display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,.55);">
-    <div style="max-width:520px; margin:8vh auto; background:#fff; border-radius:14px; max-height:80vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.4);">
-      <div style="background:#1d1d1f; color:#ffd60a; padding:14px 18px; font-weight:700;"><span class="ic">📚</span> 열 순서 정하기</div>
-      <div style="padding:14px 18px; overflow-y:auto;">
-        <div style="color:#48484a; font-size:12.5px; margin-bottom:10px;">여러 문서를 받았습니다 — <b>드래그</b>하거나 <b>▲▼</b>로 순서를 정하세요.<br>이 순서대로 <b>챕터로 이어져 한 문서</b>로 열립니다.</div>
+  <div id="orderModal" style="display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,.55); overflow:auto;">
+    <div id="orderPanel">
+      <div id="orderTitleBar">
+        <span><span class="ic">📚</span> 열 순서 정하기</span>
+        <button id="ordClose" onclick="document.getElementById('orderModal').style.display='none'" title="닫기 (Esc)">✕</button>
+      </div>
+      <div id="orderBody">
+        <div style="color:#48484a; font-size:12.5px; margin-bottom:10px;">파일을 <b>클릭해 선택</b>한 뒤 <b>▲▼</b>로 옮기거나, <b>마우스로 끌어</b> 원하는 자리에 놓으세요.<br><b>통합창</b>은 이 순서대로 <b>파일별 챕터를 유지한 한 문서</b>로, <b>개별창</b>은 파일마다 별도 탭으로 엽니다.</div>
+        <div id="orderToolbar">
+          <span id="ordSelInfo">옮길 파일을 선택하세요</span>
+          <span style="flex:1;"></span>
+          <button class="ord-move" id="ordTop" onclick="moveOrderSel(-999)" title="맨 위로 (Ctrl+Home)">⤒</button>
+          <button class="ord-move" id="ordUp" onclick="moveOrderSel(-1)" title="한 칸 위로 (Ctrl+↑) — 연속 클릭 가능">▲</button>
+          <button class="ord-move" id="ordDown" onclick="moveOrderSel(1)" title="한 칸 아래로 (Ctrl+↓) — 연속 클릭 가능">▼</button>
+          <button class="ord-move" id="ordBottom" onclick="moveOrderSel(999)" title="맨 아래로 (Ctrl+End)">⤓</button>
+        </div>
         <div id="orderRows"></div>
       </div>
-      <div style="padding:12px 18px; border-top:1px solid #e8e8ed; display:flex; gap:8px;">
-        <button class="clear-opts-btn" onclick="sortOrderItems()" title="파일명 자연 정렬 (숫자 순서 인식)">이름순 정렬</button>
+      <div id="orderFooter">
+        <button class="clear-opts-btn ord-foot" onclick="sortOrderItems()" title="파일명 자연 정렬 (숫자 순서 인식)">이름순 정렬</button>
         <span style="flex:1;"></span>
-        <button class="clear-opts-btn" onclick="document.getElementById('orderModal').style.display='none'">취소</button>
-        <button class="apply-btn" style="margin-left:0;" onclick="confirmOpenOrder()">📚 이 순서로 열기</button>
+        <button class="clear-opts-btn ord-foot" onclick="confirmOpenOrder(false)" title="파일마다 별도 탭으로 엽니다">📄 개별창</button>
+        <button class="apply-btn ord-foot" style="margin-left:0;" onclick="confirmOpenOrder(true)" title="정한 순서대로 이어붙여 한 문서로 엽니다 (파일별 챕터 유지)">📚 통합창</button>
       </div>
+      <!-- 크기 조절 손잡이 — 우측(가로) · 하단(세로) · 우하단(동시) -->
+      <div class="ord-grip ord-grip-r" data-grip="r" title="좌우로 당겨 가로 크기 조절"></div>
+      <div class="ord-grip ord-grip-b" data-grip="b" title="위아래로 당겨 세로 크기 조절"></div>
+      <div class="ord-grip ord-grip-c" data-grip="c" title="가로·세로 동시 조절"></div>
     </div>
   </div>
 
