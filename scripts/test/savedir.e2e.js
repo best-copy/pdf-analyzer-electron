@@ -63,6 +63,19 @@ app.whenReady().then(async () => {
   await new Promise(r => setTimeout(r, 200));
   ck('역슬래시 경로 → 폴더만 전달', got === path.dirname(winPath), got);
 
+  // ── 저장 폴더 결정 규칙 (main.js의 pickSaveDir를 그대로 떼어 검증) ──
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+    const i = src.indexOf('function pickSaveDir(');
+    const j = src.indexOf('function uniqueSavePath', i);
+    const pick = new Function(src.slice(i, j) + '\nreturn pickSaveDir;')();
+    ck('작업 파일은 문서 폴더 우선', pick('pdfw', 'D:/docs', 'E:/other') === 'D:/docs');
+    ck('작업 파일 — 문서 폴더가 없으면 직전 저장 폴더', pick('pdfw', null, 'E:/other') === 'E:/other');
+    ck('PDF는 직전 저장 폴더 우선', pick('pdf', 'D:/docs', 'E:/other') === 'E:/other');
+    ck('PDF — 직전 저장이 없으면 문서 폴더', pick('pdf', 'D:/docs', null) === 'D:/docs');
+    ck('둘 다 없으면 null(다운로드 폴더로 폴백)', pick('pdfw', null, null) === null);
+  }
+
   let fail = 0;
   out.forEach(([m, nm, x]) => { if (m === '✘') fail++; console.log(`  ${m} ${nm} ${x}`); });
   console.log(`\n결과: ${out.length - fail} 통과 / ${fail} 실패\n`);

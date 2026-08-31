@@ -3,7 +3,7 @@
  * pdf-lib 문서 레벨 연산(load/copyPages/addPage/save)을 메인 스레드 밖에서 수행한다.
  */
 
-importScripts('./libs/pdf-lib.min.js', './libs/fontkit.umd.min.js');
+importScripts('./libs/pdf-lib.min.js', './libs/fontkit.umd.min.js', './hf-core.js');
 
 // ── 레이아웃 변환에 쓰이는 순수 계산 헬퍼 (index.html의 동명 함수와 동일) ──
 const PT_PER_MM = 72 / 25.4;
@@ -32,27 +32,7 @@ function hexToRgb(hex) {
   return PDFLib.rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
 }
 
-function formatPageNumber(style, page, total) {
-  switch (style | 0) {
-    case 0: return `${page}`;
-    case 2: return `- ${page} -`;
-    case 3: return `Page ${page}`;
-    case 4: return `${page} 페이지`;
-    case 1:
-    default: return `${page} / ${total}`;
-  }
-}
-
-function resolveHF(tpl, ctx) {
-  // 로마자 페이지(ctx.roman — 목차·지정 앞붙이)는 번호 토큰이 i, ii…로 치환된다.
-  // 번호 시작 페이지(hf.start) 이전의 일반 페이지는 ctx.page ≤ 0 — 번호 토큰만 비운다(다른 문구는 유지).
-  return (tpl || '')
-    .replace(/\{n\}/g, ctx.roman ? ctx.roman : (ctx.page > 0 ? formatPageNumber(ctx.pnumStyle, ctx.page, ctx.total) : ''))
-    .replace(/\{page\}/g, ctx.roman ? ctx.roman : (ctx.page > 0 ? ctx.page : ''))
-    .replace(/\{total\}/g, ctx.total)
-    .replace(/\{date\}/g, ctx.date)
-    .replace(/\{filename\}/g, ctx.filename);
-}
+// formatPageNumber·resolveHF·hfInScope·hfNumberCtx = hf-core.js (렌더러 편집기와 공용 원본)
 
 // 텍스트 → PNG (OffscreenCanvas 사용 — index.html의 textToPngEmbed와 동일 로직, DOM 없이 포팅)
 async function textToPngEmbed(outDoc, text, opt, cache) {
@@ -382,7 +362,9 @@ async function handleLayoutTransform(payload) {
     // 확정(누적) 문구 레이어 + 현재 입력 — 순서대로 전부 겹쳐 인쇄한다.
     // 각 레이어는 자기 스타일(크기·색·글꼴·위치·교대·번호시작)을 그대로 보존.
     const hfHasContent = H => H && (
-      someHf([H.hL, H.hC, H.hR, H.fL, H.fC, H.fR])
+      // 페이지별 덮어쓰기(편집기에서 그 쪽만 고친 문구)만 있어도 인쇄 대상이다
+      (H.perPage && Object.keys(H.perPage).length)
+      || someHf([H.hL, H.hC, H.hR, H.fL, H.fC, H.fR])
       || someHf([H.oHL, H.oHC, H.oHR, H.oFL, H.oFC, H.oFR])
       || someHf([H.eHL, H.eHC, H.eHR, H.eFL, H.eFC, H.eFR]));
     const hfCfgs = (hf && hf.enabled) ? [...(hf.layers || []), hf].filter(hfHasContent) : [];
@@ -434,9 +416,17 @@ async function handleLayoutTransform(payload) {
           hfEff = Object.assign({}, b, { hL: b.hR, hR: b.hL, fL: b.fR, fR: b.fL });
           mirrored = true;
         }
-        // 번호 시작 페이지(start): 그 출력 페이지가 {n}=1 — 표지·목차를 번호에서 빼는 용도.
-        const hfStart = Math.max(1, (H.start | 0) || 1);
-        const ctx = { page: absPage - (hfStart - 1), total: Math.max(1, totalAll - (hfStart - 1)), roman: rn, date: dateStr, filename: fname, pnumStyle: H.pnumStyle || 0 };
+        // 적용 범위 — all: 전체 / from: applyFrom쪽부터 / pick: applyPages에 든 쪽만
+        // (챕터 체크는 렌더러에서 이미 페이지 번호로 펼쳐서 넘어온다)
+        if (!hfInScope(H, absPage)) continue;   // 적용 범위(전체·N쪽부터·체크 선택)
+        // 내부 편집기에서 그 페이지만 고쳐 둔 문구가 있으면 그것으로 대체(이미 해석된 실제 문구)
+        const pageOver = H.perPage && H.perPage[absPage];
+        if (pageOver) { hfEff = Object.assign({}, H, pageOver); mirrored = false; }
+        // 번호 시작 페이지(start)·시작 번호(numFrom) 계산은 hf-core.js에 한 벌만 둔다
+        // (편집기 미리보기와 인쇄물이 갈라지지 않게)
+        const nctx = hfNumberCtx(H, absPage, totalAll);
+        const ctx = { page: nctx.page, total: nctx.total,
+                      roman: rn, date: dateStr, filename: fname, pnumStyle: H.pnumStyle || 0 };
         const mHF = mm2pt(H.margin || 0);
         // 위치 미세조절 (mm): +X=오른쪽, +Y=아래. 교대로 뒤집힌 짝수 페이지는 가로 이동도 거울로.
         const offX = mm2pt(parseFloat(H.offX) || 0) * (mirrored ? -1 : 1), offY = mm2pt(parseFloat(H.offY) || 0);

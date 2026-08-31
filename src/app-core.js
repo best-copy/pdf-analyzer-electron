@@ -91,7 +91,10 @@
               oHL: '', oHC: '', oHR: '', oFL: '', oFC: '', oFR: '',
               eHL: '', eHC: '', eHR: '', eFL: '', eFC: '', eFR: '',
               size: 9, color: '#333333', margin: 10, pnumStyle: 1, alt: false,   // alt = 짝수쪽 좌우 교대(책 바깥쪽)
-              start: 1,   // 번호 시작 페이지 — 이 출력 페이지가 {n}=1, 앞 페이지는 번호 생략(표지·목차 제외용)
+              start: 1,   // 번호 시작 페이지 — 이 출력 페이지부터 번호를 매긴다(앞 페이지는 번호 생략)
+              numFrom: 1, // 그 시작 페이지에 찍힐 첫 번호 — 5면 5,6,7…(앞권에서 이어지는 책)
+              // 적용 범위 — all: 전체 / from: applyFrom쪽부터 끝까지 / pick: 체크한 페이지·챕터만
+              applyMode: 'all', applyFrom: 1, applyPages: [], applyChapters: [],
               offX: 0, offY: 0,   // 위치 미세조절 mm (+X=오른쪽, +Y=아래) — 머리글·바닥글 전체 이동
               font: 'C:\\Windows\\Fonts\\malgun.ttf' },
         // 워터마크
@@ -1048,20 +1051,39 @@
     // 활성 분석본(baseTab)의 페이지(기존 챕터 보존)에 새로 가져온 파일들을 차례로
     // 챕터로 추가해 하나의 PDF로 합치고, 그 합본을 다시 분석한다.
     // 결과는 단일 탭이므로 다운로드 버튼으로 하나의 파일로 저장할 수 있다.
+    // 기존 문서에 파일을 이어붙이는 중 — 이때는 '자동 세로 맞춤'이 끼어들면 안 된다.
+    // base에는 사용자가 직접 돌려 둔 페이지가 이미 구워져 있어, 자동 맞춤이 그걸 되돌린다.
+    let _appendingDocs = false;
     async function appendImportedFiles(newFiles, baseTab) {
       try {
+        _appendingDocs = true;
         hideError(); hideSuccess();
         showLoading(`기존 분석본에 ${newFiles.length}개 파일을 챕터로 추가하는 중…`);
 
         const mergedDoc = await PDFLib.PDFDocument.create();
         const chapters  = [];          // 파일별 챕터 경계 {name, start(1-based), count}
 
-        // 1) 기준 문서(베이스) 페이지 복사 — 기존 챕터는 보존, 없으면 전체를 한 챕터로
-        const baseSrc    = await PDFLib.PDFDocument.load(baseTab.originalPdfBytes.slice(0));
+        // 1) 기준 문서(베이스) 페이지 복사
+        // ⚠ 원본 바이트(originalPdfBytes)를 쓰면 안 된다 — 지운 페이지가 되살아나고 순서·회전·
+        //   빈 페이지·내부편집이 전부 사라진다(가상 프린터로 문서를 받을 때 실제로 그랬다).
+        //   활성 탭이면 '지금 화면 그대로'를 굽고(흑백은 굽지 않는다), 아니면 원본으로 폴백한다.
+        const useCurrent = baseTab.id === activeTabId && pageResults.filter(Boolean).length > 0
+                           && typeof buildBaseOptimized === 'function';
+        let baseBytes;
+        if (useCurrent) {
+          try { baseBytes = (await buildBaseOptimized(null, { skipBw: true })).bytes; }
+          catch (e) { console.warn('현재 상태 base 생성 실패 — 원본으로 대체:', e); }
+        }
+        if (!baseBytes) baseBytes = baseTab.originalPdfBytes;
+        const baseSrc    = await PDFLib.PDFDocument.load(baseBytes.slice(0));
         const baseIdx    = baseSrc.getPageIndices();
         const baseCopied = await mergedDoc.copyPages(baseSrc, baseIdx);
         baseCopied.forEach(p => mergedDoc.addPage(p));
-        if (baseTab.chapters && baseTab.chapters.length) {
+        // 챕터 경계도 '지금 페이지' 기준으로 다시 잡는다 — 원본 기준 경계는 삭제 후 어긋난다
+        const curChapters = useCurrent ? chapterRunsOf(pageResults.filter(Boolean), baseTab.fileName) : null;
+        if (curChapters && curChapters.length) {
+          curChapters.forEach(ch => chapters.push(ch));
+        } else if (baseTab.chapters && baseTab.chapters.length) {
           baseTab.chapters.forEach(ch => chapters.push({ ...ch }));
         } else {
           chapters.push({ name: baseTab.fileName, start: 1, count: baseIdx.length });
@@ -1099,17 +1121,184 @@
         activateTab(tab.id);
         closeTab(baseTab.id);
         await analyzePDF(file, tab);
+        setTimeout(() => { _appendingDocs = false; }, 1500);   // 자동 방향 맞춤(400ms 지연) 통과 후 해제
 
         showSuccess(`${newFiles.length}개 파일을 챕터로 추가했습니다. 다운로드 버튼으로 하나의 PDF로 저장할 수 있습니다.`);
       } catch (e) {
         hideLoading();
+        _appendingDocs = false;
         showError('파일 추가 중 오류: ' + (e && e.message ? e.message : String(e)));
         console.error('appendImportedFiles 오류:', e);
       }
     }
 
+    // 지금 페이지 목록에서 챕터 경계를 다시 계산 — [{name, start(1-based), count}]
+    // 챕터 표시가 없는 문서는 전체를 파일명 한 챕터로 본다.
+    function chapterRunsOf(valid, fallbackName) {
+      const runs = [];
+      valid.forEach((r, i) => {
+        const name = r.chapter || fallbackName || '문서';
+        const last = runs[runs.length - 1];
+        if (last && last.name === name) last.count++;
+        else runs.push({ name, start: i + 1, count: 1 });
+      });
+      return runs;
+    }
+
+    // ── 💾 분석 캐시 (작업 파일 .pdfw에 실려 재분석을 없앤다) ─────────────────
+    // 페이지당 분석 산출물은 {isColor, 크기, 썸네일 JPEG}뿐이라 전부 저장할 수 있다.
+    // 저장할 땐 썸네일을 폭 THUMB_CACHE_W로 줄여 담고(파일 증가 최소화), 크게 볼 때만
+    // 그 페이지를 원해상도로 다시 렌더한다(upgradeThumb).
+    //
+    // ⚠ ANALYSIS_CACHE_V는 **판정 규칙이나 썸네일 산출 규칙이 바뀌면 반드시 올린다**.
+    //   안 올리면 옛 판정이 되살아나 컬러 장수(=프린터 과금)가 틀린다.
+    const ANALYSIS_CACHE_V = 1;
+    const THUMB_CACHE_W = 300;          // 저장용 썸네일 폭(px)
+    const THUMB_CACHE_Q = 0.72;
+
+    // 현재 탭의 분석 결과 → { meta, blob(썸네일 JPEG 이어붙임) }
+    async function captureAnalysisCache(tabState) {
+      const rs = (tabState && tabState.pageResults) || [];
+      if (!rs.length || !tabState.originalPdfBytes) return null;
+      // 원본 페이지(originalIdx) 기준으로 담는다 — 순서 변경·빈 페이지는 docState가 따로 복원한다
+      const byIdx = new Map();
+      rs.forEach(r => { if (r && !r.isBlank && r.originalIdx != null && !byIdx.has(r.originalIdx)) byIdx.set(r.originalIdx, r); });
+      const idxs = [...byIdx.keys()].sort((a, b) => a - b);
+      if (!idxs.length) return null;
+      const pages = [], parts = [];
+      for (const oi of idxs) {
+        const r = byIdx.get(oi);
+        let jpeg = null;
+        try { jpeg = await shrinkThumbToJpeg(r.thumbnail, THUMB_CACHE_W, THUMB_CACHE_Q); } catch (e) { jpeg = null; }
+        pages.push({
+          oi, isColor: !!r.isColor,
+          w: r.thumbW || 0, h: r.thumbH || 0,
+          pw: r.pageWpt || 0, ph: r.pageHpt || 0,
+          tlen: jpeg ? jpeg.length : 0,
+        });
+        if (jpeg) parts.push(jpeg);
+      }
+      let total = 0; parts.forEach(p => { total += p.length; });
+      const blob = new Uint8Array(total);
+      let p = 0; parts.forEach(b => { blob.set(b, p); p += b.length; });
+      return {
+        meta: { v: ANALYSIS_CACHE_V, pdfLen: tabState.originalPdfBytes.byteLength,
+                thumbW: THUMB_CACHE_W, defaultPageSize: tabState.defaultPageSize || null, pages },
+        blob,
+      };
+    }
+
+    // blob URL 썸네일 → 축소 JPEG 바이트
+    async function shrinkThumbToJpeg(src, maxW, q) {
+      if (!src) return null;
+      const blob = await (await fetch(src)).blob();
+      const bmp = await createImageBitmap(blob);
+      const scale = Math.min(1, maxW / bmp.width);
+      const cw = Math.max(1, Math.round(bmp.width * scale));
+      const ch = Math.max(1, Math.round(bmp.height * scale));
+      const cv = document.createElement('canvas');
+      cv.width = cw; cv.height = ch;
+      cv.getContext('2d').drawImage(bmp, 0, 0, cw, ch);
+      try { bmp.close(); } catch (e) { }
+      const out = await new Promise(res => cv.toBlob(res, 'image/jpeg', q));
+      if (!out) return null;
+      return new Uint8Array(await out.arrayBuffer());
+    }
+
+    // 저장된 캐시를 이 PDF에 쓸 수 있는지 — 판정 규칙(v)과 원본 바이트 길이가 같아야 한다.
+    // 쪽수는 여기서 따지지 않는다: 저장 당시 페이지를 지웠다면 캐시가 원본 일부만 담기는데,
+    // 그때 통째로 버리면 "재저장해도 계속 재분석"이 된다 → 빠진 쪽만 따로 분석한다.
+    function analysisCacheUsable(meta, pdfLen, numPages) {
+      if (!meta || meta.v !== ANALYSIS_CACHE_V || meta.pdfLen !== pdfLen) return false;
+      if (!Array.isArray(meta.pages) || !meta.pages.length) return false;
+      const seen = new Set();
+      return meta.pages.every(p => {
+        if (!p || !(p.oi >= 0) || p.oi >= numPages || seen.has(p.oi)) return false;
+        seen.add(p.oi); return true;
+      });
+    }
+
+    // 캐시 → 원본 인덱스별 pageResults 항목 (썸네일은 blob URL로 복원). 렌더 0회.
+    // 캐시에 없는 원본 페이지는 자리를 null로 남긴다(호출부에서 그 쪽만 분석한다).
+    function pageResultsFromCache(meta, blob, numPages) {
+      const total = numPages || meta.pages.length;
+      const arr = new Array(total).fill(null);
+      let off = 0;
+      meta.pages.forEach(p => {
+        let thumb = null;
+        if (p.tlen > 0) {
+          const part = blob.slice(off, off + p.tlen);
+          try { thumb = URL.createObjectURL(new Blob([part], { type: 'image/jpeg' })); } catch (e) { }
+        }
+        off += p.tlen || 0;
+        if (p.oi < total) {
+          arr[p.oi] = { pageNum: p.oi + 1, originalIdx: p.oi, isColor: !!p.isColor, thumbnail: thumb,
+                        thumbW: p.w, thumbH: p.h, pageWpt: p.pw, pageHpt: p.ph, thumbLow: !!thumb };
+        }
+      });
+      return arr;
+    }
+
+    // 크게 볼 때만 그 페이지를 원해상도로 다시 렌더해 썸네일을 교체한다(저해상 캐시 보정).
+    // 같은 페이지를 두 번 굽지 않도록 진행 중 플래그를 둔다.
+    const _thumbUpgrading = new Set();
+    async function upgradeThumb(originalIdx) {
+      const r = (pageResults || []).find(x => x && x.originalIdx === originalIdx && x.thumbLow);
+      if (!r || _thumbUpgrading.has(originalIdx) || !globalPdfDoc) return false;
+      _thumbUpgrading.add(originalIdx);
+      try {
+        const page = await globalPdfDoc.getPage(originalIdx + 1);
+        const res = await analyzePageColor(page);
+        const t = await res.thumbPromise;
+        if (t) {
+          if (r.thumbnail && r.thumbnail.startsWith('blob:')) { try { URL.revokeObjectURL(r.thumbnail); } catch (e) { } }
+          r.thumbnail = t; r.thumbW = res.thumbW; r.thumbH = res.thumbH; r.thumbLow = false;
+          const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+          const img = el && el.querySelector('.page-thumbnail');
+          if (img) img.src = t;
+        }
+        return !!t;
+      } catch (e) { return false; }
+      finally { _thumbUpgrading.delete(originalIdx); }
+    }
+    // 화면에 보이는 저해상 썸네일만 순차 보정 — 줌이 캐시 폭을 넘겼을 때만 돈다.
+    let _thumbUpgQueued = false;
+    function scheduleThumbUpgrade() {
+      if (_thumbUpgQueued) return;
+      _thumbUpgQueued = true;
+      setTimeout(async () => {
+        _thumbUpgQueued = false;
+        if (!(pageResults || []).some(r => r && r.thumbLow)) return;
+        const els = [...document.querySelectorAll('#pagesGrid [data-page], #previewGrid [data-page]')];
+        const vis = els.filter(el => {
+          const b = el.getBoundingClientRect();
+          return b.bottom > -200 && b.top < window.innerHeight + 200;
+        }).map(el => +el.dataset.page);
+        for (const pn of vis) {
+          const r = (pageResults || []).find(x => x && x.pageNum === pn && x.thumbLow);
+          if (r) await upgradeThumb(r.originalIdx);
+        }
+      }, 250);
+    }
+    // 줌이 저장 폭을 넘어서면(=흐릿하게 보이기 시작하면) 그때부터 보이는 페이지를 원해상도로
+    window.addEventListener('scroll', () => {
+      if (THUMB_STEPS[thumbStepIdx] > THUMB_CACHE_W) scheduleThumbUpgrade();
+    }, true);
+
+    // 합본 탭이면 각 페이지에 원본 파일명(챕터) 태깅 — 그리드·사이드바 구분,
+    // 그리고 '방향 자동 맞춤'의 기준 그룹으로 쓰인다(합본에서 남의 원고를 눕히지 않도록).
+    function tagChapters(tabState) {
+      if (!tabState || !tabState.chapters || !tabState.chapters.length) return;
+      tabState.chapters.forEach(ch => {
+        for (let i = ch.start - 1; i < ch.start - 1 + ch.count; i++) {
+          if (tabState.pageResults[i]) tabState.pageResults[i].chapter = ch.name;
+        }
+      });
+    }
+
     // ── PDF 분석 (병렬, 탭별 독립 실행) ──────────────────────────────────────
-    async function analyzePDF(file, tabState) {
+    // opts.cache = { meta, blob } 이면 페이지 렌더를 통째로 건너뛰고 캐시를 되씌운다.
+    async function analyzePDF(file, tabState, opts) {
       const isActive = () => activeTabId === tabState.id;
 
       try {
@@ -1133,6 +1322,55 @@
         while (tabState.pageResults.length < totalPages) tabState.pageResults.push(null);
 
         let colorCount = 0, bwCount = 0, done = 0;
+
+        // 💾 작업 파일에 실린 분석 캐시가 이 PDF와 정확히 맞으면 페이지 렌더를 통째로 건너뛴다.
+        // (버전·바이트길이·쪽수가 하나라도 다르면 아래 정상 분석으로 내려간다)
+        const cache = opts && opts.cache;
+        if (cache && analysisCacheUsable(cache.meta, tabState.originalPdfBytes.byteLength, totalPages)) {
+          const rs = pageResultsFromCache(cache.meta, cache.blob, totalPages);
+          // 캐시에 없는 쪽(저장 당시 지웠던 페이지 등)만 지금 분석해 메운다
+          const missing = [];
+          rs.forEach((r, i) => { if (!r) missing.push(i); });
+          if (missing.length) {
+            if (isActive()) updateProgress(0);
+            let mdone = 0;
+            const MC = Math.max(2, Math.min(navigator.hardwareConcurrency || 4, 4));
+            let mi = 0;
+            await Promise.all(Array.from({ length: MC }, async () => {
+              while (mi < missing.length) {
+                const i = missing[mi++];
+                try {
+                  const page = await pdf.getPage(i + 1);
+                  const res = await analyzePageColor(page);
+                  const t = await res.thumbPromise;
+                  rs[i] = { pageNum: i + 1, originalIdx: i, isColor: res.isColor, thumbnail: t,
+                            thumbW: res.thumbW, thumbH: res.thumbH, pageWpt: res.pageWpt, pageHpt: res.pageHpt };
+                } catch (e) {
+                  rs[i] = { pageNum: i + 1, originalIdx: i, isColor: false, thumbnail: null };
+                }
+                if (isActive()) updateProgress(Math.round(++mdone / missing.length * 100));
+              }
+            }));
+          }
+          tabState.pageResults = rs;
+          tabState.analysisCacheMissing = missing.length;
+          tagChapters(tabState);
+          rs.forEach(r => { if (r.isColor) colorCount++; else bwCount++; });
+          tabState.colorCount = colorCount;
+          tabState.bwCount = bwCount;
+          tabState.status = 'ready';
+          tabState.progress = 100;
+          tabState.analysisFromCache = true;   // 안내 문구·구버전 재저장 제안 판단용
+          if (isActive()) {
+            pageResults = tabState.pageResults;
+            displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
+          } else {
+            tabState.quoteItems.push(...buildQuoteItems(colorCount, bwCount));
+          }
+          if (isActive()) { hideLoading(); progressBar.style.display = 'none'; }
+          renderTabBar();
+          return;
+        }
 
         // 페이지당 분석 동시 처리 — pdf.js 워커는 '문서당 1개'라 한 문서로는 렌더가
         // 직렬화된다(동시성만 올려도 실병렬 X). 같은 바이트로 보조 문서를 2~3개 더
@@ -1180,14 +1418,7 @@
         tabState.bwCount    = bwCount;
         tabState.status     = 'ready';
 
-        // 합본 탭이면 각 페이지에 원본 파일명(챕터) 태깅 — 그리드·사이드바 구분에 사용
-        if (tabState.chapters && tabState.chapters.length) {
-          tabState.chapters.forEach(ch => {
-            for (let i = ch.start - 1; i < ch.start - 1 + ch.count; i++) {
-              if (tabState.pageResults[i]) tabState.pageResults[i].chapter = ch.name;
-            }
-          });
-        }
+        tagChapters(tabState);
 
         if (isActive()) {
           pageResults = tabState.pageResults;
@@ -1518,6 +1749,8 @@
       document.getElementById('zoomOutBtn').disabled = thumbStepIdx === 0;
       document.getElementById('zoomInBtn').disabled  = thumbStepIdx === THUMB_STEPS.length - 1;
       applyThumbFontStep(thumbStepIdx);
+      // 작업 파일에서 온 저해상 썸네일은 이 크기부터 흐리다 → 보이는 페이지만 원해상도로 교체
+      if (px > THUMB_CACHE_W) scheduleThumbUpgrade();
       // 편집 모드 표본 미리보기: 줌 배율에 맞는 해상도로 다시 렌더 + 보이는 범위 재계산(스크롤 핸들러)
       if (document.body.classList.contains('edit-fullscreen') && typeof scheduleLivePreview === 'function') scheduleLivePreview();
     }
@@ -1712,7 +1945,16 @@
         let startIdx = order[0].originalIdx;
         const sr = (startDisplayIdx != null) ? pageResults[startDisplayIdx] : null;
         if (sr && !sr.isBlank) startIdx = sr.originalIdx;
-        await window.electronAPI.openEditor({ pdfPath, models: modelsObj, startIdx, order });
+        // 🔖 이 문서의 머리글·바닥글이 페이지마다 어떻게 찍힐지 함께 넘긴다 —
+        // 편집기에서 그 페이지의 문구를 눈으로 확인하고 고칠 수 있게(수정분은 페이지별 덮어쓰기).
+        const hfPages = {};
+        if (typeof hfForPage === 'function') {
+          order.forEach(o => {
+            const info = hfForPage(o.num);
+            if (info) hfPages[o.originalIdx] = info;
+          });
+        }
+        await window.electronAPI.openEditor({ pdfPath, models: modelsObj, startIdx, order, hfPages });
       } catch (e) {
         console.error('편집기 열기 실패:', e);
         showError('내부 편집기 열기 실패: ' + (e.message || e));
@@ -1722,8 +1964,20 @@
     // 편집기 저장 결과 반영: contentEdits 병합 → 캐시 무효 → 썸네일 재생성 → 화면 반영
     async function applyEditorResult(result) {
       if (!result) return;
-      const { edits, removed } = result;
+      const { edits, removed, hfOverrides } = result;
       const changed = [];
+      // 🔖 편집기에서 고친 '이 페이지의 머리글·바닥글' — 페이지별 덮어쓰기로 저장.
+      // (페이지 콘텐츠가 아니라 설정이므로 contentEdits와 별개로 반영한다)
+      let hfN = 0;
+      if (hfOverrides && typeof setHfPageOverride === 'function') {
+        Object.keys(hfOverrides).forEach(pn => { setHfPageOverride(+pn, hfOverrides[pn]); hfN++; });
+        if (hfN) {
+          if (typeof syncEditUI === 'function') syncEditUI();
+          if (typeof invalidateProcessed === 'function') invalidateProcessed();
+          if (typeof scheduleLivePreview === 'function') scheduleLivePreview();
+          showSuccess(`머리글·바닥글을 ${hfN}개 페이지에서 고쳤습니다 — 그 페이지만 고친 문구로 인쇄됩니다.`);
+        }
+      }
       try {
         showLoading('내부 편집 반영 중…');
         if (edits) {

@@ -27,6 +27,11 @@
     #toolbar label { font-size:12px; color:#ffd60a; font-weight:700; }
     #toolbar input[type=number]{ width:64px; padding:3px 4px; border-radius:4px; border:1px solid #5a5a5f; }
     #pageLabel { font-size:13px; min-width:90px; text-align:center; }
+    .hfp-lbl { font-size:11px; color:#98989d; text-align:center; }
+    #hfPanelGrid input { width:100%; box-sizing:border-box; background:#1d1d1f; color:#f5f5f7;
+      border:1px solid #48484a; border-radius:6px; padding:6px 7px; font-size:12px; }
+    #hfPanelGrid input:focus { outline:none; border-color:#ffd60a; }
+    #hfPanelGrid input.hfp-over { border-color:#ffd60a; }
 
     /* 본체 */
     #body { flex:1 1 auto; display:flex; min-height:0; }
@@ -98,6 +103,7 @@
       <button class="tbtn" id="tool-mosaic" title="모자이크(민감정보 가림) (M)" onclick="setTool('mosaic')">▦</button>
       <button class="tbtn" id="tool-region" title="원본 그림·로고·도표 편집: 클릭 또는 드래그로 추출 (G)" onclick="setTool('region')">◲</button>
       <button class="tbtn" id="btn-findrep" title="찾기·바꾸기 — 원본 폰트 유지 일괄 치환 (Ctrl+F)" onclick="toggleFindPanel()">🔍</button>
+      <button class="tbtn" id="btn-hf" title="이 페이지의 머리글·바닥글 확인·수정 (H)" onclick="toggleHfPanel()">🔖</button>
     </div>
     <div class="grp">
       <button class="tbtn" id="btn-group"   title="그룹 (Ctrl+G)" onclick="groupSelection()">⧉</button>
@@ -151,6 +157,26 @@
         <button class="tbtn" style="flex:1;" onclick="runFindReplace(true)">모든 페이지</button>
       </div>
       <div id="frResult" style="font-size:11.5px; color:#98989d; line-height:1.5;">같은 서식 조각 안의 글자만 치환됩니다. 원본 폰트 서브셋에 없는 글자로는 바꿀 수 없습니다(스킵). 되돌리기 = Ctrl+Z(페이지별).</div>
+    </div>
+    <!-- 🔖 이 페이지의 머리글·바닥글 — 본문에서 지정한 문구가 이 쪽에 어떻게 찍히는지 보여주고,
+         여기서 고치면 그 페이지만 고친 문구로 인쇄된다(페이지별 덮어쓰기). -->
+    <div id="hfPanel" style="position:fixed; top:56px; right:16px; z-index:70; display:none; background:#2c2c2e; border:1px solid #48484a; border-radius:10px; padding:12px; width:320px; box-shadow:0 8px 24px rgba(0,0,0,.5);">
+      <div style="font-weight:700; color:#ffd60a; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+        🔖 이 페이지의 머리글·바닥글 <span id="hfPanelPage" style="color:#98989d; font-weight:500; font-size:11.5px;"></span>
+      </div>
+      <div id="hfPanelGrid" style="display:grid; grid-template-columns:38px 1fr 1fr 1fr; gap:5px; align-items:center;">
+        <span></span>
+        <span class="hfp-lbl">좌</span><span class="hfp-lbl">중</span><span class="hfp-lbl">우</span>
+        <span class="hfp-lbl">머리</span>
+        <input id="hfpHL"><input id="hfpHC"><input id="hfpHR">
+        <span class="hfp-lbl">바닥</span>
+        <input id="hfpFL"><input id="hfpFC"><input id="hfpFR">
+      </div>
+      <div style="display:flex; gap:6px; margin-top:9px;">
+        <button class="tbtn" style="flex:1;" onclick="hfPanelReset()" title="이 페이지만 고친 내용을 지우고 문서 설정 그대로 되돌립니다">↩ 원래대로</button>
+        <button class="tbtn save" style="flex:1;" onclick="hfPanelApply()" title="이 페이지의 문구로 확정 (저장하고 닫을 때 반영)">✔ 이 쪽에 적용</button>
+      </div>
+      <div id="hfPanelNote" style="font-size:11.5px; color:#98989d; line-height:1.5; margin-top:7px;"></div>
     </div>
     <div id="stageWrap">
       <div id="stage">
@@ -248,6 +274,7 @@ function showBusy(on,msg){ const b=document.getElementById('busy'); if(msg)b.tex
     if (curPos < 0) curPos = 0;
     try { fontList = await window.electronAPI.listFonts() || []; } catch(e){ fontList=[]; }
     await buildPageThumbs();
+    syncHfPanel();
     await renderPage();
     window.addEventListener('resize', () => renderPage());
   } catch (e) {
@@ -359,7 +386,62 @@ function updateZoomLabel(){ document.getElementById('zoomLabel').textContent = M
 function zoomBy(dir){ renderPage._userZoom = true; scale = Math.max(baseScale*0.25, Math.min(baseScale*4, scale*(dir>0?1.15:1/1.15))); renderPage(); }
 function zoomActual(){ renderPage._userZoom = true; scale = ACTUAL_SCALE; renderPage(); }
 function zoomFit(){ renderPage._userZoom = false; renderPage(); }
-function gotoPage(pos){ if(pos<0||pos>=pages.length) return; commitContentEditing(); curPos=pos; renderPage._userZoom=false; renderPage(); }
+function gotoPage(pos){ if(pos<0||pos>=pages.length) return; commitContentEditing(); curPos=pos; renderPage._userZoom=false; renderPage(); syncHfPanel(); }
+
+// ── 🔖 이 페이지의 머리글·바닥글 ────────────────────────────────────────────
+// 본문(메인 창)에서 지정한 문구가 이 쪽에 어떻게 찍히는지 그대로 보여주고, 고치면
+// 그 페이지만 고친 문구로 인쇄된다. 값은 '해석된 실제 문구'(예: {n} → 7)라서
+// 눈에 보이는 그대로 나간다. 저장 시 hfOverrides로 메인 창에 돌려준다.
+const HFP_KEYS = ['hL','hC','hR','fL','fC','fR'];
+const hfOverrides = {};          // { 쪽번호: {hL..fR} } — 이번 편집에서 고친 것만
+function hfPageInfo(pos) {
+  const pg = pages[pos == null ? curPos : pos];
+  if (!pg) return null;
+  const src = (PAYLOAD && PAYLOAD.hfPages) ? PAYLOAD.hfPages[pg.originalIdx] : null;
+  return src ? Object.assign({ num: pg.num || (pg.originalIdx + 1) }, src) : { num: pg.num || (pg.originalIdx + 1), apply: false, fields: null };
+}
+function toggleHfPanel(force) {
+  const el = document.getElementById('hfPanel');
+  const show = force === undefined ? el.style.display === 'none' : !!force;
+  el.style.display = show ? '' : 'none';
+  if (show) syncHfPanel();
+}
+function syncHfPanel() {
+  const el = document.getElementById('hfPanel');
+  if (!el || el.style.display === 'none') return;
+  const info = hfPageInfo();
+  const num = info ? info.num : 0;
+  document.getElementById('hfPanelPage').textContent = num ? `(${num}쪽)` : '';
+  const over = hfOverrides[num];
+  const f = over || (info && info.fields) || {};
+  HFP_KEYS.forEach(k => {
+    const inp = document.getElementById('hfp' + k.toUpperCase());
+    inp.value = f[k] || '';
+    inp.classList.toggle('hfp-over', !!over);
+    inp.disabled = !info || (!info.apply && !over);
+  });
+  const note = document.getElementById('hfPanelNote');
+  if (!info || (!info.fields && !over)) note.textContent = '이 문서에는 머리글·바닥글이 설정되어 있지 않습니다 — 메인 창의 ✏ 편집 → 🔖 머리글·바닥글에서 먼저 넣으세요.';
+  else if (!info.apply && !over) note.textContent = '적용 범위 밖이라 이 쪽에는 인쇄되지 않습니다 — 메인 창에서 적용 범위를 바꾸세요.';
+  else if (over) note.textContent = '이 쪽만 고친 문구입니다 (문서 설정과 별개). ↩ 원래대로를 누르면 문서 설정으로 돌아갑니다.';
+  else note.textContent = '문서 설정 그대로 찍히는 문구입니다. 고치면 이 쪽만 바뀝니다({n} 같은 표시는 이미 실제 값으로 해석돼 있습니다).';
+}
+function hfPanelApply() {
+  const info = hfPageInfo();
+  if (!info || !info.num) return;
+  const f = {};
+  HFP_KEYS.forEach(k => { f[k] = document.getElementById('hfp' + k.toUpperCase()).value || ''; });
+  hfOverrides[info.num] = f;
+  syncHfPanel();
+  setStatus(`${info.num}쪽의 머리글·바닥글을 이 문구로 지정했습니다 — '💾 저장하고 닫기'로 반영됩니다.`, 4000);
+}
+function hfPanelReset() {
+  const info = hfPageInfo();
+  if (!info || !info.num) return;
+  if (hfOverrides[info.num]) hfOverrides[info.num] = null;   // null = 덮어쓰기 해제 요청
+  syncHfPanel();
+  setStatus(`${info.num}쪽을 문서 설정 그대로 되돌립니다.`, 3000);
+}
 
 // ── 오브젝트 렌더 ────────────────────────────────────────────────────────────
 function renderObjects() {
@@ -1352,7 +1434,10 @@ async function saveAndClose() {
       if (ang) savedModel.push({ type:'_pageAngle', deg:ang });
       edits[idx] = { model: savedModel, bytesPath };
     }
-    window.electronAPI.sendEditorResult({ edits, removed });
+    // 🔖 이 페이지만 고친 머리글·바닥글 (null = 덮어쓰기 해제)
+    const hfOut = {};
+    Object.keys(hfOverrides).forEach(k => { hfOut[k] = hfOverrides[k]; });
+    window.electronAPI.sendEditorResult({ edits, removed, hfOverrides: hfOut });
   } catch (e) {
     console.error(e); showBusy(false); setStatus('저장 오류: ' + (e.message||e), 6000);
   }

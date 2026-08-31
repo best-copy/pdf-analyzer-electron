@@ -120,7 +120,7 @@
     .sel-btn, .clear-opts-btn, .proc-label,
     .opt-btn:not(.active),
     .sbp-head-title, .sbp-compact-lbl, .sbp-title,
-    .sbp-opt:not(.active), .sbp-clear,
+    .sbp-opt, .sbp-clear,
     .chapter-name, .drop-hint,
     #pageCtxMenu .ctx-item > span:first-child,
     .es-head-title,
@@ -353,6 +353,30 @@
     .sb-ch-btn:hover:not(:disabled) { background: rgba(255,255,255,0.24); }
     .sb-ch-btn:disabled { opacity: 0.3; cursor: default; }
     .sb-ch-btn.sb-ch-del:hover:not(:disabled) { background: rgba(255,59,48,0.45); color: #fff; }
+    /* ✏ 챕터별 편집 — 그리드/사이드바 챕터 헤더의 주 버튼 */
+    .ch-btn.ch-edit {
+      width: auto; padding: 0 10px; gap: 4px; font-size: 12px; font-weight: 700;
+      background: #1d1d1f; color: #ffd60a; border-color: #1d1d1f;
+    }
+    .ch-btn.ch-edit:hover:not(:disabled) { background: #ffd60a; color: #1d1d1f; }
+    .sb-ch-btn.sb-ch-edit { background: #ffd60a; color: #1d1d1f; font-weight: 700; }
+    .sb-ch-btn.sb-ch-edit:hover:not(:disabled) { background: #fff; }
+    /* 챕터 제목 우클릭 메뉴 */
+    .ch-menu {
+      position: fixed; z-index: 400; min-width: 220px;
+      background: #1d1d1f; border: 1px solid #48484a; border-radius: 10px;
+      padding: 5px; box-shadow: 0 14px 40px rgba(0,0,0,0.45);
+    }
+    .ch-menu-item {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+      width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
+      color: #f5f5f7; font-size: 12.5px; font-weight: 600; font-family: inherit;
+      padding: 7px 10px; border-radius: 7px; line-height: 1.3;
+    }
+    .ch-menu-item:hover:not(:disabled) { background: #ffd60a; color: #1d1d1f; }
+    .ch-menu-item:hover:not(:disabled) .ch-menu-sub { color: #1d1d1f; }
+    .ch-menu-item:disabled { opacity: 0.35; cursor: default; }
+    .ch-menu-sub { font-size: 10.5px; font-weight: 500; color: #8e8e93; }
 
     /* 사이드바 '번호만 보기' 컴팩트 모드 — 썸네일 숨기고 챕터·페이지번호만 표시 */
     #thumbSidebar.sb-compact { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 6px; }
@@ -607,6 +631,30 @@
     .sticky-panel .toolbar-group .processing-controls {
       margin-top: 11px; padding-top: 11px; border-top: 1px solid #e2e2e7;
     }
+
+    /* ── 스티키 패널 압축 — 세로를 절반으로 줄여 그 아래 썸네일이 바로 보이게 ──────
+       스티키라 이 높이만큼 매 화면에서 썸네일 영역을 잡아먹는다. 버튼 규격(38px)은
+       다른 화면(편집 사이드바 등)에서 그대로 쓰이므로 여기서만 좁힌다. */
+    .sticky-panel { padding: 8px 40px 9px; }
+    .sticky-panel .range-summary { margin-bottom: 6px; padding: 5px 10px; line-height: 1.45; }
+    .sticky-stats { gap: 6px; margin-bottom: 7px; }
+    .sticky-panel .ss-pill { padding: 3px 10px; font-size: 0.76em; }
+    .sticky-panel .toolbar-group { padding: 8px 12px; }
+    .sticky-panel .toolbar-group .processing-controls { margin-top: 7px; padding-top: 7px; }
+    .sticky-panel .selection-controls,
+    .sticky-panel .processing-controls { gap: 6px; }
+    .sticky-panel .sel-btn { padding: 4px 9px; font-size: 0.79em; border-radius: 7px; }
+    .sticky-panel .sel-count,
+    .sticky-panel .proc-label { font-size: 0.79em; }
+    .sticky-panel .opt-btn,
+    .sticky-panel .clear-opts-btn,
+    .sticky-panel .apply-btn,
+    .sticky-panel .download-btn {
+      height: 29px; padding: 0 11px; font-size: 0.8em; border-radius: 8px; gap: 4px;
+    }
+    .sticky-panel .action-btn-group { gap: 6px; }
+    .sticky-panel .jump-bar { gap: 4px; }
+    .sticky-panel .jump-bar input[type=number] { width: 74px; padding: 4px 7px; font-size: 0.79em; }
     .jump-bar { display:flex; align-items:center; gap:6px; }
     .jump-bar input[type=number] {
       width:88px; padding:6px 9px; border:1px solid #d2d2d7; border-radius:8px;
@@ -903,32 +951,53 @@
     }
     .sbp-switch input:checked + .sbp-slider { background: #ffd60a; }
     .sbp-switch input:checked + .sbp-slider::before { transform: translateX(18px); }
-    .sbp-body { display: flex; flex-direction: column; gap: 12px; }
+    /* 사이드바 패널 — 세로를 절반으로 줄여 그 아래 페이지 썸네일이 바로 보이게.
+       (1) 섹션 접기/펴기 (2) 버튼 2열 배치 (3) 치수·간격 압축 */
+    .sbp-body { display: flex; flex-direction: column; gap: 8px; }
     #sbPanel.collapsed .sbp-body { display: none; }
-    .sbp-section { display: flex; flex-direction: column; gap: 8px; }
+    .sbp-section { display: flex; flex-direction: column; gap: 6px; }
     .sbp-title {
       font-size: 0.72em; font-weight: 700; color: #aeaeb2;
-      letter-spacing: 0.3px;
+      letter-spacing: 0.3px; cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: 5px; padding: 2px 0;
     }
-    .sbp-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .sbp-title:hover { color: #ffd60a; }
+    .sbp-caret { font-size: 0.85em; color: #8e8e93; transition: transform 0.12s; }
+    .sbp-section.collapsed .sbp-caret { transform: rotate(-90deg); }
+    .sbp-section.collapsed > *:not(.sbp-title) { display: none; }
+    /* 처리옵션 등 버튼을 2열로 — 같은 개수가 절반 높이에 들어간다 */
+    .sbp-grid2 { display: grid !important; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .sbp-grid2 > .sbp-btn, .sbp-grid2 > .sbp-row2, .sbp-grid2 > .sbp-note, .sbp-grid2 > .sbp-chk { grid-column: 1 / -1; }
+    .sbp-grid2 > .sbp-apply, .sbp-grid2 > .sbp-dl { grid-column: auto; }
+    .sbp-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
     .sbp-stat {
-      display: flex; flex-direction: column; align-items: center; gap: 1px;
-      background: #1c1c1e; border-radius: 7px; padding: 7px 4px;
+      display: flex; flex-direction: column; align-items: center; gap: 0;
+      background: #1c1c1e; border-radius: 7px; padding: 4px 2px;
     }
     .sbp-num { font-size: 1.15em; font-weight: 700; color: #f5f5f7; line-height: 1.1; }
     .sbp-num.sbp-c { color: #ffd60a; }
     .sbp-lbl { font-size: 0.62em; color: #8e8e93; }
     .sbp-sel { font-size: 0.68em; color: #48484a; font-weight: 600; text-align: center; }
-    .sbp-opts { display: flex; flex-direction: column; gap: 6px; }
+    .sbp-opts { display: flex; flex-direction: column; gap: 5px; }
     .sbp-opt, .sbp-clear, .sbp-btn {
-      font-size: 0.74em; font-weight: 600; cursor: pointer;
-      border-radius: 7px; padding: 7px 8px; text-align: center;
+      font-size: 0.72em; font-weight: 600; cursor: pointer;
+      border-radius: 7px; padding: 5px 7px; text-align: center; line-height: 1.35;
       border: 1px solid rgba(255,255,255,0.14);
       background: #1c1c1e; color: #f5f5f7;
       transition: background 0.12s, border-color 0.12s, opacity 0.12s;
     }
     .sbp-opt:hover, .sbp-clear:hover, .sbp-btn:not(:disabled):hover { background: #3a3a3c; }
-    .sbp-opt.active { background: #ffd60a; border-color: #ffd60a; color: #1d1d1f; }
+    /* ── 색의 의미를 둘로 나눈다 ─────────────────────────────────────────────
+       ▸ 노랑으로 꽉 찬 버튼(.sbp-apply)  = 누르면 실행되는 것 (적용·생성·저장)
+       ▸ 노란 테두리 + 왼쪽 노란 막대     = 지금 켜져 있는 옵션 (상태 표시)
+       예전엔 둘 다 노랑 fill이라 "켜진 것"과 "누를 것"이 구분되지 않았다. */
+    .sbp-opt.active {
+      background: #2c2c2e; border-color: #ffd60a; color: #ffd60a;
+      /* 사방 같은 굵기의 굵은 테두리 — 왼쪽 막대 없이 테두리만으로 '켜짐'을 알린다.
+         굵기 차이로 칸이 밀리지 않게 border 대신 inset 링을 쓴다(레이아웃 불변). */
+      box-shadow: inset 0 0 0 2px #ffd60a;
+    }
+    .sbp-opt.active:hover { background: #3a3a3c; }
     /* 처리옵션 패널 안의 체크박스·2열 칩·설명 (✒ 폰트 출력 안전화) */
     .sbp-chk {
       display: flex; align-items: center; gap: 7px; cursor: pointer;
@@ -939,7 +1008,28 @@
     .sbp-chk:hover { background: #3a3a3c; }
     .sbp-chk input { accent-color: #ffd60a; width: 14px; height: 14px; cursor: pointer; flex: 0 0 auto; }
     .sbp-row2 { display: flex; gap: 6px; }
-    .sbp-row2 .sbp-opt { flex: 1 1 0; min-width: 0; }
+    /* 한 줄 2버튼은 종류(.sbp-opt·.sbp-clear·.sbp-btn)와 무관하게 폭을 반씩 나눈다 */
+    .sbp-row2 > button { flex: 1 1 0; min-width: 0; }
+    /* 기능이 꺼져 있을 때의 선택 표시 — 노란색 대신 무채색으로 죽여 오해를 막는다 */
+    .sbp-opt.active.dim {
+      background: #3a3a3c; border-color: #48484a; color: #aeaeb2; box-shadow: none;
+    }
+    .sbp-opt.dim { opacity: 0.75; }
+    /* 패널 아래 가장자리 = 세로 크기 조절 손잡이 */
+    #sbPanelGrip {
+      height: 11px; margin: 2px -10px -6px; cursor: ns-resize;
+      display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    }
+    #sbPanelGrip::before {
+      content: ''; width: 46px; height: 3px; border-radius: 3px;
+      background: #48484a; transition: background 0.12s, width 0.12s;
+    }
+    #sbPanelGrip:hover::before { background: #ffd60a; width: 64px; }
+    #sbPanel.sbp-resizing #sbPanelGrip::before { background: #ffd60a; }
+    #sbPanel.sbp-resizing { user-select: none; }
+    #sbPanel.collapsed #sbPanelGrip { display: none; }
+    /* 높이를 줄이면 패널 안이 스크롤된다(옵션이 잘리지 않게) */
+    .sbp-body.sbp-limited { overflow-y: auto; overscroll-behavior: contain; }
     .sbp-note { font-size: 0.66em; color: #8e8e93; line-height: 1.5; }
     .sbp-apply { background: #ffd60a; border-color: #ffd60a; color: #1d1d1f; }
     .sbp-apply:not(:disabled):hover { background: #ffdf3a !important; }
@@ -1228,6 +1318,28 @@
       padding: 5px 6px; font-size: 11.5px; font-family: inherit;
     }
     .es-hf-grid > input:focus { outline: none; border-color: #48484a; }
+    /* 머리글·바닥글 적용 범위 체크 목록 — 챕터(전폭) + 페이지(번호 칩) */
+    .es-hf-picks {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      max-height: 168px; overflow-y: auto; overscroll-behavior: contain;
+      background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 8px;
+      padding: 7px; margin-top: 4px;
+    }
+    .es-hf-picks-h { width: 100%; color: #8e8e93; font-size: 10.5px; font-weight: 700; margin: 2px 0 1px; }
+    .es-hf-pick {
+      display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+      background: #2c2c2e; border: 1px solid #3a3a3c; border-radius: 6px;
+      padding: 3px 7px; font-size: 11px; color: #d1d1d6; user-select: none;
+    }
+    .es-hf-pick:hover { border-color: #ffd60a; }
+    .es-hf-pick input { accent-color: #ffd60a; width: 12px; height: 12px; cursor: pointer; }
+    .es-hf-pick.es-hf-pick-ch {
+      width: 100%; box-sizing: border-box;
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    }
+    /* 챕터 체크로 자동 포함된 페이지 — 개별 해제 불가라는 뜻으로 흐리게 */
+    .es-hf-pick.via-chapter { opacity: 0.55; cursor: default; }
+    .es-hf-pick.via-chapter:hover { border-color: #3a3a3c; }
     .es-reset-btn {
       background: #2c2c2e; border: 1px solid rgba(255,255,255,0.14); color: #d1d1d6;
       padding: 8px; border-radius: 8px; cursor: pointer; font-size: 12px; font-family: inherit;

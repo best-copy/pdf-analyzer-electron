@@ -295,12 +295,16 @@
     // 미리보기/적용은 페이지 캐시로 빠르게 처리하지만, 최종 파일은 여기서
     // 모든 페이지를 한 번에 copyPages(리소스 공유)하고 선택 페이지만 제자리 변환해
     // 파일 크기를 최소화한다. (변환은 이 순간 한 번만 수행)
-    async function buildBaseOptimized(onProgress) {
+    // opts.skipBw: 흑백변환을 굽지 않고 '지금 화면 구조'만 담는다(문서 합치기용).
+    //   합칠 때 흑백을 확정해 버리면 아직 '적용'을 누르지 않은 선택까지 되돌릴 수 없게 된다.
+    //   이 결과는 baseSignature 캐시에 넣지 않는다(같은 서명의 흑백본과 섞이면 사고).
+    async function buildBaseOptimized(onProgress, opts) {
+      const skipBw = !!(opts && opts.skipBw);
       // base는 편집 옵션·임포징 옵션과 무관하다(페이지 순서·회전·흑백변환·내부편집만 반영).
       // 그래서 baseSignature()로 캐시해 두면 여백 1mm·거터 1mm 같은 조작에서 전 페이지
       // 재변환을 통째로 건너뛴다. 캐시 무효화는 clearProcessCaches 한 곳에서만.
       const cacheSig = baseSignature();
-      if (_optBaseCache.sig === cacheSig && _optBaseCache.bytes) {
+      if (!skipBw && _optBaseCache.sig === cacheSig && _optBaseCache.bytes) {
         if (onProgress) onProgress(100);
         return { bytes: _optBaseCache.bytes, stats: _optBaseCache.stats };
       }
@@ -332,7 +336,7 @@
       // 변환 대상 판정은 적용 파이프라인과 공유(isBwTarget) — 누락 불일치 방지.
       // 컬러 페이지(UI Dot Gain 적용)와 회색 판정 페이지(Dot Gain 0 강제)를 나눠
       // 두 단계로 순차 변환한다(같은 outDoc이라 문서 단위 오버라이드가 섞이면 안 됨).
-      const toConvert = valid
+      const toConvert = skipBw ? [] : valid
         .map((r, i) => ({ r, pageNum: r.pageNum, idx: i }))
         .filter(({ r }) => isBwTarget(r));
       const SEM = Math.max(navigator.hardwareConcurrency || 4, 4);
@@ -353,7 +357,7 @@
       if (onProgress) onProgress(94);
       const outBytes = await outDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
       // 저장 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않는다 — 낡은 base가 남는 사고 방지
-      if (baseSignature() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
+      if (!skipBw && baseSignature() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
       return { bytes: outBytes, stats };
     }
     // 다운로드용 최종 바이트 (용량 최적화 base + 레이아웃 변환)
@@ -495,11 +499,37 @@
     function _impCropStyle() {
       const g = id => document.getElementById(id);
       return {
+        shape: g('impCropShape')?.value || 'corner',
         gap: parseFloat(g('impCropGap')?.value) || 1,
         len: parseFloat(g('impCropLen')?.value) || 3,
         th:  parseFloat(g('impCropTh')?.value) || 0.4,
         center: !!g('impCropCenter')?.checked,
+        dims: !!g('impCropDims')?.checked,   // 저장은 하되 복원하지 않는다(기본 꺼짐 유지)
       };
+    }
+    // 재단선 설정은 문서와 무관한 '작업 습관'이라 앱 전체에서 마지막 값을 기억한다.
+    const CROP_STYLE_KEY = 'impCropStyle';
+    function saveImpCropStyle() {
+      try { localStorage.setItem(CROP_STYLE_KEY, JSON.stringify(_impCropStyle())); } catch (e) { }
+    }
+    function restoreImpCropStyle() {
+      let st = null;
+      try { st = JSON.parse(localStorage.getItem(CROP_STYLE_KEY) || 'null'); } catch (e) { }
+      if (!st) return;
+      const g = id => document.getElementById(id);
+      if (g('impCropShape') && st.shape) g('impCropShape').value = st.shape;
+      if (g('impCropGap') && st.gap != null) g('impCropGap').value = st.gap;
+      if (g('impCropLen') && st.len != null) g('impCropLen').value = st.len;
+      if (g('impCropTh') && st.th != null) g('impCropTh').value = st.th;
+      if (g('impCropCenter')) g('impCropCenter').checked = !!st.center;
+      // 📏 재단 치수는 아직 보완 중이라 '기억'에서 제외한다 — 앱을 켤 때는 항상 꺼진 상태.
+      // (세션 안에서 켜 두면 그대로 유지된다)
+    }
+    // 모양·수치를 바꾸면 즉시 기억하고 미리보기에 반영
+    function impCropStyleChanged() {
+      saveImpCropStyle();
+      if (typeof impSettingsChanged === 'function') impSettingsChanged();
+      if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled && typeof bleedSettingsChanged === 'function') bleedSettingsChanged();
     }
     let _impProfile = null;    // 불러온 프로파일의 정규화 옵션(그대로 재현). UI를 만지면 null(→UI 기준).
     let _loadingProfile = false;
@@ -828,8 +858,11 @@
         pg.node.set(PDFName.of('BleedBox'), out.context.obj([0, 0, w+2*b, h+2*b]));
         // ✂ 재단선 — 트림 모서리에, 블리드 영역 안에 딱 맞게 (간격+길이 = 블리드 폭)
         if (opts && opts.crop) {
-          const gap = Math.min(1, bleedMm * 0.25);
-          drawCropMarks(pg, b, b, w, h, { gap, len: Math.max(1, bleedMm - gap), th: 0.4 });
+          // 모양·굵기·중앙마크는 임포징과 같은 설정을 쓰고, 간격·길이만 블리드 폭 안에 맞춘다
+          const st = (typeof _impCropStyle === 'function' ? _impCropStyle() : null) || {};
+          const gap = Math.min(st.gap != null ? st.gap : 1, bleedMm * 0.25);
+          const len = Math.max(1, Math.min(st.len != null ? st.len : 3, bleedMm - gap));
+          drawCropMarks(pg, b, b, w, h, Object.assign({}, st, { gap, len }));
         }
         if (onProgress && (i & 7) === 0) onProgress(40 + Math.round(i / embedded.length * 60));
         await uiYield();
@@ -1977,6 +2010,7 @@
       _outlineMode = m === 'embed' ? 'embed' : 'outline';
       try { localStorage.setItem('outlineMode', _outlineMode); } catch (e) {}
       activateChip('olmode', _outlineMode);
+      syncOutlineModeBtns();
       // 안전화는 다운로드 시점 처리 — 적용 결과(화면)는 그대로 두고 다음 저장부터 반영된다.
       if (_outlineEnabled) { outlineOnMessage(); setTimeout(prewarmOptimizedOutput, 400); }
     }
@@ -1989,6 +2023,18 @@
       _outlineEnabled = !!on;
       const chk = document.getElementById('esOutline');
       if (chk && chk.checked !== _outlineEnabled) chk.checked = _outlineEnabled;
+      // 사이드바의 토글 버튼(체크박스 대신) 표시 동기
+      const ob = document.getElementById('olOnBtn');
+      if (ob) ob.classList.toggle('active', _outlineEnabled);
+      // 켜는 순간엔 안전하고 빠른 '폰트 완전 임베드'를 우선 선택한다(실무 기본).
+      // 곡선화는 용량이 수십~수백 배 늘고 되돌릴 수 없어 사용자가 직접 고르게 둔다.
+      // (여기서 setOutlineMode를 부르면 안내·프리웜이 두 번 돌므로 상태만 맞춘다)
+      if (_outlineEnabled && _outlineMode !== 'embed') {
+        _outlineMode = 'embed';
+        try { localStorage.setItem('outlineMode', 'embed'); } catch (e) { }
+        activateChip('olmode', 'embed');
+      }
+      syncOutlineModeBtns();
       // 메인 '처리 옵션' 줄의 미러 버튼도 즉시 동기 (상태·표시 불일치로 인한 오인 방지)
       const mb = document.getElementById('opt-outline');
       if (mb) mb.classList.toggle('active', _outlineEnabled);
@@ -1998,6 +2044,41 @@
       updateDownloadBtn();
       if (_outlineEnabled) { outlineOnMessage(); setTimeout(prewarmOptimizedOutput, 400); }
     }
+    // 평탄화 토글 — 값은 숨은 체크박스(outlineFlatten)가 계속 보관한다.
+    // (프리셋 저장·buildOutlinedBytes가 그 체크박스를 읽으므로 형태만 버튼으로 바꾼다)
+    function toggleOutlineFlatten() {
+      const chk = document.getElementById('outlineFlatten');
+      if (!chk) return;
+      chk.checked = !chk.checked;
+      syncOutlineFlattenBtn();
+      // 켤 때 경고 — 평탄화는 투명도를 없애려고 겹친 부분을 잘게 잘라 이미지로 굽는다.
+      // 실제 사례: 그라데이션 삼각형 표지 1장이 이미지 273개 · 그리기 2,583회 · 클립 1,509개로
+      // 쪼개져(콘텐츠 4.4MB) 아크로뱃에서 스크롤·확대가 눈에 띄게 느려졌다.
+      if (chk.checked) {
+        showSuccess('◇ 평탄화 켜짐 — 투명도(그림자·그라데이션·반투명)를 미리 합성해 PDF 1.4로 낮춥니다.'
+          + '\n⚠ 투명도가 많은 원고(그라데이션 표지 등)는 그 부분이 수백 개 이미지 조각으로 쪼개져'
+          + ' 파일이 무거워지고 Acrobat에서 스크롤·확대가 느려질 수 있습니다.'
+          + '\n구형 RIP·출력기에서 투명도가 깨질 때만 켜세요 — 요즘 디지털 인쇄기는 투명도를 그대로 처리합니다.');
+      }
+      if (_outlineEnabled) setTimeout(prewarmOptimizedOutput, 400);
+    }
+    // 안전화가 꺼져 있으면 방식 버튼(곡선화·폰트 완전 임베드)의 선택 색을 죽인다 —
+    // 꺼진 기능의 옵션이 노랗게 켜져 있어 "이미 적용 중"으로 오해되던 표시를 없앤다.
+    function syncOutlineModeBtns() {
+      document.querySelectorAll('[data-olmode]').forEach(b => {
+        b.classList.toggle('dim', !_outlineEnabled);
+        b.title = (_outlineEnabled ? '' : '먼저 [✒ 안전화 켜기]를 누르세요 — ')
+          + (b.dataset.olmode === 'embed'
+              ? '모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지'
+              : '모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가');
+      });
+    }
+    function syncOutlineFlattenBtn() {
+      const chk = document.getElementById('outlineFlatten');
+      const b = document.getElementById('olFlatBtn');
+      if (b && chk) b.classList.toggle('active', !!chk.checked);
+    }
+
     // bytes → gs 아웃라인 변환 바이트 (적용·다운로드 공용)
     // 속도 개선 2단: ① 같은 입력+옵션이면 캐시 재사용(적용→다운로드 재실행 0초)
     // ② gs는 단일 코어만 쓰므로, 페이지를 구간으로 쪼개 gs 여러 개를 병렬 실행 후 병합.
@@ -2171,20 +2252,70 @@
       const MM = 72 / 25.4;
       const gap = (s.gap != null ? s.gap : 1) * MM, len = (s.len != null ? s.len : 3) * MM;
       const th = s.th != null ? s.th : 0.4;
+      const shape = s.shape || 'corner';
       const black = PDFLib.rgb(0, 0, 0);
       const L = (x1, y1, x2, y2) =>
         page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: th, color: black });
-      [[x, y, -1, -1], [x + w, y, 1, -1], [x, y + h, -1, 1], [x + w, y + h, 1, 1]]
-        .forEach(([cx, cy, dx, dy]) => {
-          L(cx + dx * gap, cy, cx + dx * (gap + len), cy);   // 모서리 바깥 가로선
-          L(cx, cy + dy * gap, cx, cy + dy * (gap + len));   // 모서리 바깥 세로선
-        });
+      const corners = [[x, y, -1, -1], [x + w, y, 1, -1], [x, y + h, -1, 1], [x + w, y + h, 1, 1]];
+      // 옆 칸 마크와 부딪히지 않도록 방향별로 길이를 줄여 받을 수 있다(모양 '겹침 없음').
+      // ls = { l, r, b, t } (mm) — 없으면 공통 len.
+      const ls = s.lenSide || null;
+      const lenL = ls && ls.l != null ? ls.l * MM : len, lenR = ls && ls.r != null ? ls.r * MM : len;
+      const lenB = ls && ls.b != null ? ls.b * MM : len, lenT = ls && ls.t != null ? ls.t * MM : len;
+      // 어느 모양이든 '자르는 위치'는 트림 사각형으로 같다. 모서리 바깥에 갭을 두고 두 선을 긋되,
+      // 두 선은 서로 만나지 않는다(교차점이 없어 재단선이 겹쳐 두꺼워 보이지 않는다).
+      corners.forEach(([cx, cy, dx, dy]) => {
+        const lh = dx < 0 ? lenL : lenR;    // 가로선(좌·우 바깥)
+        const lv = dy < 0 ? lenB : lenT;    // 세로선(상·하 바깥)
+        if (lh > 0.2) L(cx + dx * gap, cy, cx + dx * (gap + lh), cy);
+        if (lv > 0.2) L(cx, cy + dy * gap, cx, cy + dy * (gap + lv));
+      });
       if (s.center) {   // 중앙 마크 — 각 변 중점 바깥 (접지·정합 확인용)
         L(x + w/2, y - gap, x + w/2, y - gap - len);           // 하
         L(x + w/2, y + h + gap, x + w/2, y + h + gap + len);   // 상
         L(x - gap, y + h/2, x - gap - len, y + h/2);           // 좌
         L(x + w + gap, y + h/2, x + w + gap + len, y + h/2);   // 우
       }
+    }
+
+    // ── 시트 한 장의 재단선 — 칸들을 함께 보고 그린다 ──────────────────────────
+    // 모양 'notouch'(겹침 없음): 이웃 칸과 마주 보는 쪽 마크를 사이 간격의 절반보다 짧게 잘라
+    // 두 칸의 마크가 만나거나 겹치지 않게 한다(거터가 좁을 때 선이 이어져 보이던 문제).
+    // 스타일은 opts.cropStyle(=생성 시점의 UI 값)을 쓴다 — 이래야 모양을 바꾸면 결과 캐시도 갈린다.
+    function drawTrimMarks(page, trims, opts) {
+      const list = (trims || []).filter(Boolean);
+      if (!list.length) return;
+      const st = (opts && opts.cropStyle) || (typeof _impCropStyle === 'function' ? _impCropStyle() : null) || {};
+      const MM = 72 / 25.4;
+      const baseLen = st.len != null ? st.len : 3, gapMm = st.gap != null ? st.gap : 1;
+      if ((st.shape || 'corner') !== 'notouch') {
+        list.forEach(t => drawCropMarks(page, t.x, t.y, t.w, t.h, st));
+        return;
+      }
+      let pw = 0, ph = 0;
+      try { const sz = page.getSize(); pw = sz.width; ph = sz.height; } catch (e) { }
+      // 이 칸의 한 방향으로 가장 가까운 '이웃 칸 모서리'까지의 거리(mm) — 없으면 시트 끝까지
+      const room = (t, dir) => {
+        let d;
+        if (dir === 'l') d = Math.min(t.x, ...list.filter(o => o !== t && o.x + o.w <= t.x + 0.5
+          && o.y < t.y + t.h && o.y + o.h > t.y).map(o => t.x - (o.x + o.w)));
+        else if (dir === 'r') d = Math.min(pw - (t.x + t.w), ...list.filter(o => o !== t && o.x >= t.x + t.w - 0.5
+          && o.y < t.y + t.h && o.y + o.h > t.y).map(o => o.x - (t.x + t.w)));
+        else if (dir === 'b') d = Math.min(t.y, ...list.filter(o => o !== t && o.y + o.h <= t.y + 0.5
+          && o.x < t.x + t.w && o.x + o.w > t.x).map(o => t.y - (o.y + o.h)));
+        else d = Math.min(ph - (t.y + t.h), ...list.filter(o => o !== t && o.y >= t.y + t.h - 0.5
+          && o.x < t.x + t.w && o.x + o.w > t.x).map(o => o.y - (t.y + t.h)));
+        return Math.max(0, d) / MM;
+      };
+      list.forEach(t => {
+        const fit = dir => {
+          const gapRoom = room(t, dir);
+          // 사이 간격의 절반에서 0.4mm 더 물러난다 → 마주 보는 마크와 최소 0.8mm 떨어진다
+          return Math.max(0, Math.min(baseLen, gapRoom / 2 - gapMm - 0.4));
+        };
+        drawCropMarks(page, t.x, t.y, t.w, t.h,
+          Object.assign({}, st, { lenSide: { l: fit('l'), r: fit('r'), b: fit('b'), t: fit('t') } }));
+      });
     }
 
     // 임포징 공용: 슬롯 내 배치 계산 (순수 함수 — 노드 단독 검증 가능)
@@ -2205,6 +2336,28 @@
     // 임포징 공용: 슬롯에 페이지 그리기(배치 + 블리드) → 트림 사각형 {x,y,w,h} 반환.
     // shiftX: 배치 후 수평 이동(중철 밀림보정). 모든 임포징 빌더가 이 함수로 그린다.
     function drawPlaced(page, emb, slot, opts, shiftX) {
+      // ── 원고가 이미 블리드를 품고 있으면(TrimBox < MediaBox) '트림'을 칸에 맞춘다 ──
+      // 예전엔 블리드까지 포함한 전체(MediaBox)를 칸에 우겨넣어, 재단 결과물이 칸보다
+      // 작아졌다(실측: 200pt 칸 → 170.9pt, −14.5%). 블리드는 칸 밖(거터)으로 넘겨야 맞다.
+      // 이 경우 임포징 '블리드(확대)'는 자동으로 건너뛴다 — 실제 블리드가 이미 있으므로.
+      // TrimBox가 없는 원고(디자인 단계에서 블리드를 그냥 포함시켜 저장한 파일)는 재단 위치를
+      // 알 수 없다 → 사용자가 '원고 블리드 포함(mm)'을 적어 주면 그만큼 안쪽을 트림으로 본다.
+      // 이걸 안 쓰면 재단선·치수가 블리드 바깥(=용지 크기)에 찍혀 재단 결과가 커진다.
+      let tr0 = emb.trim;
+      if (!tr0 && (opts.srcBleed || 0) > 0) {
+        const sb = opts.srcBleed * 72 / 25.4;
+        if (emb.w > 2 * sb + 1 && emb.h > 2 * sb + 1) tr0 = { l: sb, r: sb, b: sb, t: sb };
+      }
+      if (tr0) {
+        const tw = emb.w - tr0.l - tr0.r, th = emb.h - tr0.b - tr0.t;
+        if (tw > 0 && th > 0) {
+          const t2 = placeInSlot(slot, { w: tw, h: th }, opts.place);
+          const ds2 = t2.s;
+          const tx = t2.x + (shiftX || 0), ty = t2.y;
+          page.drawPage(emb.e, { x: tx - tr0.l * ds2, y: ty - tr0.b * ds2, xScale: ds2, yScale: ds2 });
+          return { x: tx, y: ty, w: t2.w, h: t2.h };
+        }
+      }
       const t = placeInSlot(slot, emb, opts.place);
       const x = t.x + (shiftX || 0), y = t.y;
       const bPt = (opts.bleed || 0) * 72 / 25.4;
@@ -2225,6 +2378,12 @@
         w: (emb.w - tr.l - tr.r) * ds, h: (emb.h - tr.b - tr.t) * ds,
       };
       return { x, y, w: t.w, h: t.h };
+    }
+    // 트림 사각형(pt) → 재단 후 크기 [가로mm, 세로mm] (0.1mm 반올림)
+    function trimSizeMm(t) {
+      if (!t) return null;
+      const MM = 72 / 25.4;
+      return [Math.round(t.w / MM * 10) / 10, Math.round(t.h / MM * 10) / 10];
     }
     // 임포징 공용: 여백(mm)을 pt 4방으로 해석. opts.margin이 숫자면 4방 동일, 객체면 {l,t,r,b}.
     function impMargins(opts) {
@@ -2249,7 +2408,7 @@
     // 있어야 인쇄되고(맑은 고딕 등), 없으면 ASCII만 남긴다(독립 도구 폴백).
     // opts.stackNum = true — 정합(cutstack) 앞면 각 묶음의 트림 바깥에 순서 번호 인쇄.
     async function prepSlug(out, opts) {
-      if (!opts.slug && !opts.stackNum) return null;
+      if (!opts.slug && !opts.stackNum && !opts.cropDims) return null;   // 재단 치수도 폰트가 필요하다
       const ascii = await out.embedFont(PDFLib.StandardFonts.Helvetica);
       let font = null, unicode = false;
       if (opts.slug && opts.slug.fontBytes) {
@@ -2279,6 +2438,64 @@
     }
     // 정합 묶음번호 — 흰 원+검정 번호를 트림 '왼쪽 바깥'에(공간 없으면 위 바깥 → 최후 트림 안 좌상단).
     // 재단선 밖이라 재단 시 잘려나감 — 전지 상태에서 묶음 겹치기 순서 안내용.
+    // ── 📏 재단 치수 표기 — 재단기에 그대로 입력할 수 있게 각 재단선 위치를 mm로 인쇄 ──
+    // 가로 위치(세로로 자르는 선)는 시트 아래쪽, 세로 위치(가로로 자르는 선)는 시트 왼쪽에.
+    // 기준점은 시트의 왼쪽·아래 모서리(0,0) — 재단기 눈금과 같은 기준이다.
+    // 같은 좌표가 여러 칸에서 겹치면 한 번만 찍는다(0.1mm 단위로 묶음).
+    function drawCutDims(page, trims, font, sw, sh, style) {
+      if (!font || !trims || !trims.length) return;
+      const MM = 72 / 25.4, size = 6.5, black = PDFLib.rgb(0, 0, 0);
+      const uniq = vals => [...new Set(vals.map(v => Math.round(v / MM * 10) / 10))].sort((a, b) => a - b);
+      const xs = uniq(trims.flatMap(t => t ? [t.x, t.x + t.w] : []));
+      const ys = uniq(trims.flatMap(t => t ? [t.y, t.y + t.h] : []));
+      if (!xs.length || !ys.length) return;
+      const label = v => (Math.round(v * 10) / 10).toFixed(1);
+      // 재단기에 실제로 넣는 값 = '자를 때마다의 거리'다.
+      //   가장자리 → 첫 재단선까지, 그다음부터는 앞 재단선에서 다음 재단선까지(= 조각 크기·거터).
+      // 절대 좌표(19.6 · 445.4 …)는 재단기에 넣는 값이 아니라서 쓰지 않는다.
+      const stepsOf = (cuts, full) => {
+        const out2 = [];
+        let prev = 0;
+        cuts.forEach(c => { out2.push({ from: prev, to: c, d: c - prev }); prev = c; });
+        out2.push({ from: prev, to: full, d: full - prev });
+        return out2;
+      };
+      // 종이 맨 가장자리는 대부분의 프린터가 찍지 못한다(무여백 아님) → 치수는 **재단선 바로 옆**,
+      // 즉 배치 블록에 붙여 적는다. 그러면 재단선이 인쇄되는 한 치수도 반드시 함께 인쇄된다.
+      // (예전엔 시트 끝에 붙여 찍어 출력물에서 잘려 나갔다)
+      const st = style || (typeof _impCropStyle === 'function' ? _impCropStyle() : null) || {};
+      const markOut = ((st.gap != null ? st.gap : 1) + (st.len != null ? st.len : 3)) * MM;   // 마크가 나가는 거리
+      const SAFE = 4 * MM;                                    // 시트 가장자리에서 최소 이만큼 안쪽
+      const blockB = Math.min(...ys) * MM, blockL = Math.min(...xs) * MM;
+      const yPos = Math.max(SAFE, blockB - markOut - size - 1 * MM);   // 아래쪽 마크 바깥
+      // 가로 재단(세로선) — 아래쪽에 '자를 때마다의 거리'를 그 구간 가운데에 적는다
+      stepsOf(xs, Math.round(sw / MM * 10) / 10).forEach(seg => {
+        if (seg.d < 4) return;                                // 너무 좁은 구간은 글자가 안 들어간다
+        const txt = label(seg.d);
+        const w = font.widthOfTextAtSize(txt, size);
+        const cx = (seg.from + seg.to) / 2 * MM - w / 2;
+        page.drawText(txt, { x: Math.min(Math.max(SAFE, cx), sw - w - SAFE), y: yPos, size, font, color: black });
+      });
+      // 세로 재단(가로선) — 왼쪽에 90° 세워서
+      const xPos = Math.max(SAFE, blockL - markOut - size - 0.5 * MM);
+      stepsOf(ys, Math.round(sh / MM * 10) / 10).forEach(seg => {
+        if (seg.d < 4) return;
+        const txt = label(seg.d);
+        const w = font.widthOfTextAtSize(txt, size);
+        const cy = (seg.from + seg.to) / 2 * MM - w / 2;
+        page.drawText(txt, {
+          x: xPos, y: Math.min(Math.max(SAFE, cy), sh - w - SAFE),
+          size, font, color: black, rotate: PDFLib.degrees(90),
+        });
+      });
+      // 재단 결과 크기 한 줄 (칸마다 크기가 다르면 생략)
+      const sizes = trims.filter(Boolean).map(t => [Math.round(t.w / MM * 10) / 10, Math.round(t.h / MM * 10) / 10]);
+      if (sizes.length && sizes.every(s2 => s2[0] === sizes[0][0] && s2[1] === sizes[0][1])) {
+        const txt = `TRIM ${sizes[0][0].toFixed(1)} x ${sizes[0][1].toFixed(1)} mm`;
+        const w = font.widthOfTextAtSize(txt, size);
+        page.drawText(txt, { x: Math.max(SAFE, sw - w - SAFE), y: Math.max(SAFE, yPos - size - 2), size, font, color: black });
+      }
+    }
     function drawStackNum(page, t, num, font, sw, sh) {
       if (!t || !font) return;
       const MM = 72 / 25.4, r = 2 * MM;
@@ -2352,11 +2569,14 @@
       };
       const slug = await prepSlug(out, opts);
       let sheetsMade = 0;
+      let firstTrim = null;      // 재단 후 실제 크기 안내용 (첫 칸의 트림)
       for (let i = 0; i < sheets.length; i++) {
         const { front, back } = sheets[i];
         const fp = out.addPage([sw, sh]);
         const ft = front.map((lg, s) => drawInto(fp, lg, s));
-        if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
+        if (!firstTrim) firstTrim = ft.find(Boolean) || null;
+        if (opts.crop) drawTrimMarks(fp, ft, opts);
+        if (opts.cropDims && slug) drawCutDims(fp, ft, slug.ascii, sw, sh, opts.cropStyle);
         if (opts.stackNum && opts.order === 'cutstack' && slug)
           ft.forEach((t, s) => drawStackNum(fp, t, s + 1, slug.ascii, sw, sh));
         drawSlug(fp, slug, i + 1, sheets.length, 'F');
@@ -2364,7 +2584,8 @@
         if (back) {
           const bp = out.addPage([sw, sh]);
           const bt = back.map((lg, s) => drawInto(bp, lg, s));
-          if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+          if (opts.crop) drawTrimMarks(bp, bt, opts);
+          if (opts.cropDims && slug) drawCutDims(bp, bt, slug.ascii, sw, sh, opts.cropStyle);
           drawSlug(bp, slug, i + 1, sheets.length, 'B');
           sheetsMade++;
         }
@@ -2373,7 +2594,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
-      return { bytes, n0, per, across, down, sides, sheets: sheetsMade };
+      return { bytes, n0, per, across, down, sides, sheets: sheetsMade, trimMm: trimSizeMm(firstTrim) };
     }
 
     async function buildBookletBytes(srcBytes, opts, onProgress) {
@@ -2414,8 +2635,9 @@
         const bp = out.addPage([sw, sh]);
         const bt = [drawSlot(bp, back[0], 'L', shift), drawSlot(bp, back[1], 'R', shift)];
         if (opts.crop) {   // 재단선은 페이지 위에 그린다
-          ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
-          bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+          drawTrimMarks(fp, ft, opts);
+          drawTrimMarks(bp, bt, opts);
+          if (opts.cropDims && slug) { drawCutDims(fp, ft, slug.ascii, sw, sh, opts.cropStyle); drawCutDims(bp, bt, slug.ascii, sw, sh, opts.cropStyle); }
         }
         drawSlug(fp, slug, i + 1, order.length, 'F');
         drawSlug(bp, slug, i + 1, order.length, 'B');
@@ -2488,11 +2710,13 @@
         const { front, back } = sheets[i];
         const fp = out.addPage([sw, sh]);
         const ft = front.map((pg, s) => drawCell(fp, pg, s));
-        if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
+        if (opts.crop) drawTrimMarks(fp, ft, opts);
+        if (opts.cropDims && slug) drawCutDims(fp, ft, slug.ascii, sw, sh, opts.cropStyle);
         if (back) {
           const bp = out.addPage([sw, sh]);
           const bt = back.map((pg, s) => drawCell(bp, pg, s));
-          if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+          if (opts.crop) drawTrimMarks(bp, bt, opts);
+          if (opts.cropDims && slug) drawCutDims(bp, bt, slug.ascii, sw, sh, opts.cropStyle);
         }
         if (onProgress) onProgress(40 + Math.round((i + 1) / sheets.length * 55));
         await uiYield();
@@ -2521,7 +2745,7 @@
       const wantC = opts.cols | 0, wantR = opts.rows | 0;
 
       const slug = await prepSlug(out, opts);
-      let total = 0, firstGrid = null;
+      let total = 0, firstGrid = null, firstTrim = null;
       for (let pi = 0; pi < n0; pi++) {
         const { e, w, h } = embedded[pi];
         // 방향 후보별 배치 계산 → 자동: 벌 수 최대 / 지정: 원고 스케일 최대
@@ -2554,11 +2778,21 @@
         const ox = (sw - blockW) / 2, oy = (sh - blockH) / 2;
         const page = out.addPage([sw, sh]);
         const trims = [];
+        const per = cols * rows;
+        // 벌 수가 많으면(작은 라벨 등) 한 시트 조립만으로도 수천 번 그리게 된다 —
+        // 중간중간 양보하지 않으면 화면이 몇 초씩 멈춘 것처럼 보이고, 심하면 렌더러가 죽는다.
+        let drawn = 0;
         for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
           const slot = { x: ox + c * (cellW + gutterPt), y: oy + (rows - 1 - r) * (cellH + gutterPt), w: cellW, h: cellH };
           trims.push(drawPlaced(page, embedded[pi], slot, opts));
+          if ((++drawn & 127) === 0) {
+            if (onProgress) onProgress(40 + Math.round((pi + drawn / per) / n0 * 55));
+            await uiYield();
+          }
         }
-        if (opts.crop) trims.forEach(t => drawCropMarks(page, t.x, t.y, t.w, t.h));
+        if (!firstTrim) firstTrim = trims.find(Boolean) || null;
+        if (opts.crop) { drawTrimMarks(page, trims, opts); await uiYield(); }
+        if (opts.cropDims && slug) drawCutDims(page, trims, slug.ascii, sw, sh, opts.cropStyle);
         drawSlug(page, slug, pi + 1, n0, 'F');
         total += cols * rows;
         if (!firstGrid) firstGrid = { cols, rows };
@@ -2567,7 +2801,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
-      return { bytes, n0, total, grid: firstGrid, sheets: n0 };
+      return { bytes, n0, total, grid: firstGrid, sheets: n0, trimMm: trimSizeMm(firstTrim) };
     }
 
     async function generateStepRepeat() {
@@ -2588,6 +2822,7 @@
         const outName = `${base}_반복${g.cols}x${g.rows}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 반복 배치(Step&Repeat) 생성 완료 — 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${g.cols * g.rows}벌 (총 ${res.total}벌)`
+          + (res.trimMm ? `\n재단 후 크기: ${res.trimMm[0]} × ${res.trimMm[1]} mm` + impTrimHint(opts) : '')
           + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
         if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
           msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃과 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
@@ -2653,12 +2888,14 @@
         const { front, back } = sheets[i];
         const fp = out.addPage([sw, sh]);
         const ft = [drawCell(fp, front[0], 'L'), drawCell(fp, front[1], 'R')];
-        if (opts.crop) ft.forEach(t => { if (t) drawCropMarks(fp, t.x, t.y, t.w, t.h); });
+        if (opts.crop) drawTrimMarks(fp, ft, opts);
+        if (opts.cropDims && slug) drawCutDims(fp, ft, slug.ascii, sw, sh, opts.cropStyle);
         drawSlug(fp, slug, i + 1, sheets.length, 'F');
         if (back) {   // 단면은 뒷면 없음
           const bp = out.addPage([sw, sh]);
           const bt = [drawCell(bp, back[0], 'L'), drawCell(bp, back[1], 'R')];
-          if (opts.crop) bt.forEach(t => { if (t) drawCropMarks(bp, t.x, t.y, t.w, t.h); });
+          if (opts.crop) drawTrimMarks(bp, bt, opts);
+          if (opts.cropDims && slug) drawCutDims(bp, bt, slug.ascii, sw, sh, opts.cropStyle);
           drawSlug(bp, slug, i + 1, sheets.length, 'B');
         }
         if (onProgress) onProgress(45 + Math.round((i + 1) / sheets.length * 50));
@@ -2730,7 +2967,7 @@
           await saveBookletCoverSplit(res, base, opts);
           return;
         }
-        const outName = `${base}_중철북클릿.pdf`;
+        const outName = `${base}_중철.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 북클릿(중철) 생성 완료 — 시트 ${res.sheets}장 (양면 ${res.n / 2}면, 본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
           + `\n인쇄 설정: 가로 용지 · 양면 인쇄 · '짧은 쪽 넘김'(short-edge) → 반 접어 중철 제본`
@@ -2855,7 +3092,8 @@
         across: p.ax || 1, down: p.dn || 1,
         sheet: (p.sw && p.sh) ? [p.sw * MM, p.sh * MM] : null,
         margin, hgap: p.hg || 0, vgap: p.vg || 0, gutter: p.hg || 0,
-        bleed: p.bl || 0, crop: !!p.cr, frame: !!p.fr,
+        bleed: p.bl || 0, srcBleed: p.sb || 0, crop: !!p.cr, cropDims: !!p.cd, frame: !!p.fr,
+        cropStyle: (typeof _impCropStyle === 'function' ? _impCropStyle() : null),
         creep: 0, binding: p.bd === 'right' ? 'right' : 'left',
         order: p.m === 'cutstack' ? 'cutstack' : 'sequential',
         cols: p.ax || 0, rows: p.dn || 0,
@@ -2903,6 +3141,7 @@
         if (g('impMargin')) g('impMargin').value = p.mg != null ? p.mg : (p.ml || 0);
         if (g('bkGutter'))  g('bkGutter').value  = p.hg || 0;
         if (g('impBleed'))  g('impBleed').value  = p.bl || 0;
+        if (g('impSrcBleed')) g('impSrcBleed').value = p.sb || 0;
         if (g('impCrop'))   g('impCrop').checked = !!p.cr;
         if (g('impFrame'))  g('impFrame').checked = !!p.fr;
         if (g('impSlug'))   g('impSlug').checked = !!p.sl;
@@ -2928,6 +3167,8 @@
       const p = list[idx];
       applyProfileToUI(p);
       _impProfile = profileToOpts(p);          // 정확 재현 (UI를 만지기 전까지)
+      // 이름칸을 불러온 프리셋 이름으로 채운다 — 수정한 뒤 '💾 저장'을 누르면 그 프리셋에 덮어쓴다
+      const nmEl = document.getElementById('impProfName'); if (nmEl) nmEl.value = p.n;
       // 프리셋은 '옵션만' 세팅한다 — 시트 재조립(편집 적용)은 사용자가
       // '📖 임포징 PDF 생성'이나 메인 '✔ 적용'을 눌러야 진행(자동 미리보기·재조립 안 함).
       _impEnabled = true;
@@ -3005,7 +3246,9 @@
       const mg = parseFloat(g('impMargin')?.value) || 0; if (mg) s.mg = mg;
       const hg = parseFloat(g('bkGutter')?.value) || 0; if (hg) { s.hg = hg; s.vg = hg; }
       const bl = parseFloat(g('impBleed')?.value) || 0; if (bl) s.bl = bl;
+      const sbl = parseFloat(g('impSrcBleed')?.value) || 0; if (sbl) s.sb = sbl;
       if (g('impCrop')?.checked) s.cr = 1;
+      if (g('impCropDims')?.checked) s.cd = 1;
       if (g('impFrame')?.checked) s.fr = 1;
       if (g('impSlug')?.checked) s.sl = 1;
       if (_impMode === 'cutstack' && g('impStackNum')?.checked) s.sn = 1;
@@ -3023,11 +3266,16 @@
       if (!name) { showError('저장할 프리셋 이름을 입력하세요.'); return; }
       const list = loadImpProfiles();
       const at = list.findIndex(p => p.n === name);
+      // 지금 선택(불러오거나 수정 중)인 프리셋과 같은 이름이면 = '수정 저장' → 확인 없이 덮어쓴다.
+      // 다른 프리셋의 이름을 적어 넣은 경우에만 실수 방지 확인을 띄운다.
+      const selEl = document.getElementById('impProfile');
+      const curIdx = selEl && selEl.value !== '' ? parseInt(selEl.value) : -1;
+      const editingCurrent = at >= 0 && at === curIdx;
       if (at >= 0) {
-        if (!confirm(`같은 이름의 프리셋 '${name}'이(가) 있습니다 — 현재 설정으로 덮어쓸까요?`)) return;
+        if (!editingCurrent && !confirm(`같은 이름의 프리셋 '${name}'이(가) 있습니다 — 현재 설정으로 덮어쓸까요?`)) return;
         list[at] = captureImpSeed(name);
         saveImpProfiles(list); populateImpProfiles(String(at));
-        showSuccess(`프리셋 '${name}'을(를) 현재 설정으로 수정(덮어쓰기)했습니다.`);
+        showSuccess(`프리셋 '${name}'을(를) 현재 설정으로 덮어썼습니다.`);
       } else {
         list.push(captureImpSeed(name));
         saveImpProfiles(list); populateImpProfiles(String(list.length - 1));
@@ -3240,7 +3488,10 @@
         gutter: parseFloat(g('bkGutter')?.value) || 0,
         margin: parseFloat(g('impMargin')?.value) || 0,
         bleed:  parseFloat(g('impBleed')?.value) || 0,
+        srcBleed: parseFloat(g('impSrcBleed')?.value) || 0,   // 원고에 이미 포함된 재단여백(TrimBox 없을 때)
         crop:   !!g('impCrop')?.checked,
+        cropStyle: _impCropStyle(),              // ✂ 모양·간격·길이·굵기 — 옵션에 넣어야 캐시가 갈린다
+        cropDims: !!g('impCropDims')?.checked,   // 📏 재단 치수 표기
         frame:  !!g('impFrame')?.checked,
         slug:   currentSlugOpt(),
         stackNum: !!g('impStackNum')?.checked,
@@ -3277,7 +3528,7 @@
       const mode = (o && o.mode) || _impMode;
       const cell = (a, b) => Math.max(1, parseInt(a) || 1) * Math.max(1, parseInt(b) || 1);
       if (mode === 'booklet')  return '중철2up';
-      if (mode === 'dup')      return '복제2up';
+      if (mode === 'dup')      return '2up';
       if (mode === 'repeat') {
         const c = parseInt(o && o.cols) || 0, r = parseInt(o && o.rows) || 0;
         return (c > 0 && r > 0) ? `반복${c * r}up` : '반복배치';
@@ -3309,6 +3560,15 @@
       const bytes = (await build(srcBytes, opts, onProgress)).bytes;
       _impBytesCache = sig ? { sig, bytes } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
       return bytes;
+    }
+    // 재단 후 크기가 원고와 달라지는 흔한 원인을 짚어 주는 한 줄
+    function impTrimHint(opts) {
+      const bits = [];
+      if (opts && opts.place && opts.place.scale === 'fit')
+        bits.push("'칸 맞춤' 배치라 칸 크기에 맞춰 확대·축소됩니다 — 원고 크기 그대로 뽑으려면 배치를 '100% 원본'으로");
+      if (opts && !(opts.srcBleed > 0))
+        bits.push('원고에 재단여백이 이미 포함돼 있는데 크기가 커 보이면, 임포징의 <원고 블리드>에 그 폭(mm)을 넣으세요');
+      return bits.length ? '\n※ ' + bits.join('\n※ ') : '';
     }
     // 적용 완료 메시지용 임포징 설명
     function impositionNoteOf() {
@@ -6469,11 +6729,16 @@
         return b;
       };
       actions.append(
+        mkBtn('ch-edit', '✏ 편집', '이 챕터만 편집 — 크기·조판·여백·머리글이 이 파일에만 적용됩니다', false,
+              () => editChapter(name)),
         mkBtn('', '▲', '이 챕터를 위로 이동', no <= 1,     () => moveChapterRun(startIdx, -1)),
         mkBtn('', '▼', '이 챕터를 아래로 이동', no >= total, () => moveChapterRun(startIdx, +1)),
         mkBtn('ch-del', '🗑', '이 챕터 전체 삭제', total <= 1, () => deleteChapterAt(startIdx)),
       );
       d.append(badge, nm, pg, actions);
+      // 제목 우클릭 → 챕터 메뉴(편집·선택·방향·이동·삭제)
+      d.oncontextmenu = (e) => openChapterMenu(e, name, startIdx, no, total);
+      d.title = '우클릭하면 이 챕터에 할 수 있는 작업이 나옵니다';
       return d;
     }
 
@@ -7218,6 +7483,12 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       document.querySelectorAll('[data-ebbind]').forEach(b =>
         b.classList.toggle('active', b.dataset.ebbind === v));
     }
+    // 워터마크·재단선 — 체크박스 대신 토글 버튼(한 줄 2개)
+    function toggleEbOpt(key) {
+      _ebOpts[key] = !_ebOpts[key];
+      const b = document.getElementById(key === 'wm' ? 'ebWmBtn' : 'ebTrimBtn');
+      if (b) b.classList.toggle('active', !!_ebOpts[key]);
+    }
     // 예상 용량 — 실측 계수(A4 기준 페이지당 대략 dpi²에 비례)로 어림한다. 과장 없이 보수적으로.
     function updateEbNote() {
       const el = document.getElementById('ebNote');
@@ -7413,7 +7684,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     }
 
     // 파일 쓰기와 분리 — 저장 다이얼로그 없이 바이트만 만들 수 있어야 검증이 가능하다.
-    function buildWorkFileBytes() {
+    // 분석 캐시(analysis)를 함께 담아, 다시 열 때 페이지 렌더를 한 장도 하지 않는다.
+    async function buildWorkFileBytes() {
+        const tabNow = (activeTabId && tabs.has(activeTabId)) ? tabs.get(activeTabId) : null;
+        let analysis = null;
+        try { analysis = tabNow ? await captureAnalysisCache(tabNow) : null; }
+        catch (e) { console.warn('분석 캐시 저장 실패(무시하고 계속):', e); analysis = null; }
+        return buildWorkFileBytesSync(analysis);
+    }
+
+    function buildWorkFileBytesSync(analysis) {
         const entries = [], blobs = [];
         entries.push({ k: 'pdf', name: workFileBaseName() + '.pdf' });
         blobs.push(new Uint8Array(originalPdfBytes));
@@ -7441,6 +7721,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           entries.push({ k: 'direct', name: 'direct.pdf' });
           blobs.push(new Uint8Array(directOutputBytes));
         }
+        // 💾 분석 캐시(페이지별 컬러 판정·크기 + 저해상 썸네일) — 열 때 재분석을 없앤다
+        if (analysis && analysis.blob) {
+          entries.push({ k: 'analysis', name: 'analysis.jpgs' });
+          blobs.push(new Uint8Array(analysis.blob));
+        }
 
         const manifest = {
           v: 1,
@@ -7465,6 +7750,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
             // (구버전 작업 파일은 적용본 없이 이 표식만 있다 → 그 경우에만 다시 적용해 복원)
             applied: !!processedPdfBytes,
             resultName: processedPdfBytes ? (processedFileName || '') : '',
+            // 분석 캐시 메타(버전·원본 길이·페이지별 판정) — 썸네일 바이트는 entries의 k:'analysis'
+            analysis: (analysis && analysis.meta) || null,
           },
           entries,
         };
@@ -7472,23 +7759,39 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         return { bytes: packWorkFile(manifest, blobs), manifest, edits: edits.length };
     }
 
+    // 반환값: 저장했으면 true, 취소·실패면 false ('저장하고 닫기'가 이 값으로 닫을지 판단한다)
     async function saveWorkFile() {
-      if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요 — 저장할 작업이 없습니다.'); return; }
+      if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요 — 저장할 작업이 없습니다.'); return false; }
       try {
-        const { bytes, manifest, edits } = buildWorkFileBytes();
+        const { bytes, manifest, edits } = await buildWorkFileBytes();
         const saved = await window.electronAPI.saveFile({
           defaultName: workFileBaseName() + '.pdfw', buffer: bytes, kind: 'pdfw',
         });
-        if (!saved) return;
+        if (!saved) return false;                    // 저장 다이얼로그 취소
         const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
         showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(bytes.length / 1048576).toFixed(1)}MB`
           + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
           + (manifest.state.applied ? ' · 적용본 포함' : '')
-          + `\n이 파일을 더블클릭하면 지금 이 상태 그대로 다시 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
+          + (manifest.state.analysis ? ' · 분석 포함' : '')
+          + `\n이 파일을 더블클릭하면 지금 이 상태 그대로, 분석 없이 바로 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
           + (others ? `\n※ 다른 탭 ${others}개는 담기지 않습니다 — 탭마다 따로 저장하세요.` : ''));
+        return true;
       } catch (e) {
         showError('작업 저장 실패: ' + (e && e.message ? e.message : e));
+        return false;
       }
+    }
+
+    // ── 창 닫기 전 '💼 작업 저장하고 닫기' (main의 닫기 확인에서 요청) ────────
+    // 저장이 끝나야 창이 닫히도록 결과(true/false)를 main에 회신한다.
+    // 취소하거나 실패하면 창은 그대로 열려 있다 — 작업을 잃지 않는 쪽이 우선.
+    if (window.electronAPI.onSaveWorkAndQuit) {
+      window.electronAPI.onSaveWorkAndQuit(async () => {
+        let ok = false;
+        try { ok = await saveWorkFile(); }
+        catch (e) { console.error('닫기 전 작업 저장 실패:', e); ok = false; }
+        try { window.electronAPI.sendSaveWorkResult(!!ok); } catch (e) { }
+      });
     }
 
     // 작업 파일로 여는 중 표시 — 분석 완료 후 뜨는 '지난 작업 기록' 안내를 억제한다
@@ -7515,7 +7818,12 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         // 반드시 새 탭으로 — startLoad를 쓰면 열려 있는 문서에 '챕터'로 합쳐져 버린다
         const tab = createTab(fake);
         activateTab(tab.id);
-        await analyzePDF(fake, tab);
+        // 💾 분석 캐시가 들어 있으면 페이지 렌더 없이 그대로 되씌운다(analyzePDF 안에서 검증).
+        const anaAt = (manifest.entries || []).findIndex(e => e.k === 'analysis');
+        const anaMeta = (manifest.state && manifest.state.analysis) || null;
+        const cache = (anaMeta && anaAt >= 0 && blobs[anaAt]) ? { meta: anaMeta, blob: blobs[anaAt] } : null;
+        await analyzePDF(fake, tab, cache ? { cache } : undefined);
+        const usedCache = !!tab.analysisFromCache;   // 캐시가 실제로 쓰였는지는 analyzePDF가 판단
         if (!isTabReady(tab)) { hideLoading(); showError('작업 파일의 PDF를 분석하지 못했습니다.'); return false; }
 
         const st = manifest.state || {};
@@ -7556,7 +7864,10 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         hideLoading();
         const restoreMsg = `💼 작업을 이어서 엽니다 — ${describeWorkFile(manifest)}`
           + `\n설정·페이지 순서·회전·선택${editN ? ' · 내부편집 ' + editN + '쪽' : ''}까지 저장 시점 그대로 복원했습니다.`
-          + (full ? '' : '\n※ 페이지 상태 일부는 복원하지 못했습니다(문서가 바뀐 것으로 보입니다) — 설정만 적용했습니다.');
+          + (full ? '' : '\n※ 페이지 상태 일부는 복원하지 못했습니다(문서가 바뀐 것으로 보입니다) — 설정만 적용했습니다.')
+          + (usedCache
+              ? '\n⚡ 저장된 분석 결과를 그대로 써서 재분석 없이 열었습니다.'
+              : '\n💡 이 작업 파일에는 분석 결과가 없어 다시 분석했습니다 — 지금 [💼 작업 저장]으로 덮어 저장하면 다음부터는 분석 없이 즉시 열립니다.');
         // 저장 당시 '✔ 적용'까지 마친 작업이면 여기서 같은 파이프라인을 그대로 다시 돌린다.
         // 작업 파일의 존재 이유가 "그 시점 그대로"인데, 설정만 복원하고 멈추면 사용자가
         // 매번 '✔ 적용'을 다시 눌러야 해서 새로 여는 것과 다를 바가 없었다.
@@ -7675,14 +7986,31 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       if (!p && !l) return null;
       return l > p ? 'landscape' : 'portrait';                     // 동수면 세로 기준
     }
-    // 방향이 다른 페이지 수 (안내·버튼 활성화용)
+    // 방향 기준은 '문서 전체'가 아니라 **챕터별**로 잡는다.
+    // 합본(여러 파일을 이어 붙인 문서)에서 전체 다수결로 돌리면, 원래 멀쩡하던 가로 원고
+    // 한 편이 통째로 왼쪽 90° 회전해 버린다(파일을 합쳤을 때만 나타나던 증상의 원인).
+    // 챕터가 없는 보통 문서는 그룹이 하나라 종전과 완전히 같게 동작한다.
+    function orientGroups(list) {
+      const groups = new Map();
+      (list || []).forEach(r => {
+        const k = r.chapter || '';
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(r);
+      });
+      return groups;
+    }
+    // 방향이 다른 페이지 수 (안내·버튼 활성화용) — 챕터별 기준으로 셈한다
     function countMisorientedPages() {
       const valid = pageResults.filter(Boolean);
-      const base = docMajorOrient(valid);
-      if (!base) return { base: null, n: 0, total: valid.length };
-      let n = 0;
-      valid.forEach(r => { const o = pageDisplayOrient(r); if (o && o !== 'square' && o !== base) n++; });
-      return { base, n, total: valid.length };
+      const groups = orientGroups(valid);
+      let n = 0, mainBase = null, mainSize = -1;
+      groups.forEach(list => {
+        const base = docMajorOrient(list);
+        if (!base) return;
+        if (list.length > mainSize) { mainSize = list.length; mainBase = base; }
+        list.forEach(r => { const o = pageDisplayOrient(r); if (o && o !== 'square' && o !== base) n++; });
+      });
+      return { base: mainBase, n, total: valid.length, groups: groups.size };
     }
 
     // 실제 적용 — silent=true면 안내 문구를 띄우지 않는다(문서 열 때 자동 실행용은 따로 안내)
@@ -7697,11 +8025,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       const d = (dir || autoOrientCfg().dir) === 'right' ? 90 : 270;   // 왼쪽 90° = 270(시계 기준)
       if (typeof pushHistory === 'function') pushHistory();
       const targets = [];
-      valid.forEach(r => {
-        const o = pageDisplayOrient(r);
-        if (!o || o === 'square' || o === base) return;
-        r.rotation = ((((r.rotation || 0) + d) % 360) + 360) % 360;
-        targets.push(r.pageNum);
+      // 챕터별 기준으로만 돌린다 — 합본에서 다른 원고를 통째로 눕히지 않기 위함
+      orientGroups(valid).forEach(list => {
+        const gBase = docMajorOrient(list);
+        if (!gBase) return;
+        list.forEach(r => {
+          const o = pageDisplayOrient(r);
+          if (!o || o === 'square' || o === gBase) return;
+          r.rotation = ((((r.rotation || 0) + d) % 360) + 360) % 360;
+          targets.push(r.pageNum);
+        });
       });
       if (typeof renderAllPages === 'function') renderAllPages(pageResults);
       if (typeof renderSidebar === 'function') renderSidebar(pageResults);
@@ -7710,6 +8043,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       if (typeof updateDownloadBtn === 'function') updateDownloadBtn();
       if (typeof updateUndoBtn === 'function') updateUndoBtn();
       if (typeof syncAutoOrientUI === 'function') syncAutoOrientUI();
+      targets.sort((a, b) => a - b);
       const dirName = d === 270 ? '왼쪽' : '오른쪽';
       if (!silent) {
         showSuccess(`📐 ${targets.length}쪽을 ${dirName} 90° 회전해 ${base === 'portrait' ? '세로' : '가로'}로 맞췄습니다`
@@ -7725,6 +8059,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       try {
         // 작업 파일(.pdfw)로 복원하는 중이면 저장된 회전을 존중한다 — 끼어들지 않는다
         if (typeof _openingWorkFile !== 'undefined' && _openingWorkFile) return;
+        // 기존 문서에 파일을 이어붙이는 중에도 끼어들지 않는다 — 사용자가 돌려 둔 페이지가
+        // 이미 구워져 있어, 자동 맞춤이 그것을 되돌려 버린다(회전이 사라진 것처럼 보였다)
+        if (typeof _appendingDocs !== 'undefined' && _appendingDocs) return;
         const cfg = autoOrientCfg();
         const info = countMisorientedPages();
         syncAutoOrientUI();

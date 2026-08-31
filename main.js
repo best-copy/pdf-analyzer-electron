@@ -17,6 +17,7 @@ app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 // 렌더러가 보고하는 '저장 안 한 작업' 여부 + 강제 종료 플래그
 let unsavedWork = false;
 let forceClose  = false;
+let savingBeforeQuit = false;   // '작업 저장하고 닫기' 진행 중 (중복 요청·중복 다이얼로그 방지)
 
 // ── 외부 실행 인자로 받은 문서 열기 (목차 검증기 '이어서 작업' 연동) ─────────
 // 실행: "PDF 분석기.exe 문서.pdf" — 시작 시 인자의 문서를 바로 연다.
@@ -534,17 +535,47 @@ function createWindow() {
   win.on('close', (e) => {
     if (forceClose || !unsavedWork) return;
     e.preventDefault();
+    // 닫기 = 잃어버리기가 아니라 '저장하고 닫기'를 고를 수 있어야 한다.
+    // 저장은 렌더러의 작업 파일(.pdfw) 저장을 그대로 쓴다 — 원본 PDF와 지금 상태가 한 파일에 담긴다.
     const choice = dialog.showMessageBoxSync(win, {
       type: 'warning',
-      buttons: ['취소', '저장 안 하고 종료'],
+      buttons: ['💼 작업 저장하고 닫기', '저장 안 하고 닫기', '취소'],
       defaultId: 0,
-      cancelId: 0,
+      cancelId: 2,
       noLink: true,
-      title: '종료 확인',
+      title: '닫기',
       message: '저장하지 않은 편집·적용 결과가 있습니다.',
-      detail: "저장하려면 '취소'를 누른 뒤 ‘📥 다운로드’로 저장하세요.\n그래도 종료하시겠습니까?",
+      detail: '작업 저장을 고르면 원본 PDF와 지금 상태를 담은 작업 파일(.pdfw)로 저장한 뒤 닫습니다.\n'
+            + '(그 파일을 열면 지금 이 상태 그대로 이어서 작업할 수 있습니다)',
     });
-    if (choice === 1) { forceClose = true; win.destroy(); }
+    if (choice === 1) { forceClose = true; win.destroy(); return; }
+    if (choice !== 0) return;                    // 취소 — 창 유지
+    if (savingBeforeQuit) return;                // 저장 진행 중 중복 요청 방지
+    savingBeforeQuit = true;
+    win.webContents.send('app:saveWorkAndQuit');
+  });
+
+  // ── 화면이 죽었을 때(흰 화면) 복구 ──────────────────────────────────────
+  // 렌더러가 메모리 부족 등으로 종료되면 창이 흰색으로 남아 아무 반응이 없다.
+  // 그대로 두면 원인도 모른 채 기다리게 되므로, 무슨 일인지 알리고 바로 다시 띄운다.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    const reason = (details && details.reason) || 'unknown';
+    if (reason === 'clean-exit' || reason === 'killed') return;
+    const oom = reason === 'oom' || reason === 'out-of-memory';
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'error',
+      buttons: ['화면 다시 열기', '닫기'],
+      defaultId: 0, cancelId: 1, noLink: true,
+      title: '화면이 응답하지 않습니다',
+      message: oom ? '메모리가 부족해 화면이 종료되었습니다.' : `화면이 예기치 않게 종료되었습니다 (${reason}).`,
+      detail: '다시 열면 처음 상태로 돌아갑니다 — 열려 있던 문서·편집 내용은 사라집니다.\n'
+            + '벌 수가 아주 많은 반복 배치나 대용량 원고에서 생길 수 있습니다.',
+    });
+    if (choice === 0) { forceClose = false; unsavedWork = false; win.reload(); }
+    else { forceClose = true; win.destroy(); }
+  });
+  win.webContents.on('unresponsive', () => {
+    console.warn('renderer unresponsive — 조립·렌더가 오래 걸리는 중일 수 있습니다.');
   });
 
   // ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) ────────────────────────────────────
@@ -645,6 +676,12 @@ app.on('will-quit', () => { try { licenseTunnel.stop(); } catch (e) {} }); // cl
 
 // 렌더러 → '저장 안 한 작업' 상태 보고
 ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });
+// 닫기 전 작업 저장 결과 — 저장했으면 그대로 닫고, 취소·실패면 창을 유지한다
+ipcMain.on('app:saveWorkResult', (event, ok) => {
+  savingBeforeQuit = false;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (ok && win && !win.isDestroyed()) { forceClose = true; win.destroy(); }
+});
 
 // 렌더러 → 앱 강제 새로고침(캐시 무시). 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 복구한다.
 // 새로고침하면 편집 내용이 사라지므로 '저장 안 한 작업' 플래그도 함께 해제한다.
@@ -771,7 +808,10 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
     // embed 모드는 -q를 빼고 gs 로그를 함께 반환 — "Loading font X (or substitute) from %rom%..."
     // 메시지로 '이 PC에도 없어 대체된 폰트'를 렌더러가 감지해 해당 페이지를 이미지화한다.
     execFile(findGhostscript(),
-      [...(embed ? [] : ['-q']), '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite',
+      // ⚠ -dAutoRotatePages=/None 필수 — pdfwrite의 기본값(/PageByPage)은 글자 방향을 보고
+      // 페이지를 제멋대로 돌린다. 실제로 이 옵션이 없어서 폰트 안전화를 거친 결과물의
+      // 페이지가 180° 뒤집혀 나왔다(빈 페이지처럼 글자가 없는 쪽에서 특히 자주).
+      [...(embed ? [] : ['-q']), '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite', '-dAutoRotatePages=/None',
        ...(embed
          ? ['-dEmbedAllFonts=true', '-dSubsetFonts=false', '-dCompressFonts=true', `-sFONTPATH=${winFonts}`]
          : ['-dNoOutputFonts']),
@@ -971,9 +1011,20 @@ ipcMain.handle('dialog:openFile', async (_e, opts) => {
 //  자동 번호가 안전하다. 사용자가 다이얼로그에서 이름을 다시 바꾸는 것은 자유.)
 let _lastSaveDir = null;   // 저장 다이얼로그 기본 폴더 — 문서를 연 폴더 → 이후엔 직전 저장 폴더
 // 렌더러가 문서를 열면 그 파일이 있던 폴더를 저장 기본 위치로 삼는다 ("해당 폴더에 저장")
+let _docDir = null;             // 지금 연 문서가 있던 폴더 — 작업 파일 저장의 기본 위치
 ipcMain.on('app:docDir', (_e, dir) => {
-  try { if (dir && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) _lastSaveDir = dir; } catch (e) {}
+  try {
+    if (dir && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) { _lastSaveDir = dir; _docDir = dir; }
+  } catch (e) {}
 });
+// 저장 다이얼로그의 기본 폴더 결정 (순수 함수 — 노드에서 단독 검증)
+//   작업 파일(.pdfw): 항상 '지금 연 문서가 있는 폴더'가 먼저. 다른 곳에 한 번 저장했다고
+//     작업 파일 위치가 따라 옮겨 다니면 원고와 작업 파일이 흩어진다.
+//   그 밖(PDF·시안 HTML): 문서 폴더 → 직전 저장 폴더 순.
+function pickSaveDir(kind, docDir, lastDir) {
+  if (kind === 'pdfw') return docDir || lastDir || null;
+  return lastDir || docDir || null;
+}
 function uniqueSavePath(dir, name) {
   const ext = path.extname(name);
   const stem = path.basename(name, ext);
@@ -987,7 +1038,7 @@ ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind }) => {
   const isWork = kind === 'pdfw';
   if (!licenseGate(isHtml ? '시안 HTML' : isWork ? '작업 파일' : 'PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
   // 기본 폴더 = 문서를 연 폴더(app:docDir) → 그 뒤로는 직전 저장 폴더, 둘 다 없으면 다운로드
-  let dir = _lastSaveDir;
+  let dir = pickSaveDir(kind, _docDir, _lastSaveDir);
   try { if (!dir || !fs.existsSync(dir)) dir = app.getPath('downloads'); } catch (e) { dir = null; }
   const defaultPath = dir ? uniqueSavePath(dir, defaultName) : defaultName;
   const { canceled, filePath } = await dialog.showSaveDialog({

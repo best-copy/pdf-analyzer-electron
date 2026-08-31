@@ -211,8 +211,8 @@
         </label>
       </div>
       <div class="sbp-body" id="sbPanelBody">
-      <div class="sbp-section">
-        <div class="sbp-title">📊 분석결과</div>
+      <div class="sbp-section" data-sbsec="stats">
+        <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span>📊 분석결과</div>
         <div class="sbp-stats">
           <div class="sbp-stat"><span class="sbp-num" id="sbTotal">0</span><span class="sbp-lbl">전체</span></div>
           <div class="sbp-stat"><span class="sbp-num sbp-c" id="sbColor">0</span><span class="sbp-lbl">컬러</span></div>
@@ -221,9 +221,9 @@
         </div>
         <div class="sbp-sel" id="sbSel">0개 선택됨</div>
       </div>
-      <div class="sbp-section">
-        <div class="sbp-title">⚙ 처리옵션</div>
-        <div class="sbp-opts">
+      <div class="sbp-section" data-sbsec="opts">
+        <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span>⚙ 처리옵션</div>
+        <div class="sbp-opts sbp-grid2">
           <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="sbp-opt active" id="sb-opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백 판정 페이지의 색공간을 DeviceGray로 통일 — 프린터 컬러 과금 방지">🖨 잉크 정규화</button>
           <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
@@ -238,32 +238,31 @@
       </div>
       <!-- ✒ 폰트 출력 안전화 — 편집 작업공간에서 메인으로 옮김.
            적용·다운로드의 최종 단계(Ghostscript)라 편집 옵션이 아니라 처리 옵션이다. -->
-      <div class="sbp-section">
-        <div class="sbp-title"><span class="ic">✒</span> 폰트 출력 안전화 (출력소 전달용)</div>
+      <div class="sbp-section" data-sbsec="font">
+        <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span><span class="ic">✒</span> 폰트 출력 안전화</div>
         <div class="sbp-opts">
-          <label class="sbp-chk" title="켜면 '✔ 적용'·'⇩ 다운로드' 결과에 폰트 처리를 최종 단계로 반영합니다 (Ghostscript). 이미지는 무손실 유지">
-            <input type="checkbox" id="esOutline" onchange="setOutlineEnabled(this.checked)"> 폰트 출력 안전화 켜기
-          </label>
+          <input type="checkbox" id="esOutline" style="display:none;" onchange="setOutlineEnabled(this.checked)">
+          <input type="checkbox" id="outlineFlatten" style="display:none;">
+          <div class="sbp-row2">
+            <button class="sbp-opt" id="olOnBtn" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '✔ 적용'·'⇩ 다운로드' 결과에 폰트 처리를 최종 단계로 반영합니다 (Ghostscript). 이미지는 무손실 유지">✒ 안전화 켜기</button>
+            <button class="sbp-opt" id="olFlatBtn" onclick="toggleOutlineFlatten()" title="투명도 효과를 미리 합성해 PDF 1.4로 낮춥니다 — 구형 RIP에서 투명도가 깨질 때만 켜세요. ⚠ 그라데이션·반투명이 많은 원고는 그 부분이 수백 개 이미지 조각으로 쪼개져 파일이 무거워지고 Acrobat이 느려집니다">◇ 평탄화</button>
+          </div>
           <div class="sbp-row2">
             <button class="sbp-opt" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
-            <button class="sbp-opt active" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
+            <button class="sbp-opt active dim" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
           </div>
-          <label class="sbp-chk" title="투명도 효과를 미리 합성(PDF 1.4) — 구형 출력기(RIP)에서 투명도 사고 방지. 파일이 커질 수 있음">
-            <input type="checkbox" id="outlineFlatten" onchange="if(document.getElementById('esOutline').checked)setTimeout(prewarmOptimizedOutput,400)"> 평탄화 (투명도 미리 합성)
-          </label>
           <div class="sbp-note"><b>완전 임베드(권장)</b> = 폰트를 통째로 실음 — 빠르고(실측 40쪽 0.3초) 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(같은 문서 2.6초·용량 수십~수백 배↑·수정 불가)</div>
         </div>
       </div>
       <!-- 📖 E-book 시안 — 고객에게 보낼 확인용 단일 HTML (이미지 인라인, 자체 완결) -->
-      <div class="sbp-section">
-        <div class="sbp-title"><span class="ic">📖</span> E-book 시안 (고객 확인용)</div>
+      <div class="sbp-section" data-sbsec="ebook">
+        <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span><span class="ic">📖</span> E-book 시안</div>
         <div class="sbp-opts">
           <div class="sbp-row2">
             <button class="sbp-opt active" data-ebtarget="web" onclick="setEbTarget('web')" title="PC·노트북에서 보기 좋게 — 왼쪽 페이지 목록을 펼친 채로 시작합니다">💻 일반 웹용</button>
             <button class="sbp-opt" data-ebtarget="mobile" onclick="setEbTarget('mobile')" title="휴대폰에 맞춤 — 가로로 눕히면 두 쪽이 화면 가득, 세로로 세우면 한 쪽씩 크게 봅니다">📱 모바일용</button>
           </div>
           <div class="sbp-row2">
-            <button class="sbp-opt" data-ebdpi="100" onclick="setEbDpi(100)" title="용량이 가장 작습니다 — 페이지수가 많거나 메일 첨부용">가벼움</button>
             <button class="sbp-opt" data-ebdpi="150" onclick="setEbDpi(150)" title="실무 기본 — 글자·이미지 확인에 충분">표준</button>
             <button class="sbp-opt active" data-ebdpi="200" onclick="setEbDpi(200)" title="세밀한 글자까지 확대 확인 — 용량이 커집니다">고화질</button>
           </div>
@@ -271,15 +270,10 @@
             <button class="sbp-opt active" data-ebbind="left" onclick="setEbBind('left')" title="가로쓰기 책 — 왼쪽에서 오른쪽으로 넘김">좌철(가로쓰기)</button>
             <button class="sbp-opt" data-ebbind="right" onclick="setEbBind('right')" title="세로쓰기·일본식 — 오른쪽에서 왼쪽으로 넘김">우철(세로쓰기)</button>
           </div>
-          <label class="sbp-chk" title="'시안' 글자를 연하게 겹쳐 인쇄 원본으로 쓰이는 것을 막습니다">
-            <input type="checkbox" id="ebWm" onchange="_ebOpts.wm=this.checked"> 워터마크 '시안' 넣기
-          </label>
-          <label class="sbp-chk" title="임포징이 켜져 있으면 인쇄용 시트(앞뒷면)도 함께 담아 토글로 볼 수 있게 합니다">
-            <input type="checkbox" id="ebSheets" onchange="_ebOpts.sheets=this.checked"> 인쇄 대수(임포징 시트) 함께 담기
-          </label>
-          <label class="sbp-chk" title="블리드가 있을 때 '여기까지 잘립니다' 안내선을 표시합니다">
-            <input type="checkbox" id="ebTrim" onchange="_ebOpts.trim=this.checked"> 재단선 안내 표시
-          </label>
+          <div class="sbp-row2">
+            <button class="sbp-opt" id="ebWmBtn" onclick="toggleEbOpt('wm')" title="'시안' 글자를 연하게 겹쳐 인쇄 원본으로 쓰이는 것을 막습니다">💧 워터마크 '시안'</button>
+            <button class="sbp-opt" id="ebTrimBtn" onclick="toggleEbOpt('trim')" title="블리드가 있을 때 '여기까지 잘립니다' 안내선을 표시합니다">✂ 재단선 안내</button>
+          </div>
           <button class="sbp-btn sbp-apply" id="ebGenBtn" onclick="generateEbookProof()" title="현재 작업 결과를 고객이 브라우저에서 책처럼 넘겨볼 수 있는 HTML 파일 하나로 만듭니다">📖 E-book 시안 생성</button>
           <div class="sbp-note" id="ebNote">문서를 열면 예상 용량이 표시됩니다.</div>
         </div>
@@ -302,15 +296,19 @@
         <div id="remoteSrvErr" style="display:none; font-size:11.5px; color:#ff6b6b; margin-top:4px;"></div>
       </div>
       <!-- 💼 작업 파일 — 원본 PDF + 지금 상태를 한 파일로. 더블클릭하면 그 시점 그대로 열림 -->
-      <div class="sbp-section">
-        <div class="sbp-title"><span class="ic">💼</span> 작업 저장 · 이어서 열기</div>
+      <div class="sbp-section" data-sbsec="work">
+        <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span><span class="ic">💼</span> 작업 저장 · 열기</div>
         <div class="sbp-opts">
-          <button class="sbp-btn sbp-apply" id="workSaveBtn" onclick="saveWorkFile()" title="원본 PDF와 지금까지의 작업(설정·페이지 순서·회전·선택·내부편집·견적)을 .pdfw 파일 하나로 저장합니다">💼 작업 저장 (.pdfw)</button>
-          <button class="sbp-clear" id="workOpenBtn" onclick="pickWorkFile()" title="저장해 둔 .pdfw 작업 파일을 열어 그 시점 그대로 이어서 작업합니다">📂 작업 파일 열기</button>
+          <div class="sbp-row2">
+            <button class="sbp-clear" id="workOpenBtn" onclick="pickWorkFile()" title="저장해 둔 .pdfw 작업 파일을 열어 그 시점 그대로 이어서 작업합니다">📂 작업 열기</button>
+            <button class="sbp-btn sbp-apply" id="workSaveBtn" onclick="saveWorkFile()" title="원본 PDF와 지금까지의 작업(설정·페이지 순서·회전·선택·내부편집·견적)을 .pdfw 파일 하나로 저장합니다">💼 작업 저장</button>
+          </div>
           <div class="sbp-note" id="workNote">작업 파일 안에 원본 PDF가 들어 있어 다른 PC로 옮겨도 그대로 열립니다. 탐색기에서 바로 열려면 .pdfw를 우클릭 → 연결 프로그램에서 이 앱을 한 번 지정하세요.</div>
         </div>
       </div>
       </div><!-- /.sbp-body -->
+      <!-- 패널 세로 크기 조절 손잡이 — 아래로 끌면 옵션이 더 보이고, 위로 끌면 썸네일이 더 보인다 -->
+      <div id="sbPanelGrip" title="위아래로 끌어 패널 높이 조절 (더블클릭: 자동 높이)"></div>
     </div>
 
     <!-- 다중작업 파일 탭 + 파일 합치기 (처리옵션 패널 아래, 썸네일과 함께 스크롤) -->
@@ -427,8 +425,8 @@
           <button class="es-chip" id="impListToggleBtn" style="flex:1;" onclick="toggleImpProfileList()" title="전체 프리셋 목록을 펼쳐 순서변경·이름변경·삭제">▤ 목록 관리</button>
         </div>
         <div class="es-row" style="margin-top:6px;">
-          <input type="text" class="es-input" id="impProfName" placeholder="프리셋 이름" style="flex:1; min-width:0;" title="'💾 저장'에 쓸 이름 — 같은 이름이 있으면 덮어쓰기(수정 저장), 없으면 신규 추가">
-          <button class="es-chip" style="flex:0 0 auto;" onclick="impProfileSave()" title="현재 설정을 이 이름으로 저장 (같은 이름=덮어쓰기, 새 이름=신규)">💾 저장</button>
+          <input type="text" class="es-input" id="impProfName" placeholder="프리셋 이름" style="flex:1; min-width:0;" title="'💾 저장'에 쓸 이름 — 프리셋을 불러오면 그 이름이 자동으로 채워집니다(수정 후 저장 = 덮어쓰기). 이름을 바꾸면 새 프리셋으로 저장됩니다">
+          <button class="es-chip" style="flex:0 0 auto;" onclick="impProfileSave()" title="현재 설정을 이 이름으로 저장 — 불러온 프리셋을 고친 경우 그대로 덮어쓰고, 이름을 바꾸면 새 프리셋이 됩니다">💾 저장</button>
         </div>
         <!-- 동기화: JSON 내보내기/가져오기 (독립 임포징 도구 dist/임포징도구.html 과 프리셋 공유) -->
         <div class="es-row" style="margin-top:6px;">
@@ -512,8 +510,10 @@
       <div class="es-row" style="margin-top:6px;">
         <span class="es-label">여백(mm)</span>
         <input type="number" class="es-input" id="impMargin" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="시트 가장자리 여백 — 그리퍼(급지 물림)·재단 여유 공간" oninput="impSettingsChanged()">
-        <span class="es-label" style="flex:0 0 auto;" title="재단 밀림에 대비해 페이지를 재단선 밖으로 살짝 키워 채웁니다 (면당 mm, 보통 3). 거터를 블리드×2 이상으로 두세요">블리드</span>
-        <input type="number" class="es-input" id="impBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="면당 mm (보통 3)" oninput="impSettingsChanged()">
+        <span class="es-label" style="flex:0 0 auto;" title="원고에 재단여백이 없을 때, 재단 밀림에 대비해 페이지를 재단선 밖으로 살짝 키워 채웁니다 (면당 mm, 보통 3). 거터를 블리드×2 이상으로 두세요">블리드 채움</span>
+        <input type="number" class="es-input" id="impBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="면당 mm (보통 3) — 원고를 키워 칸을 채웁니다" oninput="impSettingsChanged()">
+        <span class="es-label" style="flex:0 0 auto;" title="원고가 이미 사방으로 재단여백을 품고 있을 때 그 폭(mm). 예: 297×420 인쇄물을 303×426으로 만들어 온 파일 → 3. 이 값을 넣어야 재단선·재단 치수가 실제 재단 크기(297×420)에 찍힙니다. PDF에 TrimBox가 들어 있으면 자동 인식되므로 0으로 두세요">원고 블리드</span>
+        <input type="number" class="es-input" id="impSrcBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="원고에 이미 포함된 재단여백 폭(mm) — 그만큼 안쪽이 실제 재단선" oninput="impSettingsChanged()">
       </div>
       <div class="es-row" style="margin-top:6px; gap:12px; flex-wrap:wrap;">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;">
@@ -537,15 +537,24 @@
       </div>
       <!-- 재단선 세부 옵션 (재단선 체크 시 표시) — 간격·길이·굵기·중앙마크 -->
       <div class="es-row" id="impCropOptRow" style="display:none; margin-top:6px; gap:8px; flex-wrap:wrap; align-items:center;">
+        <span class="es-label" style="flex:0 0 auto;" title="재단 위치 표기 모양 — 어느 모양이든 자르는 위치는 같습니다">모양</span>
+        <select class="es-select" id="impCropShape" style="flex:0 0 132px;" onchange="impCropStyleChanged()" title="재단선(트림 마크) 모양">
+          <option value="corner">┐ 모서리(기본)</option>
+          <option value="notouch">┐ 모서리(겹침 없음)</option>
+        </select>
         <span class="es-label" style="flex:0 0 auto;" title="트림 모서리에서 선까지 거리 (mm)">간격</span>
-        <input type="number" class="es-input" id="impCropGap" min="0" max="10" step="0.5" value="1" style="flex:0 0 52px;" oninput="impSettingsChanged()">
+        <input type="number" class="es-input" id="impCropGap" min="0" max="10" step="0.5" value="1" style="flex:0 0 52px;" oninput="impCropStyleChanged()">
         <span class="es-label" style="flex:0 0 auto;" title="재단선 길이 (mm)">길이</span>
-        <input type="number" class="es-input" id="impCropLen" min="1" max="15" step="0.5" value="3" style="flex:0 0 52px;" oninput="impSettingsChanged()">
+        <input type="number" class="es-input" id="impCropLen" min="1" max="15" step="0.5" value="3" style="flex:0 0 52px;" oninput="impCropStyleChanged()">
         <span class="es-label" style="flex:0 0 auto;" title="선 굵기 (pt)">굵기</span>
-        <input type="number" class="es-input" id="impCropTh" min="0.1" max="2" step="0.1" value="0.4" style="flex:0 0 52px;" oninput="impSettingsChanged()">
+        <input type="number" class="es-input" id="impCropTh" min="0.1" max="2" step="0.1" value="0.4" style="flex:0 0 52px;" oninput="impCropStyleChanged()">
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6;" title="각 변 중앙 바깥에도 마크 추가 — 접지·정합 위치 확인용">
-          <input type="checkbox" id="impCropCenter" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="impSettingsChanged()">
+          <input type="checkbox" id="impCropCenter" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="impCropStyleChanged()">
           중앙마크
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6;" title="시험 기능 — 자를 때마다의 거리(재단기 입력값)를 재단선 옆에 인쇄합니다. 표기 위치·형식을 다듬는 중이라 기본은 꺼짐이며, 앱을 다시 켜면 다시 꺼집니다">
+          <input type="checkbox" id="impCropDims" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="impCropStyleChanged()">
+          <span class="ic">📏</span> 재단 치수 <span style="color:#8e8e93; font-size:10.5px;">(시험)</span>
         </label>
       </div>
       <!-- 배치 크기/위치: 칸 맞춤(비율 유지) / 100% 원본 / 지정 배율, 위치 지정 -->
@@ -811,11 +820,11 @@
         <span class="es-label">폭(mm)</span>
         <input type="number" class="es-input" id="bleedGenMm" value="3" min="0.5" max="20" step="0.5" style="flex:0 0 64px;" title="재단여백 폭 — 실무 표준 3mm" oninput="bleedSettingsChanged()">
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="트림(원본 크기) 위치에 재단선을 그립니다 — 블리드 영역 안에 표시">
-          <input type="checkbox" id="bleedCrop" checked style="accent-color:#ffd60a; width:14px; height:14px;" onchange="bleedSettingsChanged()">
+          <input type="checkbox" id="bleedCrop" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="bleedSettingsChanged()">
           ✂ 재단선
         </label>
       </div>
-      <div class="es-hint">여백 없이 꽉 찬 원고용 — 가장자리를 거울로 늘여 재단여백을 만듭니다. <b>켜 두면 다른 작업을 해도 유지</b>되어 '✔ 적용'·'⇩ 다운로드' 결과에 항상 포함됩니다. 재단선은 블리드 폭만큼 트림 모서리에 표시됩니다.</div>
+      <div class="es-hint">재단선 모양·굵기는 <b>임포징의 재단선 설정</b>과 공유합니다(블리드 폭 안에 들어가도록 간격·길이만 자동 보정). 여백 없이 꽉 찬 원고용 — 가장자리를 거울로 늘여 재단여백을 만듭니다. <b>켜 두면 다른 작업을 해도 유지</b>되어 '✔ 적용'·'⇩ 다운로드' 결과에 항상 포함됩니다. 재단선은 블리드 폭만큼 트림 모서리에 표시됩니다.</div>
     </div>
 
     <!-- 📕 표지 만들기 — 선택 페이지 추출 / 무선제본 표지 스프레드 (책등 자동 계산) -->
@@ -1042,6 +1051,30 @@
       <div class="es-sub" id="esHfBody">
         <!-- 입력 대상: 아래 6칸이 어느 쪽 페이지의 내용인지 — 공통 / 홀수쪽 전용 / 짝수쪽 전용.
              전용 칸이 비어 있는 쪽 페이지는 공통 칸으로 폴백 인쇄된다. -->
+        <!-- 적용 범위: 어느 페이지에 머리글·바닥글을 찍을지 (전체 / N쪽부터 / 체크 선택) -->
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto;">적용 범위</span>
+          <div class="es-btngroup" style="flex:1;">
+            <button class="es-chip active" data-hfapply="all"  onclick="setHfApplyMode('all')"  title="문서 전체 페이지에 인쇄">전체</button>
+            <button class="es-chip"        data-hfapply="from" onclick="setHfApplyMode('from')" title="지정한 페이지부터 끝까지만 인쇄 — 표지·목차를 건너뛸 때">이 쪽부터</button>
+            <button class="es-chip"        data-hfapply="pick" onclick="setHfApplyMode('pick')" title="체크한 페이지·챕터에만 인쇄">체크 선택</button>
+          </div>
+        </div>
+        <div class="es-row" id="esHfFromRow" style="gap:6px; display:none;">
+          <span class="es-label" style="min-width:auto;">시작 쪽</span>
+          <input type="number" class="es-input" id="esHfApplyFrom" min="1" value="1" style="flex:0 0 60px;">
+          <button class="es-chip" style="flex:0 0 auto;" onclick="setHfApplyFromSelection()" title="썸네일에서 선택한 첫 페이지를 시작 쪽으로">☑ 선택 페이지부터</button>
+          <span class="es-hint" style="margin:0; flex:1;">이 쪽부터 끝까지 인쇄</span>
+        </div>
+        <div id="esHfPickBox" style="display:none;">
+          <div class="es-row" style="gap:6px;">
+            <button class="es-chip" style="flex:0 0 auto;" onclick="hfPickFromSelection()" title="썸네일에서 선택한 페이지를 그대로 체크합니다">☑ 선택 페이지 담기</button>
+            <button class="es-chip" style="flex:0 0 auto;" onclick="hfPickAll(true)">모두 체크</button>
+            <button class="es-chip" style="flex:0 0 auto;" onclick="hfPickAll(false)">모두 해제</button>
+          </div>
+          <div id="esHfPickList" class="es-hf-picks"></div>
+          <div class="es-hint" id="esHfPickInfo" style="margin-top:4px;"></div>
+        </div>
         <div class="es-row" style="gap:6px;">
           <span class="es-label" style="min-width:auto;">입력 대상</span>
           <div class="es-btngroup" style="flex:1;">
@@ -1079,8 +1112,9 @@
         <div class="es-row" style="gap:6px;">
           <span class="es-label" style="min-width:auto;" title="이 페이지가 {n}=1페이지 — 앞 페이지(표지·목차)는 번호가 생략됩니다. {total}도 본문 기준으로 줄어듭니다">번호 시작</span>
           <input type="number" class="es-input" id="esHfStart" min="1" value="1" style="flex:0 0 56px;">
-          <button class="es-chip" style="flex:0 0 auto;" onclick="setHfStartFromSelection()" title="썸네일에서 선택한 첫 페이지를 1페이지로 지정 (번호가 비어 있으면 바닥글 중앙에 {n}을 넣어 켭니다)">☑ 선택 페이지=1</button>
-          <span class="es-hint" style="margin:0; flex:1;">페이지 (앞은 번호 생략)</span>
+          <button class="es-chip" style="flex:0 0 auto;" onclick="setHfStartFromSelection()" title="썸네일에서 선택한 첫 페이지를 1페이지로 지정 (번호가 비어 있으면 바닥글 중앙에 {n}을 넣어 켭니다)">☑ 선택 페이지=시작</button>
+          <span class="es-label" style="min-width:auto;" title="그 시작 페이지에 찍힐 첫 번호 — 예: 5로 두면 5, 6, 7…로 매겨집니다(앞권에서 이어지는 책)">시작 번호</span>
+          <input type="number" class="es-input" id="esHfNumFrom" min="1" value="1" style="flex:0 0 56px;">
         </div>
         <div class="es-row" style="gap:6px;">
           <button class="es-chip" style="flex:0 0 auto;" onclick="toggleRomanForSelection()" title="썸네일에서 선택한 페이지에 로마자 번호(i, ii…)를 지정/해제합니다. 목차 페이지는 자동으로 로마자가 붙습니다. 번호가 비어 있으면 바닥글 중앙 {n}으로 켭니다">ⅰ 선택 페이지 로마자</button>
@@ -1371,6 +1405,7 @@
 
   <!-- 앱 스크립트: 순서 중요(전역 공유) — core(분석·탭·변환) → process(미리보기·다운로드·병합·견적) → ui(사이드바·편집패널·부트스트랩) -->
   <script src="./libs/qrcode.js"></script><!-- 모바일 연동 QR 표시 (vendored qrcode-generator) -->
+  <script src="./hf-core.js"></script><!-- 머리글·바닥글 문구 해석(워커와 공용) -->
   <script src="./app-core.js"></script>
   <script src="./app-process.js"></script>
   <script src="./app-ui.js"></script>

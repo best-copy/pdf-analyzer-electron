@@ -26,6 +26,78 @@
       if (p) p.classList.toggle('collapsed', !open);
     })();
 
+    // ── 사이드바 섹션 접기/펴기 — 패널이 화면을 다 먹어 그 아래 페이지 썸네일이
+    // 안 보이던 문제. 자주 쓰는 분석결과·처리옵션만 펼쳐 두고 나머지는 접어 둔다.
+    const SB_SEC_DEFAULT_OPEN = { stats: true, opts: true, font: false, ebook: false, work: false };
+    function sbSecState() {
+      try { return JSON.parse(localStorage.getItem('sbSecOpen') || 'null') || {}; } catch (e) { return {}; }
+    }
+    function toggleSbSection(titleEl) {
+      const sec = titleEl && titleEl.closest('.sbp-section');
+      if (!sec) return;
+      const on = !sec.classList.contains('collapsed');   // 지금 펼쳐져 있으면 접는다
+      sec.classList.toggle('collapsed', on);
+      const k = sec.dataset.sbsec;
+      if (k) {
+        const st = sbSecState(); st[k] = !on;
+        try { localStorage.setItem('sbSecOpen', JSON.stringify(st)); } catch (e) { }
+      }
+    }
+    // ── 패널 세로 크기 조절 — 아래 손잡이를 위아래로 끈다 ────────────────────
+    // 아래로 끌면 옵션이 더 보이고, 위로 끌면 그만큼 페이지 썸네일이 더 보인다.
+    // 값은 .sbp-body의 max-height로 걸고(내부 스크롤), 기억해 다음에도 그대로 쓴다.
+    const SBP_MIN_H = 90;
+    function applySbPanelHeight(px) {
+      const body = document.getElementById('sbPanelBody');
+      if (!body) return;
+      if (px == null) {                       // 자동(제한 없음)
+        body.style.maxHeight = '';
+        body.classList.remove('sbp-limited');
+        try { localStorage.removeItem('sbPanelH'); } catch (e) { }
+        return;
+      }
+      // 내용보다 크게 끌면 제한을 아예 풀어 '자동 높이'로 되돌린다(끝까지 내리면 원래대로).
+      if (px >= body.scrollHeight - 4) { applySbPanelHeight(null); return; }
+      const h = Math.round(Math.max(SBP_MIN_H, px));
+      body.style.maxHeight = h + 'px';
+      body.classList.add('sbp-limited');
+      try { localStorage.setItem('sbPanelH', String(h)); } catch (e) { }
+    }
+    (function initSbPanelResize() {
+      const grip = document.getElementById('sbPanelGrip');
+      const body = document.getElementById('sbPanelBody');
+      const panel = document.getElementById('sbPanel');
+      if (!grip || !body || !panel) return;
+      const saved = parseInt(localStorage.getItem('sbPanelH') || '', 10);
+      if (saved > 0) applySbPanelHeight(saved);
+      let sy = 0, sh = 0, on = false;
+      const move = e => { if (on) applySbPanelHeight(sh + (e.clientY - sy)); };
+      const up = () => {
+        if (!on) return;
+        on = false; panel.classList.remove('sbp-resizing');
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+      };
+      grip.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        on = true; sy = e.clientY; sh = body.getBoundingClientRect().height;
+        panel.classList.add('sbp-resizing');
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+      });
+      grip.addEventListener('dblclick', () => applySbPanelHeight(null));   // 자동 높이로 복귀
+    })();
+
+    function initSbSections() {
+      const st = sbSecState();
+      document.querySelectorAll('#sbPanelBody .sbp-section[data-sbsec]').forEach(sec => {
+        const k = sec.dataset.sbsec;
+        const open = (k in st) ? !!st[k] : !!SB_SEC_DEFAULT_OPEN[k];
+        sec.classList.toggle('collapsed', !open);
+      });
+    }
+    initSbSections();
+
     // 사이드바 '번호만 보기'(컴팩트) 토글 — 썸네일 숨기고 챕터·페이지 번호만 표시 (localStorage 저장)
     function toggleSbThumbs(compact) {
       sidebar.classList.toggle('sb-compact', !!compact);
@@ -440,7 +512,10 @@
         // ✒ 폰트 아웃라인화 옵션 복원 (방식 → 체크박스 순서 — 방식이 먼저여야 안내가 맞다)
         if (c.proc.outlineMode && typeof setOutlineMode === 'function') setOutlineMode(c.proc.outlineMode);
         if (typeof c.proc.outline === 'boolean' && typeof setOutlineEnabled === 'function') setOutlineEnabled(c.proc.outline);
-        if (typeof c.proc.outlineFlatten === 'boolean' && g('outlineFlatten')) g('outlineFlatten').checked = c.proc.outlineFlatten;
+        if (typeof c.proc.outlineFlatten === 'boolean' && g('outlineFlatten')) {
+          g('outlineFlatten').checked = c.proc.outlineFlatten;
+          if (typeof syncOutlineFlattenBtn === 'function') syncOutlineFlattenBtn();   // 토글 버튼 표시 동기
+        }
       }
       // ◲ 블리드 복원 (값 먼저, 켜기는 마지막 — setBleedEnabled가 안내 메시지를 띄우므로)
       if (c.bleed) {
@@ -861,6 +936,69 @@
       editSettings.scope.mode = mode;
       syncEditUI();
       scheduleLivePreview();
+    }
+
+    // ── 📄 챕터(파일)별 편집 — 챕터 제목의 '✏ 편집' 버튼·우클릭 메뉴에서 들어온다 ──
+    // 편집 모드로 들어가면서 적용 범위를 그 챕터로 맞춘다. 이후 크기·조판·여백·머리글 등
+    // 모든 편집 입력은 그 챕터에만 적용된다(editSettings.byChapter).
+    function editChapter(name) {
+      if (!name) return;
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
+      toggleEditSidebar(true);                       // 편집 모드 진입(editSettings 준비 포함)
+      if (!editSettings) return;
+      editSettings.scope.mode = 'chapter';
+      editSettings.scope.chapter = name;
+      populateChapterSel();
+      const sel = document.getElementById('esChapterSel');
+      if (sel) sel.value = name;
+      syncEditUI();
+      scheduleLivePreview();
+      const n = pageResults.filter(r => r && r.chapter === name).length;
+      showSuccess(`✏ '${name}' 챕터만 편집합니다 (${n}쪽).`
+        + `\n아래 크기·조판·여백·머리글/바닥글 설정이 이 챕터에만 적용됩니다.`
+        + ` 다른 챕터를 편집하려면 적용 범위의 챕터를 바꾸거나, 그 챕터 제목의 ✏ 편집을 누르세요.`);
+    }
+    // 이 챕터의 페이지를 모두 선택 (흑백변환·회전 등 페이지 단위 작업용)
+    function selectChapterPages(name) {
+      if (!name) return;
+      if (typeof deselectAll === 'function') deselectAll();
+      pageResults.filter(Boolean).forEach(r => {
+        if (r.chapter !== name || r.isBlank) return;
+        selectedPages.add(r.pageNum);
+        const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+        if (el) el.classList.add('selected');
+      });
+      if (typeof updateSelectedCount === 'function') updateSelectedCount();
+      showSuccess(`'${name}' 챕터 ${selectedPages.size}쪽을 선택했습니다 — ⬛ 흑백변환·회전·삭제 등에 그대로 쓰입니다.`);
+    }
+    // 챕터 제목 우클릭 메뉴 — 편집·선택·이동·삭제를 한자리에서
+    function openChapterMenu(e, name, startIdx, no, total) {
+      e.preventDefault(); e.stopPropagation();
+      document.querySelectorAll('.ch-menu').forEach(m => m.remove());
+      const m = document.createElement('div');
+      m.className = 'ch-menu';
+      const add = (label, sub, fn, disabled) => {
+        const b = document.createElement('button');
+        b.className = 'ch-menu-item';
+        b.innerHTML = `<span>${label}</span>${sub ? `<span class="ch-menu-sub">${sub}</span>` : ''}`;
+        b.disabled = !!disabled;
+        b.onclick = () => { m.remove(); fn(); };
+        m.appendChild(b);
+      };
+      add('✏ 이 챕터만 편집', '크기·조판·여백을 이 챕터에만', () => editChapter(name));
+      add('🎯 이 챕터 전체 선택', '흑백변환·회전·삭제용', () => selectChapterPages(name));
+      add('📐 이 챕터 방향 맞춤', '가로/세로 섞인 쪽 바로잡기',
+          () => { selectChapterPages(name); if (typeof autoOrientPages === 'function') autoOrientPages(); });
+      add('▲ 위로 이동', '', () => moveChapterRun(startIdx, -1), no <= 1);
+      add('▼ 아래로 이동', '', () => moveChapterRun(startIdx, +1), no >= total);
+      add('🗑 이 챕터 전체 삭제', '', () => deleteChapterAt(startIdx), total <= 1);
+      document.body.appendChild(m);
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const r = m.getBoundingClientRect();
+      m.style.left = Math.min(e.clientX, vw - r.width - 8) + 'px';
+      m.style.top = Math.min(e.clientY, vh - r.height - 8) + 'px';
+      const close = ev => { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('mousedown', close); } };
+      setTimeout(() => document.addEventListener('mousedown', close), 0);
     }
     function populateChapterSel() {
       const sel = document.getElementById('esChapterSel');
@@ -1327,7 +1465,7 @@
       document.getElementById('esBindAlt').checked = ls.bind.alt !== false;
       syncPaUI();   // 페이지별 개별 보정 (전역 editSettings.pageAdjust — 포커스와 무관)
       // 폰트 출력 안전화 방식 칩 (localStorage 전역 — es와 무관, 부트 복원 겸용)
-      if (typeof _outlineMode !== 'undefined') activateChip('olmode', _outlineMode);
+      if (typeof _outlineMode !== 'undefined') { activateChip('olmode', _outlineMode); if (typeof syncOutlineModeBtns === 'function') syncOutlineModeBtns(); }
       // 머리글/바닥글
       document.getElementById('esHfEnabled').checked = ls.hf.enabled;
       document.getElementById('esHfBody').classList.toggle('show', ls.hf.enabled);
@@ -1341,6 +1479,8 @@
       document.getElementById('esHfPnumStyle').value = ls.hf.pnumStyle != null ? ls.hf.pnumStyle : 1;
       const hfAltChk = document.getElementById('esHfAlt'); if (hfAltChk) hfAltChk.checked = !!ls.hf.alt;
       const hfStartEl = document.getElementById('esHfStart'); if (hfStartEl) hfStartEl.value = Math.max(1, (ls.hf.start | 0) || 1);
+      const hfNumFromEl = document.getElementById('esHfNumFrom'); if (hfNumFromEl) hfNumFromEl.value = Math.max(1, (ls.hf.numFrom | 0) || 1);
+      syncHfApplyUI();          // 적용 범위(전체·이 쪽부터·체크 선택) + 체크 목록
       const hfOffXEl = document.getElementById('esHfOffX'); if (hfOffXEl) hfOffXEl.value = ls.hf.offX || 0;
       const hfOffYEl = document.getElementById('esHfOffY'); if (hfOffYEl) hfOffYEl.value = ls.hf.offY || 0;
       if (typeof updateHfLayerInfo === 'function') updateHfLayerInfo();   // 💾 확정 문구 개수 표시
@@ -1456,6 +1596,8 @@
       const hfAlt = document.getElementById('esHfAlt');
       if (hfAlt) hfAlt.addEventListener('change', () => { if (editSettings) activeLayoutSettings().hf.alt = hfAlt.checked; scheduleLivePreview(); });
       onIn('esHfStart', el => { if (editSettings) activeLayoutSettings().hf.start = Math.max(1, parseInt(el.value) || 1); });
+      onIn('esHfNumFrom', el => { if (editSettings) activeLayoutSettings().hf.numFrom = Math.max(1, parseInt(el.value) || 1); });
+      onIn('esHfApplyFrom', el => { if (editSettings) { const hf = activeLayoutSettings().hf; hf.applyFrom = Math.max(1, parseInt(el.value) || 1); hf.applyMode = 'from'; } });
       onIn('esHfOffX', el => { if (editSettings) activeLayoutSettings().hf.offX = parseFloat(el.value) || 0; });
       onIn('esHfOffY', el => { if (editSettings) activeLayoutSettings().hf.offY = parseFloat(el.value) || 0; });
       const fontSel = document.getElementById('esHfFont');
@@ -1527,7 +1669,8 @@
     // 확정된 레이어들은 각자의 스타일(크기·색·글꼴·위치·교대·번호시작)대로 전부 겹쳐 인쇄된다.
     const HF_LAYER_FIELDS = ['hL', 'hC', 'hR', 'fL', 'fC', 'fR',
       'oHL', 'oHC', 'oHR', 'oFL', 'oFC', 'oFR', 'eHL', 'eHC', 'eHR', 'eFL', 'eFC', 'eFR'];
-    const HF_LAYER_STYLE = ['size', 'color', 'margin', 'font', 'pnumStyle', 'alt', 'start', 'offX', 'offY'];
+    const HF_LAYER_STYLE = ['size', 'color', 'margin', 'font', 'pnumStyle', 'alt', 'start', 'offX', 'offY',
+      'numFrom', 'applyMode', 'applyFrom', 'applyPages', 'applyChapters'];
     function commitHfLayer() {
       if (!editSettings) return;
       const hf = activeLayoutSettings().hf;
@@ -1608,6 +1751,120 @@
       scheduleLivePreview();
     }
 
+    // ── 🔖 머리글·바닥글 적용 범위 (전체 / 이 쪽부터 / 체크 선택) ──────────────
+    // 표지·목차에는 안 찍고 본문부터, 또는 특정 챕터(파일)에만 찍는 실무 요구를 처리한다.
+    // 체크 목록은 '챕터'와 '페이지' 두 층 — 챕터를 체크하면 그 챕터의 페이지가 모두 포함된다.
+    function setHfApplyMode(mode) {
+      if (!editSettings) return;
+      const hf = activeLayoutSettings().hf;
+      hf.applyMode = (mode === 'from' || mode === 'pick') ? mode : 'all';
+      if (hf.applyMode !== 'all' && !hf.enabled) hf.enabled = true;
+      syncEditUI();
+      scheduleLivePreview();
+    }
+    function setHfApplyFromSelection() {
+      if (!editSettings) return;
+      const sel = [...selectedPages].sort((a, b) => a - b);
+      if (!sel.length) { showError('먼저 썸네일에서 시작할 페이지를 선택하세요.'); return; }
+      const hf = activeLayoutSettings().hf;
+      hf.applyMode = 'from'; hf.applyFrom = sel[0];
+      syncEditUI();
+      showSuccess(`${sel[0]}쪽부터 끝까지만 머리글·바닥글이 인쇄됩니다 (앞 ${sel[0] - 1}쪽은 비워 둠).`);
+      scheduleLivePreview();
+    }
+    // 썸네일에서 고른 페이지를 체크 목록에 그대로 담는다
+    function hfPickFromSelection() {
+      if (!editSettings) return;
+      const sel = [...selectedPages].sort((a, b) => a - b);
+      if (!sel.length) { showError('먼저 썸네일에서 페이지를 선택하세요.'); return; }
+      const hf = activeLayoutSettings().hf;
+      hf.applyMode = 'pick'; hf.applyPages = sel; hf.applyChapters = [];
+      syncEditUI();
+      showSuccess(`선택한 ${sel.length}쪽에만 머리글·바닥글이 인쇄됩니다.`);
+      scheduleLivePreview();
+    }
+    function hfPickAll(on) {
+      if (!editSettings) return;
+      const hf = activeLayoutSettings().hf;
+      hf.applyMode = 'pick';
+      hf.applyPages = on ? pageResults.filter(Boolean).map(r => r.pageNum) : [];
+      hf.applyChapters = on ? hfChapterNames() : [];
+      syncEditUI();
+      scheduleLivePreview();
+    }
+    function hfChapterNames() {
+      const tab = tabs.get(activeTabId);
+      if (tab && tab.chapters && tab.chapters.length) return tab.chapters.map(c => c.name);
+      return [...new Set(pageResults.filter(Boolean).map(r => r.chapter).filter(Boolean))];
+    }
+    // 체크 하나 토글 — 페이지 또는 챕터
+    function hfTogglePick(kind, key, on) {
+      if (!editSettings) return;
+      const hf = activeLayoutSettings().hf;
+      hf.applyMode = 'pick';
+      if (kind === 'page') {
+        const n = +key;
+        const set = new Set(hf.applyPages || []);
+        if (on) set.add(n); else set.delete(n);
+        hf.applyPages = [...set].sort((a, b) => a - b);
+      } else {
+        const set = new Set(hf.applyChapters || []);
+        if (on) set.add(key); else set.delete(key);
+        hf.applyChapters = [...set];
+      }
+      renderHfPickList();
+      scheduleLivePreview();
+    }
+    // 체크 상태 → 실제 인쇄될 페이지 번호 집합 (챕터 체크는 그 챕터 페이지 전부)
+    function hfPickedPageSet(hf) {
+      const set = new Set((hf.applyPages || []).map(Number));
+      const chs = new Set(hf.applyChapters || []);
+      if (chs.size) pageResults.filter(Boolean).forEach(r => { if (r.chapter && chs.has(r.chapter)) set.add(r.pageNum); });
+      return set;
+    }
+    function syncHfApplyUI() {
+      const hf = editSettings ? activeLayoutSettings().hf : null;
+      const mode = (hf && hf.applyMode) || 'all';
+      activateChip('hfapply', mode);
+      const fromRow = document.getElementById('esHfFromRow');
+      if (fromRow) fromRow.style.display = mode === 'from' ? '' : 'none';
+      const fromEl = document.getElementById('esHfApplyFrom');
+      if (fromEl && hf) fromEl.value = Math.max(1, (hf.applyFrom | 0) || 1);
+      const box = document.getElementById('esHfPickBox');
+      if (box) box.style.display = mode === 'pick' ? '' : 'none';
+      if (mode === 'pick') renderHfPickList();
+    }
+    function renderHfPickList() {
+      const box = document.getElementById('esHfPickList');
+      if (!box || !editSettings) return;
+      const hf = activeLayoutSettings().hf;
+      const picked = new Set((hf.applyPages || []).map(Number));
+      const chs = new Set(hf.applyChapters || []);
+      const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+      const names = hfChapterNames();
+      let html = '';
+      if (names.length) {
+        html += '<div class="es-hf-picks-h">챕터(파일)</div>';
+        html += names.map(n => `<label class="es-hf-pick es-hf-pick-ch" title="${esc(n)}">`
+          + `<input type="checkbox" ${chs.has(n) ? 'checked' : ''} onchange="hfTogglePick('chapter', this.dataset.k, this.checked)" data-k="${esc(n)}">`
+          + `<span>${esc(n)}</span></label>`).join('');
+      }
+      html += '<div class="es-hf-picks-h">페이지</div>';
+      html += pageResults.filter(Boolean).map(r => {
+        const inCh = r.chapter && chs.has(r.chapter);
+        return `<label class="es-hf-pick${inCh ? ' via-chapter' : ''}" title="${inCh ? '챕터로 포함됨' : (r.pageNum + '쪽')}">`
+          + `<input type="checkbox" ${(picked.has(r.pageNum) || inCh) ? 'checked' : ''} ${inCh ? 'disabled' : ''}`
+          + ` onchange="hfTogglePick('page', this.dataset.k, this.checked)" data-k="${r.pageNum}">`
+          + `<span>${r.pageNum}</span></label>`;
+      }).join('');
+      box.innerHTML = html;
+      const info = document.getElementById('esHfPickInfo');
+      if (info) {
+        const n = hfPickedPageSet(hf).size;
+        info.textContent = n ? `${n}쪽에 인쇄됩니다` : '체크한 페이지가 없습니다 — 아무 쪽에도 인쇄되지 않습니다.';
+      }
+    }
+
     // 레이아웃 변환이 필요한 설정이 하나라도 있는지
     function hasActiveLayout(es) {
       return !!es && (
@@ -1667,6 +1924,56 @@
         if (mask.some(Boolean)) groups.push({ mask, es: editSettings });
       }
       return groups;
+    }
+
+    // ── 🔖 이 페이지에 실제로 찍힐 머리글·바닥글 (내부 편집기에서 확인·수정용) ──────
+    // 인쇄 경로(worker-assemble)와 같은 규칙을 쓰도록 해석은 hf-core.js 한 벌만 사용한다.
+    // pageNum: 표시 순서 기준 쪽번호. 반환 {apply, fields:{hL..fR}, over:bool} 또는 null.
+    function hfForPage(pageNum) {
+      if (!editSettings) return null;
+      const valid = pageResults.filter(Boolean);
+      const r = valid.find(x => x.pageNum === pageNum);
+      if (!r) return null;
+      // 그 페이지에 적용되는 설정 = 챕터별 개별 설정(있으면) 또는 전역
+      const byCh = (editSettings.byChapter || {});
+      const es = (r.chapter && byCh[r.chapter] && hasActiveLayout(byCh[r.chapter])) ? byCh[r.chapter] : editSettings;
+      const hf = es.hf;
+      if (!hf || !hf.enabled) return null;
+      // 챕터 체크를 페이지 번호로 펼친 사본으로 범위를 판단(워커에 넘길 때와 동일)
+      const set = new Set((hf.applyPages || []).map(Number));
+      const chs = new Set(hf.applyChapters || []);
+      if (chs.size) valid.forEach(x => { if (x.chapter && chs.has(x.chapter)) set.add(x.pageNum); });
+      const scoped = Object.assign({}, hf, { applyPages: [...set] });
+      const apply = hfInScope(scoped, pageNum);
+      const nctx = hfNumberCtx(hf, pageNum, valid.length);
+      const roman = (typeof computeRomanNums === 'function' ? (computeRomanNums() || [])[valid.indexOf(r)] : null) || null;
+      const ctx = { page: nctx.page, total: nctx.total, roman,
+                    date: new Date().toLocaleDateString('ko-KR'),
+                    filename: (typeof originalFileName === 'string' ? originalFileName : '') || '',
+                    pnumStyle: hf.pnumStyle || 0 };
+      const even = pageNum % 2 === 0;
+      // 홀·짝 전용 칸이 있으면 그것을, 없으면 공통 칸을 쓴다(워커와 같은 폴백)
+      const KEYS = ['hL', 'hC', 'hR', 'fL', 'fC', 'fR'];
+      const spKey = k => (even ? 'e' : 'o') + k[0].toUpperCase() + k[1];
+      const anySpecial = KEYS.some(k => (hf[spKey(k)] || '').trim());
+      const over = (hf.perPage && hf.perPage[pageNum]) || null;
+      const fields = {};
+      KEYS.forEach(k => {
+        if (over) { fields[k] = over[k] || ''; return; }
+        const tpl = anySpecial ? (hf[spKey(k)] || '') : (hf[k] || '');
+        fields[k] = resolveHF(tpl, ctx);
+      });
+      return { apply, fields, over: !!over };
+    }
+    // 편집기에서 수정한 '이 페이지의 문구'를 페이지별 덮어쓰기로 저장
+    function setHfPageOverride(pageNum, fields) {
+      if (!editSettings) return;
+      const hf = editSettings.hf;
+      if (!hf.perPage) hf.perPage = {};
+      const empty = !fields || ['hL', 'hC', 'hR', 'fL', 'fC', 'fR'].every(k => !(fields[k] || '').trim());
+      if (empty) delete hf.perPage[pageNum];
+      else hf.perPage[pageNum] = Object.assign({}, fields);
+      hf.enabled = true;
     }
 
     // ── 페이지 보정 측정: 기울기(투영 프로파일) + 콘텐츠 바운딩박스 (base PDF 저해상 렌더) ──
@@ -1874,6 +2181,20 @@
       let roman = computeRomanNums();
       if (roman && win) roman = roman.slice(win.from, win.to + 1);
       if (roman && !roman.some(Boolean)) roman = null;
+      // 적용 범위의 '챕터 체크'를 페이지 번호로 펼쳐 둔다 — 워커는 페이지 번호만 판단한다
+      const resolveScope = c => {
+        if (!c || c.applyMode !== 'pick') return c;
+        const set = new Set((c.applyPages || []).map(Number));
+        const chs = new Set(c.applyChapters || []);
+        if (chs.size) pageResults.filter(Boolean).forEach(r => { if (r.chapter && chs.has(r.chapter)) set.add(r.pageNum); });
+        return Object.assign({}, c, { applyPages: [...set].sort((a, b) => a - b) });
+      };
+      groups = groups.map(g => {
+        const hf = g.es && g.es.hf;
+        if (!hf || !hf.enabled) return g;
+        const hf2 = Object.assign({}, resolveScope(hf), { layers: (hf.layers || []).map(resolveScope) });
+        return { mask: g.mask, es: Object.assign({}, g.es, { hf: hf2 }) };
+      });
       // 개별 보정(pageAdjust)은 전역 저장이라 그룹 JSON에 안 잡힐 수 있어(챕터 그룹만 있을 때) 명시 포함
       const sig = (baseSig || '') + '::' + JSON.stringify(groups)
         + '::A' + JSON.stringify((editSettings && editSettings.pageAdjust) || {})
@@ -1885,7 +2206,10 @@
       const asciiRe = /^[\x20-\x7E]*$/;
       const hfAllFields = hf => [hf.hL, hf.hC, hf.hR, hf.fL, hf.fC, hf.fR,
         hf.oHL, hf.oHC, hf.oHR, hf.oFL, hf.oFC, hf.oFR,
-        hf.eHL, hf.eHC, hf.eHR, hf.eFL, hf.eFC, hf.eFR];
+        hf.eHL, hf.eHC, hf.eHR, hf.eFL, hf.eFC, hf.eFR,
+        // 편집기에서 그 쪽만 고친 문구도 포함 — 빠뜨리면 한글 덮어쓰기가 폰트 없이
+        // 이미지로 그려져(텍스트 아님) 검색·복사가 안 된다
+        ...Object.values(hf.perPage || {}).flatMap(o => o ? Object.values(o) : [])];
       const hfNeedsEmbed = hf => hfAllFields(hf).some(t =>
         t && t.trim() && (!asciiRe.test(t)
           || (/\{filename\}/.test(t) && !asciiRe.test(fileName))
@@ -2417,13 +2741,17 @@
             btn.onclick = (e) => { e.stopPropagation(); fn(); };
             return btn;
           };
+          const chName = r.chapter;
           acts.append(
+            mkSbBtn('sb-ch-edit', '✏', '이 챕터만 편집 — 크기·조판·여백이 이 파일에만 적용됩니다', false,
+                    () => editChapter(chName)),
             mkSbBtn('', '▲', '이 챕터를 위로 이동', no <= 1,        () => moveChapterRun(startIdx, -1)),
             mkSbBtn('', '▼', '이 챕터를 아래로 이동', no >= sbChTotal, () => moveChapterRun(startIdx, +1)),
             mkSbBtn('sb-ch-del', '🗑', '이 챕터 전체 삭제', sbChTotal <= 1, () => deleteChapterAt(startIdx)),
           );
           ch.append(b, nm, acts);
-          ch.title = r.chapter;
+          ch.oncontextmenu = (e) => openChapterMenu(e, chName, startIdx, no, sbChTotal);
+          ch.title = chName + ' — 우클릭: 챕터 메뉴';
           sidebar.appendChild(ch);
           sbPrevChapter = r.chapter;
         }
@@ -3135,4 +3463,10 @@
 
     // 💼 작업 파일 더블클릭 연결 상태를 버튼 라벨에 반영 (등록/해제 토글)
     (function initWorkAssocBtn() {
+    })();
+
+    // ✂ 재단선 설정(모양·간격·길이·굵기·중앙마크) 마지막 값 복원 — 문서와 무관한 작업 습관이라
+    // localStorage에 남겨 앱을 다시 켜도 그대로 쓴다. (저장은 impCropStyleChanged에서)
+    (function initImpCropStyle() {
+      if (typeof restoreImpCropStyle === 'function') restoreImpCropStyle();
     })();
