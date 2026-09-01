@@ -407,10 +407,17 @@
     <!-- 3-1. 임포징 (제본용 조판) — 중철(북클릿) / 정합(Cut&Stack) -->
     <div class="es-section" id="secImp">
       <label class="es-section-title" style="cursor:pointer; display:flex; align-items:center; gap:6px;" title="켜면 메인 '✔ 적용'·'⇩ 다운로드'·미리보기가 아래 임포징 시트를 최종 단계로 반영합니다">
-        <input type="checkbox" id="impEnabled" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="toggleImpEnabled(this.checked)">
+        <input type="checkbox" id="impEnabled" style="accent-color:#ffd60a; width:15px; height:15px;" onchange="toggleImpEnabled(this.checked, true)">
         <span class="ic">📖</span> 임포징 (제본 조판)
       </label>
       <div class="es-hint" style="margin:2px 0 8px;">체크하면 적용·다운로드 결과에 임포징이 포함됩니다. (아래 '📖 임포징 PDF 생성'을 누르면 자동으로 켜집니다)</div>
+      <!-- 합본(챕터)일 때만 표시 — 파일마다 독립 대수로 걸어 한 번에 인쇄하는 실무용 -->
+      <div class="es-row" id="impPerChapterWrap" style="display:none; margin:-4px 0 8px;">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="합본을 파일(챕터)마다 따로 임포징해 순서대로 이어붙입니다. 중철이면 파일마다 별도 소책자가 되어, 합본 한 번의 인쇄로 파일별 제본이 나옵니다. 양면일 때 파일 경계가 시트 앞면에서 시작하도록 필요하면 빈 시트를 한 장 넣습니다">
+          <input type="checkbox" id="impPerChapter" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="impPerChapterChanged()">
+          <span class="ic">📄</span> 챕터(파일)별로 따로 임포징
+        </label>
+      </div>
       <!-- 프리셋 (Quite Imposing sequences 71종 시드 + 사용자 추가) — 선택은 즉시 적용,
            저장·수정·목록·동기화는 '▸ 관리' 접이식(평소엔 드롭다운만 보여 패널을 가볍게) -->
       <div class="es-row">

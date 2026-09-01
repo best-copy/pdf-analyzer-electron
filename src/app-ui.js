@@ -446,7 +446,10 @@
     }
     // 편집이 하나도 없을 때 작업공간 오른쪽에 원본 페이지를 그대로 보여준다(빈 화면 방지).
     function showWorkspaceBasePreview() {
-      if (originalPdfBytes) renderProcessedPreview(originalPdfBytes, { live: true });
+      // source:'original' — 아직 편집이 없어 원본 PDF를 그대로 띄우는 경우.
+      // 이때는 출력↔원본 매핑이 1:1이 아닐 수 있어(빈 페이지 삽입·삭제) 챕터 집중이
+      // 원본 인덱스 기준으로 판단해야 한다. 이 표식이 없으면 전체 페이지가 그대로 보였다.
+      if (originalPdfBytes) renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
     }
 
     // ── 편집 설정 프리셋 (localStorage) ──────────────────────────────────────
@@ -466,6 +469,7 @@
       impFixed: 'v', impAlign: 'v', impOffX: 'v', impOffY: 'v',
       impCropGap: 'v', impCropLen: 'v', impCropTh: 'v',
       impCrop: 'c', impFrame: 'c', impSlug: 'c', impStackNum: 'c', impCropCenter: 'c', bkCoverSplit: 'c',
+      impPerChapter: 'c',
     };
     // 자주 쓰는 작업 세팅 재사용 — 처리 옵션(흑백·잉크정규화) + 임포징 설정까지 스냅샷
     function captureExtraPreset() {
@@ -506,8 +510,13 @@
     function applyExtraPreset(c) {
       const g = id => document.getElementById(id);
       if (c.proc) {
+        // 잉크 정규화는 '항상 기본 켬' — 저장된 설정이 꺼짐이어도 그걸로 끄지는 않는다.
+        // (끄고 저장해 둔 프로파일 하나 때문에 이후 작업이 계속 컬러로 과금되는 일을 막는다.
+        //  끄고 싶으면 그때그때 ⛭ 버튼으로 직접 끈다)
         ['bw', 'inkNorm'].forEach(k => {
-          if (typeof c.proc[k] === 'boolean' && !!processingOptions[k] !== c.proc[k]) toggleOption(k);
+          if (typeof c.proc[k] !== 'boolean') return;
+          if (k === 'inkNorm' && c.proc[k] === false) return;
+          if (!!processingOptions[k] !== c.proc[k]) toggleOption(k);
         });
         // ✒ 폰트 아웃라인화 옵션 복원 (방식 → 체크박스 순서 — 방식이 먼저여야 안내가 맞다)
         if (c.proc.outlineMode && typeof setOutlineMode === 'function') setOutlineMode(c.proc.outlineMode);
@@ -944,6 +953,9 @@
     function editChapter(name) {
       if (!name) return;
       if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 PDF를 열어 주세요.'); return; }
+      // 범위를 먼저 그 챕터로 잡고 나서 편집 모드로 들어간다 — 진입 렌더부터 그 챕터만 보이도록
+      // (반대 순서면 전체 문서를 한 번 그린 뒤 다시 좁혀져 깜빡였다)
+      if (editSettings) { editSettings.scope.mode = 'chapter'; editSettings.scope.chapter = name; }
       toggleEditSidebar(true);                       // 편집 모드 진입(editSettings 준비 포함)
       if (!editSettings) return;
       editSettings.scope.mode = 'chapter';
@@ -955,8 +967,9 @@
       scheduleLivePreview();
       const n = pageResults.filter(r => r && r.chapter === name).length;
       showSuccess(`✏ '${name}' 챕터만 편집합니다 (${n}쪽).`
-        + `\n아래 크기·조판·여백·머리글/바닥글 설정이 이 챕터에만 적용됩니다.`
-        + ` 다른 챕터를 편집하려면 적용 범위의 챕터를 바꾸거나, 그 챕터 제목의 ✏ 편집을 누르세요.`);
+        + `\n화면에도 이 챕터의 쪽만 표시되고, 아래 크기·조판·여백·머리글/바닥글 설정이 이 챕터에만 적용됩니다.`
+        + ` 다른 챕터를 편집하려면 적용 범위의 챕터를 바꾸고, 문서 전체를 보려면 적용 범위를 '전체'로 바꾸세요.`
+        + `\n'💾 저장하고 닫기'로 반영하면 다른 챕터는 손대지 않은 채 전체 문서가 그대로 저장됩니다.`);
     }
     // 이 챕터의 페이지를 모두 선택 (흑백변환·회전 등 페이지 단위 작업용)
     function selectChapterPages(name) {
@@ -1496,6 +1509,13 @@
       activateChip('wmmode', ls.wm.mode);
       updateScopeInfo();
       updateEsGroupBadges();
+      // 📄 '챕터별로 따로 임포징'은 합본(챕터 2개 이상)에서만 의미가 있다
+      const pcw = document.getElementById('impPerChapterWrap');
+      if (pcw) {
+        let multi = false;
+        try { multi = (typeof chapterRuns === 'function') && chapterRuns().length >= 2; } catch (e) {}
+        pcw.style.display = multi ? '' : 'none';
+      }
     }
 
     // 입력 위젯 → editSettings(또는 챕터별 개별 설정) 바인딩 (1회)
@@ -1904,6 +1924,67 @@
       }
       return editSettings;
     }
+    // ── 📄 챕터 집중(편집 모드) ────────────────────────────────────────────
+    // 챕터의 '✏ 편집'으로 들어오면 그 챕터만 편집한다 — 설정이 그 챕터에만 적용되는 것은
+    // 물론, 편집 모드 화면에도 그 챕터의 쪽만 보여 다른 파일을 건드릴 일이 없게 한다.
+    // (적용 결과 PDF에는 전체 문서가 그대로 들어간다 — 보기와 편집 대상만 좁히는 것)
+    function wsFocusChapter() {
+      if (!document.body.classList.contains('edit-fullscreen')) return '';
+      if (!editSettings || editSettings.scope.mode !== 'chapter') return '';
+      const ch = editSettings.scope.chapter || '';
+      if (!ch) return '';
+      const valid = pageResults.filter(Boolean);
+      const n = valid.filter(r => r.chapter === ch).length;
+      return (n > 0 && n < valid.length) ? ch : '';   // 챕터가 하나뿐이면 좁힐 것이 없다
+    }
+    // 집중 중인 챕터의 쪽번호 집합 (없으면 null)
+    function wsFocusPageNums() {
+      const ch = wsFocusChapter();
+      if (!ch) return null;
+      return new Set(pageResults.filter(Boolean).filter(r => r.chapter === ch).map(r => r.pageNum));
+    }
+    // 출력 PDF에서 그 챕터에 해당하는 페이지 번호(1-based) 집합.
+    // opts.source === 'original' 이면 화면에 띄운 바이트가 원본 PDF 그대로다 —
+    // 빈 페이지를 넣었거나 페이지를 지운 문서는 쪽 수가 달라 srcMap으로 맞출 수 없으므로
+    // 원본 페이지 인덱스(originalIdx)로 고른다. 그 밖에는 출력↔원본 매핑(srcMap)을 쓰고,
+    // 매핑이 1:1이 아닐 때(임포징 시트 등)는 좁히지 않는다 — 시트가 챕터 경계를 넘기 때문.
+    function wsFocusOutputSet(srcMap, total, opts) {
+      const ch = wsFocusChapter();
+      if (!ch) return null;
+      const valid = pageResults.filter(Boolean);
+      if (opts && opts.source === 'original') {
+        const only = new Set();
+        valid.forEach(r => {
+          if (r.chapter !== ch || r.isBlank || r.originalIdx == null) return;
+          if (r.originalIdx >= 0 && r.originalIdx < total) only.add(r.originalIdx + 1);
+        });
+        return only.size ? only : null;
+      }
+      // 임포징이 포함된 화면: 시트는 원본 쪽과 1:1이 아니다. 다만 '챕터별로 따로 임포징'이면
+      // 각 대수가 한 챕터에만 속하므로, 그 구간만 보여줄 수 있다.
+      if (typeof impIncluded === 'function' && impIncluded()) {
+        const ranges = (typeof impChapterRanges === 'function') ? impChapterRanges() : null;
+        const hit = ranges && ranges.find(r => r.name === ch);
+        if (!hit || ranges[ranges.length - 1].to !== total) return null;
+        const only = new Set();
+        for (let i = hit.from; i <= hit.to; i++) only.add(i);
+        return only.size ? only : null;
+      }
+      const pn = new Set(valid.filter(r => r.chapter === ch).map(r => r.pageNum));
+      if (!srcMap || srcMap.length !== total) return null;
+      const only = new Set();
+      srcMap.forEach((src, i) => { if (src && src.length && src.every(p => pn.has(p))) only.add(i + 1); });
+      return only.size ? only : null;
+    }
+    // 원본 바이트를 띄운 화면에서 셀에 붙일 쪽번호 — 원본 인덱스 → 문서 쪽번호
+    function wsOriginalPageNumMap() {
+      const m = new Map();
+      pageResults.filter(Boolean).forEach(r => {
+        if (!r.isBlank && r.originalIdx != null && !m.has(r.originalIdx + 1)) m.set(r.originalIdx + 1, r.pageNum);
+      });
+      return m;
+    }
+
     // 실제 적용 시 사용할 (마스크, 설정) 그룹 목록. 챕터별 개별 설정이 있는 챕터는 그 설정으로
     // 독립된 그룹이 되고, 나머지 페이지는 전역 설정 기준(적용 범위)으로 한 그룹이 된다.
     function computeLayoutGroups() {
@@ -2178,8 +2259,10 @@
     async function applyLayoutTransform(srcBytes, groups, baseSig, opts) {
       // 로마자 번호(목차·지정 페이지) — 문서 전체 기준으로 배정 후, 표본 미리보기면 창만큼 슬라이스
       const win = opts && opts.window;
+      const pick = opts && opts.pick;          // 표본 창이 연속 구간이 아닐 때(챕터 집중)의 인덱스 목록
       let roman = computeRomanNums();
-      if (roman && win) roman = roman.slice(win.from, win.to + 1);
+      if (roman && pick) roman = pick.map(i => roman[i]);
+      else if (roman && win) roman = roman.slice(win.from, win.to + 1);
       if (roman && !roman.some(Boolean)) roman = null;
       // 적용 범위의 '챕터 체크'를 페이지 번호로 펼쳐 둔다 — 워커는 페이지 번호만 판단한다
       const resolveScope = c => {
@@ -2442,7 +2525,14 @@
         if (myToken !== previewRenderToken) return;
 
         const cellsByIdx = new Map();          // i → { cell, canvas, sbCanvas, sbItem }
+        // 📄 챕터 집중: 그 챕터의 쪽만 화면에 만든다(쪽번호는 문서 기준 그대로 표시)
+        const focusCh = (typeof wsFocusChapter === 'function') ? wsFocusChapter() : '';
+        const focusOnly = focusCh ? wsFocusOutputSet(srcMap, total, opts) : null;
+        const shownTotal = focusOnly ? focusOnly.size : total;
+        // 원본 바이트 화면에서 집중 중이면 셀 번호를 문서 쪽번호로 보정(빈 페이지 삽입 대응)
+        const numMap = (focusOnly && opts.source === 'original') ? wsOriginalPageNumMap() : null;
         for (let i = 1; i <= total; i++) {
+          if (focusOnly && !focusOnly.has(i)) continue;
           const src = canSelect ? srcMap[i - 1] : null;
           const sig = sigOf(i);
           const cached = sig ? _pvPageCache.get(i) : null;
@@ -2479,7 +2569,8 @@
           const cell = document.createElement('div');
           cell.className = 'pv-cell' + (selected ? ' pv-selected' : '') + (hit ? '' : ' pv-pending');
           if (pagePtW > 0) { cell.dataset.pw = pagePtW; cell.dataset.ph = pagePtH; }
-          const num = document.createElement('div'); num.className = 'pv-num'; num.textContent = i;
+          const num = document.createElement('div'); num.className = 'pv-num';
+          num.textContent = (numMap && numMap.get(i)) || i;
           cell.append(canvas, num); mainFrag.appendChild(cell);
 
           // 사이드바 미니 썸네일 (메인과 동일 모양으로 다운스케일)
@@ -2492,7 +2583,7 @@
           sbItem.className = 'sb-item' + (isColor === true ? ' sb-color-page' : isColor === false ? ' sb-mono-page' : '')
                            + (selected ? ' sb-selected' : '');
           sbItem.appendChild(sc);
-          const sn = document.createElement('div'); sn.className = 'sb-num'; sn.textContent = i;
+          const sn = document.createElement('div'); sn.className = 'sb-num'; sn.textContent = (numMap && numMap.get(i)) || i;
           sbItem.appendChild(sn);
           sbFrag.appendChild(sbItem);
 
@@ -2533,17 +2624,24 @@
         sidebar.appendChild(sbFrag);
         _pvCells = pvCells;
         updateGeometryOverlays();   // 편집 모드면 여백·제본여백 가이드 오버레이 재부착
-        document.getElementById('previewCount').textContent = `(전체 ${total}페이지)` + (canSelect ? ' · 페이지를 클릭해 흑백 선택' : '');
-        note.textContent = '';
+        document.getElementById('previewCount').textContent = (focusOnly
+          ? `('${focusCh}' 챕터 ${shownTotal}쪽만 보는 중 · 전체 ${total}페이지)`
+          : `(전체 ${total}페이지)`) + (canSelect ? ' · 페이지를 클릭해 흑백 선택' : '');
+        note.textContent = focusOnly
+          ? `📄 '${focusCh}' 챕터만 편집 중 — 아래 설정은 이 챕터에만 적용되고 다른 챕터는 그대로 유지됩니다. 전체를 보려면 적용 범위를 '전체'로 바꾸세요.`
+          // 임포징 시트는 문서 전체를 걸쳐 만들어지므로 챕터만 볼 수 없다 — 방법을 알려 준다
+          : (focusCh && typeof impIncluded === 'function' && impIncluded())
+          ? `📄 '${focusCh}' 챕터를 편집 중이지만 임포징 대수는 문서 전체로 걸립니다. 임포징 항목의 '📄 챕터(파일)별로 따로 임포징'을 켜면 파일마다 독립 대수가 되고, 이 화면도 이 챕터의 대수만 빠르게 보여줍니다.`
+          : '';
         setAnalysisGridVisible(false);
         section.style.display = 'block';
         // 출력 결과 기준 컬러/흑백 통계 — 아직 안 그린 셀이 있으면 그려지는 대로 채워진다
-        setStatCounts(total, colorCount);
+        setStatCounts(shownTotal, colorCount);
         // 화면에 보이는 셀부터 그리고, 나머지는 배경에서 이어서 채운다(총 작업량·화질은 동일)
         if (cellsByIdx.size) {
           keepPdf = true;
           runLazyPreviewRender({
-            pdf, bytes, byteLen: bytes.length, myToken, pxW, cellsByIdx, cache: pvPageCacheNext, grid, note, total,
+            pdf, bytes, byteLen: bytes.length, myToken, pxW, cellsByIdx, cache: pvPageCacheNext, grid, note, total: shownTotal,
             onColor: (i, isColor) => {
               if (colorKnown.has(i)) return;
               colorKnown.add(i);

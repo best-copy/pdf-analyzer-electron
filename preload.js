@@ -53,8 +53,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
 
+  // 이미 저장한 적 있는 파일에 덮어쓰기 ('저장') — 저장 위치를 다시 묻지 않는다.
+  // 반환: 저장한 경로 / 거절되면 false
+  saveFileTo: async ({ filePath, buffer, kind }) => {
+    const ok = await ipcRenderer.invoke('dialog:confirmSavePath', { filePath, kind });
+    if (!ok) return false;
+    fs.writeFileSync(ok, Buffer.from(buffer));
+    return ok;
+  },
+
   // 닫기 전 '작업 저장하고 닫기' 요청 수신 / 결과 회신
-  onSaveWorkAndQuit: (cb) => ipcRenderer.on('app:saveWorkAndQuit', () => cb()),
+  // mode: 'save'(같은 파일에 덮어쓰기) | 'saveAs'(다른 이름으로 저장)
+  onSaveWorkAndQuit: (cb) => ipcRenderer.on('app:saveWorkAndQuit', (_e, mode) => cb(mode || 'save')),
   sendSaveWorkResult: (ok) => ipcRenderer.send('app:saveWorkResult', !!ok),
 
   // 방금 연 문서가 있던 폴더 — 저장 다이얼로그 기본 위치로 쓰인다
@@ -62,6 +72,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // '저장 안 한 작업' 상태를 main에 보고 (종료 전 확인용)
   setUnsaved: (dirty) => ipcRenderer.send('app:dirty', !!dirty),
+
+  // '문서가 열려 있음' + 지금 작업 파일 이름 — 편집이 없어도 닫기 전에 저장을 묻기 위함
+  setDocOpen: (open, name) => ipcRenderer.send('app:docopen', !!open, name || ''),
 
   // 앱 강제 새로고침 (캐시 무시) — 화면·상태가 꼬였을 때 재시작 없이 복구
   forceReload: () => ipcRenderer.invoke('app:forceReload'),

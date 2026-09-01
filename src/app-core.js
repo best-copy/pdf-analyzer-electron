@@ -64,9 +64,42 @@
     let _isDirty = false;
     function setDirty(v) {
       v = !!v;
-      if (v === _isDirty) return;
-      _isDirty = v;
-      try { window.electronAPI.setUnsaved && window.electronAPI.setUnsaved(v); } catch (e) {}
+      // 무엇이든 바뀌면 '작업 파일로 저장해 둔 상태'가 아니게 된다 — 다시 저장을 물어야 한다
+      if (v) {
+        const t = (activeTabId && tabs.get(activeTabId)) || null;
+        if (t) t.workSaved = false;
+      }
+      if (v !== _isDirty) {
+        _isDirty = v;
+        try { window.electronAPI.setUnsaved && window.electronAPI.setUnsaved(v); } catch (e) {}
+      }
+      reportDocState();
+    }
+    // 지금 상태를 작업 파일(.pdfw)로 저장해 두었음을 표시 — 닫을 때 다시 묻지 않는다.
+    // (작업 파일을 열었을 때도 같다 — 그 파일이 곧 지금 상태다)
+    function markWorkSaved() {
+      const t = (activeTabId && tabs.get(activeTabId)) || null;
+      if (t) t.workSaved = true;
+      setDirty(false);
+      reportDocState();
+    }
+
+    // 닫을 때 저장을 물어야 하는지 + 지금 작업 파일(.pdfw) 이름을 main에 보고.
+    // 물어야 하는 경우 = 분석이 끝난 문서가 있는데 그 상태를 아직 작업 파일로 저장하지 않았을 때.
+    // 편집을 하나도 안 했어도(불러오기만 했어도) 묻는다 — 그냥 꺼지면 분석 결과와 설정이 사라지므로.
+    // 반대로 '💼 작업 저장'을 눌러 저장해 둔 뒤라면 묻지 않는다(저장했는데 또 묻는 것은 잘못).
+    let _docStateSig = '';
+    function reportDocState() {
+      let open = false, name = '';
+      try {
+        open = [...tabs.values()].some(t => isTabReady(t) && !t.workSaved);
+        const t = (activeTabId && tabs.get(activeTabId)) || null;
+        if (t && t.workPath) name = String(t.workPath).split(/[\\/]/).pop();
+      } catch (e) {}
+      const sig = (open ? '1' : '0') + '|' + name;
+      if (sig === _docStateSig) return;
+      _docStateSig = sig;
+      try { window.electronAPI.setDocOpen && window.electronAPI.setDocOpen(open, name); } catch (e) {}
     }
 
     // 편집 설정 기본값 팩토리 — 탭마다 독립 보관
@@ -405,6 +438,7 @@
     // 사이드바(#tabBar)·메인(#mainTabBar) 두 곳에 동일한 탭 목록을 렌더링한다.
     // 사이드바를 닫아도 메인 쪽 탭 바는 항상 보이도록 동시에 표시한다.
     function renderTabBar() {
+      reportDocState();   // 탭 생성·전환·닫기·분석 완료가 모두 이 함수를 지난다
       tabBars.forEach(container => {
         container.innerHTML = '';
         tabs.forEach((state, id) => {
@@ -447,7 +481,7 @@
 
       const colorList = tab.pageResults.filter(p => p && p.isColor).map(p => p.pageNum);
       const grayList  = tab.pageResults.filter(p => p && !p.isColor).map(p => p.pageNum);
-      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}`;
+      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}` + rgbGrayWarningHtml();
 
       renderAllPages(tab.pageResults);
 
@@ -1296,6 +1330,95 @@
       });
     }
 
+    // ── ⚠ '화면은 흑백인데 색공간이 컬러'인 원고 감지 ─────────────────────────
+    // 눈으로도 분석기로도 흑백인데 프린터가 컬러로 세는 가장 흔한 원인: 회색을 DeviceGray가
+    // 아니라 RGB/CMYK 값으로 칠한 원고(예: '0.2 0.2 0.2 rg'). 기기는 RGB→CMYK 변환에서
+    // 미세한 C·M·Y를 만들어 그 페이지를 컬러로 과금한다. 잉크 정규화(기본 켬)로 적용해
+    // 저장하면 DeviceGray('0.2 g')로 바뀌어 해결되므로, 원본을 그대로 보내지 않도록 알린다.
+    // 원본 바이트의 Flate 스트림만 훑어 색 지정 연산자(rg/RG/k/K)를 찾는다 — 한 개만 찾으면 중단.
+    const _COLOROP_RE = /(?<![\w\/.#-])(?:[\d.]+\s+){3}(rg|RG)(?=[\s\]\/<>()]|$)|(?<![\w\/.#-])(?:[\d.]+\s+){4}(k|K)(?=[\s\]\/<>()]|$)/;
+    function docPaintsInColorSpace(bytes, budgetMs) {
+      try {
+        if (!bytes || !bytes.length || bytes.length > 96 * 1024 * 1024) return false;
+        if (typeof pako === 'undefined') return false;
+        const t0 = Date.now();
+        const dec = new TextDecoder('latin1');
+        const hay = dec.decode(bytes);
+        let i = 0, scanned = 0;
+        for (;;) {
+          const s = hay.indexOf('stream', i);
+          if (s < 0) break;
+          let b = s + 6;
+          if (hay.charCodeAt(b) === 13) b++;
+          if (hay.charCodeAt(b) === 10) b++;
+          const e = hay.indexOf('endstream', b);
+          if (e < 0) break;
+          i = e + 9;
+          if (e - b < 8 || e - b > 8 * 1024 * 1024) continue;
+          // 스트림 끝의 개행을 빼고 넘긴다 — 그대로 넣으면 pako가 통째로 실패한다(node zlib는 통과)
+          let e2 = e;
+          while (e2 > b && (bytes[e2 - 1] === 10 || bytes[e2 - 1] === 13)) e2--;
+          let out = null;
+          try { out = pako.inflate(bytes.subarray(b, e2)); } catch (err) { out = null; }
+          // /Length 손상 등으로 실패하면 앱의 관대한 해제기로 한 번 더 (있을 때만)
+          if ((!out || !out.length) && typeof inflateLenient === 'function') {
+            try { out = inflateLenient(bytes.subarray(b, e2)); } catch (err) { out = null; }
+          }
+          // 압축이 안 된 스트림(일부 생성기·pdf-lib 기본)은 그대로 읽는다
+          const txt = (out && out.length) ? dec.decode(out) : hay.slice(b, e);
+          if (txt && _COLOROP_RE.test(txt)) return true;
+          if (++scanned > 2000) break;
+          if ((Date.now() - t0) > (budgetMs || 1500)) break;   // 큰 문서에서 분석을 붙잡지 않는다
+        }
+      } catch (e) { console.warn('색공간 훑기 실패(무시):', e); }
+      return false;
+    }
+    // 분석 결과 안내에 덧붙일 경고 (해당 없으면 빈 문자열)
+    const RGB_GRAY_MSG = '⚠ 화면은 흑백이지만 회색을 RGB/CMYK 값으로 칠한 원고입니다 — 이 파일을 그대로 보내면 프린터가 컬러 장수로 셉니다.';
+    const RGB_GRAY_FIX = "'✔ 적용'(잉크 정규화 켠 상태)으로 저장한 파일을 보내면 DeviceGray로 바뀌어 프린터도 흑백으로 셉니다.";
+    function rgbGrayWarning(tabState) {
+      try {
+        if (!tabState || tabState.colorCount) return '';           // 컬러 페이지가 이미 있으면 안내 불필요
+        if (!docPaintsInColorSpace(tabState.originalPdfBytes)) return '';
+        return '\n' + RGB_GRAY_MSG + '\n   ' + RGB_GRAY_FIX;
+      } catch (e) { return ''; }
+    }
+    // ⚠ 잉크 정규화를 끈 채 저장하면 '흑백' 페이지가 RGB/CMYK로 칠해진 채 나간다 —
+    // 프린터는 그 쪽들도 컬러로 셈한다(실제로 흑백 10쪽이 컬러로 과금된 적 있음).
+    // 반환값 = 그렇게 나갈 흑백 페이지 수 (0이면 문제 없음).
+    function inkNormRiskCount() {
+      try {
+        if (processingOptions.inkNorm) return 0;                    // 켜져 있으면 DeviceGray로 나간다
+        if (!originalPdfBytes || !pageResults) return 0;
+        const bw = pageResults.filter(r => r && !r.isColor).length;
+        if (!bw) return 0;
+        if (_rgbGrayCache.bytes !== originalPdfBytes) {
+          _rgbGrayCache = { bytes: originalPdfBytes, val: docPaintsInColorSpace(originalPdfBytes) };
+        }
+        return _rgbGrayCache.val ? bw : 0;
+      } catch (e) { return 0; }
+    }
+    function inkNormRiskNote() {
+      const n = inkNormRiskCount();
+      if (!n) return '';
+      return `\n⚠ 잉크 정규화가 꺼져 있습니다 — 흑백 ${n}쪽이 RGB/CMYK 색으로 칠해진 채 저장되어`
+           + ` 프린터가 컬러로 셉니다. ⛭ 잉크 정규화를 켜고 '✔ 적용'을 다시 누르세요.`;
+    }
+
+    // 분석 결과 패널에 남기는 경고 — 토스트는 다른 안내(지난 작업 기록 등)에 덮이기 때문.
+    // 스트림을 훑는 비용이 있어 같은 문서에서는 한 번만 판정하고 캐시한다.
+    let _rgbGrayCache = { bytes: null, val: false };
+    function rgbGrayWarningHtml() {
+      try {
+        if (!originalPdfBytes || !pageResults) return '';
+        if (pageResults.filter(r => r && r.isColor).length) return '';   // 이미 컬러 페이지가 있으면 불필요
+        if (_rgbGrayCache.bytes !== originalPdfBytes) {
+          _rgbGrayCache = { bytes: originalPdfBytes, val: docPaintsInColorSpace(originalPdfBytes) };
+        }
+        if (!_rgbGrayCache.val) return '';
+        return '<br><span class="rgb-gray-warn">' + RGB_GRAY_MSG + '<br>' + RGB_GRAY_FIX + '</span>';
+      } catch (e) { return ''; }
+    }
     // ── PDF 분석 (병렬, 탭별 독립 실행) ──────────────────────────────────────
     // opts.cache = { meta, blob } 이면 페이지 렌더를 통째로 건너뛰고 캐시를 되씌운다.
     async function analyzePDF(file, tabState, opts) {
@@ -1423,7 +1546,7 @@
         if (isActive()) {
           pageResults = tabState.pageResults;
           displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
-          showSuccess('PDF 분석이 완료되었습니다!');
+          showSuccess('PDF 분석이 완료되었습니다!' + rgbGrayWarning(tabState));
         } else {
           // 비활성(백그라운드) 탭: DOM은 그대로 두고 quoteItems만 채워, 나중에 이 탭으로
           // 전환했을 때 renderTabUI가 견적서를 바로 표시할 수 있게 한다.
@@ -1499,7 +1622,7 @@
 
       const colorList = results.filter(p => p && p.isColor).map(p => p.pageNum);
       const grayList  = results.filter(p => p && !p.isColor).map(p => p.pageNum);
-      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}`;
+      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}` + rgbGrayWarningHtml();
 
       resultsSection.style.display = 'block';
       setThumbZoomWidgetVisible(true);
@@ -1701,7 +1824,7 @@
       colorPagesEl.textContent = newColor;
       grayscalePagesEl.textContent = newGray;
       colorPercentEl.textContent = Math.round(newColor / pageResults.filter(Boolean).length * 100) + '%';
-      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorPages)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayPages)}`;
+      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorPages)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayPages)}` + rgbGrayWarningHtml();
       initQuoteSection(newColor, newGray);
       syncSidebarPanel();
     }
@@ -2157,15 +2280,24 @@
       }
       invalidateProcessed();
       if (typeof previewVisible === 'function' && previewVisible()) scheduleLivePreview();
+      // 잉크 정규화를 끄는 것은 '프린터가 컬러로 셀 수 있는 상태'로 되돌리는 것 — 바로 알린다
+      if (key === 'inkNorm' && !processingOptions.inkNorm) {
+        showSuccess('⛭ 잉크 정규화를 껐습니다 — 흑백으로 보이는 페이지도 원고의 색공간(RGB/CMYK) 그대로 나갑니다.'
+          + '\n프린터가 그 페이지를 컬러 장수로 셀 수 있습니다. 특별한 이유가 없으면 켜 두세요(새 문서를 열면 다시 켜집니다).');
+      }
       // 잉크 정규화·흑백변환을 켜면 유휴 시간에 미리 변환 시작 (적용 대기시간 제거)
       if (processingOptions[key]) scheduleBwPrewarm(300);
     }
 
+    // '✖ 해제' — 잉크 정규화는 기본값(켬)으로 되돌린다. 예전엔 이것까지 함께 꺼져서,
+    // 해제 한 번에 흑백 페이지가 RGB인 채로 나가 프린터가 컬러로 세는 일이 생겼다.
     function clearOptions() {
       Object.keys(processingOptions).forEach(k => {
-        processingOptions[k] = false;
+        processingOptions[k] = (k === 'inkNorm');      // 잉크 정규화만 기본 ON 유지
         const btn = document.getElementById('opt-' + k);
-        if (btn) btn.classList.remove('active');
+        if (btn) btn.classList.toggle('active', processingOptions[k]);
+        const sb = document.getElementById('sb-opt-' + k);
+        if (sb) sb.classList.toggle('active', processingOptions[k]);
       });
       invalidateProcessed();
     }
@@ -2566,6 +2698,7 @@
           msg += `\n⚠️ 주의: ${conv.errors}개 페이지(${conv.errPages.join(', ')})에서 일부 이미지 변환 실패 — 해당 페이지는 부분적으로 칼라가 남아있을 수 있습니다.`;
         if (committed > 0)
           msg += `\n✅ 흑백변환 확정 — 선택은 자동 해제되었고 변환은 유지됩니다. 되돌리려면 ⬛ 흑백변환 체크를 끄세요.`;
+        msg += inkNormRiskNote();
         showSuccess(msg);
         // 🕓 적용 시점의 설정을 최근 작업으로 기록 — 1분 주기 스냅샷만 믿으면
         // "적용하고 바로 껐을 때" 임포징·블리드·표지 설정이 통째로 빠진 기록이 남는다.

@@ -79,6 +79,10 @@
         const base = await buildBaseProcessed();
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
+        // 📄 챕터 집중 + 챕터별 임포징: 미리보기는 그 챕터만 조판·임포징한다.
+        // (전체 문서를 매번 다시 조판·임포징하느라 '편집 내용 반영 중'이 10초 넘게 걸렸다.
+        //  최종 결과는 '✔ 적용'·'💾 저장하고 닫기'에서 전체 문서로 만든다 — 표본 미리보기와 같은 규약)
+        if (await runFocusedImposedPreview(base, groups)) { invalidateProcessed(); return; }
         // ── 편집 작업공간 표본 미리보기: 큰 문서는 보이는 페이지 주변만 재조립·렌더 ──
         // (다운로드용 결과가 아니므로 processedPdfBytes는 만들지 않는다 — '저장하고 닫기'가 전체 적용)
         if (wsSampleEligible(groups)) {
@@ -111,6 +115,47 @@
       }
     }
 
+    // ── 📄 챕터 집중 + 챕터별 임포징 — 그 챕터만 조판·임포징해 보여준다 ─────
+    // 반환 true = 이 경로로 화면을 채웠음. false면 평소 경로(전체 조립)로 진행한다.
+    async function runFocusedImposedPreview(base, groups) {
+      if (!document.body.classList.contains('edit-fullscreen')) return false;
+      if (!_impEnabled) return false;
+      const ch = (typeof wsFocusChapter === 'function') ? wsFocusChapter() : '';
+      if (!ch) return false;
+      // 파일마다 독립 대수일 때만 '그 챕터의 대수'가 결과의 한 구간과 정확히 같다 —
+      // 그때만 이 빠른 미리보기를 쓴다(전체 대수는 챕터 경계를 넘나들어 잘라 볼 수 없다).
+      if (typeof impPerChapterOn !== 'function' || !impPerChapterOn()) return false;
+      try {
+        const all = pageResults.filter(Boolean);
+        const idxs = all.map((r, i) => (r.chapter === ch ? i : -1)).filter(i => i >= 0);
+        if (!idxs.length || idxs.length === all.length) return false;
+        if (_wsSliceCache.sig !== base.sig || !_wsSliceCache.doc) {
+          _wsSliceCache = { sig: base.sig, doc: await PDFLib.PDFDocument.load(base.bytes.slice(0)) };
+        }
+        const sub = await PDFLib.PDFDocument.create();
+        (await sub.copyPages(_wsSliceCache.doc, idxs)).forEach(p => sub.addPage(p));
+        let bytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
+        const sGroups = groups.map(g => ({ mask: idxs.map(i => g.mask[i]), es: g.es })).filter(g => g.mask.some(Boolean));
+        if (sGroups.length) {
+          bytes = await applyLayoutTransform(bytes, sGroups, base.sig + '#chimp:' + ch, { pick: idxs });
+        }
+        bytes = await applyBleedStage(bytes);
+        // 이 바이트에는 한 챕터만 들어 있으므로 임포징은 통째로(=그 챕터의 대수) 걸린다
+        bytes = await buildImposedBytes(bytes);
+        wsResetSampleGrid();
+        await renderProcessedPreview(bytes, { live: true });
+        const note = document.getElementById('previewNote');
+        if (note) note.textContent = `📄 '${ch}' 챕터의 대수만 만들어 보여주는 중 — 다른 챕터는 그대로 유지됩니다.`
+          + ` '✔ 적용'·'💾 저장하고 닫기'를 누르면 전체 문서를 파일별로 임포징해 만듭니다.`;
+        const cnt = document.getElementById('previewCount');
+        if (cnt) cnt.textContent = `('${ch}' 챕터 대수 ${(await PDFLib.PDFDocument.load(bytes.slice(0))).getPageCount()}장)`;
+        return true;
+      } catch (e) {
+        console.warn('챕터 임포징 미리보기 실패 — 전체 경로로 진행:', e);
+        return false;
+      }
+    }
+
     // ── 편집 작업공간 표본 미리보기 ──────────────────────────────────────────
     // 큰 문서에서 옵션을 바꿀 때마다 전체를 재조립하면 수 초씩 걸려 "실시간"이 아니게 된다.
     // 전체화면 편집 모드에서는 현재 보이는 페이지(중심 ±WS_SPAN)만 base에서 잘라 레이아웃
@@ -119,7 +164,7 @@
     const WS_MAX = 20;                 // 한 번에 실시간 유지할 최대 페이지 수 (비용 상한)
     const WS_SAMPLE_MIN = 16;          // 이보다 적으면 그냥 전체 렌더가 더 낫다
     let _wsView = null;                // {from,to} 화면에 보이는 페이지 범위(±1 버퍼) — 스크롤이 갱신
-    let _wsGrid = { n: -1, from: -1, to: -1, cells: null };
+    let _wsGrid = { n: -1, key: '', from: -1, to: -1, cells: null };
     let _wsSliceCache = { sig: null, doc: null };
     function wsSampleEligible(groups) {
       if (!document.body.classList.contains('edit-fullscreen')) return false;
@@ -128,10 +173,17 @@
       if (groups.some(g => (g.es.nUp | 0) > 1)) return false;
       return pageResults.filter(Boolean).length >= WS_SAMPLE_MIN;
     }
-    function wsResetSampleGrid() { _wsGrid = { n: -1, from: -1, to: -1, cells: null }; _wsView = null; }
+    function wsResetSampleGrid() { _wsGrid = { n: -1, key: '', from: -1, to: -1, cells: null }; _wsView = null; }
     async function runWorkspaceSamplePreview(base, groups) {
-      const valid = pageResults.filter(Boolean);
+      const all = pageResults.filter(Boolean);
+      // 📄 챕터 집중이면 그 챕터의 쪽만 표본 그리드에 올린다(sel = 문서 순서 인덱스 목록)
+      const focusCh = (typeof wsFocusChapter === 'function') ? wsFocusChapter() : '';
+      const sel = focusCh
+        ? all.map((r, i) => (r.chapter === focusCh ? i : -1)).filter(i => i >= 0)
+        : all.map((_, i) => i);
+      const valid = sel.map(i => all[i]);
       const N = valid.length;
+      if (!N) { wsResetSampleGrid(); return; }
       // 실시간 창 = 화면에 보이는 페이지 범위(_wsView, 스크롤 추적) ±1 버퍼. 최대 WS_MAX로 상한.
       let from = _wsView ? Math.max(0, Math.min(N - 1, _wsView.from)) : 0;
       let to = _wsView ? Math.max(from, Math.min(N - 1, _wsView.to)) : Math.min(N - 1, 11);
@@ -145,20 +197,20 @@
         _wsSliceCache = { sig: base.sig, doc: await PDFLib.PDFDocument.load(base.bytes.slice(0)) };
       }
       const sub = await PDFLib.PDFDocument.create();
-      const idxs = Array.from({ length: to - from + 1 }, (_, k) => from + k);
+      const idxs = sel.slice(from, to + 1);   // 표본 창 → 문서 순서 인덱스(챕터 집중이면 그 챕터의 쪽)
       (await sub.copyPages(_wsSliceCache.doc, idxs)).forEach(p => sub.addPage(p));
       const sampleBytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
-      // 그룹 마스크도 같은 창으로 슬라이스 — es는 그대로 공유(전역/챕터별 설정 유지)
-      const sGroups = groups.map(g => ({ mask: g.mask.slice(from, to + 1), es: g.es })).filter(g => g.mask.some(Boolean));
+      // 그룹 마스크도 같은 창으로 추려낸다 — es는 그대로 공유(전역/챕터별 설정 유지)
+      const sGroups = groups.map(g => ({ mask: idxs.map(i => g.mask[i]), es: g.es })).filter(g => g.mask.some(Boolean));
       let bytes = sGroups.length
-        ? await applyLayoutTransform(sampleBytes, sGroups, base.sig + '#ws' + from + '-' + to, { window: { from, to } })
+        ? await applyLayoutTransform(sampleBytes, sGroups, base.sig + '#ws' + (focusCh || '') + ':' + idxs.join(','), { pick: idxs })
         : sampleBytes;
       bytes = await applyBleedStage(bytes);   // ◲ 블리드 옵션 — 표본 창에도 동일 반영
-      await renderWorkspaceSampleGrid(bytes, from, to, valid);
+      await renderWorkspaceSampleGrid(bytes, from, to, valid, focusCh);
     }
     // 표본 그리드: [from,to]는 변환 결과 캔버스, 나머지는 분석 썸네일 플레이스홀더.
     // 페이지 수가 같으면 셀을 재사용(패치)해 큰 문서에서도 DOM 재구축 비용이 없다.
-    async function renderWorkspaceSampleGrid(bytes, from, to, valid) {
+    async function renderWorkspaceSampleGrid(bytes, from, to, valid, focusCh) {
       const grid = document.getElementById('previewGrid');
       const section = document.getElementById('previewSection');
       const note = document.getElementById('previewNote');
@@ -169,13 +221,16 @@
       try {
         if (myToken !== previewRenderToken) return;
         // 그리드 골격 (재)구축 — 페이지 수가 달라졌거나 표본 모드 첫 진입일 때만
-        if (_wsGrid.n !== N || !_wsGrid.cells || grid.dataset.wsSample !== '1') {
+        // 집중 챕터가 바뀌면 쪽 수가 같아도 다른 문서 구간이므로 그리드를 다시 만든다
+        const gridKey = (focusCh || '') + '|' + N;
+        if (_wsGrid.n !== N || _wsGrid.key !== gridKey || !_wsGrid.cells || grid.dataset.wsSample !== '1') {
           const frag = document.createDocumentFragment();
           const cells = [];
           for (let i = 0; i < N; i++) {
             const cell = document.createElement('div');
             cell.className = 'pv-cell';
-            const num = document.createElement('div'); num.className = 'pv-num'; num.textContent = i + 1;
+            const num = document.createElement('div'); num.className = 'pv-num';
+            num.textContent = (valid[i] && valid[i].pageNum) || (i + 1);   // 쪽번호는 문서 기준
             cell.appendChild(num);
             cell.addEventListener('click', () => {   // 회색 페이지 클릭 → 그 위치 주변을 실시간 창으로
               if (cell.classList.contains('pv-stale')) { _wsView = { from: Math.max(0, i - 3), to: i + 8 }; scheduleLivePreview(); }
@@ -183,7 +238,7 @@
             // 우클릭 → 페이지 컨텍스트 메뉴 (회전·개별 보정 등 — 표본 셀 i = 문서 순서 인덱스)
             cell.addEventListener('contextmenu', e => {
               e.preventDefault(); e.stopPropagation();
-              const r = pageResults.filter(Boolean)[i];
+              const r = valid[i];
               const idx = r ? pageResults.indexOf(r) : -1;
               if (idx >= 0) { ctxTargetIdx = idx; showCtxMenu(e, idx); }
             });
@@ -192,7 +247,7 @@
           }
           grid.replaceChildren(frag);
           grid.dataset.wsSample = '1';
-          _wsGrid = { n: N, from: -1, to: -1, cells };
+          _wsGrid = { n: N, key: gridKey, from: -1, to: -1, cells };
         }
         const cells = _wsGrid.cells;
         const setPlaceholder = i => {
@@ -245,8 +300,12 @@
         }
         _wsGrid.from = from; _wsGrid.to = to;
         if (typeof updateGeometryOverlays === 'function') updateGeometryOverlays();
-        document.getElementById('previewCount').textContent = `(전체 ${N}페이지 · 표본 ${from + 1}~${to + 1}쪽 실시간)`;
-        if (note) note.textContent = `표본 미리보기 — ${from + 1}~${to + 1}쪽만 실시간 반영 중. 회색 페이지는 스크롤하거나 클릭하면 그 위치가 반영됩니다. '💾 저장하고 닫기'에서 전체 적용.`;
+        const pnOf = i => (valid[i] && valid[i].pageNum) || (i + 1);
+        document.getElementById('previewCount').textContent = focusCh
+          ? `('${focusCh}' 챕터 ${N}쪽만 보는 중 · 표본 ${pnOf(from)}~${pnOf(to)}쪽 실시간)`
+          : `(전체 ${N}페이지 · 표본 ${pnOf(from)}~${pnOf(to)}쪽 실시간)`;
+        if (note) note.textContent = (focusCh ? `📄 '${focusCh}' 챕터만 편집 중 — 다른 챕터는 그대로 유지됩니다. ` : '')
+          + `표본 미리보기 — ${pnOf(from)}~${pnOf(to)}쪽만 실시간 반영 중. 회색 페이지는 스크롤하거나 클릭하면 그 위치가 반영됩니다. '💾 저장하고 닫기'에서 전체 적용.`;
         setAnalysisGridVisible(false);
         section.style.display = 'block';
       } finally { try { await pdf.destroy(); } catch (e) {} }
@@ -554,8 +613,12 @@
 
     // 임포징 포함 토글 — 켜면 적용·다운로드·실시간 미리보기가 임포징 시트를 최종 단계로 얹는다.
     // ('임포징 PDF 생성' 버튼을 누르면 자동으로 켜져 화면 결과와 메인 다운로드가 일치)
-    function toggleImpEnabled(on) {
+    // 사용자가 직접 끈 상태인지 — 켜 두면 프리셋 불러오기·임포징 생성이 몰래 다시 켜지 않는다.
+    // (끈 체크가 자꾸 되살아나 "임포징 체크가 반복해서 켜진다"는 문제의 원인이었다)
+    let _impUserOff = false;
+    function toggleImpEnabled(on, byUser) {
       const want = on === undefined ? !_impEnabled : !!on;
+      if (byUser) _impUserOff = !want;   // 직접 끈 것은 존중, 직접 켜면 해제
       // 방식 미선택 상태에서 포함을 켜려 하면 막고 안내 (기본은 미선택)
       if (want && !_impMode && !_impProfile) {
         _impEnabled = false;
@@ -564,6 +627,7 @@
         return;
       }
       _impEnabled = want;
+      if (want) _impUserOff = false;   // 어떤 경로로든 켜졌으면 '직접 끔' 표시는 해제
       const chk = document.getElementById('impEnabled');
       if (chk && chk.checked !== _impEnabled) chk.checked = _impEnabled;
       invalidateProcessed();   // 직전 적용 결과 무효화 → 다시 적용해야 반영
@@ -2333,6 +2397,19 @@
       const y = slot.y + (a[0] === 't' ? slot.h - dh : a[0] === 'b' ? 0 : (slot.h - dh) / 2) - (p.offY || 0) * MM;
       return { x, y, w: dw, h: dh, s };
     }
+    // 임포징 공용: 그 칸에 실제로 그려질 '재단 크기'(트림 기준).
+    // 칸을 이 크기로 좁혀야 거터 값 그대로(0이면 맞닿게) 배치된다.
+    function drawnTrimSize(slot, emb, opts) {
+      let tr = emb.trim;
+      if (!tr && (opts.srcBleed || 0) > 0) {
+        const sb = opts.srcBleed * 72 / 25.4;
+        if (emb.w > 2 * sb + 1 && emb.h > 2 * sb + 1) tr = { l: sb, r: sb, b: sb, t: sb };
+      }
+      const pg = tr ? { w: emb.w - tr.l - tr.r, h: emb.h - tr.b - tr.t } : { w: emb.w, h: emb.h };
+      if (!(pg.w > 0) || !(pg.h > 0)) return { w: slot.w, h: slot.h };
+      const t = placeInSlot(slot, pg, opts.place);
+      return { w: t.w, h: t.h };
+    }
     // 임포징 공용: 슬롯에 페이지 그리기(배치 + 블리드) → 트림 사각형 {x,y,w,h} 반환.
     // shiftX: 배치 후 수평 이동(중철 밀림보정). 모든 임포징 빌더가 이 함수로 그린다.
     function drawPlaced(page, emb, slot, opts, shiftX) {
@@ -2533,10 +2610,33 @@
       const slotH = (sh - mg.t - mg.b - (down - 1) * gp.v) / down;
       if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
 
+      // ── 칸을 원고가 실제로 그려지는 크기로 좁힌다 ────────────────────────
+      // 시트를 균등 분할한 칸 '가운데'에 앉히면, 가로 원고를 1열 2행으로 배치했을 때
+      // 칸 안 위·아래 여백 때문에 거터가 0인데도 사이가 떠 보였다. 칸을 실제 그려지는
+      // 크기(재단 기준)로 좁히고 배치 블록 전체를 정렬하면 거터 값 그대로 나온다.
+      // (100%·지정배율이라 원고가 칸보다 크면 칸 크기를 그대로 둔다 — 기존 동작 유지)
+      let packW = slotW, packH = slotH;
+      {
+        const probe = { x: 0, y: 0, w: slotW, h: slotH };
+        let mw = 0, mh = 0;
+        for (const e of embedded) {
+          const d = drawnTrimSize(probe, e, opts);
+          if (d.w > mw) mw = d.w;
+          if (d.h > mh) mh = d.h;
+        }
+        if (mw > 0 && mh > 0) { packW = Math.min(slotW, mw); packH = Math.min(slotH, mh); }
+      }
+      const blockW = across * packW + (across - 1) * gp.h;
+      const blockH = down * packH + (down - 1) * gp.v;
+      const areaW = sw - mg.l - mg.r, areaH = sh - mg.t - mg.b;
+      const al = (opts.place && opts.place.align) || 'cc';
+      const blockX = mg.l + (al[1] === 'l' ? 0 : al[1] === 'r' ? areaW - blockW : (areaW - blockW) / 2);
+      const blockY = mg.b + (al[0] === 'b' ? 0 : al[0] === 't' ? areaH - blockH : (areaH - blockH) / 2);
+
       // 슬롯 s(0=좌상, 좌→우·상→하)의 사각형
       const slotRect = s => {
         const col = s % across, row = (s / across) | 0;
-        return { x: mg.l + col * (slotW + gp.h), y: sh - mg.t - (row + 1) * slotH - row * gp.v, w: slotW, h: slotH };
+        return { x: blockX + col * (packW + gp.h), y: blockY + (down - 1 - row) * (packH + gp.v), w: packW, h: packH };
       };
       const mirror = s => { const col = s % across, row = (s / across) | 0; return row * across + (across - 1 - col); };
 
@@ -2771,6 +2871,14 @@
             ? '칸 수가 너무 많거나 여백·거터가 커서 배치할 수 없습니다.'
             : `원고(${Math.round(w / MM)}×${Math.round(h / MM)}mm)가 용지보다 큽니다 — 더 큰 용지를 선택하세요.`);
         }
+        // 칸을 실제 그려지는 크기로 좁혀 거터 값 그대로 붙인다 (N-up과 같은 규칙)
+        {
+          const d = drawnTrimSize({ x: 0, y: 0, w: best.cellW, h: best.cellH }, embedded[pi], opts);
+          if (d.w > 0 && d.h > 0) {
+            best.cellW = Math.min(best.cellW, d.w);
+            best.cellH = Math.min(best.cellH, d.h);
+          }
+        }
         const { sw, sh, cols, rows, cellW, cellH } = best;
         // 배치 블록 전체를 시트 중앙 정렬 (여백 안쪽 보장: blockW ≤ W)
         const blockW = cols * cellW + (cols - 1) * gutterPt;
@@ -2814,7 +2922,7 @@
         const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading('반복 배치 — Step&Repeat 시트 조립 중…');
         const opts = currentImpOptions();
-        const res = await buildStepRepeatBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
+        const res = await imposeForGenerate(srcBytes, opts, buildStepRepeatBytes, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
@@ -2826,7 +2934,7 @@
           + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
         if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
           msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃과 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
-        showSuccess(msg);
+        showSuccess(msg + impScopeNote(res));
       } catch (e) {
         console.error('반복 배치 생성 오류:', e);
         showError('반복 배치 생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -2916,7 +3024,7 @@
         const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading('복제 2-up — 양면 2부 시트 조립 중…');
         const opts = currentImpOptions();
-        const res = await buildDup2upBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
+        const res = await imposeForGenerate(srcBytes, opts, buildDup2upBytes, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         // 결과를 화면에 바로 표시 (저장 다이얼로그 뒤에서 확인 가능)
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
@@ -2933,7 +3041,7 @@
             + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
         if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
           msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 거터를 ${opts.bleed * 2}mm 이상 권장`;
-        showSuccess(msg);
+        showSuccess(msg + impScopeNote(res));
       } catch (e) {
         console.error('복제 2-up 생성 오류:', e);
         showError('복제 2-up 생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -2954,12 +3062,16 @@
         const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading('북클릿 임포징 — 중철 시트 조립 중…');
         const opts = currentImpOptions();
-        const res = await buildBookletBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
+        const res = await imposeForGenerate(srcBytes, opts, buildBookletBytes, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         // 표지 분리: 맨 바깥 시트(표지 4면)와 내지를 별도 PDF 두 개로 저장 (표지 = 두꺼운 용지)
         if (document.getElementById('bkCoverSplit')?.checked) {
+          if (res.perChapter) {
+            showError("표지 분리는 '📄 챕터별로 따로 임포징'과 함께 쓸 수 없습니다 — 적용 범위를 그 챕터로 두거나 파일을 하나씩 여세요.");
+            return;
+          }
           if (res.sheets < 2) {
             showError('표지 분리는 시트가 2장 이상(본문 5쪽 이상)일 때 가능합니다 — 지금은 전체가 표지 1시트입니다.');
             return;
@@ -2974,7 +3086,7 @@
           + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
         if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
           msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 이웃 페이지와 겹칠 수 있으니 거터를 ${opts.bleed * 2}mm 이상으로 권장`;
-        showSuccess(msg);
+        showSuccess(msg + impScopeNote(res));
       } catch (e) {
         console.error('북클릿 생성 오류:', e);
         showError('북클릿 생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -3016,7 +3128,7 @@
       if (opts.creep > 0) msg += `\n밀림보정 ${opts.creep}mm/장이 내지 안쪽 시트에 반영되어 있습니다.`;
       if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
         msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 거터를 ${opts.bleed * 2}mm 이상 권장`;
-      showSuccess(msg);
+      showSuccess(msg + impScopeNote(res));
     }
 
     // 모아찍기(nup)·정합(cutstack) 공통 생성 — buildNupBytes 사용(메인 파이프라인과 동일 빌더)
@@ -3031,7 +3143,7 @@
         progressBar.style.display = 'block'; updateProgress(0);
         const srcBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.45)));
         showLoading(`${isCut ? '정합' : '모아찍기'} — 시트 조립 중…`);
-        const res = await buildNupBytes(srcBytes, opts, p => updateProgress(45 + Math.round(p * 0.55)));
+        const res = await imposeForGenerate(srcBytes, opts, buildNupBytes, p => updateProgress(45 + Math.round(p * 0.55)));
         updateProgress(100); hideLoading(); progressBar.style.display = 'none';
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
@@ -3041,7 +3153,7 @@
         let msg = `📖 ${isCut ? '정합(Cut&Stack)' : '모아찍기(N-up)'} 생성 완료 — 시트 ${res.sheets}장 · ${grid} 배치(칸당 ${res.per}쪽) · ${res.sides === 2 ? '양면' : '단면'} (본문 ${res.n0}쪽)`
           + (isCut ? `\n인쇄 → 재단 → 좌상 묶음부터 차례로 겹치면 페이지 순서 완성` : `\n연속 페이지가 좌→우·상→하로 배치됩니다`)
           + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
-        showSuccess(msg);
+        showSuccess(msg + impScopeNote(res));
       } catch (e) {
         console.error('모아찍기/정합 생성 오류:', e);
         showError('생성 실패: ' + (e && e.message ? e.message : String(e)));
@@ -3171,8 +3283,10 @@
       const nmEl = document.getElementById('impProfName'); if (nmEl) nmEl.value = p.n;
       // 프리셋은 '옵션만' 세팅한다 — 시트 재조립(편집 적용)은 사용자가
       // '📖 임포징 PDF 생성'이나 메인 '✔ 적용'을 눌러야 진행(자동 미리보기·재조립 안 함).
-      _impEnabled = true;
-      const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
+      if (!_impUserOff) {   // 직접 꺼 둔 상태면 그대로 존중한다
+        _impEnabled = true;
+        const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
+      }
       invalidateProcessed();                   // '적용 필요' 표시만 (렌더 없음)
       showSuccess(`프리셋 '${p.n}' 불러옴 — 용지 ${_impProfile.paper}, ${p.m}${p.sd ? (p.sd === 2 ? ' 양면' : ' 단면') : ''}. 옵션만 적용됨 — '📖 임포징 PDF 생성' 또는 메인 '✔ 적용'을 눌러 반영하세요.`);
     }
@@ -3188,8 +3302,10 @@
       _impProfile = null;                      // UI 기준 편집 모드
       const nm = document.getElementById('impProfName'); if (nm) nm.value = p.n;
       // 옵션만 펼쳐 편집 상태로 둔다 — 시트 재조립은 '📖 임포징 PDF 생성'·'✔ 적용'에서만.
-      _impEnabled = true;
-      const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
+      if (!_impUserOff) {   // 직접 꺼 둔 상태면 그대로 존중한다
+        _impEnabled = true;
+        const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
+      }
       invalidateProcessed();                   // '적용 필요' 표시만 (렌더 없음)
       showSuccess(`프리셋 '${p.n}' 편집 모드 — 모드·용지·그리드·여백·정렬 등을 아래에서 수정한 뒤 '💾 저장'을 누르면 같은 이름으로 덮어써집니다.`);
     }
@@ -3478,6 +3594,7 @@
         const o = JSON.parse(JSON.stringify(_impProfile));
         o.slug = currentSlugOpt();
         o.stackNum = !!document.getElementById('impStackNum')?.checked;
+        o.perChapter = impPerChapterOn();
         return o;
       }
       const g = id => document.getElementById(id);
@@ -3495,6 +3612,7 @@
         frame:  !!g('impFrame')?.checked,
         slug:   currentSlugOpt(),
         stackNum: !!g('impStackNum')?.checked,
+        perChapter: impPerChapterOn(),   // 📄 챕터(파일)별로 따로 대수를 만들지
         place:  {
           scale: _impScale,
           fixedScale: _impScale === 'fixed' ? (parseFloat(g('impFixed')?.value) || 100) / 100 : undefined,
@@ -3544,21 +3662,95 @@
     // (편집 모드에서 임포징 무관한 옵션을 만질 때마다 전체 재조립하던 딜레이 제거)
     let _impBytesCache = { sig: null, bytes: null };
     function clearImpCache() { _impBytesCache = { sig: null, bytes: null }; }
+    // 📄 챕터(파일)별 임포징 — 켜져 있고 합본(챕터 2개 이상)일 때만 의미가 있다
+    function impPerChapterOn() {
+      const el = document.getElementById('impPerChapter');
+      if (!el || !el.checked) return false;
+      try { return chapterRuns().length >= 2; } catch (e) { return false; }
+    }
+    function impPerChapterChanged() {
+      impGenInvalidate();
+      if (!_impEnabled) return;
+      invalidateProcessed();
+      scheduleLivePreview();
+    }
+    // 챕터별로 만든 결과에서 '이 챕터의 시트가 몇 번째~몇 번째인지' — 편집 모드 챕터 집중이
+    // 그 챕터의 대수만 보여줄 때 쓴다. 전체 임포징을 하면 비운다(옛 범위가 남으면 오판).
+    let _impChapterRanges = null;
+    function impChapterRanges() { return _impChapterRanges; }
+    // 조립된 문서를 챕터 구간으로 잘라 각각 임포징한 뒤 순서대로 이어붙인다.
+    // 반환 null = 챕터 경계를 신뢰할 수 없음(페이지 매핑 불일치·챕터 1개) → 전체 임포징으로.
+    async function buildImposedPerChapter(u8, opts, build, onProgress) {
+      const src = await PDFLib.PDFDocument.load(u8.slice(0), { ignoreEncryption: true });
+      const total = src.getPageCount();
+      const srcMap = (typeof computeOutputSourceMap === 'function') ? computeOutputSourceMap() : null;
+      if (!srcMap || srcMap.length !== total) return null;
+      const pnCh = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r.chapter || '']));
+      const runs = [];
+      let prev = '';
+      srcMap.forEach((s, i) => {
+        let name = '';
+        for (const pn of (s || [])) { const c = pnCh.get(pn); if (c) { name = c; break; } }
+        if (!name) name = prev;            // 빈 페이지처럼 표식 없는 쪽은 앞 챕터에 붙인다
+        const last = runs[runs.length - 1];
+        if (last && last.name === name) last.idxs.push(i);
+        else runs.push({ name, idxs: [i] });
+        prev = name;
+      });
+      if (runs.length < 2) return null;
+      const out = await PDFLib.PDFDocument.create();
+      const ranges = [], results = [];
+      const duplex = (opts.sides | 0) === 2;
+      for (let k = 0; k < runs.length; k++) {
+        const sub = await PDFLib.PDFDocument.create();
+        (await sub.copyPages(src, runs[k].idxs)).forEach(p => sub.addPage(p));
+        const subBytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
+        const res = await build(subBytes, opts, p => {
+          if (onProgress) onProgress(Math.min(99, Math.round(((k + (p || 0) / 100) / runs.length) * 100)));
+        });
+        results.push(res);
+        const sd = await PDFLib.PDFDocument.load(res.bytes, { ignoreEncryption: true });
+        const from = out.getPageCount();
+        (await out.copyPages(sd, sd.getPageIndices())).forEach(p => out.addPage(p));
+        // 양면 인쇄에서 다음 파일이 새 시트 앞면부터 시작하도록 — 시트 수가 홀수면 빈 시트 한 장
+        if (duplex && (out.getPageCount() - from) % 2 === 1) {
+          const lastPg = out.getPage(out.getPageCount() - 1);
+          out.addPage([lastPg.getWidth(), lastPg.getHeight()]);
+        }
+        ranges.push({ name: runs[k].name, from: from + 1, to: out.getPageCount() });   // 1-based
+        await uiYield();
+      }
+      if (onProgress) onProgress(100);
+      const bytes = new Uint8Array(await out.save({ useObjectStreams: false, updateFieldAppearances: false }));
+      return { bytes, ranges, results };
+    }
+
     async function buildImposedBytes(srcBytes, onProgress) {
       const opts = currentImpOptions();
       const u8 = srcBytes instanceof Uint8Array ? srcBytes : new Uint8Array(srcBytes);
       // 시그니처는 opts에서 직접 만든다 — impSignature()는 '임포징 포함'이 꺼져 있으면 빈 문자열을
       // 돌려주므로, 그걸 쓰면 옵션을 바꿔도 캐시가 적중하는 낡은 결과 버그가 생긴다.
+      // 결과물에는 언제나 문서 전체가 들어간다 — 챕터 집중은 편집 화면의 보기 범위일 뿐이다.
+      // (한때 챕터 범위면 그 챕터만 남겼더니, 메인으로 나왔을 때 다른 챕터가 통째로 사라졌다)
       let sig;
       try { sig = bytesFingerprint(u8) + '|' + JSON.stringify(opts); }
       catch (e) { sig = null; }
-      if (sig && _impBytesCache.sig === sig && _impBytesCache.bytes) { if (onProgress) onProgress(100); return _impBytesCache.bytes; }
+      if (sig && _impBytesCache.sig === sig && _impBytesCache.bytes) {
+        if (onProgress) onProgress(100);
+        _impChapterRanges = _impBytesCache.ranges || null;
+        return _impBytesCache.bytes;
+      }
       const build = opts.mode === 'nup' || opts.mode === 'cutstack' ? buildNupBytes
                   : opts.mode === 'repeat'   ? buildStepRepeatBytes
                   : opts.mode === 'dup'      ? buildDup2upBytes
                   : buildBookletBytes;
-      const bytes = (await build(srcBytes, opts, onProgress)).bytes;
-      _impBytesCache = sig ? { sig, bytes } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
+      let bytes = null;
+      if (opts.perChapter) {
+        const per = await buildImposedPerChapter(u8, opts, build, onProgress);
+        if (per) { bytes = per.bytes; _impChapterRanges = per.ranges; }
+      }
+      if (!bytes) { bytes = (await build(srcBytes, opts, onProgress)).bytes; _impChapterRanges = null; }
+      _impBytesCache = sig ? { sig, bytes, ranges: _impChapterRanges } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
       return bytes;
     }
     // 재단 후 크기가 원고와 달라지는 흔한 원인을 짚어 주는 한 줄
@@ -3583,24 +3775,63 @@
                  : `중철(북클릿)·${_bkBind === 'right' ? '우철' : '좌철'}`;
       const paper = g('bkPaper')?.value || 'auto';
       const paperName = paper === 'auto' ? '자동 용지' : paper.startsWith('custom:') ? paper.slice(7) : paper;
-      return ` · 임포징: ${name} · ${paperName}${_impScale === 'orig' ? ' · 100% 배치' : _impScale === 'fixed' ? ' · 지정배율' : ''}`;
+      return ` · 임포징: ${name} · ${paperName}${_impScale === 'orig' ? ' · 100% 배치' : _impScale === 'fixed' ? ' · 지정배율' : ''}`
+           + (impPerChapterOn() ? ' · 📄 챕터별 따로' : '');
     }
     // '임포징 PDF 생성' 결과를 메인 적용 상태로 채택 + 포함 모드 자동 ON —
     // 이후 메인 '⇩ 다운로드'도 같은 임포징 반영본을 저장한다(화면·파일 불일치 버그 방지).
-    function adoptImposedResult(bytes, name) {
-      if (!_impEnabled) {
+    // direct=true : 이 결과는 파이프라인이 재현하지 못한다(챕터 범위 임포징) → 저장도 이 바이트 그대로
+    function adoptImposedResult(bytes, name, direct) {
+      // 사용자가 '임포징 포함'을 직접 꺼 뒀으면 켜지 않는다 — 대신 만든 결과를 그대로 저장하도록
+      // direct 모드로 채택해, 화면과 저장 파일이 어긋나지 않게 한다.
+      if (!_impEnabled && !_impUserOff) {
         _impEnabled = true;
         const chk = document.getElementById('impEnabled');
         if (chk) chk.checked = true;
       }
+      if (!_impEnabled) direct = true;
       processedPdfBytes = bytes;
-      directOutputBytes = null;   // 임포징은 파이프라인 포함(_impEnabled) — 재조립 경로와 일치
+      // 평소엔 파이프라인(_impEnabled)이 같은 결과를 다시 만들 수 있어 재조립 경로를 쓴다.
+      // 챕터 범위로 만든 결과는 파이프라인이 문서 전체를 걸어 달라지므로 이 바이트를 그대로 저장한다.
+      directOutputBytes = direct ? bytes : null;
       processedFileName = name;
       setDirty(true);
       updateDownloadBtn();
       setImpGenDone(true);        // 같은 설정으로 다시 누르지 않도록 버튼 잠금
       // 🕓 임포징까지 반영된 현재 설정을 최근 작업으로 기록 (제본 설정 유실 방지)
       if (typeof recordWorkHistory === 'function') { try { recordWorkHistory(); } catch (e) {} }
+    }
+
+    // '📖 임포징 PDF 생성' 공용 실행부 — 범위(챕터/전체)와 '챕터별로 따로'를 한자리에서 처리.
+    // 반환값은 각 빌더의 결과와 같은 모양이며, 파일별로 합친 경우 장수를 합산하고 perChapter를 덧붙인다.
+    async function imposeForGenerate(srcBytes, opts, build, onProgress) {
+      // 결과에는 항상 문서 전체가 들어간다(챕터를 편집 중이어도) — 다른 챕터가 사라지면 안 된다.
+      // 파일마다 독립 대수를 원하면 '📄 챕터(파일)별로 따로 임포징'을 켠다.
+      if (typeof impPerChapterOn === 'function' && impPerChapterOn()) {
+        const per = await imposeRunsForGenerate(srcBytes, opts, build, onProgress);
+        if (per) return per;
+      }
+      return await build(srcBytes, opts, onProgress);
+    }
+    // 챕터마다 따로 임포징해 이어붙이고, 장수를 합산한 결과를 만든다
+    async function imposeRunsForGenerate(srcBytes, opts, build, onProgress) {
+      const u8 = srcBytes instanceof Uint8Array ? srcBytes : new Uint8Array(srcBytes);
+      const per = await buildImposedPerChapter(u8, opts, build, onProgress);
+      if (!per) return null;
+      const sum = k => per.results.reduce((a, r) => a + (r && typeof r[k] === 'number' ? r[k] : 0), 0);
+      const first = per.results[0] || {};
+      return Object.assign({}, first, {
+        bytes: per.bytes,
+        sheets: sum('sheets'), n: sum('n'), n0: sum('n0'), total: sum('total'),
+        perChapter: per.ranges.map(r => r.name),
+      });
+    }
+
+    // 생성 결과 안내에 붙일 범위 설명
+    function impScopeNote(res) {
+      if (res && res.perChapter && res.perChapter.length)
+        return `\n📄 파일별로 따로 임포징: ${res.perChapter.join(' · ')} — 파일마다 독립 대수이며, 결과에는 모든 파일이 들어 있습니다.`;
+      return '';
     }
 
     // 임포징 실행 — 모드에 따라 모아찍기/정합/반복/복제/중철 분기 (화면 생성만; 저장은 메인 다운로드)
@@ -3636,6 +3867,15 @@
           showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
         }
         return;
+      }
+      // ⚠ 잉크 정규화를 끈 채 저장하려 하면 한 번 확인한다 — 이대로 나가면 흑백 쪽이 컬러로 과금된다
+      {
+        const risk = (typeof inkNormRiskCount === 'function') ? inkNormRiskCount() : 0;
+        if (risk && !confirm(
+          '⚠ 잉크 정규화가 꺼져 있습니다.\n\n'
+          + `흑백 ${risk}쪽이 RGB/CMYK 색으로 칠해진 채 저장됩니다 — 프린터는 이 쪽들도 컬러 장수로 셉니다.\n\n`
+          + '그래도 이대로 저장할까요?\n'
+          + "(취소를 누르고 ⛭ 잉크 정규화를 켠 뒤 '✔ 적용'을 다시 누르면 흑백으로 셈됩니다)")) return;
       }
       try {
         applying = true; updateDownloadBtn();
@@ -6384,7 +6624,7 @@
       colorPagesEl.textContent     = colorList.length;
       grayscalePagesEl.textContent = grayList.length;
       colorPercentEl.textContent   = Math.round(colorList.length / Math.max(1, total) * 100) + '%';
-      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}`;
+      rangeSummary.innerHTML = `<strong>컬러 페이지:</strong> ${formatRanges(colorList)}<br><strong>흑백 페이지:</strong> ${formatRanges(grayList)}` + rgbGrayWarningHtml();
       renderAllPages(pageResults);
       if (activeTabId && tabs.has(activeTabId)) updateFileInfo(tabs.get(activeTabId));
     }
@@ -7759,20 +7999,44 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         return { bytes: packWorkFile(manifest, blobs), manifest, edits: edits.length };
     }
 
+    // 지금 탭이 어떤 작업 파일(.pdfw)에서 왔는지 / 어디에 저장했는지 — '저장'은 그 파일에 덮어쓴다
+    function currentWorkPath() {
+      const t = (activeTabId && tabs.has(activeTabId)) ? tabs.get(activeTabId) : null;
+      return (t && t.workPath) || '';
+    }
+    function setCurrentWorkPath(p) {
+      const t = (activeTabId && tabs.has(activeTabId)) ? tabs.get(activeTabId) : null;
+      if (t) t.workPath = p || '';
+      if (typeof reportDocState === 'function') reportDocState();
+    }
+    // 저장 직후 / 작업 파일을 연 직후 — 지금 상태 = 그 파일이므로 닫을 때 다시 묻지 않는다
+    function noteWorkSaved(p) {
+      if (p) setCurrentWorkPath(p);
+      if (typeof markWorkSaved === 'function') markWorkSaved();
+    }
+
     // 반환값: 저장했으면 true, 취소·실패면 false ('저장하고 닫기'가 이 값으로 닫을지 판단한다)
-    async function saveWorkFile() {
+    // opts.saveAs = true → 이미 경로를 알고 있어도 저장 위치를 다시 묻는다(다른 이름으로 저장)
+    async function saveWorkFile(opts) {
       if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요 — 저장할 작업이 없습니다.'); return false; }
       try {
         const { bytes, manifest, edits } = await buildWorkFileBytes();
-        const saved = await window.electronAPI.saveFile({
-          defaultName: workFileBaseName() + '.pdfw', buffer: bytes, kind: 'pdfw',
-        });
+        const reuse = (!opts || !opts.saveAs) ? currentWorkPath() : '';
+        const saved = reuse
+          ? await window.electronAPI.saveFileTo({ filePath: reuse, buffer: bytes, kind: 'pdfw' })
+          : await window.electronAPI.saveFile({
+              defaultName: workFileBaseName() + '.pdfw', buffer: bytes, kind: 'pdfw',
+            });
         if (!saved) return false;                    // 저장 다이얼로그 취소
+        // 저장 완료 → 지금 상태는 이 파일에 들어 있다. '저장 안 한 작업' 표시도 함께 해제해
+        // 창을 닫을 때 저장을 다시 묻지 않게 한다.
+        noteWorkSaved(typeof saved === 'string' ? saved : '');
         const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
         showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(bytes.length / 1048576).toFixed(1)}MB`
           + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
           + (manifest.state.applied ? ' · 적용본 포함' : '')
           + (manifest.state.analysis ? ' · 분석 포함' : '')
+          + (reuse ? `\n덮어쓴 파일: ${reuse}` : '')
           + `\n이 파일을 더블클릭하면 지금 이 상태 그대로, 분석 없이 바로 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
           + (others ? `\n※ 다른 탭 ${others}개는 담기지 않습니다 — 탭마다 따로 저장하세요.` : ''));
         return true;
@@ -7786,9 +8050,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // 저장이 끝나야 창이 닫히도록 결과(true/false)를 main에 회신한다.
     // 취소하거나 실패하면 창은 그대로 열려 있다 — 작업을 잃지 않는 쪽이 우선.
     if (window.electronAPI.onSaveWorkAndQuit) {
-      window.electronAPI.onSaveWorkAndQuit(async () => {
+      window.electronAPI.onSaveWorkAndQuit(async (mode) => {
         let ok = false;
-        try { ok = await saveWorkFile(); }
+        try { ok = await saveWorkFile({ saveAs: mode === 'saveAs' }); }
         catch (e) { console.error('닫기 전 작업 저장 실패:', e); ok = false; }
         try { window.electronAPI.sendSaveWorkResult(!!ok); } catch (e) { }
       });
@@ -7829,10 +8093,18 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         const st = manifest.state || {};
         // 1) 설정(편집·처리·임포징·블리드·표지) — 프로파일 적용과 같은 경로
         if (st.data) applyPresetData(JSON.parse(JSON.stringify(st.data)));
-        // 2) editSettings 통째 되씌우기 — 챕터별 설정·적용범위·개별보정까지 복원
+        // 2) editSettings 통째 되씌우기 — 챕터별 설정·개별보정까지 복원
         if (st.editSettings && editSettings) {
           Object.keys(editSettings).forEach(k => { delete editSettings[k]; });
           Object.assign(editSettings, JSON.parse(JSON.stringify(st.editSettings)));
+          // 적용 범위만은 '전체'로 되돌린다. 챕터 집중은 그때그때 챕터의 ✏ 편집으로 들어가는
+          // 일회성 작업인데, 저장 당시 범위를 그대로 살리면 다시 열어 ✏ 편집을 눌렀을 때
+          // 지난번 그 챕터만 열려 "문서가 일부만 열린다"로 보였다.
+          // (챕터별 설정 byChapter는 그대로 유지되어 적용 결과는 달라지지 않는다)
+          if (editSettings.scope && editSettings.scope.mode === 'chapter') {
+            editSettings.scope.mode = 'all';
+            editSettings.scope.chapter = '';
+          }
           tab.editSettings = editSettings;
         }
         // 3) 내부편집 결과 복원 (썸네일·캐시는 아래 refresh에서 다시 만들어진다)
@@ -7912,7 +8184,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       try {
         const buf = window.electronAPI.readFile(p);
         reportSaveDir(p);                      // 작업 파일이 있던 폴더를 저장 기본 위치로
-        return await openWorkFileBytes(new Uint8Array(buf), p);
+        const okOpen = await openWorkFileBytes(new Uint8Array(buf), p);
+        if (okOpen) noteWorkSaved(p);   // 다음 '저장'은 이 파일에 덮어쓰고, 바로 닫으면 묻지 않는다
+        return okOpen;
       } catch (e) {
         showError('작업 파일을 읽을 수 없습니다: ' + (e && e.message ? e.message : e));
         return false;

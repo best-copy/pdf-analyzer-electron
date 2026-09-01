@@ -19,8 +19,14 @@ app.whenReady().then(async () => {
     savePath = path.join(dir, defaultName);
     return savePath;
   });
+  // 이미 경로가 정해진 작업 파일에 덮어쓰기('저장') — main의 허가 검사 대역
+  ipcMain.handle('dialog:confirmSavePath', (_e, { filePath }) => (allowSave ? filePath : null));
   let lastResult = null;
   ipcMain.on('app:saveWorkResult', (_e, ok) => { lastResult = ok; });
+  // main이 닫기 확인을 띄울지 판단하는 두 신호 — 렌더러가 보내는 그대로 받아 본다
+  let askOnClose = null, unsaved = null;
+  ipcMain.on('app:docopen', (_e, open) => { askOnClose = open; });
+  ipcMain.on('app:dirty', (_e, d) => { unsaved = d; });
 
   const win = new BrowserWindow({ show: false, width: 1200, height: 900,
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });
@@ -41,6 +47,9 @@ app.whenReady().then(async () => {
     return await waitFor(() => pageResults.length === 3 && pageResults.every(r => r && r.thumbnail));
   })()`);
   ck('문서 3쪽 준비', ready === true);
+  await new Promise(r => setTimeout(r, 500));
+  // 불러오기만 한 상태 = 아직 작업 파일로 저장한 적 없음 → 닫을 때 물어야 한다
+  ck('불러오기 직후엔 닫기 질문 대상', askOnClose === true, { askOnClose, unsaved });
   ck('닫기 전 저장 요청 수신부가 있음',
      await win.webContents.executeJavaScript('typeof window.electronAPI.onSaveWorkAndQuit === "function"'));
 
@@ -65,6 +74,20 @@ app.whenReady().then(async () => {
     const head = fs.readFileSync(savePath).slice(0, 13).toString('latin1');
     ck('작업 파일 매직 확인', head === 'PDFEDITWORK1\n', head);
   }
+
+  // ③ 저장한 뒤에는 닫아도 묻지 않는다 (저장했는데 또 묻던 문제)
+  ck('저장 후엔 닫기 질문 없음', askOnClose === false, { askOnClose, unsaved });
+  ck('저장 후 저장 안 한 작업 표시도 해제', unsaved !== true, unsaved);
+
+  // ④ 저장 뒤에 무언가 바꾸면 다시 물어야 한다
+  await win.webContents.executeJavaScript('rotatePage(0, 90)');
+  await new Promise(r => setTimeout(r, 600));
+  ck('저장 후 편집하면 다시 닫기 질문 대상', askOnClose === true, { askOnClose, unsaved });
+
+  // ⑤ 사이드바 '💼 작업 저장'(같은 경로)으로 다시 저장하면 또 조용해진다
+  await win.webContents.executeJavaScript('saveWorkFile()');
+  await new Promise(r => setTimeout(r, 8000));
+  ck('다시 저장하면 닫기 질문 없음', askOnClose === false, { askOnClose, unsaved });
 
   let fail = 0;
   out.forEach(([m, n, x]) => { if (m === '✘') fail++; console.log(`  ${m} ${n} ${x}`); });

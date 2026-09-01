@@ -18,6 +18,10 @@ app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 let unsavedWork = false;
 let forceClose  = false;
 let savingBeforeQuit = false;   // '작업 저장하고 닫기' 진행 중 (중복 요청·중복 다이얼로그 방지)
+// 문서가 열려 있는지 + 지금 작업 파일(.pdfw) 이름 — 편집을 안 했어도 닫기 전에
+// '저장 / 다른 이름으로 저장 / 종료'를 고를 수 있어야 한다(그냥 꺼지면 분석·설정이 통째로 날아감).
+let docOpen = false;
+let docWorkName = '';
 
 // ── 외부 실행 인자로 받은 문서 열기 (목차 검증기 '이어서 작업' 연동) ─────────
 // 실행: "PDF 분석기.exe 문서.pdf" — 시작 시 인자의 문서를 바로 연다.
@@ -220,6 +224,41 @@ function psB64(script, cb, timeout) {
 
 // 인쇄 문서명 정리 — 앱이 붙이는 접두·접미와 경로·확장자를 떼고 파일명으로 안전하게.
 // 예) 'Microsoft Word - 계약서.docx' → '계약서', '견적서.xlsx - Excel' → '견적서'
+// 임시 폴더(변환·인쇄 접수본이 놓이는 곳)인지 — 저장 기본 위치가 되면 안 된다
+function isTempPath(p) {
+  try {
+    const t = path.resolve(os.tmpdir()).toLowerCase();
+    const v = path.resolve(String(p)).toLowerCase();
+    return v === t || v.startsWith(t + path.sep);
+  } catch (e) { return false; }
+}
+// 저장 기본 폴더로 쓸 수 있는 실제 폴더인지
+function usableSaveDir(dir) {
+  try {
+    if (!dir) return false;
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return false;
+    return !isTempPath(dir);
+  } catch (e) { return false; }
+}
+function desktopDir() {
+  try { const d = app.getPath('desktop'); return usableSaveDir(d) ? d : null; } catch (e) { return null; }
+}
+// 인쇄 작업명이 전체 경로로 오는 경우(아크로뱃·탐색기·한글 등)가 많다 → 그 원본이 있던 폴더.
+// 이걸 저장 기본 위치로 삼아야 "바탕화면에서 인쇄한 문서를 바탕화면에 저장"이 된다.
+// 인쇄 접수본을 열었을 때 저장 기본 폴더 — 원본 폴더를 알면 그곳, 모르면 바탕화면.
+// (접수본 자체는 임시 폴더에 있어 그대로 두면 저장창이 Temp를 가리킨다)
+function printSaveDir(srcDir) {
+  return (usableSaveDir(srcDir) ? srcDir : null) || desktopDir() || null;
+}
+function printedSourceDir(raw) {
+  try {
+    const s = String(raw || '').replace(/[\r\n]/g, '').trim();
+    if (!/^[a-z]:[\\/]|^\\\\/i.test(s)) return null;   // 절대 경로 형태일 때만
+    const dir = path.dirname(s);
+    return usableSaveDir(dir) ? dir : null;
+  } catch (e) { return null; }
+}
+
 function cleanPrintDocName(raw) {
   if (!raw) return '';
   let s = String(raw).trim();
@@ -266,8 +305,9 @@ while ($true) {
         const b64 = line.trim();
         if (!b64) return;
         try {
-          const name = cleanPrintDocName(Buffer.from(b64, 'base64').toString('utf8'));
-          if (name) _lastPrintJob = { name, at: Date.now() };
+          const raw = Buffer.from(b64, 'base64').toString('utf8');
+          const name = cleanPrintDocName(raw);
+          if (name) _lastPrintJob = { name, dir: printedSourceDir(raw), at: Date.now() };
         } catch (e) {}
       });
     });
@@ -294,10 +334,11 @@ function initPrintDocNameSources() {
 }
 
 // 접수 파일에 붙일 이름 결정 (실시간 캡처 우선 → 로그 → 폴백)
+// cb(문서명, 원본 폴더) — 폴더는 인쇄 작업명이 전체 경로일 때만 나온다
 function resolvePrintedDocName(cb) {
-  const fresh = _lastPrintJob && (Date.now() - _lastPrintJob.at < 180000) ? _lastPrintJob.name : null;
-  if (fresh) { _lastPrintJob = null; return cb(fresh); }
-  lookupPrintedDocFromLog(180, raw => cb(cleanPrintDocName(raw) || null));
+  const fresh = _lastPrintJob && (Date.now() - _lastPrintJob.at < 180000) ? _lastPrintJob : null;
+  if (fresh && fresh.name) { _lastPrintJob = null; return cb(fresh.name, fresh.dir || null); }
+  lookupPrintedDocFromLog(180, raw => cb(cleanPrintDocName(raw) || null, printedSourceDir(raw)));
 }
 
 let _printDebounce = null;
@@ -324,7 +365,11 @@ function ingestPrintedFile(p, retry) {
       try { fs.copyFileSync(p, dst); } catch (err) { return; }
       try { fs.unlinkSync(p); } catch (err) {}   // 처리 완료 — 재기동 시 중복 열림 방지
       // 인쇄를 건 문서의 원래 이름을 찾아 붙인다(못 찾으면 기존처럼 '인쇄접수_시각')
-      resolvePrintedDocName(docName => {
+      resolvePrintedDocName((docName, srcDir) => {
+        // 접수본은 임시 폴더에 있으므로, 그대로 두면 저장 다이얼로그가 Temp를 가리킨다.
+        // 인쇄한 원본이 있던 폴더를 알면 그곳으로, 모르면 바탕화면으로 맞춘다.
+        const saveDir = printSaveDir(srcDir);
+        if (saveDir) { _docDir = saveDir; _lastSaveDir = saveDir; }
         const name = `${docName || `인쇄접수_${Date.now() % 100000}`}.pdf`;
         if (mainWin && !mainWin.isDestroyed()) {
           mainWin.webContents.send('external:open', [{ path: dst, name }]);
@@ -342,7 +387,8 @@ function ingestPrintedFile(p, retry) {
 function sweepTempConversions() {
   try {
     const dir = os.tmpdir();
-    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin)$|^remoteup_.*$/i;
+    // pdfedit_*: 편집 임시 PDF·bin, 인쇄 접수본, 아웃라인 결과, 표지 AI 생성 PNG까지 모두 포함
+    const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin|png)$|^remoteup_.*$/i;
     for (const f of fs.readdirSync(dir)) {
       if (re.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} }
     }
@@ -533,26 +579,36 @@ function createWindow() {
 
   // ── 종료 전 저장 여부 확인 ──────────────────────────────────────────────
   win.on('close', (e) => {
-    if (forceClose || !unsavedWork) return;
+    if (forceClose) return;
+    if (!unsavedWork && !docOpen) return;        // 열린 문서도 없고 저장할 것도 없다 → 그대로 닫기
     e.preventDefault();
     // 닫기 = 잃어버리기가 아니라 '저장하고 닫기'를 고를 수 있어야 한다.
     // 저장은 렌더러의 작업 파일(.pdfw) 저장을 그대로 쓴다 — 원본 PDF와 지금 상태가 한 파일에 담긴다.
+    // 편집을 하나도 안 했어도(불러오기만 했어도) 물어본다 — 분석 결과·설정도 저장 가치가 있다.
     const choice = dialog.showMessageBoxSync(win, {
-      type: 'warning',
-      buttons: ['💼 작업 저장하고 닫기', '저장 안 하고 닫기', '취소'],
+      type: unsavedWork ? 'warning' : 'question',
+      buttons: [
+        docWorkName ? `💼 저장하고 닫기 (${docWorkName})` : '💼 작업 저장하고 닫기',
+        '📁 다른 이름으로 저장하고 닫기',
+        '저장 안 하고 종료',
+        '취소',
+      ],
       defaultId: 0,
-      cancelId: 2,
+      cancelId: 3,
       noLink: true,
       title: '닫기',
-      message: '저장하지 않은 편집·적용 결과가 있습니다.',
+      message: unsavedWork
+        ? '저장하지 않은 편집·적용 결과가 있습니다.'
+        : '문서가 열려 있습니다. 저장하고 닫을까요?',
       detail: '작업 저장을 고르면 원본 PDF와 지금 상태를 담은 작업 파일(.pdfw)로 저장한 뒤 닫습니다.\n'
-            + '(그 파일을 열면 지금 이 상태 그대로 이어서 작업할 수 있습니다)',
+            + '(그 파일을 열면 지금 이 상태 그대로 이어서 작업할 수 있습니다)'
+            + (docWorkName ? '' : '\n※ 아직 저장한 적이 없어 두 항목 모두 저장 위치를 묻습니다.'),
     });
-    if (choice === 1) { forceClose = true; win.destroy(); return; }
-    if (choice !== 0) return;                    // 취소 — 창 유지
-    if (savingBeforeQuit) return;                // 저장 진행 중 중복 요청 방지
+    if (choice === 2) { forceClose = true; win.destroy(); return; }
+    if (choice !== 0 && choice !== 1) return;     // 취소 — 창 유지
+    if (savingBeforeQuit) return;                 // 저장 진행 중 중복 요청 방지
     savingBeforeQuit = true;
-    win.webContents.send('app:saveWorkAndQuit');
+    win.webContents.send('app:saveWorkAndQuit', choice === 1 ? 'saveAs' : 'save');
   });
 
   // ── 화면이 죽었을 때(흰 화면) 복구 ──────────────────────────────────────
@@ -571,7 +627,7 @@ function createWindow() {
       detail: '다시 열면 처음 상태로 돌아갑니다 — 열려 있던 문서·편집 내용은 사라집니다.\n'
             + '벌 수가 아주 많은 반복 배치나 대용량 원고에서 생길 수 있습니다.',
     });
-    if (choice === 0) { forceClose = false; unsavedWork = false; win.reload(); }
+    if (choice === 0) { forceClose = false; unsavedWork = false; docOpen = false; docWorkName = ''; win.reload(); }
     else { forceClose = true; win.destroy(); }
   });
   win.webContents.on('unresponsive', () => {
@@ -676,6 +732,8 @@ app.on('will-quit', () => { try { licenseTunnel.stop(); } catch (e) {} }); // cl
 
 // 렌더러 → '저장 안 한 작업' 상태 보고
 ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });
+// 렌더러 → '문서가 열려 있음' + 지금 작업 파일 이름 (편집이 없어도 닫기 확인을 띄우기 위함)
+ipcMain.on('app:docopen', (_, open, name) => { docOpen = !!open; docWorkName = String(name || ''); });
 // 닫기 전 작업 저장 결과 — 저장했으면 그대로 닫고, 취소·실패면 창을 유지한다
 ipcMain.on('app:saveWorkResult', (event, ok) => {
   savingBeforeQuit = false;
@@ -689,6 +747,7 @@ ipcMain.handle('app:forceReload', (event) => {
   const w = BrowserWindow.fromWebContents(event.sender);
   if (!w) return false;
   unsavedWork = false;
+  docOpen = false; docWorkName = '';   // 새로고침하면 열린 문서도 사라진다
   w.webContents.reloadIgnoringCache();
   return true;
 });
@@ -1014,16 +1073,21 @@ let _lastSaveDir = null;   // 저장 다이얼로그 기본 폴더 — 문서를
 let _docDir = null;             // 지금 연 문서가 있던 폴더 — 작업 파일 저장의 기본 위치
 ipcMain.on('app:docDir', (_e, dir) => {
   try {
-    if (dir && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) { _lastSaveDir = dir; _docDir = dir; }
+    // 임시 폴더(HWP·Office 변환본, 인쇄 접수본이 놓이는 곳)는 저장 기본 위치가 될 수 없다.
+    // 예전엔 그대로 받아들여, 프린터로 보낸 문서를 저장하면 AppData\Local\Temp가 열렸다.
+    if (usableSaveDir(dir)) { _lastSaveDir = dir; _docDir = dir; }
   } catch (e) {}
 });
 // 저장 다이얼로그의 기본 폴더 결정 (순수 함수 — 노드에서 단독 검증)
 //   작업 파일(.pdfw): 항상 '지금 연 문서가 있는 폴더'가 먼저. 다른 곳에 한 번 저장했다고
 //     작업 파일 위치가 따라 옮겨 다니면 원고와 작업 파일이 흩어진다.
 //   그 밖(PDF·시안 HTML): 문서 폴더 → 직전 저장 폴더 순.
-function pickSaveDir(kind, docDir, lastDir) {
-  if (kind === 'pdfw') return docDir || lastDir || null;
-  return lastDir || docDir || null;
+function pickSaveDir(kind, docDir, lastDir, isTemp) {
+  const bad = isTemp || (() => false);
+  const d = bad(docDir) ? null : docDir;
+  const l = bad(lastDir) ? null : lastDir;
+  if (kind === 'pdfw') return d || l || null;
+  return l || d || null;
 }
 function uniqueSavePath(dir, name) {
   const ext = path.extname(name);
@@ -1032,14 +1096,23 @@ function uniqueSavePath(dir, name) {
   for (let i = 1; fs.existsSync(p) && i < 1000; i++) p = path.join(dir, `${stem}-${i}${ext}`);
   return p;
 }
+// 이미 경로가 정해진 작업 파일에 덮어쓰기 ('저장' — 위치를 다시 묻지 않는다).
+// 파일 쓰기는 preload가 fs로 직접 한다(대용량 버퍼 IPC 금지). 여기서는 허가와 경로 검증만.
+ipcMain.handle('dialog:confirmSavePath', (_, { filePath, kind }) => {
+  if (!licenseGate(kind === 'pdfw' ? '작업 파일' : 'PDF')) return null;
+  if (!filePath || typeof filePath !== 'string') return null;
+  try { _lastSaveDir = path.dirname(filePath); } catch (e) {}
+  return filePath;
+});
+
 ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind }) => {
   // kind:'html' — E-book 시안 등 PDF가 아닌 산출물. 없으면 지금까지처럼 PDF로 동작한다.
   const isHtml = kind === 'html';
   const isWork = kind === 'pdfw';
   if (!licenseGate(isHtml ? '시안 HTML' : isWork ? '작업 파일' : 'PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
   // 기본 폴더 = 문서를 연 폴더(app:docDir) → 그 뒤로는 직전 저장 폴더, 둘 다 없으면 다운로드
-  let dir = pickSaveDir(kind, _docDir, _lastSaveDir);
-  try { if (!dir || !fs.existsSync(dir)) dir = app.getPath('downloads'); } catch (e) { dir = null; }
+  let dir = pickSaveDir(kind, _docDir, _lastSaveDir, isTempPath);
+  try { if (!usableSaveDir(dir)) dir = desktopDir() || app.getPath('downloads'); } catch (e) { dir = null; }
   const defaultPath = dir ? uniqueSavePath(dir, defaultName) : defaultName;
   const { canceled, filePath } = await dialog.showSaveDialog({
     title: isHtml ? '시안 HTML 저장' : isWork ? '작업 파일 저장' : 'PDF 저장',
