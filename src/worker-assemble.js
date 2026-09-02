@@ -5,6 +5,29 @@
 
 importScripts('./libs/pdf-lib.min.js', './libs/fontkit.umd.min.js', './hf-core.js');
 
+// ── PDF 저장 옵션 (pdf-lib) ────────────────────────────────────────────────
+// ⚠ src/app-core.js의 같은 이름 함수와 **같은 내용을 유지할 것** — 워커/편집기 창은
+//   별개 스코프라 전역을 공유하지 못한다. 한쪽만 고치면 저장 성능이 갈라진다.
+// pdf-lib은 저장 중 objectsPerTick개마다 setTimeout(…,0)으로 이벤트 루프에 양보한다.
+// 기본값 50은 이 앱처럼 객체가 많은 문서에서 재앙이다 — 실측(2403쪽·간접객체 13,553개):
+// 실제 직렬화는 126ms인데 tick 대기만 9.6초였다(브라우저가 중첩 setTimeout을 최소 4ms로
+// 조이고 큰 버퍼 GC까지 겹쳐 tick 하나당 25~36ms). **결과 바이트는 tick 수와 무관하게 동일**하다.
+// → 문서 크기를 보고 '한 번 멈춤이 SAVE_CHUNK_MS를 넘지 않을 만큼'만 나눈다.
+//   작은 문서는 아예 쉬지 않고(가장 빠름), 아주 큰 문서만 몇 번 쉬어 간다.
+const SAVE_CHUNK_MS = 200;      // 한 번에 멈춰도 괜찮은 시간
+const SAVE_OBJS_PER_MS = 108;   // 실측 직렬화 속도 (13,553객체 / 126ms)
+function pdfSaveOpts(doc, extra) {
+  let n = 0;
+  try { n = (doc && doc.context && doc.context.indirectObjects) ? doc.context.indirectObjects.size : 0; } catch (e) {}
+  const total = 2 * n;          // pdf-lib은 크기 계산·직렬화로 객체를 두 번 훑는다
+  const budget = SAVE_CHUNK_MS * SAVE_OBJS_PER_MS;
+  const ticks = Math.floor(total / budget);            // 이 문서에 필요한 쉼 횟수(작으면 0)
+  const per = ticks > 0 ? Math.ceil(total / (ticks + 1)) : total + 1;
+  return Object.assign({ useObjectStreams: false, updateFieldAppearances: false,
+                         objectsPerTick: Math.max(1000, per) }, extra || {});
+}
+function savePdfDoc(doc, extra) { return doc.save(pdfSaveOpts(doc, extra)); }
+
 // ── 레이아웃 변환에 쓰이는 순수 계산 헬퍼 (index.html의 동명 함수와 동일) ──
 const PT_PER_MM = 72 / 25.4;
 const mm2pt = mm => mm * PT_PER_MM;
@@ -452,7 +475,7 @@ async function handleLayoutTransform(payload) {
     self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 });
   }
 
-  return out.save({ useObjectStreams: false });
+  return savePdfDoc(out, { updateFieldAppearances: true });
 }
 
 async function handleMerge(payload) {
@@ -468,7 +491,7 @@ async function handleMerge(payload) {
     counts.push(indices.length);
     self.postMessage({ id: self.__currentId, progress: (i + 1) / total });
   }
-  const bytes = await mergedDoc.save();
+  const bytes = await savePdfDoc(mergedDoc, { useObjectStreams: true, updateFieldAppearances: true });
   return { bytes, counts };
 }
 

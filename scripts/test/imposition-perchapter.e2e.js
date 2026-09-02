@@ -143,6 +143,44 @@ app.whenReady().then(async () => {
     ck('다시 켜면 켜진 상태', _impEnabled && document.getElementById('impEnabled').checked);
 
     exitEditWorkspace(false);
+    await new Promise(r => setTimeout(r, 400));
+
+    // ── 체크만 하면 '적용' 결과가 실제로 파일별로 갈리는지 (메인 화면 기준) ──────
+    closeTab(activeTabId);
+    await new Promise(r => setTimeout(r, 300));
+    await openMergedAsChapters([await mk('E', 5), await mk('F', 5), await mk('G', 5)]);
+    await waitFor(() => pageResults.length === 15 && pageResults.every(r => r && r.thumbnail));
+    await new Promise(r => setTimeout(r, 700));
+    toggleEditSidebar(true);
+    setImpMode('booklet');
+    toggleImpEnabled(true, true);
+    document.getElementById('impPerChapter').checked = false; impPerChapterChanged();
+    await new Promise(r => setTimeout(r, 2000));
+    await applyChanges();
+    await waitFor(() => !!processedPdfBytes, 120000);
+    const w3 = (await PDFDocument.load(processedPdfBytes.slice(0))).getPageCount();
+    ck('전체 중철: 15쪽 → 시트 8장', w3 === 8, w3);
+    document.getElementById('impPerChapter').checked = true; impPerChapterChanged();
+    await new Promise(r => setTimeout(r, 2500));
+    await applyChanges();
+    await waitFor(() => !!processedPdfBytes, 120000);
+    const p3 = (await PDFDocument.load(processedPdfBytes.slice(0))).getPageCount();
+    ck('파일별 중철: 4+4+4 = 12장 (전체와 다름)', p3 === 12, { p3, w3 });
+    ck('구간 3개 기록', (impChapterRanges() || []).length === 3, impChapterRanges());
+    ck('적용 안내에 파일별 표기', /📄 챕터별 따로/.test(impositionNoteOf()), impositionNoteOf());
+    ck('나누지 못했다는 경고는 없음', impPerChapterStatusNote() === '', impPerChapterStatusNote());
+
+    // ── 파일 구분이 없는 단일 문서에서 체크하면 이유를 알려 준다 ─────────────
+    exitEditWorkspace(false);
+    closeTab(activeTabId);
+    await new Promise(r => setTimeout(r, 300));
+    startLoad([await mk('H', 6)]);
+    await waitFor(() => pageResults.length === 6 && pageResults.every(r => r && r.thumbnail), 60000);
+    await new Promise(r => setTimeout(r, 700));
+    document.getElementById('impPerChapter').checked = true;
+    ck('단일 문서면 적용되지 않는다고 알림', impPerChapterStatusNote().indexOf('단일 문서') > 0,
+       impPerChapterStatusNote());
+
     return out;
   })()`);
 

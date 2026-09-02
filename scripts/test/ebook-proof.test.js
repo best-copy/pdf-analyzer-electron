@@ -19,7 +19,7 @@ function loadCore() {
     .filter(t => buildTime.includes(t));
   return {
     impure, coreSrc: body,
-    api: new Function(body + '\nreturn { ebookSpreads, buildEbookProofHtml, ebookWatermarkUri, EBOOK_CSS, EBOOK_JS };')(),
+    api: new Function(body + '\nreturn { ebookSpreads, ebookSoloSpreads, buildEbookProofHtml, ebookWatermarkUri, EBOOK_CSS, EBOOK_JS };')(),
   };
 }
 
@@ -222,6 +222,48 @@ const scriptOpens = (evil.match(/<script/gi) || []).length;
 const scriptCloses = (evil.match(/<\/script>/gi) || []).length;
 ck('script 태그 짝이 맞음', scriptOpens === 2 && scriptCloses === 2, { scriptOpens, scriptCloses });
 
+console.log('\n[4-b] 보기 형식 — 양면(펼침) / 단면(한 쪽씩)');
+// 단면(한 면만 인쇄한) 책자는 펼치면 왼쪽이 백지, 오른쪽이 인쇄면이다.
+const { ebookSoloSpreads } = api;
+ck('단면 펼침면 = [백지, 인쇄면]', JSON.stringify(ebookSoloSpreads(3, 'left'))
+    === JSON.stringify([[null, 0], [null, 1], [null, 2]]));
+ck('우철 단면은 좌우가 뒤집힘', JSON.stringify(ebookSoloSpreads(2, 'right'))
+    === JSON.stringify([[0, null], [1, null]]));
+ck('0쪽이면 빈 배열', ebookSoloSpreads(0, 'left').length === 0);
+// 모든 쪽이 정확히 한 번씩 (빠지거나 겹치면 고객이 잘못된 시안을 본다)
+const soloSeen = ebookSoloSpreads(17, 'left').flat().filter(v => v !== null);
+ck('17쪽: 모든 쪽이 한 번씩', soloSeen.length === 17 && soloSeen.every((v, i) => v === i));
+const solo = buildEbookProofHtml({
+  title: 'x', meta: { mm: [210, 297], bind: 'left', view: 'single' },
+  book: [img, img, img, img], sheets: [], opts: {},
+});
+ck('페이로드에 view=single', /"view":"single"/.test(solo));
+ck('단면 페이로드의 spreads가 [null,k] 꼴',
+   /"spreads":\[\[null,0\],\[null,1\]/.test(solo.replace(/\s/g, '')));
+ck('단면은 화면 방향을 강제하지 않음(늘 펼침 구성)',
+   solo.includes('var want=(MOB&&V==="book"'));
+ck('단면 목록에는 백지 칸을 넣지 않음', solo.includes('if(!im&&(V!=="book"||SOLO))return;'));
+ck('단면 낱장 뒷면은 백지', solo.includes('var backImg=single?(SOLO?null:to[0]):(to[leafR?0:1]);'));
+ck('기본은 양면(펼침)', /"view":"spread"/.test(html));
+ck('알 수 없는 값은 양면으로 떨어짐',
+   /"view":"spread"/.test(buildEbookProofHtml({ title: 'x', meta: { view: '없는값' }, book: [img], opts: {} })));
+
+console.log('\n[4-c] 제본 형태 — 책자 / 트윈링');
+// 트윈링은 낱장을 타공해 철사로 엮으므로 책등에 골(그늘)이 없고 고리·타공이 보인다.
+const ring = buildEbookProofHtml({
+  title: 'x', meta: { mm: [210, 297], bind: 'left', bindStyle: 'twinring' },
+  book: [img, img], sheets: [], opts: {},
+});
+ck('페이로드에 bindStyle=twinring', /"bindStyle":"twinring"/.test(ring));
+ck('기본은 책자 제본', /"bindStyle":"book"/.test(html));
+ck('알 수 없는 값은 책자로 떨어짐',
+   /"bindStyle":"book"/.test(buildEbookProofHtml({ title: 'x', meta: { bindStyle: '없는값' }, book: [img], opts: {} })));
+ck('고리 그리는 코드 포함', ring.includes('function addRings(') && ring.includes('.ringwrap'));
+ck('트윈링이면 책등 골을 CSS로 숨김', ring.includes('.twinring .gut,.twinring .gtop{display:none}'));
+ck('고리는 무대에 붙인 뒤 배치', (() => {
+  const a = ring.indexOf('stage.appendChild(d)'), b = ring.indexOf('addRings(d)');
+  return a > 0 && b > a && b - a < 200;
+})());
 console.log('\n[5] 인쇄 대수 없을 때');
 const only = buildEbookProofHtml({ title: 'x', meta: {}, book: [img], sheets: [], opts: {} });
 ck('시트 없으면 토글 버튼도 없음', !only.includes('id="tabSheet"'));

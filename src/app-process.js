@@ -91,16 +91,21 @@
           return;
         }
         wsResetSampleGrid();
-        if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
-        pdfBytes = await applyBleedStage(pdfBytes);   // ◲ 블리드 옵션 (임포징 앞)
-        if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
+        // 📄 파일별 임포징이면 조판부터 파일마다 따로 (모아찍기 칸이 파일 경계를 넘지 않게)
+        const perPv = await tryPerChapterPipeline(pdfBytes, groups, base.sig);
+        if (perPv) pdfBytes = perPv;
+        else {
+          if (groups.length) pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
+          pdfBytes = await applyBleedStage(pdfBytes);   // ◲ 블리드 옵션 (임포징 앞)
+          if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
+        }
         processedPdfBytes = pdfBytes;
         directOutputBytes = null;   // 파이프라인 결과 — 다운로드는 재조립 경로 사용
         processedFileName = defaultProcessedName();
         // 이 결과가 어떤 설정으로 만들어졌는지 기록 — '💾 저장하고 닫기'가 같은 설정이면
         // 똑같은 파이프라인을 한 번 더 돌리지 않고 이 결과를 그대로 쓴다(임포징 재조립 생략).
         _processedSig = (optSignature() === sigAtStart) ? sigAtStart : null;
-        setDirty(true);
+        setDirty(true, { auto: true });   // 화면 갱신일 뿐 — 저장해 둔 상태를 더럽히지 않는다
         updateDownloadBtn();
         await renderProcessedPreview(pdfBytes, { live: true });
       } catch (e) {
@@ -134,7 +139,7 @@
         }
         const sub = await PDFLib.PDFDocument.create();
         (await sub.copyPages(_wsSliceCache.doc, idxs)).forEach(p => sub.addPage(p));
-        let bytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
+        let bytes = new Uint8Array(await savePdfDoc(sub));
         const sGroups = groups.map(g => ({ mask: idxs.map(i => g.mask[i]), es: g.es })).filter(g => g.mask.some(Boolean));
         if (sGroups.length) {
           bytes = await applyLayoutTransform(bytes, sGroups, base.sig + '#chimp:' + ch, { pick: idxs });
@@ -199,7 +204,7 @@
       const sub = await PDFLib.PDFDocument.create();
       const idxs = sel.slice(from, to + 1);   // 표본 창 → 문서 순서 인덱스(챕터 집중이면 그 챕터의 쪽)
       (await sub.copyPages(_wsSliceCache.doc, idxs)).forEach(p => sub.addPage(p));
-      const sampleBytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
+      const sampleBytes = new Uint8Array(await savePdfDoc(sub));
       // 그룹 마스크도 같은 창으로 추려낸다 — es는 그대로 공유(전역/챕터별 설정 유지)
       const sGroups = groups.map(g => ({ mask: idxs.map(i => g.mask[i]), es: g.es })).filter(g => g.mask.some(Boolean));
       let bytes = sGroups.length
@@ -414,7 +419,7 @@
         await runBatch(toConvert.filter(x => !x.r.isColor), 0);          // 회색 → Dot Gain 미적용
       }
       if (onProgress) onProgress(94);
-      const outBytes = await outDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const outBytes = await savePdfDoc(outDoc);
       // 저장 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않는다 — 낡은 base가 남는 사고 방지
       if (!skipBw && baseSignature() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
       return { bytes: outBytes, stats };
@@ -461,6 +466,13 @@
       if (onProgress) cbs.add(onProgress);
       const report = p => cbs.forEach(cb => { try { cb(p); } catch (e) {} });
       const promise = (async () => {
+        // 📄 파일별 임포징: 조판 전 단계(base)에서 파일마다 잘라 조판·임포징까지 따로 돌린다
+        if (_impEnabled && impPerChapterOn()) {
+          const b0 = await buildBaseOptimized(p => report(Math.round(p * 0.6)));
+          const per = await tryPerChapterPipeline(b0.bytes, computeLayoutGroups(),
+            baseSignature() + '#opt', p => report(60 + Math.round(p * 0.4)));
+          if (per) { report(100); return per; }
+        }
         let bytes = await buildOptimizedBase(p => report(_impEnabled ? Math.round(p * 0.85) : p));
         bytes = await applyBleedStage(bytes);   // ◲ 블리드 옵션 (임포징 앞) — 다운로드 경로에도 동일 적용
         // 임포징 포함 모드: 조립·레이아웃까지 마친 결과를 최종적으로 시트로 임포징한다.
@@ -931,7 +943,7 @@
         if (onProgress && (i & 7) === 0) onProgress(40 + Math.round(i / embedded.length * 60));
         await uiYield();
       }
-      return { bytes: await out.save({ useObjectStreams: false, updateFieldAppearances: false }), n: embedded.length };
+      return { bytes: await savePdfDoc(out), n: embedded.length };
     }
     async function generateBleed() {
       if (_bkBusy) return;
@@ -1113,7 +1125,7 @@
       }
       // TrimBox 기록 — 출력기·후속 임포징이 재단 위치를 알 수 있게
       page.node.set(PDFName.of('TrimBox'), out.context.obj([trimAll.x, trimAll.y, trimAll.x + trimAll.w, trimAll.y + trimAll.h]));
-      return out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      return savePdfDoc(out);
     }
     // UI: 표지 모드 전환 + 책등폭 읽어주기
     function setCoverMode(m) {
@@ -1334,7 +1346,7 @@
         page.drawImage(img, { x: ox, y: fh - oy - img.height * s, width: img.width * s, height: img.height * s });
       }
       page.pushOperators(popGraphicsState());
-      return new Uint8Array(await doc.save({ useObjectStreams: false, updateFieldAppearances: false }));
+      return new Uint8Array(await savePdfDoc(doc));
     }
     function clearCoverFile(which) { _coverFiles[which] = null; updateCoverFileInfo(); }
     function updateCoverFileInfo() {
@@ -1847,14 +1859,14 @@
         workDoc = await PDFLib.PDFDocument.create();
         fi = await appendCoverFilePage(workDoc, { name: job.name, type: ftype, bytes: fbytes });
         c = coverInputsFromPresetData(presetData, 0);
-        const front1 = new Uint8Array(await workDoc.save({ useObjectStreams: false, updateFieldAppearances: false }));
+        const front1 = new Uint8Array(await savePdfDoc(workDoc));
         const ab = await buildAutoBackCover(front1, fi, 'ai');   // 뒤표지 = 앞표지 기반 로컬 구성
         const jpg = await workDoc.embedJpg(ab.jpg);
         const pg = workDoc.addPage([ab.w, ab.h]);
         pg.drawImage(jpg, { x: 0, y: 0, width: ab.w, height: ab.h });
         bi = workDoc.getPageCount() - 1;
       }
-      const workBytes = new Uint8Array(await workDoc.save({ useObjectStreams: false, updateFieldAppearances: false }));
+      const workBytes = new Uint8Array(await savePdfDoc(workDoc));
       const outBytes = await buildCoverSpreadBytes(workBytes, {
         frontIdx: fi, backIdx: bi, spineMm: c.spine, bleedMm: c.bleed,
         crop: c.crop, fold: c.fold,
@@ -1932,7 +1944,7 @@
           fileNote += `\n📂 뒤표지 파일: ${_coverFiles.back.name}`;
         }
         if (_coverFiles.front || _coverFiles.back)
-          workBytes = new Uint8Array(await src.save({ useObjectStreams: false, updateFieldAppearances: false }));
+          workBytes = new Uint8Array(await savePdfDoc(src));
         // 뒤표지 자동 생성(🤖) — 앞표지(불러온 파일 포함)를 분석해 자동 구성 페이지를 추가.
         // 뒤표지 파일을 불러왔으면 파일이 우선.
         if (!_coverFiles.back && c.backAuto !== 'none') {
@@ -1943,7 +1955,7 @@
             try {
               showLoading('🤖 AI 뒤표지 생성 중 — 이미지 생성 API 호출 (수십 초)…');
               bi = await appendAiBackCover(src, workBytes, fi, apiKey);
-              workBytes = new Uint8Array(await src.save({ useObjectStreams: false, updateFieldAppearances: false }));
+              workBytes = new Uint8Array(await savePdfDoc(src));
               autoBackNote = '\n🤖 뒤표지 AI 생성 완료 (gpt-image-1 — 앞표지 색 분석 기반)';
               aiDone = true;
             } catch (e) {
@@ -1959,7 +1971,7 @@
             const jpg = await src.embedJpg(ab.jpg);
             const pg = src.addPage([ab.w, ab.h]);
             pg.drawImage(jpg, { x: 0, y: 0, width: ab.w, height: ab.h });
-            workBytes = new Uint8Array(await src.save({ useObjectStreams: false, updateFieldAppearances: false }));
+            workBytes = new Uint8Array(await savePdfDoc(src));
             bi = src.getPageCount() - 1;
             autoBackNote = `\n🎨 뒤표지 자동 구성(로컬) — 배경색 RGB ${ab.color.join(',')} 그라데이션` + autoBackNote;
           }
@@ -1992,7 +2004,7 @@
           const out = await PDFLib.PDFDocument.create();
           const idxs = fi === bi ? [fi] : [fi, bi];
           (await out.copyPages(workDoc, idxs)).forEach(p => out.addPage(p));
-          bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+          bytes = await savePdfDoc(out);
           name = `${base}_표지.pdf`;
           note = `📕 표지 추출 완료 — ${idxs.length}쪽 (앞표지 ${fi + 1}p${fi === bi ? '' : ` · 뒤표지 ${c.backAuto !== 'none' ? '자동 생성' : (bi + 1) + 'p'}`})`
             + fileNote + autoBackNote
@@ -2051,7 +2063,7 @@
             doc.removePage(idx);
             doc.insertPage(idx, np);
           }
-          outBytes = new Uint8Array(await doc.save({ useObjectStreams: false, updateFieldAppearances: false }));
+          outBytes = new Uint8Array(await savePdfDoc(doc));
           hideLoading();
         }
         try { renderProcessedPreview(outBytes); } catch (e) {}
@@ -2065,7 +2077,12 @@
 
     // ── ✒ 폰트 아웃라인화 — 체크 옵션 (편집 적용·다운로드의 최종 단계로 반영) ──
     // 즉시 실행 버튼이 아니라 옵션이므로 프리셋에 저장·복원된다.
-    let _outlineEnabled = false;
+    // 기본값 = **켜짐**(방식은 아래 기본값인 '폰트 완전 임베드'). 폰트가 빠진 채로 출력이 나가는
+    // 사고가 실무에서 가장 비싸고, 완전 임베드는 실측(한글 40쪽) 0.3초·+35KB로 부담이 거의 없다.
+    // 사용자가 직접 끄면 그 선택을 기억한다(localStorage 'outlineOn').
+    let _outlineEnabled = (function () {
+      try { return localStorage.getItem('outlineOn') !== '0'; } catch (e) { return true; }
+    })();
     // 방식: 'outline'=곡선화(-dNoOutputFonts), 'embed'=폰트 완전 임베드(-dEmbedAllFonts, 비서브셋)
     // 기본값 = 'embed'(완전 임베드). 실측(한글 40쪽): 곡선화 2.6초·11MB vs 완전 임베드 0.3초·35KB —
     // 9배 빠르고 용량 증가가 없으며 텍스트 검색·수정도 유지된다. 곡선화는 명시 선택 시에만.
@@ -2085,6 +2102,7 @@
     }
     function setOutlineEnabled(on) {
       _outlineEnabled = !!on;
+      try { localStorage.setItem('outlineOn', _outlineEnabled ? '1' : '0'); } catch (e) {}
       const chk = document.getElementById('esOutline');
       if (chk && chk.checked !== _outlineEnabled) chk.checked = _outlineEnabled;
       // 사이드바의 토글 버튼(체크박스 대신) 표시 동기
@@ -2212,7 +2230,7 @@
             const idxs = Array.from({ length: Math.min(per, N - s) }, (_, j) => s + j);
             const sub = await PDFLib.PDFDocument.create();
             (await sub.copyPages(src, idxs)).forEach(p => sub.addPage(p));
-            parts.push(new Uint8Array(await sub.save({ useObjectStreams: false })));
+            parts.push(new Uint8Array(await savePdfDoc(sub, { updateFieldAppearances: true })));
           }
           let done = 0;
           const outlinedChunks = await Promise.all(parts.map(pb => gsOne(pb).then(r => {
@@ -2225,7 +2243,7 @@
             const cd = await PDFLib.PDFDocument.load(cb);
             (await merged.copyPages(cd, cd.getPageIndices())).forEach(p => merged.addPage(p));
           }
-          out = new Uint8Array(await merged.save({ useObjectStreams: true }));
+          out = new Uint8Array(await savePdfDoc(merged, { useObjectStreams: true }));
         }
       } catch (e) {
         // gs 미설치 등 환경 문제는 그대로 알리고, 분할·병합 단계 오류만 단일 실행 폴백
@@ -2302,7 +2320,7 @@
           pg.drawImage(jpg, { x: 0, y: 0, width: vp1.width, height: vp1.height });
         }
       } finally { try { await pdf.destroy(); } catch (e) {} }
-      return new Uint8Array(await doc.save({ useObjectStreams: false }));
+      return new Uint8Array(await savePdfDoc(doc, { updateFieldAppearances: true }));
     }
 
     // 임포징 공용 용지 (가로 기준 [w, h])
@@ -2693,7 +2711,7 @@
         await uiYield();
       }
       if (onProgress) onProgress(98);
-      const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const bytes = await savePdfDoc(out);
       return { bytes, n0, per, across, down, sides, sheets: sheetsMade, trimMm: trimSizeMm(firstTrim) };
     }
 
@@ -2745,7 +2763,7 @@
         await uiYield();
       }
       if (onProgress) onProgress(98);
-      const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const bytes = await savePdfDoc(out);
       return { bytes, n0, n, sheets: n / 4 };
     }
 
@@ -2822,7 +2840,7 @@
         await uiYield();
       }
       if (onProgress) onProgress(98);
-      const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const bytes = await savePdfDoc(out);
       return { bytes, n0, n, chunk, sheets: sheets.length, nup, sides };
     }
 
@@ -2908,7 +2926,7 @@
         await uiYield();
       }
       if (onProgress) onProgress(98);
-      const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const bytes = await savePdfDoc(out);
       return { bytes, n0, total, grid: firstGrid, sheets: n0, trimMm: trimSizeMm(firstTrim) };
     }
 
@@ -3010,7 +3028,7 @@
         await uiYield();
       }
       if (onProgress) onProgress(98);
-      const bytes = await out.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const bytes = await savePdfDoc(out);
       return { bytes, n0, n, sheets: sheets.length, sides };
     }
 
@@ -3105,7 +3123,7 @@
       const make = async idxs => {
         const d = await PDFLib.PDFDocument.create();
         (await d.copyPages(src, idxs)).forEach(p => d.addPage(p));
-        return d.save({ useObjectStreams: false, updateFieldAppearances: false });
+        return savePdfDoc(d);
       };
       const cover = await make([0, 1]);
       const inner = await make(Array.from({ length: total - 2 }, (_, i) => i + 2));
@@ -3668,6 +3686,16 @@
       if (!el || !el.checked) return false;
       try { return chapterRuns().length >= 2; } catch (e) { return false; }
     }
+    // '📄 챕터별로 따로'가 켜져 있는데 실제로 적용되지 않았으면 그 이유를 한 줄로
+    function impPerChapterStatusNote() {
+      const el = document.getElementById('impPerChapter');
+      if (!el || !el.checked) return '';
+      let runs = 0;
+      try { runs = chapterRuns().length; } catch (e) {}
+      if (runs < 2) return '\n⚠ 📄 챕터별로 따로 임포징은 이 문서에 적용되지 않았습니다 — 파일(챕터) 구분이 없는 단일 문서입니다.';
+      if (_impPerChapterWhy) return `\n⚠ 📄 파일별로 나누지 못해 전체를 한 벌 대수로 걸었습니다 — ${_impPerChapterWhy}.`;
+      return '';
+    }
     function impPerChapterChanged() {
       impGenInvalidate();
       if (!_impEnabled) return;
@@ -3680,12 +3708,103 @@
     function impChapterRanges() { return _impChapterRanges; }
     // 조립된 문서를 챕터 구간으로 잘라 각각 임포징한 뒤 순서대로 이어붙인다.
     // 반환 null = 챕터 경계를 신뢰할 수 없음(페이지 매핑 불일치·챕터 1개) → 전체 임포징으로.
+    // 파일별로 나누지 못했을 때의 이유 — 조용히 전체로 걸어 버리면 "체크했는데 그대로"로 보인다
+    let _impPerChapterWhy = '';
+    // 문서 순서 기준 챕터 구간 [{ name, idxs }] — 챕터명이 없는 쪽(빈 페이지 등)은 앞 챕터에 붙인다
+    function chapterRunsForImposition() {
+      const valid = pageResults.filter(Boolean);
+      const runs = [];
+      let prev = '';
+      valid.forEach((r, i) => {
+        const name = r.chapter || prev || '';
+        const last = runs[runs.length - 1];
+        if (last && last.name === name) last.idxs.push(i);
+        else runs.push({ name, idxs: [i] });
+        prev = name;
+      });
+      return runs;
+    }
+    // 📄 파일(챕터)별 조판+임포징 — 조판(모아찍기·N-up) 단계부터 파일마다 따로 돌린 뒤 이어붙인다.
+    // 이렇게 해야 한 칸에 두 파일의 쪽이 섞이지 않고, 파일마다 독립된 대수가 나온다.
+    //   baseBytes : 순서·회전·흑백까지 끝난 문서(문서 쪽과 1:1)
+    //   groups    : computeLayoutGroups() — 문서 전체 기준 (챕터별 개별 설정 포함)
+    // 반환 { bytes, ranges, results } 또는 null(나눌 수 없음 — 이유는 _impPerChapterWhy)
+    async function buildPerChapterPipeline(baseBytes, groups, baseSig, onProgress) {
+      _impPerChapterWhy = '';
+      const valid = pageResults.filter(Boolean);
+      const runs = chapterRunsForImposition();
+      if (runs.length < 2) { _impPerChapterWhy = '이 문서에는 파일(챕터) 구분이 하나뿐이라'; return null; }
+      const u8 = baseBytes instanceof Uint8Array ? baseBytes : new Uint8Array(baseBytes);
+      const src = await PDFLib.PDFDocument.load(u8.slice(0), { ignoreEncryption: true });
+      if (src.getPageCount() !== valid.length) {
+        _impPerChapterWhy = `조립본 쪽 수가 문서와 달라(문서 ${valid.length}쪽 · 조립 ${src.getPageCount()}쪽)`;
+        return null;
+      }
+      const opts = currentImpOptions();
+      const build = opts.mode === 'nup' || opts.mode === 'cutstack' ? buildNupBytes
+                  : opts.mode === 'repeat'   ? buildStepRepeatBytes
+                  : opts.mode === 'dup'      ? buildDup2upBytes
+                  : buildBookletBytes;
+      const out = await PDFLib.PDFDocument.create();
+      const ranges = [], results = [];
+      const duplex = (opts.sides | 0) === 2;
+      for (let k = 0; k < runs.length; k++) {
+        const idxs = runs[k].idxs;
+        const sub = await PDFLib.PDFDocument.create();
+        (await sub.copyPages(src, idxs)).forEach(p => sub.addPage(p));
+        let bytes = new Uint8Array(await savePdfDoc(sub));
+        // 조판(크기·여백·N-up·머리글…)도 이 파일의 쪽만 대상으로 — 마스크를 그 구간으로 추린다
+        const sGroups = groups.map(g => ({ mask: idxs.map(i => g.mask[i]), es: g.es })).filter(g => g.mask.some(Boolean));
+        if (sGroups.length) {
+          bytes = await applyLayoutTransform(bytes, sGroups, baseSig + '#pc:' + k + ':' + idxs.join(','), { pick: idxs });
+        }
+        bytes = await applyBleedStage(bytes);
+        const res = await build(bytes, opts, p => {
+          if (onProgress) onProgress(Math.min(99, Math.round(((k + (p || 0) / 100) / runs.length) * 100)));
+        });
+        results.push(res);
+        const sd = await PDFLib.PDFDocument.load(res.bytes, { ignoreEncryption: true });
+        const from = out.getPageCount();
+        (await out.copyPages(sd, sd.getPageIndices())).forEach(p => out.addPage(p));
+        // 양면 인쇄에서 다음 파일이 새 시트 앞면부터 시작하도록 — 시트 수가 홀수면 빈 시트 한 장
+        if (duplex && (out.getPageCount() - from) % 2 === 1) {
+          const lastPg = out.getPage(out.getPageCount() - 1);
+          out.addPage([lastPg.getWidth(), lastPg.getHeight()]);
+        }
+        ranges.push({ name: runs[k].name, from: from + 1, to: out.getPageCount() });
+        await uiYield();
+      }
+      if (onProgress) onProgress(100);
+      const bytes = new Uint8Array(await savePdfDoc(out));
+      _impChapterRanges = ranges;
+      return { bytes, ranges, results };
+    }
+    // 파이프라인(미리보기·적용·다운로드) 공용: 조판~임포징을 파일별로 돌릴 수 있으면 그 결과를 준다.
+    // 반환 null이면 평소 순서(전체 조판 → 블리드 → 임포징)로 진행하면 된다.
+    async function tryPerChapterPipeline(baseBytes, groups, baseSig, onProgress) {
+      if (!_impEnabled || !impPerChapterOn()) return null;
+      try {
+        const per = await buildPerChapterPipeline(baseBytes, groups, baseSig, onProgress);
+        return per ? per.bytes : null;
+      } catch (e) {
+        console.warn('파일별 임포징 실패 — 전체 경로로 진행:', e);
+        _impPerChapterWhy = '조립 중 오류가 나서';
+        return null;
+      }
+    }
     async function buildImposedPerChapter(u8, opts, build, onProgress) {
+      _impPerChapterWhy = '';
       const src = await PDFLib.PDFDocument.load(u8.slice(0), { ignoreEncryption: true });
       const total = src.getPageCount();
-      const srcMap = (typeof computeOutputSourceMap === 'function') ? computeOutputSourceMap() : null;
-      if (!srcMap || srcMap.length !== total) return null;
-      const pnCh = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r.chapter || '']));
+      const valid = pageResults.filter(Boolean);
+      let srcMap = (typeof computeOutputSourceMap === 'function') ? computeOutputSourceMap() : null;
+      // 매핑 길이가 어긋나도 쪽 수가 문서와 같으면 1:1로 보고 진행한다(조판이 쪽 수를 바꾸지 않은 경우)
+      if ((!srcMap || srcMap.length !== total) && total === valid.length) srcMap = valid.map(r => [r.pageNum]);
+      if (!srcMap || srcMap.length !== total) {
+        _impPerChapterWhy = `페이지 매핑이 맞지 않아(문서 ${valid.length}쪽 · 조판 결과 ${total}쪽)`;
+        return null;
+      }
+      const pnCh = new Map(valid.map(r => [r.pageNum, r.chapter || '']));
       const runs = [];
       let prev = '';
       srcMap.forEach((s, i) => {
@@ -3697,14 +3816,17 @@
         else runs.push({ name, idxs: [i] });
         prev = name;
       });
-      if (runs.length < 2) return null;
+      if (runs.length < 2) {
+        _impPerChapterWhy = '이 문서에는 파일(챕터) 구분이 하나뿐이라';
+        return null;
+      }
       const out = await PDFLib.PDFDocument.create();
       const ranges = [], results = [];
       const duplex = (opts.sides | 0) === 2;
       for (let k = 0; k < runs.length; k++) {
         const sub = await PDFLib.PDFDocument.create();
         (await sub.copyPages(src, runs[k].idxs)).forEach(p => sub.addPage(p));
-        const subBytes = new Uint8Array(await sub.save({ useObjectStreams: false, updateFieldAppearances: false }));
+        const subBytes = new Uint8Array(await savePdfDoc(sub));
         const res = await build(subBytes, opts, p => {
           if (onProgress) onProgress(Math.min(99, Math.round(((k + (p || 0) / 100) / runs.length) * 100)));
         });
@@ -3721,7 +3843,7 @@
         await uiYield();
       }
       if (onProgress) onProgress(100);
-      const bytes = new Uint8Array(await out.save({ useObjectStreams: false, updateFieldAppearances: false }));
+      const bytes = new Uint8Array(await savePdfDoc(out));
       return { bytes, ranges, results };
     }
 
@@ -3776,7 +3898,8 @@
       const paper = g('bkPaper')?.value || 'auto';
       const paperName = paper === 'auto' ? '자동 용지' : paper.startsWith('custom:') ? paper.slice(7) : paper;
       return ` · 임포징: ${name} · ${paperName}${_impScale === 'orig' ? ' · 100% 배치' : _impScale === 'fixed' ? ' · 지정배율' : ''}`
-           + (impPerChapterOn() ? ' · 📄 챕터별 따로' : '');
+           + (impPerChapterOn() ? ' · 📄 챕터별 따로' : '')
+           + impPerChapterStatusNote();
     }
     // '임포징 PDF 생성' 결과를 메인 적용 상태로 채택 + 포함 모드 자동 ON —
     // 이후 메인 '⇩ 다운로드'도 같은 임포징 반영본을 저장한다(화면·파일 불일치 버그 방지).
@@ -3808,8 +3931,19 @@
       // 결과에는 항상 문서 전체가 들어간다(챕터를 편집 중이어도) — 다른 챕터가 사라지면 안 된다.
       // 파일마다 독립 대수를 원하면 '📄 챕터(파일)별로 따로 임포징'을 켠다.
       if (typeof impPerChapterOn === 'function' && impPerChapterOn()) {
-        const per = await imposeRunsForGenerate(srcBytes, opts, build, onProgress);
-        if (per) return per;
+        // 조판(모아찍기 포함)부터 파일별로 다시 돌린다 — srcBytes는 이미 전체 기준으로 조판된 것이라 쓰지 않는다
+        try {
+          const b0 = await buildBaseOptimized();
+          const per = await buildPerChapterPipeline(b0.bytes, computeLayoutGroups(), baseSignature() + '#gen', onProgress);
+          if (per) {
+            const sum = k => per.results.reduce((a, r) => a + (r && typeof r[k] === 'number' ? r[k] : 0), 0);
+            return Object.assign({}, per.results[0] || {}, {
+              bytes: per.bytes,
+              sheets: sum('sheets'), n: sum('n'), n0: sum('n0'), total: sum('total'),
+              perChapter: per.ranges.map(r => r.name),
+            });
+          }
+        } catch (e) { console.warn('파일별 임포징 생성 실패 — 전체로 진행:', e); }
       }
       return await build(srcBytes, opts, onProgress);
     }
@@ -3831,7 +3965,7 @@
     function impScopeNote(res) {
       if (res && res.perChapter && res.perChapter.length)
         return `\n📄 파일별로 따로 임포징: ${res.perChapter.join(' · ')} — 파일마다 독립 대수이며, 결과에는 모든 파일이 들어 있습니다.`;
-      return '';
+      return impPerChapterStatusNote();
     }
 
     // 임포징 실행 — 모드에 따라 모아찍기/정합/반복/복제/중철 분기 (화면 생성만; 저장은 메인 다운로드)
@@ -6184,7 +6318,7 @@
         }));
         doc.catalog.set(PDFName.of('Outlines'), outlineRef);
         doc.catalog.set(PDFName.of('PageMode'), PDFName.of('UseOutlines'));
-        return await doc.save({ useObjectStreams: false, updateFieldAppearances: false });
+        return await savePdfDoc(doc);
       } catch (e) { console.warn('북마크 적용 실패(파일은 정상 저장):', e); return bytes; }
     }
     async function generateToc() {
@@ -6243,7 +6377,7 @@
           });
           const res = await appendTocPages(srcDoc, entries, document.getElementById('tocTitle').value.trim() || '목  차', getSlugFontBytes());
           tocPageCount = res.tocPageCount;
-          mergedBytes = await srcDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+          mergedBytes = await savePdfDoc(srcDoc);
         }
         updateProgress(60);
 
@@ -7012,6 +7146,16 @@
       return bind === 'right' ? out.map(s => [s[1], s[0]]) : out;
     }
 
+    // 📄 단면(한 면만 인쇄한) 책자의 펼침면 — 펼치면 **왼쪽은 백지**(앞장의 뒷면)이고
+    // 오른쪽에 인쇄면이 온다. 우철이면 좌우가 뒤집힌다.
+    // (양면 책처럼 두 쪽을 맞붙이면 실제 인쇄물과 다르게 보인다)
+    function ebookSoloSpreads(n, bind) {
+      const out = [];
+      const rtl = bind === 'right';
+      for (let k = 0; k < n; k++) out.push(rtl ? [k, null] : [null, k]);
+      return out;
+    }
+
     const EBOOK_CSS = `
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"Malgun Gothic","맑은 고딕",sans-serif;overflow:hidden}
@@ -7043,10 +7187,28 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .realsize .stage{overflow:auto;scrollbar-gutter:stable both-edges}
 .railon .stage{left:206px}
 .dragging,.dragging .pg{cursor:grabbing}
-.spread{position:relative;display:flex;align-items:flex-start;perspective:2600px}
+/* ⟳ 눕혀 보기 — 가로 원고를 볼 때 펼침면 전체를 **오른쪽으로 90°** 돌린다(책을 눕혀 보는 것과 같다).
+   회전은 화면 표시만 바꾸므로 넘김·확대·목록은 그대로 동작한다. 크기 계산(fit)만 가로세로를 바꾼다.
+   실제 transform은 drawSpread가 '회전 + 가운데 맞춤'을 합쳐서 넣는다. */
+/* 트윈링에서 종이가 없는 면 — 자리는 두고 보이지만 않게 한다(위치가 튀지 않게) */
+/* 맞은편에 종이가 없는 면 — 자리는 두고 보이지만 않게 한다(위치가 튀지 않게).
+   트윈링의 표지 앞·마지막 뒤, 그리고 단면 인쇄물의 첫 장 앞·마지막 뒤가 여기 해당한다. */
+.pg.nosheet{visibility:hidden}
+/* 펼침면 위치는 transform으로 옮긴다(닫힌 표지 가운데 정렬·눕혀 보기) — 자리(레이아웃)는 늘
+   두 면 그대로라, 표지에서 펼침면으로 넘어갈 때 페이지가 순간 이동하지 않고 부드럽게 미끄러진다. */
+.spread{position:relative;display:flex;align-items:flex-start;perspective:2600px;transition:transform 260ms ease}
 .pg{position:relative;background:#fff;flex:none;box-shadow:0 14px 34px rgba(0,0,0,.5)}
 .pg img{display:block;width:100%;height:100%;object-fit:contain;background:#fff;-webkit-user-drag:none;user-select:none}
+/* 양면 책의 '표지 맞은편' 빈 자리는 종이가 아니라 **빈 공간**이라 거의 투명하게 둔다. */
 .pg.blank{background:rgba(255,255,255,.04);box-shadow:none}
+/* 단면(한 면 인쇄) 책자의 왼쪽 면은 앞장의 뒷면 = **실제 흰 종이**다.
+   넘김이 끝난 뒤에도 그 백지가 그대로 남아 있어야 한다(투명하면 종이가 사라져 보인다). */
+.solo .pg.blank{background:#fff;box-shadow:0 14px 34px rgba(0,0,0,.5)}
+.solo.paper .pg.blank{box-shadow:none}
+/* 트윈링은 낱장을 링으로 엮은 것이라 **표지 맞은편에 종이가 아예 없다**.
+   첫 장은 오른쪽 표지만, 마지막 장은 왼쪽 내용만 보이고 반대쪽은 비어 있어야 한다.
+   (자리는 그대로 차지해 페이지 크기가 앞뒤로 들쭉날쭉해지지 않게 한다) */
+.twinring:not(.solo) .pg.blank{background:transparent;box-shadow:none}
 .pg .no{position:absolute;bottom:-22px;left:0;right:0;text-align:center;font-size:0.72em;color:#8e8e93}
 .trim{position:absolute;border:1px dashed rgba(255,70,70,.9);pointer-events:none}
 .wm{position:absolute;inset:0;pointer-events:none;background-repeat:repeat;opacity:.15}
@@ -7062,16 +7224,65 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
    맡고 바깥으로 갈수록 조금씩 더 돌아, 넘기는 동안 종이가 활처럼 휘었다가 다시 펴진다.
    조각마다 앞면(.sfc)과 뒷면(.sbc)이 있고, 그림은 배경 이미지를 조각 폭만큼 밀어 붙인다. */
 .leaf{position:absolute;transform-style:preserve-3d;z-index:9;pointer-events:none}
+/* 착지한 낱장은 곧바로 지우지 않고 아주 짧게 녹인다 — 원근 때문에 착지 직전의 낱장은
+   실제 페이지보다 조금 크고 기울어 있어서, 그대로 교체하면 크기·그늘이 툭 튀어 깜박여 보인다. */
+.leaf.land{transition:opacity 140ms linear;opacity:0}
+/* 넘기는 동안 제본선 위를 덮는 그늘 — 낱장(z:9)보다 위에 둬서, 종이가 책등 위를 스쳐 지나갈
+   때도 골이 밝아지지 않게 한다. 실제 책에서 제본선의 그늘은 그 자리에 늘 있다. */
+.gtop{position:absolute;pointer-events:none;z-index:12;display:none}
+.paper .gtop{display:block}
+/* ── 🌀 트윈링(더블 와이어) 제본 ──
+   일반 책자는 종이가 책등에서 이어져 골(그늘)이 지지만, 트윈링은 낱장을 잘라 구멍을 뚫고
+   철사 고리로 엮는다. 그래서 책등에 골이 없고 대신 **고리와 타공 자국**이 보인다. */
+.twinring .gut,.twinring .gtop{display:none}          /* 제본 골(그늘)이 없다 */
+.ringwrap{position:absolute;pointer-events:none;z-index:13}
+.ring{position:absolute;box-sizing:border-box;border-radius:999px;z-index:2;
+  border-style:solid;border-color:#9b9ba1;background:transparent;
+  box-shadow:0 1px 2px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.6),
+             inset 0 -1px 0 rgba(0,0,0,.25)}
+/* 타공 — 종이에 뚫린 구멍. 고리보다 뒤에 있어야 철사가 구멍을 지나가는 것처럼 보인다 */
+.punch{position:absolute;background:#3a3a40;border-radius:1.5px;z-index:1;
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.7)}
+/* 고리 그림자 — 종이 위에 드리운다 */
+.ringsh{position:absolute;pointer-events:none;z-index:11;
+  background:linear-gradient(90deg,rgba(0,0,0,0),rgba(0,0,0,.28),rgba(0,0,0,0))}
 .st{position:absolute;top:0;transform-style:preserve-3d;will-change:transform}
 .sfc{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:#fff no-repeat;overflow:hidden}
 .sbc{transform:rotateY(180deg)}
 .stsh,.stgu{position:absolute;inset:0;pointer-events:none;will-change:opacity}
 .stwm{position:absolute;inset:0;background-repeat:repeat;opacity:.15;pointer-events:none}
-.nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;opacity:0;transition:opacity .15s;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff;touch-action:none}
-.nav:hover{opacity:.8;background:linear-gradient(90deg,rgba(0,0,0,.45),transparent)}
+/* 넘김 표시 — 예전에는 띠 전체를 흐렸다 나타냈지만, 그 안에 늘 보여야 하는 버튼이 생겨
+   **화살표(i)만** 흐리게 한다. 세로 배치라 버튼이 화살표 위에 온다(눕히면 옆으로). */
+.nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff;touch-action:none}
+.nav i{opacity:0;transition:opacity .15s;font-style:normal}
+.nav:hover i{opacity:.8}
+.nav:hover{background:linear-gradient(90deg,rgba(0,0,0,.45),transparent)}
+/* 눕혀 보기 버튼 — 넘김 표시 안에 있지만 늘 보인다(넘김 동작과 섞이지 않게 따로 처리) */
+/* 눕혀 보기 버튼 — 화살표와 붙어 있으면 넘기려다 잘못 눌린다. 흐름에서 빼고
+   가운데(화살표)에서 NAVGAP만큼 떨어진 자리에 따로 앉힌다.
+   정상(가로 화면): 화살표 **아래** / 눕혀 보기: 화살표 **오른쪽** */
+.layfab{position:absolute;left:50%;top:calc(50% + 104px);transform:translate(-50%,-50%);
+  border:none;border-radius:999px;width:46px;height:46px;cursor:pointer;
+  background:rgba(29,29,31,.82);color:#f5f5f7;font-size:0.5em;line-height:1;
+  box-shadow:0 3px 12px rgba(0,0,0,.45);opacity:.55;transition:opacity .15s,background .15s}
+.layfab:hover{opacity:1;background:#ffd60a;color:#1d1d1f}
+.nav:hover .layfab{opacity:1}
+/* 눕혀 보기에서는 넘김 띠가 페이지 위에 겹치므로 버튼이 내용을 가린다 —
+   평소에는 감추고 그 근처(넘김 띠)에 마우스가 가면 나타난다.
+   손가락 기기에는 hover가 없으므로 상단 툴바의 [⟳ 눕혀 보기]로 되돌릴 수 있다. */
+.lay90 .layfab{background:#ffd60a;color:#1d1d1f;opacity:0;left:calc(50% + 104px);top:50%}
+.lay90 .nav:hover .layfab,.lay90 .layfab:hover{opacity:1}
 .railon .nav{left:206px}
 .nav.r{left:auto;right:0}
 .railon .nav.r{left:auto}
+/* 눕혀 보기(오른쪽 90°)에서는 페이지의 오른쪽이 화면 **아래**가 된다 —
+   넘김 표시도 위/아래로 옮기고, 화살표도 같이 돌려 방향이 헷갈리지 않게 한다. */
+.lay90 .nav{top:52px;bottom:auto;left:0;right:0;width:auto;height:15%}
+.lay90 .nav:hover{background:linear-gradient(180deg,rgba(0,0,0,.45),transparent)}
+.lay90 .nav.r{top:auto;bottom:56px;left:0;right:0}
+.lay90 .nav.r:hover{background:linear-gradient(0deg,rgba(0,0,0,.45),transparent)}
+.railon.lay90 .nav,.railon.lay90 .nav.r{left:206px}
+.lay90 .nav i{display:inline-block;transform:rotate(90deg);font-style:normal}
 .nav.r:hover{background:linear-gradient(270deg,rgba(0,0,0,.45),transparent)}
 .foot{position:fixed;bottom:0;left:0;right:0;height:56px;background:#000;border-top:1px solid #333;display:flex;align-items:center;gap:12px;padding:0 16px;z-index:20}
 .foot input[type=range]{flex:1;accent-color:#ffd60a}
@@ -7149,8 +7360,17 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '// 넘김 연출 값 — 조각 수, 자동 넘김 시간, 휘는 정도(도)',
       '// BEND = 휨의 최대 비율(바깥 끝 각도 대비). 0.7이면 가운데에서 약 65도쯤 휜다.',
       'var STRIPS=18, TURN_MS=1300, BEND=0.7;',
+      '// ⟳ 눕혀 보기 — 펼침면 전체를 오른쪽으로 90° 돌려서 본다(가로 원고용). 다시 누르면 원래대로.',
+      'var lay90=false;',
       '// 보는 기기 — mobile로 만든 시안은 가로일 때 두 쪽을 화면 가득, 세로일 때 한 쪽씩 보여 준다.',
       'var TG=(D.meta.target==="mobile")?"mobile":"web", MOB=(TG==="mobile"), single=false;',
+      '// 단면 시안 — 펼침면 목록이 이미 [백지, 인쇄면]으로 짜여 있다(ebookSoloSpreads).',
+      '// 화면 구성은 양면과 같고, 왼쪽이 늘 비어 있을 뿐이다.',
+      'var SOLO=(D.meta.view==="single");',
+      '// 제본 형태 — book: 무선·중철(책등에 골) / twinring: 트윈링(고리·타공)',
+      'var TWIN=(D.meta.bindStyle==="twinring");',
+      'document.body.classList.toggle("twinring",TWIN);',
+      'document.body.classList.toggle("solo",SOLO);',
       'function imgs(){return V==="book"?D.book:D.sheets;}',
       'function views(){',
       '  if(V!=="book")return D.sheets.map(function(_,k){return [k,null];});',
@@ -7170,7 +7390,10 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  // 뷰포트 크기를 못 얻는 환경(0×0 미리보기·인쇄 스냅샷)에서 음수 배율이 나오면',
       '  // 페이지 상자가 0으로 찌그러져 화면이 빈 것처럼 보인다 → 최소 배율을 보장한다.',
       '  var px=MOB?18:70, py=MOB?16:56;   // 모바일은 여백을 줄여 화면을 꽉 채운다',
-      '  var sc=Math.min((stage.clientWidth-px)/w,(stage.clientHeight-py)/h);',
+      '  // 눕혀 보기에서는 펼침면이 90° 돌아 있으므로, 폭은 화면 높이에·높이는 화면 폭에 맞춘다.',
+      '  var SW=lay90?stage.clientHeight:stage.clientWidth;',
+      '  var SH=lay90?stage.clientWidth:stage.clientHeight;',
+      '  var sc=Math.min((SW-px)/w,(SH-py)/h);',
       '  return (isFinite(sc)&&sc>0.02)?sc:1;',
       '}',
       'function viewOfPage(p){ var Ls=views();',
@@ -7183,7 +7406,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    var row=document.createElement("div"); row.className="ri"; row.setAttribute("data-v",String(k));',
       '    sp.forEach(function(p){',
       '      var im=(p==null)?null:list[p];',
-      '      if(!im&&V!=="book")return;',
+      '      if(!im&&(V!=="book"||SOLO))return;   // 단면 목록에는 백지 칸을 넣지 않는다',
       '      var cell=document.createElement("div"); cell.className="rp"+(im?"":" empty");',
       '      if(im){ var g=new Image(); g.src=im.u; g.loading="lazy"; g.alt=""; cell.appendChild(g);',
       '        var n=document.createElement("div"); n.className="rn";',
@@ -7218,15 +7441,32 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'function drawSpread(sp){',
       '  var list=imgs(), sc=fit(sp), book=(V==="book");',
       '  var d=document.createElement("div"); d.className="spread";',
+      '  var nose=0, pw=0;   // 종이 없는 쪽(-1 왼쪽 / +1 오른쪽), 한 면의 폭',
       '  sp.forEach(function(p,k){',
       '    var im=(p==null)?null:list[p];',
+      '    // 맞은편에 **실제로 종이가 있는지** 판정한다. 없으면 자리째 감춰(닫힌 책) 한 면만 보인다.',
+      '    //  · 트윈링(양면): 표지 앞·마지막 뒤에는 종이가 없다.',
+      '    //  · 단면 인쇄물: 첫 장 앞에는 넘긴 장이 없고, 마지막 뒤에는 남은 장이 없다.',
+      '    //    가운데 쪽들은 앞장의 뒷면이 실제로 있으므로 백지가 그대로 보인다.',
+      '    //  · 무선·중철 양면 책자는 표지 맞은편을 예전처럼 옅은 빈 자리로 둔다.',
+      '    var noSheet=false;',
+      '    if(!im&&book){',
+      '      var mate=sp[k?0:1];',
+      '      if(mate==null) noSheet=true;',
+      '      else if(SOLO) noSheet=(mate<=0)||(mate>=list.length-1);',
+      '      else if(TWIN) noSheet=k?(mate>=list.length-1):(mate<=0);',
+      '    }',
+      '    // 크기는 fit()이 빈 면도 한 쪽으로 세어 맞추므로 다른 펼침면과 똑같이 유지된다.',
       '    if((!book||single)&&!im)return;',
-      '    var box=document.createElement("div"); box.className="pg "+(single?"s":(k?"r":"l"))+(im?"":" blank");',
+      '    if(noSheet)nose=k?1:-1;   // 종이가 없는 쪽 — 아래에서 그만큼 가운데로 옮긴다',
+      '    var box=document.createElement("div");',
+      '    box.className="pg "+(single?"s":(k?"r":"l"))+(im?"":" blank")+(noSheet?" nosheet":"");',
+      '    box.setAttribute("data-side",String(k));   // 자리가 비어도 어느 면인지 알 수 있게',
       '    var refW=im?im.w:(list[0]?list[0].w:600), refH=im?im.h:(list[0]?list[0].h:800);',
       '    var W,H;',
       '    if(real&&D.meta.mm){ W=D.meta.mm[0]*MM; H=D.meta.mm[1]*MM; }',
       '    else { W=refW*sc; H=refH*sc; }',
-      '    box.style.width=W+"px"; box.style.height=H+"px";',
+      '    box.style.width=W+"px"; box.style.height=H+"px"; pw=W;',
       '    if(im){ var g=new Image(); g.src=im.u; g.draggable=false; box.appendChild(g); }',
       '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
       '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
@@ -7246,14 +7486,19 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '      box.onclick=function(){ if(dragMoved||noZoom)return; zoom(im); }; }',
       '    d.appendChild(box);',
       '  });',
+      '  // 한쪽에 종이가 없으면 그만큼 옮겨 **보이는 면이 화면 가운데**에 오게 한다.',
+      '  // (자리를 지우지 않고 옮기기만 하므로 표지 → 펼침면 전환이 미끄러지듯 이어진다)',
+      '  var tf=(lay90?"rotate(90deg) ":"")+(nose?("translateX("+(nose*pw/2)+"px)"):"");',
+      '  d.style.transform=tf;',
       '  stage.innerHTML=""; stage.appendChild(d);',
+      '  addRings(d);',   // ⚠ 무대에 붙인 뒤라야 offsetLeft/Width가 잡힌다(앞서 부르면 고리가 한 점에 뭉친다)
       '  return d;',
       '}',
       'function render(){',
       '  var Ls=views(); if(i<0)i=0; if(i>=Ls.length)i=Ls.length-1;',
       '  drawSpread(Ls[i]||[]);',
       '  rng.max=String(Math.max(0,Ls.length-1)); rng.value=String(i);',
-      '  lbl.textContent=(i+1)+" / "+Ls.length+(V!=="book"?" 시트":(single?" 쪽":" 펼침"));',
+      '  lbl.textContent=(i+1)+" / "+Ls.length+(V!=="book"?" 시트":((single||SOLO)?" 쪽":" 펼침"));',
       '  markRail();',
       '}',
       '// 조각 한 면 — 이미지에서 자기 몫(slice)만 보이도록 배경을 밀어 붙인다.',
@@ -7273,10 +7518,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  // 그늘 모양(조각을 가로지르는 농도 변화)은 여기서 한 번만 굽는다 —',
       '  // 프레임마다는 투명도만 바꿔 CSS 재파싱 없이 부드럽게 흐른다.',
       '  var sh=document.createElement("div"); sh.className="stsh";',
-      '  sh.style.background=grad(0.26+0.74*u0,0.26+0.74*u1,rev); sh.style.opacity="0";',
+      '  // 들리는 그늘은 **책등에서 0, 바깥으로 갈수록 짙게**(u²). 책등에 붙어 거의 움직이지 않는',
+      '  // 부분까지 어두워지면, 종이가 지나가는 순간 원래 밝기로 튀어 깜박임이 된다.',
+      '  // 모양은 여기서 한 번만 굽고, 농도는 프레임마다 opacity로만 바꾼다(문자열을 새로 만들면 CSS 재파싱).',
+      '  sh.style.background=grad(u0*u0,u1*u1,rev); sh.style.opacity="0";',
       '  d.appendChild(sh);',
       '  var gu=null, g0=gutAt(u0), g1=gutAt(u1);',
-      '  if(g0>0||g1>0){   // 책등 그늘은 안쪽 조각에만 필요하다',
+      '  // 트윈링은 낱장을 타공해 철사로 엮은 것이라 **제본선 골 자체가 없다**.',
+      '  // 그런데도 넘어가는 낱장에만 골 그늘을 그리면, 넘길 때만 책등이 어두워졌다',
+      '  // 밝아져 깜박임으로 보인다(실측: 낱장 .stgu opacity 0.25가 생겼다 사라짐).',
+      '  if(!TWIN&&(g0>0||g1>0)){   // 책등 그늘은 안쪽 조각에만 필요하다',
       '    gu=document.createElement("div"); gu.className="stgu";',
       '    gu.style.background=grad(g0,g1,rev); gu.style.opacity="0";',
       '    d.appendChild(gu);',
@@ -7333,8 +7584,22 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  for(var q=1;q<n;q++){ W[q]=0.35+0.65*Math.sin(Math.PI*Math.pow(q/n,0.45)); S+=W[q]; }',
       '  if(!(S>0))S=1;',
 
-      '  var fb=0.34*p, bb=0.30*(1-p);',
-      '  var gf=GUTS*(1-p), gb=GUTS*p;',
+      '  // 앞면(들리는 면)만 그늘이 짙어진다. 뒷면은 반대편에 **평평하게 내려앉는 면**이라',
+      '  // 그늘이 없어야 아래 페이지와 밝기가 같다. 예전에는 뒷면에도 (1-p) 그늘을 줘서,',
+      '  // 접힌 종이가 책등을 스칠 때 한 프레임에 -18/255로 툭 어두워졌다(깜박임).',
+      '  var fb=0.34*p, bb=0;',
+      '  // 책등(제본선) 그늘은 넘기는 내내 **농도를 그대로 유지**한다. 예전에는 진행도 p에 따라',
+      '  // 앞면 그늘을 (1-p)로 옅게 했는데, 책등에 붙어 있는 안쪽 조각까지 같이 옅어져서 넘김',
+      '  // 후반에 제본선이 허옇게 떴다가 착지하는 순간 원래 농도로 툭 돌아왔다',
+      '  // (실측 밝기 198 → 235 → 198, 한 프레임에 37/255 급변 = 깜박임).',
+      '  // 실제 책에서 제본선의 그늘은 종이가 들려도 그 자리에 그대로 있다. 앞·뒷면 모두',
+      '  // 같은 농도로 두면 backface-visibility가 보이는 면만 그리므로 전 구간이 이어진다.',
+      '  // 펼침 보기에서는 제본선 그늘을 낱장 **위의 덮개**(.gtop)가 통째로 맡는다 —',
+      '  // 낱장에도 같이 칠하면 두 번 겹쳐 어두워진다. 한 쪽씩 보기에는 제본선이 없으므로',
+      '  // 예전처럼 낱장이 들리는 만큼 옅어지게 둔다(책에서 떨어져 나오는 느낌).',
+      '  // 덮개(.gtop)가 맡거나(펼침 책자), 골 자체가 없으면(트윈링) 낱장에는 칠하지 않는다.',
+      '  var noGut=(T.spineTop||TWIN);',
+      '  var gf=noGut?0:GUTS*(1-p), gb=noGut?0:GUTS*p;',
       '  for(var k=0;k<n;k++){',
       '    var s=st[k];',
       '    var a=(k===0)?m:(c*W[k]/S);',
@@ -7358,15 +7623,104 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  var leafR=(RTL?(d<0):(d>0));            // 넘어가는 쪽이 화면 오른쪽 면인가',
       '  var mixed=single?[to[0]]:(leafR?[from[0],to[1]]:[to[0],from[1]]);',
       '  var sp=drawSpread(mixed);',
-      '  var box=single?sp.children[0]:sp.children[leafR?1:0];',
-      '  if(!box)return null;',
-      '  var r={l:box.offsetLeft,t:box.offsetTop,w:box.offsetWidth,h:box.offsetHeight};',
+      '  var want=single?0:(leafR?1:0);',
+      '  var pgs=sp.querySelectorAll(".pg"), box=null;',
+      '  if(single){ box=pgs[0]; }',
+      '  else { for(var q=0;q<pgs.length;q++){',
+      '    if(pgs[q].getAttribute("data-side")===String(want))box=pgs[q]; } }',
+      '  var r=null;',
+      '  if(box){ r={l:box.offsetLeft,t:box.offsetTop,w:box.offsetWidth,h:box.offsetHeight}; }',
+      '  else {   // 트윈링에서 그쪽에 종이가 없을 때 — 맞은편 면에서 자리를 옮겨 잡는다',
+      '    var other=sp.querySelector(".pg"); if(!other)return null;',
+      '    var ow=other.offsetWidth;',
+      '    r={l:other.offsetLeft+(want?ow:-ow),t:other.offsetTop,w:ow,h:other.offsetHeight};',
+      '  }',
       '  if(!r.w)return null;',
-      '  var leaf=buildLeaf(r,(single?from[0]:from[leafR?1:0]),(single?to[0]:to[leafR?0:1]),leafR,list);',
+      '  // 한 쪽씩 보기(단면 인쇄물)에서는 넘어가는 종이의 **뒷면이 백지**다 —',
+      '  // 예전에는 뒷면에 다음 쪽을 그려 넣어, 넘기는 도중 아직 오지 않은 페이지가 비쳐 보였다.',
+      '  // 뒷장(다음 쪽)은 낱장 아래 펼침면이 이미 깔고 있으므로, 종이가 젖혀지면 그대로 드러난다.',
+      '  var backImg=single?(SOLO?null:to[0]):(to[leafR?0:1]);',
+      '  var leaf=buildLeaf(r,(single?from[0]:from[leafR?1:0]),backImg,leafR,list);',
       '  sp.appendChild(leaf.el);',
-      '  var T={leaf:leaf,sign:(leafR?-1:1),leafR:leafR,n:n,w:r.w};',
+      '  var spineTop=addSpineShade(sp);',
+      '  var rw=sp.querySelector(".ringwrap"); if(rw)sp.appendChild(rw);   // 철사는 늘 종이 앞',
+      '  var T={leaf:leaf,sign:(leafR?-1:1),leafR:leafR,n:n,w:r.w,spineTop:!!spineTop};',
       '  poseLeaf(T,0);',
       '  return T;',
+      '}',
+      '// 🌀 트윈링 고리 — 책등을 가로지르는 철사 고리와, 종이에 뚫린 타공 자국.',
+      '// 고리는 **넘어가는 종이보다 앞에** 있어야 한다(실제로 철사가 종이를 꿰고 있다).',
+      'function addRings(sp){',
+      '  if(!TWIN||single||V!=="book")return;',
+      '  var bx=[]; for(var q=0;q<sp.children.length;q++){ var e=sp.children[q];',
+      '    if(e.classList&&e.classList.contains("pg"))bx.push(e); }',
+      '  if(!bx.length)return;',
+      '  var x,top,H,W;',
+      '  if(bx.length>=2){',
+      '    var L=bx[0], R=bx[1];',
+      '    x=L.offsetLeft+L.offsetWidth;              // 책등(두 면이 맞닿는 선)',
+      '    top=Math.min(L.offsetTop,R.offsetTop); H=Math.max(L.offsetHeight,R.offsetHeight);',
+      '    W=L.offsetWidth||R.offsetWidth;',
+      '  } else {',
+      '    // 한 면만 있을 때(닫힌 앞표지·뒤표지) 링은 그 면의 **제본 쪽 가장자리**에 붙는다.',
+      '    var B=bx[0], side=B.getAttribute("data-side");',
+      '    W=B.offsetWidth; top=B.offsetTop; H=B.offsetHeight;',
+      '    x=(side==="1")?B.offsetLeft:(B.offsetLeft+W);',
+      '  }',
+      '  // 타공 수 — 3:1 피치 실무 기준 **A4(297mm) 34홀**에 맞춘다.',
+      '  // 판형이 다르면 제본되는 변의 길이에 비례해 환산한다(A5 210mm → 24홀).',
+      '  // 화면 픽셀이 아니라 **실제 mm**로 세야 확대·축소해도 홀 수가 흔들리지 않는다.',
+      '  var mmH=(D.meta.mm&&D.meta.mm[1])?D.meta.mm[1]:297;',
+      '  var n=Math.max(6,Math.min(60,Math.round(mmH/297*34)));',
+      '  var pitch=H/n, rw=Math.max(9,W*0.075), rh=Math.max(5,pitch*0.56);',
+      '  var bw=Math.max(1.2,rh*0.16);               // 철사 굵기',
+      '  var wrap=document.createElement("div"); wrap.className="ringwrap";',
+      '  wrap.style.left=(x-rw/2)+"px"; wrap.style.top=top+"px";',
+      '  wrap.style.width=rw+"px"; wrap.style.height=H+"px";',
+      '  // 고리가 종이에 드리우는 그림자 (책등 양쪽으로 옅게)',
+      '  var sh=document.createElement("div"); sh.className="ringsh";',
+      '  sh.style.left=(x-rw*0.9)+"px"; sh.style.top=top+"px";',
+      '  sh.style.width=(rw*1.8)+"px"; sh.style.height=H+"px";',
+      '  sp.appendChild(sh);',
+      '  for(var k=0;k<n;k++){',
+      '    var cy=pitch*(k+0.5);',
+      '    var r=document.createElement("div"); r.className="ring";',
+      '    r.style.left="0"; r.style.top=(cy-rh/2)+"px";',
+      '    r.style.width=rw+"px"; r.style.height=rh+"px"; r.style.borderWidth=bw+"px";',
+      '    wrap.appendChild(r);',
+      '    // 타공 — 고리가 지나가는 자리에 종이가 뚫려 있다(양쪽 면 각각)',
+      '    for(var t=0;t<bx.length;t++){',
+      '      var b=bx[t];',
+      '      if(b.classList.contains("nosheet"))continue;   // 종이가 없는 쪽엔 구멍도 없다',
+      '      var p=document.createElement("div"); p.className="punch";',
+      '      var ph=Math.max(3,rh*0.42), pw=Math.max(3,rw*0.22);',
+      '      p.style.width=pw+"px"; p.style.height=ph+"px";',
+      '      p.style.top=(cy-ph/2)+"px";',
+      '      p.style.left=(t? (rw-pw-rw*0.10) : (rw*0.10))+"px";',
+      '      wrap.appendChild(p);',
+      '    }',
+      '  }',
+      '  sp.appendChild(wrap);',
+      '}',
+      '// 넘기는 동안만 쓰는 제본선 그늘 덮개 — 펼침면의 .gut과 같은 모양·농도를 낱장 위에 다시 깐다.',
+      '// (한 쪽씩 보기에는 제본선이 없으므로 만들지 않는다)',
+      'function addSpineShade(sp){',
+      '  if(single||TWIN||V!=="book")return;',
+      '  var bx=[]; for(var q=0;q<sp.children.length;q++){ var e=sp.children[q];',
+      '    if(e.classList&&e.classList.contains("pg"))bx.push(e); }',
+      '  if(bx.length<2)return false;',
+      '  for(var k=0;k<bx.length;k++){',
+      '    var b=bx[k], gw=b.offsetWidth*0.07;',
+      '    var og=b.querySelector(".gut"); if(og)og.style.display="none";   // 덮개와 겹치지 않게',
+      '    var o=document.createElement("div"); o.className="gtop";',
+      '    o.style.top=b.offsetTop+"px"; o.style.height=b.offsetHeight+"px"; o.style.width=gw+"px";',
+      '    if(k){ o.style.left=b.offsetLeft+"px";',
+      '      o.style.background="linear-gradient(to left,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
+      '    else { o.style.left=(b.offsetLeft+b.offsetWidth-gw)+"px";',
+      '      o.style.background="linear-gradient(to right,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
+      '    sp.appendChild(o);',
+      '  }',
+      '  return true;',
       '}',
       '// 낱장을 p0에서 p1까지 굴린 뒤 마무리 — 끝까지 넘겼으면 그 펼침면으로 확정, 아니면 원래대로.',
       'function settle(T,p0,p1,ms){',
@@ -7377,9 +7731,22 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    poseLeaf(T,p0+(p1-p0)*ease(t));',
       '    if(t<1){ requestAnimationFrame(frame); return; }',
       '    if(p1>=1)i=T.n;',
-      '    anim=0; render();',
+      '    anim=0; landLeaf(T);',
       '  }',
       '  requestAnimationFrame(frame);',
+      '}',
+      '// 착지 — 최종 펼침면을 먼저 깔고, 넘어간 낱장만 그 위에서 짧게 녹여 없앤다.',
+      '// 곧바로 교체하면 원근 때문에 조금 크고 기울어 있던 낱장이 정확한 페이지로 툭 바뀌면서',
+      '// 그늘 농도까지 함께 튀어 "깜박임"으로 보인다. 140ms 녹임이면 눈에는 이어져 보인다.',
+      'function landLeaf(T){',
+      '  var el=T&&T.leaf&&T.leaf.el;',
+      '  render();',
+      '  var sp=stage.firstChild;',
+      '  if(!el||!sp){ return; }',
+      '  sp.appendChild(el);',
+      '  var rw=sp.querySelector(".ringwrap"); if(rw)sp.appendChild(rw);   // 철사는 늘 종이 앞',
+      '  requestAnimationFrame(function(){ el.classList.add("land"); });',
+      '  setTimeout(function(){ if(el.parentNode)el.parentNode.removeChild(el); },220);',
       '}',
       'function go(d){',
       '  var Ls=views(), n=i+d; if(!d||n<0||n>=Ls.length||anim||drag)return;',
@@ -7395,10 +7762,13 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'var drag=null, dragMoved=false, navTap=false;',
       'function inUI(t){ while(t&&t!==document.body){',
       '  if(t.classList&&(t.classList.contains("bar")||t.classList.contains("foot")||',
-      '     t.classList.contains("rail")||t.classList.contains("zoomv")))return true;',
+      '     t.classList.contains("rail")||t.classList.contains("zoomv")||',
+      '     t.classList.contains("layfab")))return true;   // 눕혀 보기 버튼은 넘김이 아니다',
       '  t=t.parentNode; } return false; }',
-      'function dragProgress(x){',
-      '  var dx=x-drag.x0;',
+      '// 눕혀 보기에서는 페이지의 오른쪽 방향이 화면에서는 **아래쪽**이 된다(오른쪽 90° 회전).',
+      '// 그래서 끌기 진행도도 세로 움직임에서 뽑아야 손끝과 종이가 따로 놀지 않는다.',
+      'function dragProgress(e){',
+      '  var dx=lay90?(e.clientY-drag.y0):(e.clientX-drag.x0);',
       '  var p=(drag.T?(drag.T.leafR?-dx:dx):(drag.dir>0?-dx:dx))/drag.w;',
       '  return Math.max(0,Math.min(1,p));',
       '}',
@@ -7408,11 +7778,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  var sp=stage.firstChild; if(!sp)return;',
       '  var b=sp.getBoundingClientRect(); if(!b.width)return;',
       '  // 어느 쪽을 잡았는지로 방향 결정 — 오른쪽 면을 잡으면 다음, 왼쪽 면을 잡으면 이전',
-      '  var grabR=(e.clientX>=b.left+b.width/2);',
+      '  var grabR=lay90?(e.clientY>=b.top+b.height/2):(e.clientX>=b.left+b.width/2);',
       '  var d=grabR?(RTL?-1:1):(RTL?1:-1);',
       '  var Ls=views(), n=i+d; if(n<0||n>=Ls.length)return;',
       '  dragMoved=false;',
-      '  var onNav=!!(e.target&&e.target.classList&&e.target.classList.contains("nav"));',
+      '  var onNav=!!(e.target&&e.target.closest&&e.target.closest(".nav"));',
       '  drag={x0:e.clientX,y0:e.clientY,t0:Date.now(),dir:d,T:null,w:b.width/2,p:0,id:e.pointerId,nav:onNav};',
       '  if(V==="book"&&paper){ drag.T=beginTurn(d); if(drag.T)drag.w=drag.T.w; }',
       '  document.body.classList.add("dragging");',
@@ -7421,14 +7791,15 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  if(!drag||e.pointerId!==drag.id)return;',
       '  if(!dragMoved&&Math.abs(e.clientX-drag.x0)<5&&Math.abs(e.clientY-drag.y0)<5)return;',
       '  dragMoved=true; hideHint();',
-      '  drag.p=dragProgress(e.clientX);',
+      '  drag.p=dragProgress(e);',
       '  if(drag.T)poseLeaf(drag.T,drag.p);',
       '  e.preventDefault();',
       '});',
       'function endDrag(e){',
       '  if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;',
       '  var T=drag.T, p=drag.p, ms=Math.max(1,Date.now()-drag.t0);',
-      '  var flick=(Math.abs((e?e.clientX:drag.x0)-drag.x0)/ms)>0.55;   // 빠르게 튕겼는가',
+      '  var mv=lay90?((e?e.clientY:drag.y0)-drag.y0):((e?e.clientX:drag.x0)-drag.x0);',
+      '  var flick=(Math.abs(mv)/ms)>0.55;   // 빠르게 튕겼는가',
       '  var done=dragMoved?(p>0.32||(flick&&p>0.06)):!!drag.nav;   // 넘김 표시를 톡 누르면 그대로 넘긴다',
       '  if(!dragMoved&&drag.nav){ navTap=true; setTimeout(function(){ navTap=false; },400); }',
       '  var dir=drag.dir, n=i+dir;',
@@ -7606,6 +7977,19 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    document.addEventListener("webkitfullscreenchange",syncFs);',
       '  }',
       '}',
+      '// ⟳ 눕혀 보기 토글 — 표시만 돌리므로 그림을 다시 굽지 않아 즉시 전환된다.',
+      'function setLay90(on){',
+      '  if(on===lay90||anim||drag)return;',
+      '  lay90=on;',
+      '  document.body.classList.toggle("lay90",lay90);',
+      '  var lb=document.getElementById("layBtn"); if(lb)lb.classList.toggle("on",lay90);',
+      '  render();',
+      '}',
+      'var layb=document.getElementById("layBtn");',
+      'if(layb) layb.onclick=function(){ setLay90(!lay90); };',
+      '// 넘김 표시 안의 버튼 — 클릭이 넘김 표시로 새지 않도록 여기서 끊는다',
+      'var layFab=document.getElementById("layFab");',
+      'if(layFab) layFab.onclick=function(e){ e.stopPropagation(); setLay90(!lay90); };',
       'var pb=document.getElementById("paperBtn");',
       'document.body.classList.toggle("paper",paper);',
       'if(pb){ pb.classList.toggle("on",paper);',
@@ -7658,8 +8042,12 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       const opts = data.opts || {};
       const payload = {
         book, sheets,
-        spreads: ebookSpreads(book.length, opts.coverSingle !== false, meta.bind),
-        meta: { mm: meta.mm || null, bind: meta.bind || 'left', target: meta.target === 'mobile' ? 'mobile' : 'web' },
+        spreads: (meta.view === 'single')
+          ? ebookSoloSpreads(book.length, meta.bind)
+          : ebookSpreads(book.length, opts.coverSingle !== false, meta.bind),
+        meta: { mm: meta.mm || null, bind: meta.bind || 'left', target: meta.target === 'mobile' ? 'mobile' : 'web',
+                view: meta.view === 'single' ? 'single' : 'spread',
+                bindStyle: meta.bindStyle === 'twinring' ? 'twinring' : 'book' },
         opts: { wm: opts.watermark ? ebookWatermarkUri(opts.wmText) : '', trimPct: +opts.trimPct || 0 },
       };
       const hasSheets = sheets.length > 0;
@@ -7677,12 +8065,18 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         +   (hasSheets ? '<button class="b" id="tabSheet">인쇄 대수</button>' : '')
         +   '<button class="b on" id="railBtn" title="왼쪽 페이지 목록 보이기/숨기기">📑 페이지 목록</button>'
         +   '<button class="b on" id="paperBtn" title="종이·책등 그늘·두께 등 책 느낌 효과 — 색을 정확히 볼 때는 끄세요">📕 책 느낌</button>'
+        +   '<button class="b" id="layBtn"'
+        +   ' title="펼침면 전체를 오른쪽으로 90° 눕혀서 봅니다 — 가로 원고를 크게 볼 때. 다시 누르면 원래대로">⟳ 눕혀 보기</button>'
         +   '<button class="b" id="fsBtn" title="전체화면으로 보기 (휴대폰은 가로로 눕히면 화면 가득)">⛶ 전체화면</button>'
         +   '<button class="b" id="realBtn" title="모니터에서 실제 인쇄 크기로 봅니다">실제 크기</button>'
         +   '<input type="range" id="calib" min="2.5" max="6" step="0.02"'
         +   ' style="display:none;width:110px" title="자로 잰 길이와 맞도록 조절하세요">'
         + '</div>'
-        + '<div class="nav" id="prev">‹</div><div class="nav r" id="next">›</div>'
+        + '<div class="nav" id="prev"><i>‹</i></div>'
+        + '<div class="nav r" id="next">'
+        +   '<button class="layfab" id="layFab" title="펼침면 전체를 오른쪽으로 90° 눕혀서 봅니다 — 가로 원고를 크게 볼 때. 다시 누르면 원래대로">⟳</button>'
+        +   '<i>›</i>'
+        + '</div>'
         + '<div class="rail" id="rail"></div>'
         + '<div class="stage" id="stage"></div>'
         + '<div class="foot">'
@@ -7704,7 +8098,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // ── E-book 시안 생성 (앱 연결부) ───────────────────────────────────────────
     // 위 코어는 순수 함수, 여기부터는 앱 상태·DOM·pdf.js를 쓰는 연결부다.
     // 기본값 = 고화질·좌철·부가 표시 없음(워터마크·인쇄대수·재단선). 필요할 때만 켠다.
-    let _ebOpts = { dpi: 200, wm: false, sheets: false, bind: 'left', trim: false, target: 'web' };
+    let _ebOpts = { dpi: 200, wm: false, sheets: false, bind: 'left', trim: false, target: 'web',
+                    view: 'spread', bindStyle: 'book' };
 
     function setEbDpi(v) {
       _ebOpts.dpi = v;
@@ -7717,6 +8112,18 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       _ebOpts.target = v;
       document.querySelectorAll('[data-ebtarget]').forEach(b =>
         b.classList.toggle('active', b.dataset.ebtarget === v));
+    }
+    // 보기 형식 — spread: 펼침면(두 쪽 맞붙임, 제본된 책 모양) / single: 한 쪽씩(낱장·단면 인쇄물)
+    function setEbView(v) {
+      _ebOpts.view = v;
+      document.querySelectorAll('[data-ebview]').forEach(b =>
+        b.classList.toggle('active', b.dataset.ebview === v));
+    }
+    // 제본 형태 — book: 무선·중철(책등에 골이 진다) / twinring: 트윈링(철사 고리·타공)
+    function setEbBindStyle(v) {
+      _ebOpts.bindStyle = v;
+      document.querySelectorAll('[data-ebbstyle]').forEach(b =>
+        b.classList.toggle('active', b.dataset.ebbstyle === v));
     }
     function setEbBind(v) {
       _ebOpts.bind = v;
@@ -7813,6 +8220,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           title: base + ' 출력 시안',
           meta: {
             mm: book.mm, bind: _ebOpts.bind, spec: specBits.join(' · '), target: _ebOpts.target,
+            view: _ebOpts.view, bindStyle: _ebOpts.bindStyle,
             date: new Date().toLocaleDateString('ko-KR'), by: '일청기획',
           },
           book: book.pages,
@@ -7833,6 +8241,15 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           + ` · ${mb}MB\n`
           + `파일 하나로 끝나므로 그대로 메일·카톡에 첨부하면 됩니다 — 고객은 더블클릭만 하면 브라우저에서 열립니다.\n`
           + `→ 넘기기: 페이지를 잡고 끌면(휴대폰은 손가락으로) 종이처럼 넘어갑니다 · 화면 좌우 클릭·←/→ 키도 가능\n→ 페이지를 누르면 확대 · [📑 페이지 목록]에서 바로 이동하거나 아래 '쪽 이동'에 번호를 넣고 Enter\n→ [실제 크기]로 인쇄 크기 확인 · 색을 정확히 볼 때는 [📕 책 느낌]을 끄세요`
+          + (_ebOpts.view === 'single'
+              ? `
+📄 단면(한 면 인쇄) 형식입니다 — 펼치면 왼쪽은 백지, 오른쪽에 인쇄면이 옵니다(넘길 때 종이 뒷면도 백지).`
+              : `
+📖 양면(펼침) 형식입니다 — 제본된 책처럼 두 쪽을 맞붙여 보여 줍니다.`)
+          + (_ebOpts.bindStyle === 'twinring'
+              ? `
+🌀 트윈링 제본으로 보여 줍니다 — 책등에 골 대신 철사 고리와 타공 자국이 보입니다.`
+              : '')
           + (_ebOpts.target === 'mobile'
               ? `\n📱 모바일용으로 만들었습니다 — 폰을 눕히면 두 쪽이 화면 가득(잠시 두면 위아래 막대가 숨습니다), 세우면 한 쪽씩 크게 보입니다.`
               : `\n💻 일반 웹용입니다 — 폰에서 볼 고객이 많으면 '📱 모바일용'으로 다시 만들어 보내세요.`));
@@ -8151,7 +8568,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           processedFileName = st.resultName || defaultProcessedName();
           directOutputBytes = (dirAt >= 0 && blobs[dirAt]) ? blobs[dirAt] : null;
           _processedSig = (typeof optSignature === 'function') ? optSignature() : null;
-          setDirty(true);
+          setDirty(true, { auto: true });   // 저장된 결과를 그대로 되살린 것 — 새 변경이 아니다
           updateDownloadBtn();
           await renderProcessedPreview(processedPdfBytes, { live: false });
           showSuccess(restoreMsg

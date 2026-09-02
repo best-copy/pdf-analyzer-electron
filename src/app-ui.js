@@ -3563,6 +3563,21 @@
     (function initWorkAssocBtn() {
     })();
 
+    // ✒ 폰트 출력 안전화 — 기본이 '켜짐(완전 임베드)'이라 화면도 켜진 모습으로 시작해야 한다.
+    // setOutlineEnabled를 부르면 안내 문구·프리웜까지 돌아가므로 여기서는 표시만 맞춘다.
+    // (activateChip이 이 파일에 있어 app-process.js에서는 부를 수 없다 — 로드 순서)
+    (function initOutlineButtons() {
+      if (typeof _outlineEnabled === 'undefined') return;
+      const chk = document.getElementById('esOutline');
+      if (chk) chk.checked = _outlineEnabled;
+      const ob = document.getElementById('olOnBtn');
+      if (ob) ob.classList.toggle('active', _outlineEnabled);
+      const mb = document.getElementById('opt-outline');
+      if (mb) mb.classList.toggle('active', _outlineEnabled);
+      activateChip('olmode', _outlineMode);
+      if (typeof syncOutlineModeBtns === 'function') syncOutlineModeBtns();
+    })();
+
     // ✂ 재단선 설정(모양·간격·길이·굵기·중앙마크) 마지막 값 복원 — 문서와 무관한 작업 습관이라
     // localStorage에 남겨 앱을 다시 켜도 그대로 쓴다. (저장은 impCropStyleChanged에서)
     (function initImpCropStyle() {

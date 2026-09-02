@@ -55,6 +55,18 @@ const UI = `
         <option value="mobile">📱 모바일용 (가로=두 쪽, 세로=한 쪽씩)</option>
       </select>
     </label>
+    <label>보기 형식
+      <select id="view">
+        <option value="spread" selected>📖 양면(펼침) — 제본된 책 모양</option>
+        <option value="single">📄 단면(한 면 인쇄) — 왼쪽 백지 + 오른쪽 인쇄면</option>
+      </select>
+    </label>
+    <label>제본 형태
+      <select id="bstyle">
+        <option value="book" selected>📕 책자 제본 (무선·중철) — 책등에 골</option>
+        <option value="twinring">🌀 트윈링 (더블와이어) — 고리·타공</option>
+      </select>
+    </label>
     <label>제본
       <select id="bind">
         <option value="left" selected>좌철 (가로쓰기)</option>
@@ -117,7 +129,8 @@ $('go').onclick = async function () {
     var html = buildEbookProofHtml({
       title: $('title').value || (_name + ' 출력 시안'),
       meta: {
-        mm: book.mm, bind: $('bind').value, target: $('target').value,
+        mm: book.mm, bind: $('bind').value, target: $('target').value, view: $('view').value,
+        bindStyle: $('bstyle').value,
         spec: book.mm[0] + '×' + book.mm[1] + 'mm · ' + book.pages.length + '쪽',
         date: new Date().toLocaleDateString('ko-KR'), by: '',
       },

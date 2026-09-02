@@ -263,8 +263,16 @@
             <button class="sbp-opt" data-ebtarget="mobile" onclick="setEbTarget('mobile')" title="휴대폰에 맞춤 — 가로로 눕히면 두 쪽이 화면 가득, 세로로 세우면 한 쪽씩 크게 봅니다">📱 모바일용</button>
           </div>
           <div class="sbp-row2">
+            <button class="sbp-opt active" data-ebview="spread" onclick="setEbView('spread')" title="제본된 책 모양 — 두 쪽을 맞붙여 펼침면으로 보여 줍니다 (중철·무선 등 책자용)">📖 양면(펼침)</button>
+            <button class="sbp-opt" data-ebview="single" onclick="setEbView('single')" title="한 면만 인쇄한 책자 — 펼치면 왼쪽은 백지(앞장의 뒷면), 오른쪽에 인쇄면이 옵니다. 넘길 때도 종이 뒷면이 백지로 보입니다">📄 단면(한 면 인쇄)</button>
+          </div>
+          <div class="sbp-row2">
             <button class="sbp-opt" data-ebdpi="150" onclick="setEbDpi(150)" title="실무 기본 — 글자·이미지 확인에 충분">표준</button>
             <button class="sbp-opt active" data-ebdpi="200" onclick="setEbDpi(200)" title="세밀한 글자까지 확대 확인 — 용량이 커집니다">고화질</button>
+          </div>
+          <div class="sbp-row2">
+            <button class="sbp-opt active" data-ebbstyle="book" onclick="setEbBindStyle('book')" title="무선·중철 등 일반 책자 — 책등에 골(그늘)이 지고 두 면이 이어져 보입니다">📕 책자 제본</button>
+            <button class="sbp-opt" data-ebbstyle="twinring" onclick="setEbBindStyle('twinring')" title="트윈링(더블와이어) — 낱장을 타공해 철사 고리로 엮습니다. 책등에 골이 없고 고리·타공 자국이 보입니다">🌀 트윈링</button>
           </div>
           <div class="sbp-row2">
             <button class="sbp-opt active" data-ebbind="left" onclick="setEbBind('left')" title="가로쓰기 책 — 왼쪽에서 오른쪽으로 넘김">좌철(가로쓰기)</button>

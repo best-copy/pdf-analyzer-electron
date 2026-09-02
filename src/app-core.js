@@ -62,13 +62,16 @@
 
     // 저장 안 한 작업 여부를 main에 보고 (종료 전 확인용)
     let _isDirty = false;
-    function setDirty(v) {
+    // setDirty(true, { auto: true }) = 사용자가 바꾼 것이 아니라 화면이 스스로 다시 그린 것
+    // (작업 파일 복원, 실시간 미리보기 재조립). 이미 작업 파일로 저장해 둔 상태라면 이런 자동 갱신은
+    // '저장 안 한 작업'으로 세지 않는다 — 작업 파일을 열자마자 닫을 때 저장 확인이 뜨던 원인.
+    // 사용자의 편집(회전·삭제·적용·옵션 변경 등)은 auto 없이 부르므로 언제나 그대로 기록된다.
+    function setDirty(v, opts) {
       v = !!v;
+      const t = (activeTabId && tabs.get(activeTabId)) || null;
+      if (v && opts && opts.auto && t && t.workSaved) return;   // 저장해 둔 상태의 자동 갱신 — 무시
       // 무엇이든 바뀌면 '작업 파일로 저장해 둔 상태'가 아니게 된다 — 다시 저장을 물어야 한다
-      if (v) {
-        const t = (activeTabId && tabs.get(activeTabId)) || null;
-        if (t) t.workSaved = false;
-      }
+      if (v && t) t.workSaved = false;
       if (v !== _isDirty) {
         _isDirty = v;
         try { window.electronAPI.setUnsaved && window.electronAPI.setUnsaved(v); } catch (e) {}
@@ -139,27 +142,53 @@
       };
     }
 
+    // ── PDF 저장 옵션 (pdf-lib) ────────────────────────────────────────────────
+    // pdf-lib은 저장 중 objectsPerTick개마다 setTimeout(…,0)으로 이벤트 루프에 양보한다.
+    // 기본값 50은 이 앱처럼 객체가 많은 문서에서 재앙이다 — 실측(2403쪽·간접객체 13,553개):
+    // 실제 직렬화는 126ms인데 tick 대기만 9.6초였다(브라우저가 중첩 setTimeout을 최소 4ms로
+    // 조이고 큰 버퍼 GC까지 겹쳐 tick 하나당 25~36ms). **결과 바이트는 tick 수와 무관하게 동일**하다.
+    // → 문서 크기를 보고 '한 번 멈춤이 SAVE_CHUNK_MS를 넘지 않을 만큼'만 나눈다.
+    //   작은 문서는 아예 쉬지 않고(가장 빠름), 아주 큰 문서만 몇 번 쉬어 간다.
+    const SAVE_CHUNK_MS = 200;      // 한 번에 멈춰도 괜찮은 시간
+    const SAVE_OBJS_PER_MS = 108;   // 실측 직렬화 속도 (13,553객체 / 126ms)
+    function pdfSaveOpts(doc, extra) {
+      let n = 0;
+      try { n = (doc && doc.context && doc.context.indirectObjects) ? doc.context.indirectObjects.size : 0; } catch (e) {}
+      const total = 2 * n;          // pdf-lib은 크기 계산·직렬화로 객체를 두 번 훑는다
+      const budget = SAVE_CHUNK_MS * SAVE_OBJS_PER_MS;
+      const ticks = Math.floor(total / budget);            // 이 문서에 필요한 쉼 횟수(작으면 0)
+      const per = ticks > 0 ? Math.ceil(total / (ticks + 1)) : total + 1;
+      return Object.assign({ useObjectStreams: false, updateFieldAppearances: false,
+                             objectsPerTick: Math.max(1000, per) }, extra || {});
+    }
+    function savePdfDoc(doc, extra) { return doc.save(pdfSaveOpts(doc, extra)); }
+
     // ── 멀티코어 Worker Pool ──────────────────────────────────────────────────
     class WorkerPool {
+      // 워커는 **처음 일이 들어올 때** 만든다. 예전에는 생성자에서 코어 수만큼 한꺼번에
+      // 만들어, 문서를 열기도 전에 16+16개가 떠 있었다. 조립 워커는 하나가
+      // pdf-lib+fontkit(약 1.28MB)을 importScripts 하므로 그 자체로 무거웠다.
       constructor(scriptPath, numWorkers) {
         this.pending = new Map();
         this.nextId = 0;
         this.freeWorkers = [];
         this.jobQueue = [];
-        const workerUrl = new URL(scriptPath, window.location.href).href;
-        this.workers = Array.from({ length: numWorkers }, () => {
-          const w = new Worker(workerUrl);
-          w.onmessage = (e) => this._onResult(w, e.data);
-          w.onerror   = (e) => {
-            const job = w.__currentJob;
-            if (job) { this.pending.get(job.id)?.reject(new Error(e.message)); this.pending.delete(job.id); }
-            w.__currentJob = null;
-            this.freeWorkers.push(w);
-            this._flush();
-          };
+        this.maxWorkers = Math.max(1, numWorkers);
+        this.workerUrl = new URL(scriptPath, window.location.href).href;
+        this.workers = [];   // 실제로 만들어진 워커 (필요한 만큼만 늘어난다)
+      }
+      _spawn() {
+        const w = new Worker(this.workerUrl);
+        w.onmessage = (e) => this._onResult(w, e.data);
+        w.onerror   = (e) => {
+          const job = w.__currentJob;
+          if (job) { this.pending.get(job.id)?.reject(new Error(e.message)); this.pending.delete(job.id); }
+          w.__currentJob = null;
           this.freeWorkers.push(w);
-          return w;
-        });
+          this._flush();
+        };
+        this.workers.push(w);
+        return w;
       }
       run(type, payload, transferable = [], onProgress = null) {
         return new Promise((resolve, reject) => {
@@ -169,10 +198,13 @@
         });
       }
       _flush() {
-        while (this.freeWorkers.length > 0 && this.jobQueue.length > 0) {
-          const worker = this.freeWorkers.pop();
-          const job    = this.jobQueue.shift();
-          this._dispatch(worker, job);
+        while (this.jobQueue.length > 0) {
+          let worker = this.freeWorkers.pop();
+          if (!worker) {
+            if (this.workers.length >= this.maxWorkers) break;   // 상한까지 다 쓰는 중 — 큐에서 대기
+            worker = this._spawn();
+          }
+          this._dispatch(worker, this.jobQueue.shift());
         }
       }
       _dispatch(worker, job) {
@@ -193,6 +225,7 @@
       }
     }
     const CORES = Math.max(navigator.hardwareConcurrency || 4, 2);
+    // 상한만 정해 둘 뿐, 실제 워커는 첫 작업이 들어올 때 하나씩 만들어진다(지연 생성).
     const grayWorkerPool = new WorkerPool('./worker-gray.js', CORES);
     const assembleWorkerPool = new WorkerPool('./worker-assemble.js', CORES);
 
@@ -596,7 +629,7 @@
       const page = doc.addPage([pw, ph]);
       page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
       // 다른 변환 경로(readFile)와 같은 ArrayBuffer로 반환 — 이후 파이프라인이 동일하게 다룬다
-      const out = await doc.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const out = await savePdfDoc(doc);
       return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
     }
 
@@ -1060,7 +1093,7 @@
           startPage += idx.length;
           await uiYield();
         }
-        const bytes = await mergedDoc.save();
+        const bytes = await savePdfDoc(mergedDoc, { useObjectStreams: true, updateFieldAppearances: true });
         hideLoading();
         const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
         const file = {
@@ -1135,7 +1168,7 @@
           startPage += idx.length;
         }
 
-        const bytes = await mergedDoc.save();
+        const bytes = await savePdfDoc(mergedDoc, { useObjectStreams: true, updateFieldAppearances: true });
         hideLoading();
 
         // 합본 파일명: 이미 합본이면 그 이름 유지, 아니면 베이스명 기준 "_합본.pdf"
@@ -1273,6 +1306,19 @@
       return arr;
     }
 
+    // 지금 줌 단계에서 썸네일 한 장이 화면에서 차지하는 실제 픽셀 수.
+    // (THUMB_STEPS·thumbStepIdx는 아래에서 선언되지만, 이 함수는 분석이 시작된 뒤에 불린다)
+    function thumbDisplayPx() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const css = (typeof THUMB_STEPS !== 'undefined' && THUMB_STEPS[thumbStepIdx]) || 160;
+      return Math.round(Math.max(120, css) * dpr);
+    }
+    // 지금 줌에서 흐리게 보이는(=더 크게 구워야 하는) 페이지가 하나라도 있는가
+    function anyThumbTooSmall() {
+      const px = thumbDisplayPx();
+      return (pageResults || []).some(r => r && r.thumbLow && (!r.thumbW || r.thumbW < px * 0.95));
+    }
+
     // 크게 볼 때만 그 페이지를 원해상도로 다시 렌더해 썸네일을 교체한다(저해상 캐시 보정).
     // 같은 페이지를 두 번 굽지 않도록 진행 중 플래그를 둔다.
     const _thumbUpgrading = new Set();
@@ -1282,7 +1328,7 @@
       _thumbUpgrading.add(originalIdx);
       try {
         const page = await globalPdfDoc.getPage(originalIdx + 1);
-        const res = await analyzePageColor(page);
+        const res = await analyzePageColor(page, { full: true });
         const t = await res.thumbPromise;
         if (t) {
           if (r.thumbnail && r.thumbnail.startsWith('blob:')) { try { URL.revokeObjectURL(r.thumbnail); } catch (e) { } }
@@ -1302,7 +1348,8 @@
       _thumbUpgQueued = true;
       setTimeout(async () => {
         _thumbUpgQueued = false;
-        if (!(pageResults || []).some(r => r && r.thumbLow)) return;
+        if (!anyThumbTooSmall()) return;
+        const needPx = thumbDisplayPx();
         const els = [...document.querySelectorAll('#pagesGrid [data-page], #previewGrid [data-page]')];
         const vis = els.filter(el => {
           const b = el.getBoundingClientRect();
@@ -1310,14 +1357,12 @@
         }).map(el => +el.dataset.page);
         for (const pn of vis) {
           const r = (pageResults || []).find(x => x && x.pageNum === pn && x.thumbLow);
-          if (r) await upgradeThumb(r.originalIdx);
+          if (r && (!r.thumbW || r.thumbW < needPx * 0.95)) await upgradeThumb(r.originalIdx);
         }
       }, 250);
     }
     // 줌이 저장 폭을 넘어서면(=흐릿하게 보이기 시작하면) 그때부터 보이는 페이지를 원해상도로
-    window.addEventListener('scroll', () => {
-      if (THUMB_STEPS[thumbStepIdx] > THUMB_CACHE_W) scheduleThumbUpgrade();
-    }, true);
+    window.addEventListener('scroll', () => { scheduleThumbUpgrade(); }, true);
 
     // 합본 탭이면 각 페이지에 원본 파일명(챕터) 태깅 — 그리드·사이드바 구분,
     // 그리고 '방향 자동 맞춤'의 기준 그룹으로 쓰인다(합본에서 남의 원고를 눕히지 않도록).
@@ -1467,7 +1512,8 @@
                   const res = await analyzePageColor(page);
                   const t = await res.thumbPromise;
                   rs[i] = { pageNum: i + 1, originalIdx: i, isColor: res.isColor, thumbnail: t,
-                            thumbW: res.thumbW, thumbH: res.thumbH, pageWpt: res.pageWpt, pageHpt: res.pageHpt };
+                            thumbW: res.thumbW, thumbH: res.thumbH, thumbLow: !!res.low,
+                            pageWpt: res.pageWpt, pageHpt: res.pageHpt };
                 } catch (e) {
                   rs[i] = { pageNum: i + 1, originalIdx: i, isColor: false, thumbnail: null };
                 }
@@ -1520,7 +1566,8 @@
           const page = await doc.getPage(pn);
           const res  = await analyzePageColor(page);
           const entry = { pageNum: pn, originalIdx: pn - 1, isColor: res.isColor, thumbnail: null,
-                          thumbW: res.thumbW, thumbH: res.thumbH, pageWpt: res.pageWpt, pageHpt: res.pageHpt };
+                          thumbW: res.thumbW, thumbH: res.thumbH, thumbLow: !!res.low,
+                          pageWpt: res.pageWpt, pageHpt: res.pageHpt };
           tabState.pageResults[i] = entry;
           thumbJobs.push(res.thumbPromise.then(t => { entry.thumbnail = t; }));
           if (res.isColor) colorCount++; else bwCount++;
@@ -1563,19 +1610,46 @@
       }
     }
 
-    async function analyzePageColor(page) {
+    // ── 썸네일 JPEG 인코딩 동시 상한 ────────────────────────────────────────
+    // toBlob은 브라우저가 알아서 백그라운드에서 굽지만, **끝날 때까지 원본 캔버스가
+    // 메모리에 살아 있다**(A4 한 장 ≈ 1.3MB). 상한이 없으면 2000장 넘게 쌓여
+    // GC 압박으로 뒤쪽 페이지가 점점 느려진다(실측: 인코딩 대기가 장당 1.1초까지 밀림).
+    // 자리가 없으면 렌더 레인이 여기서 잠깐 쉰다 — 총 시간은 그대로, 메모리만 평평해진다.
+    const THUMB_MAX = Math.max(4, Math.min((navigator.hardwareConcurrency || 4) * 2, 32));
+    let _thumbBusy = 0;
+    const _thumbWait = [];
+    function thumbSlot() {
+      if (_thumbBusy < THUMB_MAX) { _thumbBusy++; return Promise.resolve(); }
+      return new Promise(res => _thumbWait.push(res));
+    }
+    function thumbRelease() {
+      const next = _thumbWait.shift();
+      if (next) next();      // 자리를 기다리던 쪽에 그대로 넘긴다 (_thumbBusy 유지)
+      else _thumbBusy--;
+    }
+
+    async function analyzePageColor(page, opts) {
       try {
         // 페이지 실제 크기(pt) — 표시 스케일 산출 + 혼합문서 크기 판별에 사용
         const vp1 = page.getViewport({ scale: 1 });
         // 썸네일 화질: 화면 DPI(Windows 125~200% 배율 등)와 표시폭에 맞춰
-        // '딱 필요한 만큼만' 렌더 → 화질↑·픽셀 낭비 없음. 색상 판정은 어느
-        // 해상도든 15k 샘플이면 충분하므로 화질을 올려도 분석 정확도엔 무관.
-        // 최대 줌(≈480px)에서도 선명하도록 페이지 폭·DPI 기준으로 타깃 산출.
-        // 보통 페이지는 ≈0.8(A4→476px ≈ 최대 줌 폭)로 렌더, 0.5~0.8로 제한해
-        // 큰 페이지의 과도 렌더만 방지. (DPI 영향은 1.5까지만 반영해 폭주 차단)
+        // '딱 필요한 만큼만' 렌더한다. (DPI 영향은 1.5까지만 반영해 폭주 차단)
+        // ⚠ 해상도는 컬러/흑백 판정에 영향을 준다 — 작게 그리면 작은 컬러 요소가 사라진다.
+        //    그래서 저해상 경로는 아래에서 **전 픽셀을 훑는다**(sampleStep=1).
         const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-        let rScale = (480 * dpr) / vp1.width;            // 최대 표시폭 × DPI ÷ 페이지폭
-        rScale = Math.max(0.5, Math.min(rScale, 0.8));   // 0.5~0.8 제한
+        // ⚡ 2단계 썸네일: 예전에는 모든 쪽을 **최대 줌 화질**(480px)로 미리 구웠다.
+        // 실제로 최대 줌까지 키우는 쪽은 몇 장뿐인데 수천 쪽을 그 화질로 굽느라 분석
+        // 시간의 상당 부분을 썼다(실측 2403쪽·87MB: 23.7초 → 19.8초).
+        // 이제 **지금 줌에서 화면에 보이는 크기**로만 굽고, 더 키우면 그때 보이는 쪽만
+        // 원해상도로 다시 굽는다(upgradeThumb). 눈에 보이는 화질은 그대로다.
+        // opts.full = 처음부터 최대 화질 (확대 보정·썸네일 재생성 경로)
+        const full = !!(opts && opts.full);
+        const fullScale = Math.max(0.5, Math.min((480 * dpr) / vp1.width, 0.8));
+        let rScale = fullScale;
+        // ⚠ 하한 = 원해상도의 75%. 더 줄이면 **이미지가 많은 원고에서 오히려 느려진다**
+        // — 큰 그림을 많이 축소할 때 브라우저가 더 비싼 리샘플링 경로를 탄다
+        // (실측 436쪽·98MB 법령: 240px 97초 vs 358px 84초 = 원해상도와 동일).
+        if (!full) rScale = Math.max(fullScale * 0.75, Math.min(thumbDisplayPx() / vp1.width, fullScale));
         const vp = page.getViewport({ scale: rScale });
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -1589,7 +1663,11 @@
         // 뒤 페이지 렌더가 점점 느려지는 것을 방지 (캔버스 픽셀은 이미 복사됨)
         try { page.cleanup(); } catch (e) {}
         const totalPixels = data.length >> 2;
-        const sampleStep  = Math.max(1, totalPixels / 15000 | 0);
+        // 컬러 판정은 '중성이 아닌 픽셀이 하나라도 있으면 컬러'다. 썸네일을 작게 굽게 되면서
+        // 픽셀 수가 줄었으므로, 성긴 표본(15k)을 쓰면 작은 컬러 요소(로고·도장 한 점)를
+        // 놓칠 수 있다(실측: 2403쪽에서 컬러 1929 → 1927쪽으로 2쪽 어긋남 = 과금 오차).
+        // → 저해상 렌더에서는 **모든 픽셀을 훑는다**. 픽셀이 적어 비용이 오히려 작다.
+        const sampleStep  = full ? Math.max(1, totalPixels / 15000 | 0) : 1;
         let gray = 0;
         for (let i = 0; i < data.length; i += sampleStep * 4) {
           const r = data[i], g = data[i+1], b = data[i+2];
@@ -1601,11 +1679,14 @@
         // 썸네일: 같은 캔버스에서 비동기 인코딩(toBlob)→objectURL.
         // 완료를 여기서 기다리지 않고 promise로 반환 — 인코딩이 도는 동안 같은 워커
         // 레인이 다음 페이지 렌더를 시작할 수 있어 렌더·인코딩이 겹쳐 진행된다.
+        await thumbSlot();
         const thumbPromise = new Promise(res => {
-          canvas.toBlob(b => res(b ? URL.createObjectURL(b) : null), 'image/jpeg', 0.85);
+          canvas.toBlob(b => { thumbRelease(); res(b ? URL.createObjectURL(b) : null); }, 'image/jpeg', 0.85);
         });
         // vp1(실제 페이지 크기 pt)은 위에서 산출함. thumbW/H는 캔버스 실제 픽셀.
         return { isColor, thumbPromise, thumbW: canvas.width, thumbH: canvas.height,
+                 // low = 더 크게 볼 때 다시 구울 여지가 있다(원해상도보다 작게 구웠다)
+                 low: rScale < fullScale - 0.001,
                  pageWpt: vp1.width, pageHpt: vp1.height };
       } catch {
         return { isColor: false, thumbPromise: Promise.resolve(null) };
@@ -1872,8 +1953,9 @@
       document.getElementById('zoomOutBtn').disabled = thumbStepIdx === 0;
       document.getElementById('zoomInBtn').disabled  = thumbStepIdx === THUMB_STEPS.length - 1;
       applyThumbFontStep(thumbStepIdx);
-      // 작업 파일에서 온 저해상 썸네일은 이 크기부터 흐리다 → 보이는 페이지만 원해상도로 교체
-      if (px > THUMB_CACHE_W) scheduleThumbUpgrade();
+      // 지금 줌에서 흐리게 보이는 쪽(분석 때 작게 구운 쪽·작업 파일의 저해상 썸네일)을
+      // 화면에 보이는 것부터 원해상도로 교체한다.
+      if (dir > 0) scheduleThumbUpgrade();
       // 편집 모드 표본 미리보기: 줌 배율에 맞는 해상도로 다시 렌더 + 보이는 범위 재계산(스크롤 핸들러)
       if (document.body.classList.contains('edit-fullscreen') && typeof scheduleLivePreview === 'function') scheduleLivePreview();
     }
@@ -2150,6 +2232,7 @@
             if (r.thumbnail && typeof r.thumbnail === 'string' && r.thumbnail.startsWith('blob:'))
               { try { URL.revokeObjectURL(r.thumbnail); } catch (x) {} }
             r.thumbnail = thumb; r.thumbW = res.thumbW; r.thumbH = res.thumbH; r.isColor = res.isColor;
+            r.thumbLow = !!res.low;
           }
         } catch (e) { console.error('썸네일 재생성 실패:', e); }
         finally { if (pdf) { try { pdf.destroy(); } catch (x) {} } }
@@ -2505,7 +2588,7 @@
           page.setRotation(PDFLib.degrees((((baseAngle + (r.rotation || 0)) % 360) + 360) % 360));
         }
         if (onProgress) onProgress(80);
-        const bytes = await asm.outDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+        const bytes = await savePdfDoc(asm.outDoc);
         _baseCache = { sig, bytes, stats: asm.stats, validCount: valid.length };
         if (onProgress) onProgress(94);
         return _baseCache;
@@ -2566,7 +2649,7 @@
         asmPages.push({ page, baseAngle });
       }
       if (onProgress) onProgress(94);
-      const bytes = await outDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+      const bytes = await savePdfDoc(outDoc);
       _baseAssembled = { key, outDoc, pages: asmPages, stats, validCount: valid.length };
       _baseCache = { sig, bytes, stats, validCount: valid.length };
       return _baseCache;
@@ -2648,6 +2731,14 @@
         const base = await buildBaseProcessed(p => updateProgress(typeof _impEnabled !== 'undefined' && _impEnabled ? Math.round(p * 0.85) : p));
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
+        // 📄 파일(챕터)별 임포징이면 조판 단계부터 파일마다 따로 돌린다 —
+        // 모아찍기처럼 조판이 쪽 수를 바꾸는 경우에도 한 칸에 두 파일이 섞이지 않는다.
+        const perAll = (typeof tryPerChapterPipeline === 'function')
+          ? await tryPerChapterPipeline(pdfBytes, groups, base.sig, p => updateProgress(82 + Math.round(p * 0.18)))
+          : null;
+        if (perAll) {
+          pdfBytes = perAll;
+        } else {
         if (groups.length) {
           updateProgress((typeof _impEnabled !== 'undefined' && _impEnabled) ? 82 : 96);
           pdfBytes = await applyLayoutTransform(pdfBytes, groups, base.sig);
@@ -2661,6 +2752,7 @@
         if (typeof _impEnabled !== 'undefined' && _impEnabled) {
           updateProgress(88);
           pdfBytes = await buildImposedBytes(pdfBytes, p => updateProgress(88 + Math.round(p * 0.12)));
+        }
         }
         // 폰트 출력 안전화(곡선화·완전 임베드)는 '적용' 단계에서 하지 않는다.
         // gs 변환은 모양을 전혀 바꾸지 않으면서(벡터 무손실) 시간이 오래 걸려(한글 40쪽 곡선화 2.6초,
