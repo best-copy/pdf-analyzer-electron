@@ -1403,8 +1403,8 @@
       });
       if (typeof renderAllPages === 'function') renderAllPages(pageResults);
       if (typeof renderSidebar  === 'function') renderSidebar(pageResults);
-      pageEdited = true;
-      const t = tabs.get(activeTabId); if (t) t.pageEdited = true;
+      pageEdited = true; pageEditedByUser = true;   // 사용자가 직접 돌린 것
+      const t = tabs.get(activeTabId); if (t) { t.pageEdited = true; t.pageEditedByUser = true; }
       // 회전 후 결과를 다시 적용해야 하므로 이전 적용본 무효화
       processedPdfBytes = null; processedFileName = '';
       if (typeof updateDownloadBtn === 'function') updateDownloadBtn();
@@ -2125,7 +2125,7 @@
       const missing = [];
       for (let i = 0; i < needMask.length; i++) if (needMask[i] && !data[i]) missing.push(i);
       if (!missing.length) return data;
-      const pdf = await pdfjsLib.getDocument({ data: srcBytes.slice(0) }).promise;
+      const pdf = await openPdfDoc({ data: srcBytes.slice(0) }).promise;
       try {
         for (const i of missing) {
           if (i >= pdf.numPages) continue;
@@ -2475,7 +2475,7 @@
         if (reused) {
           pdf = _pvDoc.pdf; // 동일 출력 → 파싱 생략, 메모리에 상주한 문서 재사용
         } else {
-          pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+          pdf = await openPdfDoc({ data: bytes.slice(0) }).promise;
           if (myToken !== previewRenderToken) { try { await pdf.destroy(); } catch (e) {} return; }
         }
         const total = pdf.numPages;
@@ -2773,7 +2773,7 @@
             for (let n = 1; n < k; n++) {
               if (cancelled || myToken !== previewRenderToken || !pending.size) break;
               try {
-                const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+                const doc = await openPdfDoc({ data: bytes.slice(0) }).promise;
                 if (cancelled || myToken !== previewRenderToken) { try { await doc.destroy(); } catch (e) {} break; }
                 extraDocs.push(doc);
                 loops.push(drawLoop(doc));

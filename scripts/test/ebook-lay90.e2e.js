@@ -24,6 +24,13 @@ const land = (n) => ({
 let pass = 0, fail = 0;
 const ck = (n, c, x) => { if (c) { pass++; console.log('  ✔', n); } else { fail++; console.log('  ✘', n, x !== undefined ? JSON.stringify(x) : ''); } };
 
+// 실제 포인터가 넘김 띠 위에 있으면 :hover가 걸려 '감춰짐' 판정이 흔들린다 —
+// 상태를 읽기 전에 항상 포인터를 구석으로 치운다.
+const away = async (win) => {
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: 5, y: 5 });
+  await new Promise(r => setTimeout(r, 250));
+};
+
 const READ = `(() => {
   const sp = document.querySelector('.spread');
   const st = document.getElementById('stage');
@@ -71,6 +78,7 @@ app.whenReady().then(async () => {
   await new Promise(r => setTimeout(r, 1000));
 
   try {
+    await away(win);
     const a0 = await win.webContents.executeJavaScript(READ);
     console.log('\n[1] 처음 — 눕히지 않은 상태');
     ck('lay90 꺼짐', a0.lay === false && a0.on === false, a0);
@@ -78,6 +86,7 @@ app.whenReady().then(async () => {
 
     await win.webContents.executeJavaScript("document.getElementById('layBtn').click()");
     await new Promise(r => setTimeout(r, 500));
+    await away(win);
     const a1 = await win.webContents.executeJavaScript(READ);
     console.log('\n[2] 눕혀 보기 — 오른쪽으로 90°');
     ck('lay90 켜짐', a1.lay === true && a1.on === true, a1);
@@ -105,6 +114,7 @@ app.whenReady().then(async () => {
       } return false;
     })()`);
     await new Promise(r => setTimeout(r, 200));
+    await away(win);
     const a2 = await win.webContents.executeJavaScript(READ);
     console.log('\n[2-b] 넘김 표시 안의 눕혀 보기 버튼');
     ck('버튼이 넘김 표시 안에 있다', a0.fab && a0.fab.inNext === true, a0.fab);
@@ -139,10 +149,12 @@ app.whenReady().then(async () => {
     ck('눕힘: 넘김 띠에 마우스가 가면 나타나는 규칙이 있다', hov.rule === true, hov);
     ck('눕힘: 감춰져 있어도 누를 수는 있다', hov.clickable === true, hov);
     await new Promise(r => setTimeout(r, 500));
+    await away(win);
     const aF = await win.webContents.executeJavaScript(READ);
     ck('버튼으로 정상 복귀', aF.lay === false, aF.lay);
     await win.webContents.executeJavaScript("document.getElementById('layFab').click()");
     await new Promise(r => setTimeout(r, 500));
+    await away(win);
     const aG = await win.webContents.executeJavaScript(READ);
     ck('버튼으로 다시 눕히기', aG.lay === true, aG.lay);
     ck('90° 회전 버튼은 없다',
@@ -155,6 +167,7 @@ app.whenReady().then(async () => {
 
     await win.webContents.executeJavaScript("document.getElementById('layBtn').click()");
     await new Promise(r => setTimeout(r, 500));
+    await away(win);
     const a3 = await win.webContents.executeJavaScript(READ);
     console.log('\n[4] 정상으로 복귀');
     ck('lay90 꺼짐', a3.lay === false && a3.on === false, a3);

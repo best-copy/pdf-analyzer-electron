@@ -222,7 +222,7 @@
       if (!grid || !section) return;
       const N = valid.length;
       const myToken = ++previewRenderToken;
-      const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      const pdf = await openPdfDoc({ data: bytes.slice(0) }).promise;
       try {
         if (myToken !== previewRenderToken) return;
         // 그리드 골격 (재)구축 — 페이지 수가 달라졌거나 표본 모드 첫 진입일 때만
@@ -502,8 +502,11 @@
         // '적용'은 화면을 즉시 보여주고, 다운로드는 이 캐시를 그대로 저장한다(대기 0초).
         if (_outlineEnabled && optSignature() === sig) {
           await buildOutlinedBytes(bytes);
-          if (_outlineRasterInfo && _outlineRasterInfo.count) {
-            showSuccess(`🖼 폰트 완전 임베드 준비 완료 — 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 대체 임베드 대신 300DPI 이미지로 굳혔습니다.\n'⇩ 다운로드'를 누르면 이 결과가 그대로 저장됩니다 — 어디서 출력해도 화면과 동일.`);
+          // 이미지화·대체 경고처럼 사용자가 알아야 할 일이 있었을 때만 알린다
+          // (전부 임베드된 문서라 건너뛴 경우는 조용히 지나간다 — 다운로드 때 안내).
+          if ((_outlineRasterInfo && _outlineRasterInfo.count) || _outlineFontWarn) {
+            showSuccess('🔤 폰트 완전 임베드 준비 완료 — \'⇩ 다운로드\'를 누르면 이 결과가 그대로 저장됩니다.'
+              + outlineResultNote());
           }
         }
       }
@@ -1180,7 +1183,7 @@
       // 내용 미리보기 소스 준비 (pdf.js 렌더 또는 이미지 디코드)
       let srcCanvas, sw, sh;
       if (file.type === 'pdf') {
-        const pdf = await pdfjsLib.getDocument({ data: file.bytes.slice(0) }).promise;
+        const pdf = await openPdfDoc({ data: file.bytes.slice(0) }).promise;
         try {
           const page = await pdf.getPage(1);
           const vp1 = page.getViewport({ scale: 1 });
@@ -1498,7 +1501,7 @@
     // 앞표지를 참고해 뒤표지 자동 생성 — 가장자리 최빈색 단색('color') 또는 흐림 배경('blur').
     // 반환: { jpg, w, h(pt·뷰어 방향), color:[r,g,b] } — 호출자가 페이지로 추가한다.
     async function buildAutoBackCover(srcBytes, frontIdx, mode) {
-      const pdf = await pdfjsLib.getDocument({ data: srcBytes.slice(0) }).promise;
+      const pdf = await openPdfDoc({ data: srcBytes.slice(0) }).promise;
       try {
         const page = await pdf.getPage(frontIdx + 1);
         const vp1 = page.getViewport({ scale: 1 });
@@ -2092,12 +2095,14 @@
       try { localStorage.setItem('outlineMode', _outlineMode); } catch (e) {}
       activateChip('olmode', _outlineMode);
       syncOutlineModeBtns();
+      // 방식이 바뀌면 다운로드 버튼의 배지(🔤/✒)도 따라가야 한다
+      if (typeof syncOutlineBadges === 'function') syncOutlineBadges();
       // 안전화는 다운로드 시점 처리 — 적용 결과(화면)는 그대로 두고 다음 저장부터 반영된다.
       if (_outlineEnabled) { outlineOnMessage(); setTimeout(prewarmOptimizedOutput, 400); }
     }
     function outlineOnMessage() {
       showSuccess(_outlineMode === 'embed'
-        ? "🔤 폰트 완전 임베드 켜짐 — '⇩ 다운로드'로 저장되는 파일에 모든 폰트를 통째로 실어, 다른 PC·출력기에서도 동일하게 인쇄됩니다.\n텍스트 수정·검색은 유지됩니다. (적용 화면은 그대로 — 모양이 바뀌지 않는 처리라 저장 시점에 반영됩니다)"
+        ? "🔤 폰트 완전 임베드 켜짐 — '⇩ 다운로드'로 저장되는 파일에 모든 폰트를 통째로 실어, 다른 PC·출력기에서도 동일하게 인쇄됩니다.\n텍스트 수정·검색은 유지됩니다.\n→ '✔ 적용'을 누를 필요가 없습니다 — 모양을 바꾸지 않는 처리라 저장하는 순간 반영됩니다(다운로드 버튼의 🔤 표시로 확인)."
         : "✒ 폰트 곡선화 켜짐 — '⇩ 다운로드'로 저장되는 파일의 모든 글자가 곡선으로 변환됩니다.\n⚠ 용량이 크게 늘고(수십~수백 배) 텍스트 수정·검색 불가 — 수정용 원본은 따로 보관하세요. 빠르고 용량 부담 없는 '폰트 완전 임베드'도 같은 안전 효과를 냅니다.");
     }
     function setOutlineEnabled(on) {
@@ -2166,25 +2171,32 @@
     // ② gs는 단일 코어만 쓰므로, 페이지를 구간으로 쪼개 gs 여러 개를 병렬 실행 후 병합.
     // 용량 증가(글자→곡선 데이터)는 방식의 본질이며 병렬화와 무관. 병합은 pdf-lib
     // copyPages — 아웃라인 결과는 전부 곡선이라 재병합에 안전하다.
-    let _outlineCache = { key: null, bytes: null, rasterInfo: null };
+    let _outlineCache = { key: null, bytes: null, rasterInfo: null, skipInfo: null, fontWarn: null, cidLinked: null };
     let _outlineRasterInfo = null;   // 마지막 실행에서 이미지화된 페이지 정보 (성공 메시지용)
+    let _outlineSkipInfo = null;     // 이미 전부 임베드돼 gs를 건너뛴 경우
+    let _outlineFontWarn = null;     // 대체될 폰트가 너무 많은 쪽에 걸쳐 이미지화를 포기한 경우
+    let _outlineCidLinked = null;    // 미임베드 CID 폰트를 이 PC 설치본으로 이어 실은 목록
     async function buildOutlinedBytes(bytes, onProgress) {
       const flatten = !!document.getElementById('outlineFlatten')?.checked;
       const mode = _outlineMode;
       const key = bytesFingerprint(bytes) + '|' + (flatten ? 'f' : 'n') + '|' + mode;
       if (_outlineCache.key === key && _outlineCache.bytes) {
         _outlineRasterInfo = _outlineCache.rasterInfo || null;
+        _outlineSkipInfo = _outlineCache.skipInfo || null;
+        _outlineFontWarn = _outlineCache.fontWarn || null;
+        _outlineCidLinked = _outlineCache.cidLinked || null;
         return _outlineCache.bytes;
       }
-      _outlineRasterInfo = null;
-      const gsOne = async (inBytes) => {
+      _outlineRasterInfo = null; _outlineSkipInfo = null; _outlineFontWarn = null; _outlineCidLinked = null;
+      const gsOne = async (inBytes, cidFonts) => {
         let tmpPath = null, outPath = null;
         try {
           tmpPath = window.electronAPI.writeTempFile(inBytes, 'pdf');
-          const res = await window.electronAPI.outlineFonts(tmpPath, { flatten, mode });
+          const res = await window.electronAPI.outlineFonts(tmpPath, { flatten, mode, cidFonts: cidFonts || [] });
           outPath = typeof res === 'string' ? res : res.path;
           const b = new Uint8Array(window.electronAPI.readFile(outPath));
-          return { bytes: b, log: typeof res === 'string' ? '' : (res.log || '') };
+          return { bytes: b, log: typeof res === 'string' ? '' : (res.log || ''),
+                   cidLinked: (typeof res === 'string' ? [] : (res.cidLinked || [])) };
         } finally {
           if (tmpPath) { try { window.electronAPI.removeTempFile(tmpPath); } catch (e) {} }
           if (outPath) { try { window.electronAPI.removeTempFile(outPath); } catch (e) {} }
@@ -2196,24 +2208,90 @@
         // 병합 시 폰트가 구간 수만큼 중복돼 용량 이점이 사라진다. 곡선 변환이 없어
         // 단일 실행도 충분히 빠르다.
         if (mode === 'embed') {
-          // 1차 실행 — gs 로그에서 '이 PC에도 없어 내장 대체폰트(%rom%)로 바뀐' 폰트 감지.
-          // 대체 임베드는 글꼴이 달라져 사고 위험 → 그 폰트를 쓰는 페이지만 화면 그대로
-          // 300DPI 이미지로 굳혀(이미지화) 어디서 출력해도 동일하게 만든다.
-          const r1 = await gsOne(bytes);
-          const missing = _gsSubstitutedFonts(r1.log);
-          out = r1.bytes;
-          if (missing.length) {
-            const pageIdxs = await _pagesUsingFonts(bytes, missing);
-            if (pageIdxs.length) {
-              if (onProgress) onProgress(0.3);
-              const rastered = await _rasterizePagesToImages(bytes, pageIdxs);
-              if (onProgress) onProgress(0.7);
-              out = (await gsOne(rastered)).bytes;   // 2차: 이미지화 반영본을 다시 완전 임베드
-              rasterInfo = { count: pageIdxs.length, fonts: missing, pages: pageIdxs.map(i => i + 1) };
+          // ── 사전 스캔: 미임베드 폰트가 정말 있는지부터 본다 ──────────────────
+          let scan = null, pageCount = 0;
+          try {
+            const probeDoc = await PDFLib.PDFDocument.load(bytes.slice(0), { ignoreEncryption: true });
+            pageCount = probeDoc.getPageCount();
+            scan = scanDocFonts(probeDoc);
+          } catch (e) { console.warn('폰트 스캔 실패 — gs 실행으로 진행:', e); }
+
+          // ── A. 이미 전부 임베드된 문서는 굽지 않는다 (대기 0초) ─────────────
+          // 완전 임베드의 목적은 '다른 PC·출력기에서 글꼴이 바뀌지 않는 것'이고,
+          // 서브셋 임베드도 출력에는 완전히 동일하므로 그 목적은 이미 충족돼 있다.
+          // (비서브셋이 의미 있는 건 출력소가 그 파일에서 글자를 직접 고칠 때뿐이다.)
+          // 다만 투명도 평탄화가 켜져 있으면 gs가 할 일이 남아 있으므로 건너뛰지 않는다.
+          if (scan && !scan.missing.size && !flatten) {
+            _outlineSkipInfo = { fonts: scan.embedded.size, pages: pageCount };
+            if (bytes.byteLength < 400 * 1024 * 1024)
+              _outlineCache = { key, bytes, rasterInfo: null, skipInfo: _outlineSkipInfo, fontWarn: null };
+            if (onProgress) onProgress(1);
+            return bytes;
+          }
+
+          // ── 미임베드 CID(한글) 폰트는 이 PC의 설치본으로 잇는다 ─────────────
+          // gs는 CID 폰트를 -sFONTPATH로 찾지 못하므로(cidfmap만 봄), 설치돼 있어도
+          // 대체돼 버린다. 메인이 폰트 파일을 찾아 임시 cidfmap을 써 준다.
+          const cidFonts = cidFontsFromScan(scan);
+
+          // ── C. gs 실행 '전에' 대체될 폰트를 확정 — 예전엔 pdfwrite 1차 실행 로그를
+          //    보고서야 알 수 있어 gs를 두 번 돌렸다(큰 문서에서 그대로 2배 시간).
+          let work = bytes, preHandled = false, substList = [];
+          if (scan && scan.missing.size) {
+            const subst = await _probeSubstitutedFonts(bytes, scan.missing, cidFonts);
+            substList = subst || [];
+            if (subst) {   // null = 프로브 불가(구버전 preload·gs 오류) → 사후 감지로 폴백
+              preHandled = true;
+              const idxSet = new Set();
+              for (const nm of subst) {
+                const pgs = scan.missing.get(nm.replace(/^[A-Z]{6}\+/, ''));
+                if (pgs) pgs.forEach(i => idxSet.add(i));
+              }
+              const idxs = [...idxSet].sort((a, b) => a - b);
+              // 대체 폰트를 쓰는 쪽은 화면 그대로 300DPI 이미지로 굳혀야 어디서 출력해도
+              // 같다. 다만 문서 대부분이 대상이면(예: 쪽번호 폰트가 전 쪽에 걸린 경우)
+              // 책 전체가 이미지로 바뀌어 용량이 폭증하고 텍스트가 사라진다 —
+              // 실측(수학_2up 40쪽): 40쪽 전부 대상, 300DPI JPEG 36MB. 그럴 땐 굳히지 않고
+              // 경고만 하고 넘어간다(폰트를 설치하는 것이 유일한 제대로 된 해결).
+              const limit = Math.min(20, Math.max(3, Math.ceil(pageCount * 0.25)));
+              if (idxs.length && idxs.length <= limit) {
+                if (onProgress) onProgress(0.3);
+                work = await _rasterizePagesToImages(bytes, idxs);
+                rasterInfo = { count: idxs.length, fonts: subst, pages: idxs.map(i => i + 1) };
+                if (onProgress) onProgress(0.7);
+              } else if (idxs.length) {
+                _outlineFontWarn = { fonts: subst, count: idxs.length, total: pageCount };
+              }
             }
           }
-          if (out.byteLength < 400 * 1024 * 1024) _outlineCache = { key, bytes: out, rasterInfo };
+          const r1 = await gsOne(work, cidFonts);
+          out = r1.bytes;
+          // 설치본으로 이어 실은 폰트를 알려 준다(경고가 아니라 안심 정보).
+          // 프로브에서 여전히 대체된 것으로 나온 폰트는 실제로 못 이은 것이니 제외한다.
+          if (r1.cidLinked && r1.cidLinked.length) {
+            const ok = r1.cidLinked.filter(n => !substList.includes(n));
+            if (ok.length) _outlineCidLinked = ok;
+          }
+          // 사후 감지 폴백 — 프로브를 못 쓴 경우에만 종전 2패스 경로를 탄다.
+          if (!preHandled) {
+            const missing = _gsSubstitutedFonts(r1.log);
+            if (missing.length) {
+              const pageIdxs = await _pagesUsingFonts(bytes, missing);
+              if (pageIdxs.length) {
+                if (onProgress) onProgress(0.3);
+                const rastered = await _rasterizePagesToImages(bytes, pageIdxs);
+                if (onProgress) onProgress(0.7);
+                out = (await gsOne(rastered, cidFonts)).bytes;   // 2차: 이미지화 반영본을 다시 완전 임베드
+                rasterInfo = { count: pageIdxs.length, fonts: missing, pages: pageIdxs.map(i => i + 1) };
+              } else {
+                _outlineFontWarn = { fonts: missing, count: 0, total: pageCount };
+              }
+            }
+          }
+          if (out.byteLength < 400 * 1024 * 1024)
+            _outlineCache = { key, bytes: out, rasterInfo, skipInfo: null, fontWarn: _outlineFontWarn, cidLinked: _outlineCidLinked };
           _outlineRasterInfo = rasterInfo;
+          if (onProgress) onProgress(1);
           return out;
         }
         const src = await PDFLib.PDFDocument.load(bytes.slice(0));
@@ -2252,8 +2330,24 @@
         out = (await gsOne(bytes)).bytes;
       }
       // 초대형 결과(400MB+)는 캐시하지 않음 — 메모리 보호
-      if (out.byteLength < 400 * 1024 * 1024) _outlineCache = { key, bytes: out, rasterInfo: null };
+      if (out.byteLength < 400 * 1024 * 1024)
+        _outlineCache = { key, bytes: out, rasterInfo: null, skipInfo: null, fontWarn: null };
       return out;
+    }
+
+    // 폰트 안전화 결과를 성공 메시지 뒤에 붙일 요약 (건너뜀·이미지화·대체 경고)
+    function outlineResultNote() {
+      const parts = [];
+      if (_outlineSkipInfo)
+        parts.push(`✔ 이미 모든 폰트(${_outlineSkipInfo.fonts}종)가 파일에 들어 있어 다시 굽지 않았습니다 — 그대로도 다른 PC·출력기에서 글꼴이 바뀌지 않습니다.`);
+      if (_outlineRasterInfo && _outlineRasterInfo.count)
+        parts.push(`🖼 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 300DPI 이미지로 굳혔습니다.`);
+      if (_outlineCidLinked && _outlineCidLinked.length)
+        parts.push(`🔗 파일에 빠져 있던 폰트(${_outlineCidLinked.join(', ')})를 이 PC에 설치된 같은 폰트로 찾아 실었습니다 — 원래 글꼴 그대로 출력됩니다.`);
+      if (_outlineFontWarn)
+        parts.push(`⚠ 이 PC에 없는 폰트(${_outlineFontWarn.fonts.join(', ')})가 ${_outlineFontWarn.count || '여러'}/${_outlineFontWarn.total}쪽에 쓰여 gs 대체 글꼴로 나갑니다.`
+          + `\n→ 문서 대부분이 대상이라 이미지로 굳히지 않았습니다(굳히면 텍스트가 사라지고 용량이 폭증). 그 폰트를 이 PC에 설치한 뒤 다시 저장하세요.`);
+      return parts.length ? '\n' + parts.join('\n') : '';
     }
 
     // ── 완전 임베드 보조: 대체폰트 감지·페이지 매핑·이미지화 ─────────────────
@@ -2263,7 +2357,11 @@
       const STD14 = /^(Helvetica|Times|Courier|Symbol|ZapfDingbats|Arial|ArialMT|Arial-|TimesNewRoman|CourierNew)/i;
       const names = new Set();
       for (const line of String(log || '').split(/\r?\n/)) {
-        let m = line.match(/Loading (?:CID)?[Ff]ont (.+?) \(or substitute\) from (.+)$/);
+        // ⚠ gs 10은 CID(한글) 폰트에 괄호 없는 형식으로 찍는다 —
+        //   "Loading CIDFont KoPubWorldDotum,Bold substitute from %rom%…/DroidSansFallback.ttf"
+        //   예전 정규식은 '(or substitute)'만 받아 이 줄을 통째로 놓쳤고, 그래서 한글 폰트가
+        //   대체돼도 감지되지 않았다(실측: 수학_2up.pdf).
+        let m = line.match(/Loading (?:CID)?[Ff]ont (.+?) (?:\(or substitute\)|substitute) from (.+)$/);
         if (m && /%rom%/.test(m[2]) && !STD14.test(m[1].trim())) names.add(m[1].trim());
         m = line.match(/Substituting font .+? for (.+?)\.?\s*$/i);
         if (m && !STD14.test(m[1].trim())) names.add(m[1].trim());
@@ -2272,31 +2370,126 @@
       }
       return [...names];
     }
-    // 해당 폰트(BaseFont, 서브셋 접두사 제거 비교)를 리소스로 참조하는 페이지 인덱스 목록
-    async function _pagesUsingFonts(bytes, fontNames) {
-      const want = new Set(fontNames.map(n => n.replace(/^[A-Z]{6}\+/, '')));
-      const doc = await PDFLib.PDFDocument.load(bytes.slice(0));
-      const idxs = [];
-      doc.getPages().forEach((pg, i) => {
+    // ── 문서 폰트 스캔 (임베드 여부 · 사용 페이지) ─────────────────────────────
+    // ⚠ 페이지 Resources만 훑으면 안 된다 — 임포징·배치를 거친 원고는 내용이 Form
+    //    XObject 안에 들어가 있어, 그 안의 /Resources /Font 를 재귀로 따라가지 않으면
+    //    폰트가 한 종도 안 보인다. 실측(수학_2up.pdf 40쪽): 페이지 단위 스캔은 0종,
+    //    재귀 스캔은 임베드 60종 + 미임베드 1종(KoPubWorldDotum,Bold 전 40쪽)을 찾았다.
+    //    이 맹점 때문에 프리플라이트가 '폰트 이상 없음'이라 답하고, 완전 임베드는
+    //    대체된 폰트의 페이지를 못 찾아 이미지화를 건너뛰었다.
+    //    타일링 패턴·주석 외형(/AP /N)도 같은 이유로 함께 훑는다.
+    // 반환: { embedded: Map(이름→Set(0-based 쪽)), missing: Map(...),
+    //         cid: Map(이름→{ordering, supplement}) } — 이름은 서브셋 접두사 제거
+    function scanDocFonts(doc) {
+      const PDFName = PDFLib.PDFName, ctx = doc.context;
+      const embedded = new Map(), missing = new Map(), cid = new Map();
+      const add = (map, name, i) => { if (!map.has(name)) map.set(name, new Set()); map.get(name).add(i); };
+      const scanRes = (res, i, seen, depth) => {
+        if (!res || !res.get || depth > 8) return;
         try {
-          const res = pg.node.Resources();
-          const fonts = res && res.lookup(PDFLib.PDFName.of('Font'));
-          if (!fonts || !fonts.entries) return;
-          for (const [, ref] of fonts.entries()) {
-            const fd = doc.context.lookup(ref);
-            const bf = fd && fd.lookup && fd.lookup(PDFLib.PDFName.of('BaseFont'));
-            const name = bf && bf.decodeText ? bf.decodeText() : (bf ? String(bf).replace(/^\//, '') : '');
-            if (name && want.has(name.replace(/^[A-Z]{6}\+/, ''))) { idxs.push(i); return; }
+          const fonts = ctx.lookup(res.get(PDFName.of('Font')));
+          if (fonts && fonts.entries) for (const [, ref] of fonts.entries()) {
+            const f = ctx.lookup(ref); if (!f || !f.get) continue;
+            let desc = ctx.lookup(f.get(PDFName.of('FontDescriptor'))), csi = null;
+            if (!desc) {   // Type0 는 자손 폰트 쪽에 디스크립터가 있다
+              const dfs = ctx.lookup(f.get(PDFName.of('DescendantFonts')));
+              if (dfs && dfs.size && dfs.size() > 0) {
+                const df = ctx.lookup(dfs.get(0));
+                desc = df && df.get ? ctx.lookup(df.get(PDFName.of('FontDescriptor'))) : null;
+                // CIDSystemInfo — gs cidfmap으로 설치 폰트를 이어 줄 때 /CSI 값이 된다
+                const si = df && df.get ? ctx.lookup(df.get(PDFName.of('CIDSystemInfo'))) : null;
+                if (si && si.get) {
+                  const ord = si.get(PDFName.of('Ordering')), sup = si.get(PDFName.of('Supplement'));
+                  const o = ord && ord.decodeText ? ord.decodeText() : String(ord || '').replace(/^\(|\)$/g, '');
+                  if (o) csi = { ordering: o, supplement: Number(String(sup || 0)) || 0 };
+                }
+              }
+            }
+            const emb = !!(desc && desc.get && ['FontFile', 'FontFile2', 'FontFile3'].some(x => desc.get(PDFName.of(x))));
+            const bn = f.get(PDFName.of('BaseFont'));
+            const nm = (bn ? String(bn).replace(/^\//, '') : '(이름없음)').replace(/^[A-Z]{6}\+/, '');
+            add(emb ? embedded : missing, nm, i);
+            if (!emb && csi && !cid.has(nm)) cid.set(nm, csi);
+          }
+        } catch (e) {}
+        for (const key of ['XObject', 'Pattern']) {
+          try {
+            const d = ctx.lookup(res.get(PDFName.of(key)));
+            if (!d || !d.entries) continue;
+            for (const [, ref] of d.entries()) {
+              const tag = String(ref); if (seen.has(tag)) continue; seen.add(tag);   // 순환 참조 방지
+              const x = ctx.lookup(ref), dict = x && (x.dict || x);
+              if (dict && dict.get) scanRes(ctx.lookup(dict.get(PDFName.of('Resources'))), i, seen, depth + 1);
+            }
+          } catch (e) {}
+        }
+      };
+      doc.getPages().forEach((pg, i) => {
+        const seen = new Set();
+        try { scanRes(pg.node.Resources(), i, seen, 0); } catch (e) {}
+        try {
+          const annots = ctx.lookup(pg.node.get(PDFName.of('Annots')));
+          if (annots && annots.asArray) for (const a of annots.asArray()) {
+            const ad = ctx.lookup(a); if (!ad || !ad.get) continue;
+            const ap = ctx.lookup(ad.get(PDFName.of('AP')));
+            const n = ap && ap.get ? ctx.lookup(ap.get(PDFName.of('N'))) : null;
+            const nd = n && (n.dict || n);
+            if (nd && nd.get) scanRes(ctx.lookup(nd.get(PDFName.of('Resources'))), i, seen, 1);
           }
         } catch (e) {}
       });
-      return idxs;
+      return { embedded, missing, cid };
+    }
+
+    // 미임베드 CID 폰트 목록 → gs cidfmap 항목 (메인이 설치 폰트 파일을 찾아 이어 준다)
+    function cidFontsFromScan(scan) {
+      if (!scan || !scan.cid || !scan.cid.size) return [];
+      const out = [];
+      for (const [name, csi] of scan.cid) {
+        if (!scan.missing.has(name)) continue;
+        out.push({ name, ordering: csi.ordering, supplement: csi.supplement });
+      }
+      return out;
+    }
+
+    // gs가 '이 PC에도 없어 대체'하게 될 폰트를 본 실행 전에 확정한다.
+    // 미임베드 폰트를 처음 쓰는 페이지만 nullpage로 훑으면 되므로 아주 싸다
+    // (실측: 1쪽 0.21초 · 전체 40쪽 1.7초 · pdfwrite 본 실행 4.6초).
+    // 반환: 대체될 폰트 이름 배열, 또는 프로브를 쓸 수 없으면 null(→ 사후 감지 폴백)
+    async function _probeSubstitutedFonts(bytes, missMap, cidFonts) {
+      if (!missMap || !missMap.size || !window.electronAPI.probeFonts) return null;
+      const pages = [...new Set([...missMap.values()].map(s => Math.min(...s)))]
+        .sort((a, b) => a - b).slice(0, 6);
+      let tmp = null; const found = new Set();
+      try {
+        tmp = window.electronAPI.writeTempFile(bytes, 'pdf');
+        for (const p of pages) {
+          // 본 실행과 같은 조건(cidfmap 포함)으로 훑어야 판정이 맞는다
+          const log = await window.electronAPI.probeFonts(tmp, { first: p + 1, last: p + 1, cidFonts: cidFonts || [] });
+          _gsSubstitutedFonts(log).forEach(n => found.add(n));
+        }
+      } catch (e) {
+        console.warn('폰트 대체 사전 감지 실패 — 사후 감지로 진행:', e);
+        return null;
+      } finally { if (tmp) { try { window.electronAPI.removeTempFile(tmp); } catch (e) {} } }
+      return [...found];
+    }
+
+    // 해당 폰트(BaseFont, 서브셋 접두사 제거 비교)를 쓰는 페이지 인덱스 목록
+    async function _pagesUsingFonts(bytes, fontNames) {
+      const want = new Set(fontNames.map(n => n.replace(/^[A-Z]{6}\+/, '')));
+      const doc = await PDFLib.PDFDocument.load(bytes.slice(0), { ignoreEncryption: true });
+      const scan = scanDocFonts(doc);
+      const idxs = new Set();
+      for (const [nm, pgs] of [...scan.missing, ...scan.embedded])
+        if (want.has(nm)) pgs.forEach(i => idxs.add(i));
+      return [...idxs].sort((a, b) => a - b);
     }
     // 지정 페이지를 pdf.js로 300DPI 렌더(화면 미리보기와 동일한 모습) → JPEG로 페이지 교체.
     // 회전은 렌더에 구워지므로 /Rotate 0 + 뷰어 방향 크기로 재설정, 부속 박스는 제거.
     async function _rasterizePagesToImages(bytes, pageIdxs) {
       const doc = await PDFLib.PDFDocument.load(bytes.slice(0));
-      const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      const pdf = await openPdfDoc({ data: bytes.slice(0) }).promise;
       try {
         for (const i of pageIdxs) {
           const page = await pdf.getPage(i + 1);
@@ -3994,7 +4187,12 @@
             hideLoading();
           }
           const saved = await window.electronAPI.saveFile({ defaultName: processedFileName, buffer: bytes });
-          if (saved) { setDirty(false); showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)' + (_outlineEnabled ? (_outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영') : '')); }
+          if (saved) {
+            setDirty(false);
+            showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)'
+              + (_outlineEnabled ? (_outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영') : '')
+              + (_outlineEnabled ? outlineResultNote() : ''));
+          }
         } catch (err) {
           console.error('다운로드 오류:', err);
           hideLoading();
@@ -4035,8 +4233,7 @@
           setDirty(false);
           let m = 'PDF를 다운로드했습니다. (용량 최적화 적용)';
           if (_outlineEnabled) m += _outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영';
-          if (_outlineEnabled && _outlineRasterInfo && _outlineRasterInfo.count)
-            m += `\n🖼 이 PC에 없는 폰트(${_outlineRasterInfo.fonts.join(', ')}) 사용 ${_outlineRasterInfo.count}쪽(${_outlineRasterInfo.pages.join(', ')}p)은 300DPI 이미지로 굳혔습니다.`;
+          if (_outlineEnabled) m += outlineResultNote();
           showSuccess(m);
         }
       } catch (err) {
@@ -6386,7 +6583,7 @@
           originalPdfBytes = mergedBytes;
           const tab = tabs.get(activeTabId);
           if (tab) { tab.originalPdfBytes = mergedBytes; tab.fileSize = mergedBytes.byteLength; }
-          const newPdf = await pdfjsLib.getDocument({ data: mergedBytes.slice(0) }).promise;
+          const newPdf = await openPdfDoc({ data: mergedBytes.slice(0) }).promise;
           try { if (globalPdfDoc) globalPdfDoc.destroy(); } catch (e) {}
           globalPdfDoc = newPdf;
           if (tab) tab.pdfDoc = newPdf;
@@ -6489,33 +6686,14 @@
         if (noBleed.length === n) infos.push(`블리드/트림 박스 정보 없음 — 가장자리까지 인쇄물이 닿는 원고면 '블리드 자동 생성'을 사용하세요.`);
         else if (noBleed.length) infos.push(`일부 페이지(${_pfFmtPages(noBleed)})에 블리드/트림 박스 없음`);
 
-        // 2) 폰트 임베드 (Type0은 DescendantFonts 쪽 디스크립터 확인)
+        // 2) 폰트 임베드 — 페이지·Form XObject·패턴·주석을 재귀로 훑는다(scanDocFonts 공유).
+        //    예전엔 페이지 Resources만 봐서, 임포징을 거친 원고(내용이 XObject 안에 들어간
+        //    경우)는 폰트가 한 종도 안 잡혀 미임베드 폰트가 있어도 이상 없음으로 통과했다.
         const notEmb = new Map();
-        doc.getPages().forEach((pg, i) => {
-          try {
-            const res = ctx.lookup(pg.node.get(PDFName.of('Resources')));
-            const fd = res ? ctx.lookup(res.get(PDFName.of('Font'))) : null;
-            if (!fd || !fd.entries) return;
-            for (const [, v] of fd.entries()) {
-              const f = ctx.lookup(v); if (!f || !f.get) continue;
-              let desc = ctx.lookup(f.get(PDFName.of('FontDescriptor')));
-              if (!desc) {
-                const dfs = ctx.lookup(f.get(PDFName.of('DescendantFonts')));
-                if (dfs && dfs.size && dfs.size() > 0) {
-                  const df = ctx.lookup(dfs.get(0));
-                  desc = df ? ctx.lookup(df.get(PDFName.of('FontDescriptor'))) : null;
-                }
-              }
-              const emb = desc && ['FontFile', 'FontFile2', 'FontFile3'].some(x => desc.get(PDFName.of(x)));
-              if (!emb) {
-                const bn = f.get(PDFName.of('BaseFont'));
-                const nm = bn ? String(bn).replace(/^\//, '').replace(/^[A-Z]{6}\+/, '') : '(이름없음)';
-                if (!notEmb.has(nm)) notEmb.set(nm, new Set());
-                notEmb.get(nm).add(i + 1);
-              }
-            }
-          } catch (e) {}
-        });
+        try {
+          const fscan = scanDocFonts(doc);
+          for (const [nm, pgs] of fscan.missing) notEmb.set(nm, new Set([...pgs].map(k => k + 1)));
+        } catch (e) { console.warn('프리플라이트 폰트 스캔 실패:', e); }
         if (notEmb.size)
           errs.push(`폰트 미임베드 ${notEmb.size}종 — ${[...notEmb.entries()].slice(0, 6).map(([nm, ps]) => `${nm}(${_pfFmtPages(ps)})`).join(', ')}${notEmb.size > 6 ? ' 외' : ''} → 다른 PC에서 글꼴이 바뀔 수 있음. '✒ 폰트 아웃라인화' 권장`);
 
@@ -6763,9 +6941,16 @@
       if (activeTabId && tabs.has(activeTabId)) updateFileInfo(tabs.get(activeTabId));
     }
 
-    function setPageEdited() {
+    // opts.auto = 사용자가 아니라 앱이 스스로 고친 것(문서를 열 때 도는 방향 자동 맞춤).
+    // 적용은 여전히 필요하지만(결과에 반영해야 하므로) '적용 필요' 강조는 켜지 않는다.
+    function setPageEdited(opts) {
       pageEdited = true;
-      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).pageEdited = true;
+      const byUser = !(opts && opts.auto);
+      if (byUser) pageEditedByUser = true;
+      if (activeTabId && tabs.has(activeTabId)) {
+        tabs.get(activeTabId).pageEdited = true;
+        if (byUser) tabs.get(activeTabId).pageEditedByUser = true;
+      }
       invalidateProcessed();
       if (typeof previewVisible === 'function' && previewVisible()) {
         // 미리보기가 자동 갱신되지 않는 상태(편집 모드 밖 + 자동 반영 꺼짐)라면, 화면에는 방금
@@ -8150,7 +8335,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 
     // PDF 바이트 → 페이지별 JPEG data URI 배열
     async function ebookRenderPages(bytes, dpi, onProgress) {
-      const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      const pdf = await openPdfDoc({ data: bytes.slice(0) }).promise;
       const out = [];
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { willReadFrequently: false });
@@ -8729,8 +8914,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       });
       if (typeof renderAllPages === 'function') renderAllPages(pageResults);
       if (typeof renderSidebar === 'function') renderSidebar(pageResults);
-      if (typeof setPageEdited === 'function') setPageEdited();
-      else { pageEdited = true; processedPdfBytes = null; }
+      if (typeof setPageEdited === 'function') setPageEdited({ auto: !!silent });
+      else { pageEdited = true; if (!silent) pageEditedByUser = true; processedPdfBytes = null; }
       if (typeof updateDownloadBtn === 'function') updateDownloadBtn();
       if (typeof updateUndoBtn === 'function') updateUndoBtn();
       if (typeof syncAutoOrientUI === 'function') syncAutoOrientUI();

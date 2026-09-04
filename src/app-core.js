@@ -38,6 +38,10 @@
     let originalThumbnails = new Map();
     let quoteItems         = [];
     let pageEdited         = false;
+    // 위와 별개로 **사용자가 직접** 고친 것이 있는지. 문서를 열 때 도는 '방향 자동 맞춤'은
+    // 페이지를 돌리므로 pageEdited는 참이 되지만, 사용자가 한 일이 아니라서 '적용 필요'
+    // 강조(깜박임)를 켜면 안 된다 — 아무것도 안 했는데 깜박여 오해를 부른다.
+    let pageEditedByUser   = false;
     let liveAutoPreview    = localStorage.getItem('liveAutoPreview') === '1'; // 편집 중 자동 반영 (기본 OFF)
     let undoStack          = []; // 실행취소 히스토리 (페이지 상태 스냅샷)
     let redoStack          = []; // 다시실행 히스토리
@@ -163,6 +167,29 @@
     }
     function savePdfDoc(doc, extra) { return doc.save(pdfSaveOpts(doc, extra)); }
 
+    // ── pdf.js 문서 열기 (공용) ───────────────────────────────────────────────
+    // 사전 정의 CMap(한국어 UniKS-UTF16-H 등)은 pdf.js가 **외부 파일**에서 읽어야 한다.
+    // 안 알려주면 폰트 로드가 통째로 실패해 그 글자가 화면에 아예 안 그려진다 —
+    // 아크로뱃이 넣은 머리글·바닥글(비임베드 CID 폰트)이 사라지던 원인이 이것이다.
+    // file:// 에서는 fetch/XHR가 막히므로 preload의 fs로 직접 읽어 넘긴다.
+    const _CMAP_DIR = (() => {
+      try { return (window.electronAPI && window.electronAPI.cmapDir) ? window.electronAPI.cmapDir() : null; }
+      catch (e) { return null; }
+    })();
+    class LocalCMapReader {
+      // pdf.js가 { baseUrl, isCompressed }로 생성하지만 우리는 경로를 직접 안다
+      async fetch({ name }) {
+        if (!_CMAP_DIR || !name) throw new Error("CMap을 찾을 수 없습니다: " + name);
+        const buf = window.electronAPI.readFile(_CMAP_DIR + "/" + name + ".bcmap");
+        return { cMapData: new Uint8Array(buf), compressionType: 1 };   // 1 = 바이너리(.bcmap)
+      }
+    }
+    // 모든 pdf.js 문서 열기는 여기를 지난다 — 한 곳만 고치면 전부 따라온다.
+    function openPdfDoc(src, extra) {
+      const o = (src && src.data !== undefined) ? Object.assign({}, src) : { data: src };
+      if (_CMAP_DIR) o.CMapReaderFactory = LocalCMapReader;
+      return pdfjsLib.getDocument(Object.assign(o, extra || {}));
+    }
     // ── 멀티코어 Worker Pool ──────────────────────────────────────────────────
     class WorkerPool {
       // 워커는 **처음 일이 들어올 때** 만든다. 예전에는 생성자에서 코어 수만큼 한꺼번에
@@ -252,6 +279,7 @@
         progress: 0,
         defaultPageSize: null,
         pageEdited: false,
+        pageEditedByUser: false,
         undoStack: [],
         redoStack: [],
         fileSize: file.size || 0,
@@ -376,6 +404,7 @@
       quoteItems         = tab.quoteItems;
       Object.assign(processingOptions, tab.processingOptions);
       pageEdited         = tab.pageEdited;
+      pageEditedByUser   = !!tab.pageEditedByUser;
       undoStack          = tab.undoStack;
       redoStack          = tab.redoStack;
       if (!tab.editSettings) tab.editSettings = newEditSettings();
@@ -1473,7 +1502,7 @@
         const arrayBuffer = await file.arrayBuffer();
         tabState.originalPdfBytes = new Uint8Array(arrayBuffer.slice(0));
         tabState.fileSize = arrayBuffer.byteLength;
-        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+        const pdf = await openPdfDoc({ data: new Uint8Array(arrayBuffer) }).promise;
         tabState.pdfDoc = pdf;
         if (isActive()) { originalPdfBytes = tabState.originalPdfBytes; globalPdfDoc = pdf; }
 
@@ -1554,7 +1583,7 @@
           const want = Math.min(3, Math.max(0, Math.floor(CONCURRENCY / 2) - 1));
           for (let e = 0; e < want; e++) {
             try {
-              extraDocs.push(await pdfjsLib.getDocument({ data: tabState.originalPdfBytes.slice(0) }).promise);
+              extraDocs.push(await openPdfDoc({ data: tabState.originalPdfBytes.slice(0) }).promise);
             } catch (err) { break; }
           }
         }
@@ -2224,7 +2253,7 @@
         let pdf = null;
         try {
           const data = ed ? ed.bytes.slice(0) : originalPdfBytes.slice(0);
-          pdf = await pdfjsLib.getDocument({ data }).promise;
+          pdf = await openPdfDoc({ data }).promise;
           const page = await pdf.getPage(ed ? 1 : idx + 1);
           const res = await analyzePageColor(page);
           const thumb = res && res.thumbPromise ? await res.thumbPromise : null;
@@ -2284,8 +2313,11 @@
       // '편집 적용'과 같은 조건으로 활성화된다.
       // 임포징 포함(_impEnabled)도 단독으로 '수정사항' — 빠져 있으면 임포징만 켠 상태에서
       // 메인/사이드바 '적용'이 비활성이라 전체화면으로 펼쳐야만 반영되는 비대칭이 생긴다.
-      const outlineOn = (typeof _outlineEnabled !== 'undefined') && _outlineEnabled;   // ✒ 아웃라인 옵션도 단독 수정사항
-      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout() || hasContentEdits() || impIncluded() || outlineOn);
+      // ✒ 폰트 출력 안전화는 **저장(다운로드) 시점 처리**다 — 화면·적용본을 바꾸지 않으므로
+      // '수정사항'에 넣지 않는다. 넣어 두면 안전화만 켠 상태에서 적용 버튼이 활성화되는데,
+      // 눌러도 안전화와 무관한 재조립만 돌고(이미 적용했다면 버튼이 비활성이라 눌리지도 않아)
+      // "체크했는데 적용이 안 된다"로 보였다. 대신 다운로드 버튼에 배지로 계속 알린다.
+      const hasMod    = !!originalPdfBytes && (anyActive || pageEdited || selectedPages.size > 0 || hasAnyActiveLayout() || hasContentEdits() || impIncluded());
       const applyBtn    = document.getElementById('applyBtn');
       const downloadBtn = document.getElementById('downloadBtn');
       // 적용 결과가 이미 최신이면(processedPdfBytes 존재 — 어떤 수정이든 생기면
@@ -2297,6 +2329,7 @@
         downloadBtn.disabled = applying || !originalPdfBytes;
         downloadBtn.classList.toggle('btn-dim', !processedPdfBytes);
       }
+      syncOutlineBadges();
       const clearBtn = document.getElementById('clearOptsBtn');
       if (clearBtn) clearBtn.style.display = anyActive ? '' : 'none';
       // 편집 패널 적용/다운로드 버튼
@@ -2311,7 +2344,7 @@
       // 열자마자 hasMod가 참이 되어, 사용자가 아무것도 건드리지 않았는데 계속 깜빡인다.
       // 강조는 '사용자가 실제로 바꾼 것'이 있을 때만: 기본값과 달라진 옵션 + 실제 편집.
       const optsChanged = processingOptions.bw || processingOptions.inkNorm !== true;
-      const userMod = !!originalPdfBytes && (optsChanged || pageEdited || selectedPages.size > 0
+      const userMod = !!originalPdfBytes && (optsChanged || pageEditedByUser || selectedPages.size > 0
                       || hasAnyActiveLayout() || hasContentEdits() || impIncluded());
       const needsApply = userMod && !upToDate && !applying;
       ['applyBtn', 'sb-applyBtn', 'esApplyBtn'].forEach(id => {
@@ -2319,6 +2352,27 @@
         if (b) b.classList.toggle('needs-apply', needsApply && !b.disabled);
       });
       syncSidebarPanel();
+    }
+
+    // ✒ 폰트 안전화는 저장할 때 반영된다 — 적용 버튼이 아니라 **다운로드 버튼**에 표시해
+    // "체크했는데 어디에 반영되는지 모르겠다"를 없앤다. (app-process.js의 _outlineEnabled를
+    // app-core에서 읽으므로 TDZ를 피해 try로 감싼다)
+    function syncOutlineBadges() {
+      let on = false, mode = 'embed';
+      try { on = !!_outlineEnabled; mode = _outlineMode; } catch (e) { return; }
+      const mark = on ? (mode === 'embed' ? ' 🔤' : ' ✒') : '';
+      const tip  = on
+        ? (mode === 'embed' ? '저장할 때 모든 폰트를 파일에 완전 임베드합니다 (적용은 필요 없습니다)'
+                            : '저장할 때 모든 글자를 곡선으로 변환합니다 (적용은 필요 없습니다)')
+        : '';
+      ['downloadBtn', 'esDownloadBtn', 'sb-downloadBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (!b) return;
+        if (b.dataset.baseLabel === undefined) b.dataset.baseLabel = b.textContent;
+        if (b.dataset.baseTitle === undefined) b.dataset.baseTitle = b.title || '';
+        b.textContent = b.dataset.baseLabel + mark;
+        b.title = b.dataset.baseTitle + (tip ? '\n' + tip : '');
+      });
     }
 
     // 새 수정이 생기면 직전 '적용' 결과는 무효화 (다시 적용해야 다운로드 가능)

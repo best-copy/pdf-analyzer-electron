@@ -847,6 +847,133 @@ function runInkCoverage(pdfPath) {
 
 ipcMain.handle('ink:coverage', (_, pdfPath) => runInkCoverage(pdfPath));
 
+// ── 설치된 폰트 색인 (폰트 내부 이름 → 파일) + gs cidfmap 생성 ────────────────
+// ⚠ gs는 **CID(한글·CJK) 폰트를 -sFONTPATH로 찾지 않는다.** FONTPATH는 일반 폰트용
+//   Fontmap만 만들고, CID 폰트는 별도의 `cidfmap` 표에서만 찾는다. 그래서 폰트가 이 PC에
+//   멀쩡히 설치돼 있어도 내장 대체폰트(DroidSansFallback)로 바뀌어 버린다.
+//   실측: KoPubWorldDotum,Bold — C:\Windows\Fonts에 설치돼 있는데도 대체됨.
+// ⚠ 레지스트리 표시 이름은 한글("KoPubWorld돋움체 Bold")이라 PDF의 폰트 이름과 안 맞는다.
+//   그래서 fonts:list가 아니라 **폰트 파일의 name 테이블**(영문 Family/PostScript 이름)을
+//   직접 읽어 색인한다. 헤더와 name 테이블만 읽으므로 파일당 수 KB면 된다.
+let _fontIndex = null;
+function normFontKey(s) {
+  return String(s || '').toLowerCase().replace(/^[a-z]{6}\+/, '').replace(/[\s,_()\-.]/g, '');
+}
+function _readAt(fd, pos, len) {
+  const b = Buffer.alloc(len);
+  fs.readSync(fd, b, 0, len, pos);
+  return b;
+}
+// sfnt(ttf/otf) 한 벌의 이름들 — {1:Family, 2:Subfamily, 4:Full, 6:PostScript, 16/17:Typo}
+function _sfntNames(fd, base) {
+  const h = _readAt(fd, base, 12);
+  const tag = h.readUInt32BE(0);
+  if (tag !== 0x00010000 && tag !== 0x4f54544f && tag !== 0x74727565) return null;
+  const num = h.readUInt16BE(4);
+  if (!num || num > 512) return null;
+  const dir = _readAt(fd, base + 12, num * 16);
+  let off = 0, len = 0;
+  for (let i = 0; i < num; i++) {
+    if (dir.slice(i * 16, i * 16 + 4).toString('latin1') === 'name') {
+      off = dir.readUInt32BE(i * 16 + 8); len = dir.readUInt32BE(i * 16 + 12); break;
+    }
+  }
+  if (!off || !len || len > (1 << 20)) return null;
+  const nt = _readAt(fd, off, len);          // name 테이블 오프셋은 TTC에서도 파일 선두 기준
+  const cnt = nt.readUInt16BE(2), so = nt.readUInt16BE(4);
+  const out = {};
+  for (let i = 0; i < cnt; i++) {
+    const r = 6 + i * 12;
+    if (r + 12 > nt.length) break;
+    const pid = nt.readUInt16BE(r), nid = nt.readUInt16BE(r + 6);
+    const l = nt.readUInt16BE(r + 8), o = nt.readUInt16BE(r + 10);
+    if (![1, 2, 4, 6, 16, 17].includes(nid) || out[nid]) continue;
+    const raw = nt.slice(so + o, so + o + l);
+    if (!raw.length) continue;
+    let s = '';
+    try { s = pid === 3 ? (raw.length % 2 ? '' : Buffer.from(raw).swap16().toString('utf16le')) : raw.toString('latin1'); } catch (e) {}
+    if (s) out[nid] = s;
+  }
+  return out;
+}
+function buildFontIndex() {
+  if (_fontIndex) return _fontIndex;
+  const idx = new Map();
+  const put = (k, v) => { const n = normFontKey(k); if (n && !idx.has(n)) idx.set(n, v); };
+  const dirs = [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')];
+  if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Windows', 'Fonts'));
+  for (const d of dirs) {
+    let files = [];
+    try { files = fs.readdirSync(d); } catch (e) { continue; }
+    for (const f of files) {
+      if (!/\.(ttf|otf|ttc|otc)$/i.test(f)) continue;
+      const p = path.join(d, f);
+      let fd = null;
+      try {
+        fd = fs.openSync(p, 'r');
+        const head = _readAt(fd, 0, 12);
+        const bases = [];
+        if (head.slice(0, 4).toString('latin1') === 'ttcf') {   // TTC는 gs가 SubfontID로 고른다
+          const n = Math.min(head.readUInt32BE(8), 64);
+          const offs = _readAt(fd, 12, n * 4);
+          for (let i = 0; i < n; i++) bases.push(offs.readUInt32BE(i * 4));
+        } else bases.push(0);
+        bases.forEach((b, i) => {
+          const nm = _sfntNames(fd, b);
+          if (!nm) return;
+          const v = { path: p, subfontId: bases.length > 1 ? i : 0 };
+          if (nm[6]) put(nm[6], v);
+          if (nm[4]) put(nm[4], v);
+          if (nm[1]) put(nm[1] + (nm[2] && !/^regular$/i.test(nm[2]) ? nm[2] : ''), v);
+          if (nm[16]) put(nm[16] + (nm[17] || ''), v);
+        });
+        put(f.replace(/\.[^.]+$/, ''), { path: p, subfontId: 0 });   // 파일명도 후보
+      } catch (e) {} finally { if (fd !== null) { try { fs.closeSync(fd); } catch (e) {} } }
+    }
+  }
+  _fontIndex = idx;
+  return idx;
+}
+function resolveFontFile(name) {
+  const idx = buildFontIndex();
+  const raw = String(name || '').replace(/^[A-Z]{6}\+/, '');
+  const cands = [raw];
+  const m = raw.match(/^(.*?),(.*)$/);   // 윈도우식 "Family,Bold" 표기
+  if (m) cands.push(m[1] + m[2], m[1] + '-' + m[2], m[1]);
+  for (const c of cands) { const v = idx.get(normFontKey(c)); if (v) return v; }
+  return null;
+}
+// 미임베드 CID 폰트를 설치본으로 잇는 임시 cidfmap 생성 → { dir, used } 또는 null
+// 매핑에 실패하거나 경로가 틀리면 gs는 종전대로 내장 대체폰트를 쓴다(실측 확인) — 안전한 폴백.
+function writeCidFmap(cidFonts) {
+  if (!Array.isArray(cidFonts) || !cidFonts.length) return null;
+  const lines = [], used = [];
+  for (const f of cidFonts) {
+    const name = String((f && f.name) || '');
+    if (!name || !/^[A-Za-z0-9,\-_.+]+$/.test(name)) continue;   // PS 이름으로 안전한 것만
+    const ordering = String((f && f.ordering) || '');
+    // Identity 정렬은 CID=원본 글리프 번호라 다른 폰트로 이으면 엉뚱한 글자가 된다 → 제외
+    if (!ordering || !/^[A-Za-z0-9]+$/.test(ordering) || /^identity$/i.test(ordering)) continue;
+    const hit = resolveFontFile(name);
+    if (!hit) continue;
+    const p = hit.path.replace(/\\/g, '/');
+    if (/[^\x20-\x7e]/.test(p)) continue;   // 비ASCII 경로는 gs 문자열 해석이 불확실 → 건너뜀
+    lines.push(`/${name} << /FileType /TrueType /Path (${p.replace(/([()\\])/g, '\\$1')}) `
+      + `/SubfontID ${hit.subfontId} /CSI [(${ordering}) ${Number(f.supplement) || 0}] >> ;`);
+    used.push(name);
+  }
+  if (!lines.length) return null;
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfedit_cidmap_'));
+    fs.writeFileSync(path.join(dir, 'cidfmap'), lines.join('\n') + '\n', 'latin1');
+    return { dir, used };
+  } catch (e) { return null; }
+}
+function removeCidFmap(m) {
+  if (!m || !m.dir) return;
+  try { fs.rmSync(m.dir, { recursive: true, force: true }); } catch (e) {}
+}
+
 // ── IPC: 폰트 아웃라인화 — gs pdfwrite -dNoOutputFonts (모든 텍스트 → 곡선) ──
 // 외부 출력소 전달 표준 관행: 폰트 문제로 인한 출력 사고 원천 차단.
 ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
@@ -864,6 +991,8 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
     const compat = opts && opts.flatten ? '1.4' : '1.6';
     const embed = opts && opts.mode === 'embed';
     const winFonts = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts');
+    // 미임베드 CID 폰트를 이 PC의 설치본으로 잇는다 (-I 로 우리 cidfmap을 먼저 찾게 함)
+    const cidm = embed ? writeCidFmap(opts && opts.cidFonts) : null;
     // embed 모드는 -q를 빼고 gs 로그를 함께 반환 — "Loading font X (or substitute) from %rom%..."
     // 메시지로 '이 PC에도 없어 대체된 폰트'를 렌더러가 감지해 해당 페이지를 이미지화한다.
     execFile(findGhostscript(),
@@ -871,14 +1000,28 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
       // 페이지를 제멋대로 돌린다. 실제로 이 옵션이 없어서 폰트 안전화를 거친 결과물의
       // 페이지가 180° 뒤집혀 나왔다(빈 페이지처럼 글자가 없는 쪽에서 특히 자주).
       [...(embed ? [] : ['-q']), '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite', '-dAutoRotatePages=/None',
+       ...(cidm ? ['-I' + cidm.dir] : []),
        ...(embed
          ? ['-dEmbedAllFonts=true', '-dSubsetFonts=false', '-dCompressFonts=true', `-sFONTPATH=${winFonts}`]
          : ['-dNoOutputFonts']),
+       // ⚠ 이미지는 **손대지 않는다**. 다운샘플만 끄면 부족하다 — pdfwrite는 기본값
+       //   AutoFilterColorImages=true 때문에 무손실(Flate) 이미지를 '사진 같다'고 판단하면
+       //   JPEG로 다시 굽는다. 실측(사진 원고 4.94MB): 1.04MB로 줄고 300dpi 렌더 픽셀 차이가
+       //   평균 2.26/255까지 벌어졌다. 필터를 무손실로 고정하면 차이 0.05(사실상 원본).
+       //   원본 JPEG도 함께 풀려 용량은 커지지만(4.94→6.46MB), 인쇄 원고는 화질이 우선이다.
+       //   ⚠ 예전 주석은 '필터를 명시하면 -dPassThroughJPEGImages를 gs가 무시한다'였으나
+       //   gs 10.07.1 재실측 결과 **무시하지 않는다** — 원본 JPEG는 그대로 통과하고
+       //   (JPEG 24장 4.31MB → 4.32MB, /DCTDecode 4개 유지) 무손실 이미지만 Flate로 남는다.
+       //   반대로 이 필터 지정을 빼면 gs가 무손실 이미지를 JPEG로 재압축한다(실측: Flate
+       //   이미지 7개가 /DCTDecode로 바뀌고 2.91MB→2.14MB). 즉 지금 조합이 정답이다.
+       '-dAutoFilterColorImages=false', '-dColorImageFilter=/FlateEncode',
+       '-dAutoFilterGrayImages=false', '-dGrayImageFilter=/FlateEncode',
        '-dPassThroughJPEGImages=true',
        '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
        `-dCompatibilityLevel=${compat}`, '-o', outPath, pdfPath],
       { windowsHide: true, timeout: 600000, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout, stderr) => {
+        removeCidFmap(cidm);
         if (err) {
           const msg = (err.code === 'ENOENT')
             ? 'Ghostscript(gswin64c)가 설치되어 있지 않습니다. 폰트 아웃라인화에는 Ghostscript가 필요합니다.'
@@ -886,7 +1029,40 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
           return reject(new Error(msg));
         }
         if (!fs.existsSync(outPath)) return reject(new Error('아웃라인 PDF가 생성되지 않았습니다.'));
-        resolve(embed ? { path: outPath, log: String(stdout || '') + '\n' + String(stderr || '') } : outPath);
+        resolve(embed
+          ? { path: outPath, log: String(stdout || '') + '\n' + String(stderr || ''), cidLinked: (cidm && cidm.used) || [] }
+          : outPath);
+      });
+  });
+});
+
+// ── IPC: 폰트 대체 사전 감지 — gs nullpage 프로브 ──────────────────────────
+// 완전 임베드는 '이 PC에도 없는 폰트'를 만나면 gs가 내장 대체폰트로 바꿔 버린다.
+// 예전엔 pdfwrite 1차 실행 로그를 보고서야 그걸 알 수 있어 gs를 두 번 돌렸다.
+// nullpage는 PDF를 쓰지 않고 해석만 하므로 훨씬 싸다 — 실측(2up 40쪽):
+// pdfwrite 4.6초 / nullpage 전체 1.7초 / nullpage 1쪽 0.21초.
+// 그래서 '그 폰트를 처음 쓰는 페이지'만 훑어 대체 여부를 미리 확정한다.
+ipcMain.handle('gs:probeFonts', (_, pdfPath, opts) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const base = path.basename(pdfPath || '');
+      if (!/^pdfedit_.*\.pdf$/i.test(base)) return reject(new Error('잘못된 임시파일 경로'));
+      if (path.dirname(pdfPath) !== os.tmpdir()) return reject(new Error('잘못된 임시파일 경로'));
+    } catch (e) { return reject(e); }
+    const first = Math.max(1, parseInt((opts && opts.first) || 1, 10) || 1);
+    const last = Math.max(first, parseInt((opts && opts.last) || first, 10) || first);
+    const winFonts = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts');
+    // 본 실행과 **같은 조건**으로 훑어야 판정이 맞는다 — cidfmap도 동일하게 건다.
+    const cidm = writeCidFmap(opts && opts.cidFonts);
+    execFile(findGhostscript(),
+      ['-dNOPAUSE', '-dBATCH', '-sDEVICE=nullpage', ...(cidm ? ['-I' + cidm.dir] : []), `-sFONTPATH=${winFonts}`,
+       `-dFirstPage=${first}`, `-dLastPage=${last}`, pdfPath],
+      { windowsHide: true, timeout: 120000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        removeCidFmap(cidm);
+        // 프로브는 '있으면 좋은' 정보다 — 실패해도 본 실행을 막지 않고 빈 로그를 준다.
+        if (err && err.code === 'ENOENT') return reject(new Error('Ghostscript(gswin64c)가 설치되어 있지 않습니다.'));
+        resolve(String(stdout || '') + '\n' + String(stderr || ''));
       });
   });
 });

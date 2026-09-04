@@ -197,6 +197,28 @@
 <div id="busy">처리 중…</div>
 
 <script>
+// ── pdf.js 문서 열기 ──────────────────────────────────────────────────────
+// ⚠ src/app-core.js의 같은 이름 함수와 **같은 내용을 유지할 것** — 편집기 창은 별개
+//   스코프라 전역을 공유하지 못한다.
+// 사전 정의 CMap(한국어 UniKS-UTF16-H 등)을 안 알려주면 폰트 로드가 실패해 그 글자가
+// 화면에 아예 안 그려진다(아크로뱃 머리글·바닥글이 사라지던 원인).
+const _CMAP_DIR = (() => {
+  try { return (window.electronAPI && window.electronAPI.cmapDir) ? window.electronAPI.cmapDir() : null; }
+  catch (e) { return null; }
+})();
+class LocalCMapReader {
+  async fetch({ name }) {
+    if (!_CMAP_DIR || !name) throw new Error("CMap을 찾을 수 없습니다: " + name);
+    const buf = window.electronAPI.readFile(_CMAP_DIR + "/" + name + ".bcmap");
+    return { cMapData: new Uint8Array(buf), compressionType: 1 };   // 1 = 바이너리(.bcmap)
+  }
+}
+function openPdfDoc(src, extra) {
+  const o = (src && src.data !== undefined) ? Object.assign({}, src) : { data: src };
+  if (_CMAP_DIR) o.CMapReaderFactory = LocalCMapReader;
+  return pdfjsLib.getDocument(Object.assign(o, extra || {}));
+}
+
 // ── PDF 저장 옵션 (pdf-lib) ────────────────────────────────────────────────
 // ⚠ src/app-core.js의 같은 이름 함수와 **같은 내용을 유지할 것** — 워커/편집기 창은
 //   별개 스코프라 전역을 공유하지 못한다. 한쪽만 고치면 저장 성능이 갈라진다.
@@ -279,7 +301,7 @@ function showBusy(on,msg){ const b=document.getElementById('busy'); if(msg)b.tex
     if (!PAYLOAD) { setStatus('편집 데이터를 불러오지 못했습니다.'); return; }
     origBytes = new Uint8Array(window.electronAPI.readFile(PAYLOAD.pdfPath));
     // pdf.js 문서 (사본 전달 — 원본 버퍼는 pdf-lib 굽기에 재사용)
-    pdfjsDoc = await pdfjsLib.getDocument({ data: origBytes.slice(0) }).promise;
+    pdfjsDoc = await openPdfDoc({ data: origBytes.slice(0) }).promise;
     pages = (PAYLOAD.order && PAYLOAD.order.length)
       ? PAYLOAD.order.map(o => ({ originalIdx: o.originalIdx, num: o.num }))
       : Array.from({ length: pdfjsDoc.numPages }, (_, i) => ({ originalIdx: i, num: i+1 }));
@@ -1725,7 +1747,7 @@ async function syncStreamDoc(idx, rerender) {
     return { ok:false, failed };
   }
   const bytes = await savePdfDoc(sp);
-  const pjsDoc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+  const pjsDoc = await openPdfDoc({ data: bytes.slice(0) }).promise;
   if (cur) { try{ cur.pjsDoc.destroy(); }catch(e){} }
   _streamDocs.set(idx, { bytes, pjsDoc, sig });
   if (rerender && pages[curPos] && pages[curPos].originalIdx===idx) await renderPage();

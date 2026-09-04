@@ -20,6 +20,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onExternalOpen: (cb) => ipcRenderer.on('external:open', (_e, items) => cb(items)),
 
   // 파일을 직접 읽어 ArrayBuffer 반환 (Node.js fs → asar/실제파일 모두 처리)
+  // pdf.js가 사전 정의 CMap(한국어 UniKS-UTF16-H 등)을 읽을 폴더 — pdf.js 정식 세트(.bcmap).
+  // 안 넘기면 폰트 로드가 실패해 그 글자가 화면에 아예 안 그려진다.
+  // (Ghostscript의 CMap으로는 부족하다 — Adobe-Korea1-UCS2 같은 ToUnicode CMap이 빠져 있다)
+  cmapDir: () => {
+    const p = path.join(__dirname, "src", "libs", "cmaps");
+    try { if (fs.existsSync(p)) return p; } catch (e) {}
+    return null;
+  },
   readFile: (filePath) => {
     const buf = fs.readFileSync(filePath);
     // Buffer → ArrayBuffer (structured clone으로 고속 전달)
@@ -93,6 +101,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 폰트 아웃라인화 (gs pdfwrite -dNoOutputFonts) — 변환된 임시 PDF 경로 반환
   // opts.flatten = 투명도 평탄화(PDF 1.4, 구형 RIP 대응)
   outlineFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:outlineFonts', pdfPath, opts || {}),
+  // 폰트 대체 사전 감지 (gs nullpage) — opts.first/last = 훑을 페이지(1-based). 로그 문자열 반환
+  probeFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:probeFonts', pdfPath, opts || {}),
 
   // 💼 작업 파일(.pdfw) 더블클릭 연결 — HKCU만 사용(관리자 권한 불필요)
 

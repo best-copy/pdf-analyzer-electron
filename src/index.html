@@ -251,7 +251,7 @@
             <button class="sbp-opt" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
             <button class="sbp-opt active dim" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
           </div>
-          <div class="sbp-note"><b>완전 임베드(권장)</b> = 폰트를 통째로 실음 — 빠르고(실측 40쪽 0.3초) 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(같은 문서 2.6초·용량 수십~수백 배↑·수정 불가)</div>
+          <div class="sbp-note"><b>완전 임베드(권장)</b> = 빠지거나 대체될 폰트만 손봄 — 이미 모든 폰트가 들어 있는 문서는 그냥 건너뜁니다(대기 0초) · 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(용량 수십~수백 배↑·수정 불가)</div>
         </div>
       </div>
       <!-- 📖 E-book 시안 — 고객에게 보낼 확인용 단일 HTML (이미지 인라인, 자체 완결) -->

@@ -25,6 +25,33 @@ const core = slice('// <EBOOK-CORE>', '// </EBOOK-CORE>').replace(/^\s{4}/gm, ''
 // 렌더는 앱과 완전히 같은 함수를 쓴다(화질·여백 처리가 갈라지지 않게)
 const render = 'let _yieldAt = 0;\n' + exFn('uiYield') + '\n' + exFn('ebookRenderPages');
 
+// 사전 정의 CMap(한국어 CID 인코딩) — 안 넣으면 pdf.js가 그 폰트를 통째로 못 읽어
+// 아크로뱃이 넣은 머리글·바닥글 같은 글자가 시안에서 사라진다.
+// 앱은 src/libs/cmaps를 파일로 읽지만 독립 도구는 파일 하나여야 하므로 한국어 세트만
+// 인라인한다(약 190KB). 다른 언어 CMap이 필요한 원고는 앱에서 만들 것.
+const CMAP_DIR = path.join(ROOT, "src/libs/cmaps");
+const cmapFiles = fs.existsSync(CMAP_DIR)
+  ? fs.readdirSync(CMAP_DIR).filter(f => /^(UniKS|Adobe-Korea1|KSC)/.test(f) && f.endsWith(".bcmap"))
+  : [];
+const CMAPS = "const CMAPS = " + JSON.stringify(Object.fromEntries(cmapFiles.map(f =>
+  [f.replace(/\.bcmap$/, ""), fs.readFileSync(path.join(CMAP_DIR, f)).toString("base64")]))) + ";";
+// 앱의 openPdfDoc과 같은 자리 — 여기서는 인라인한 CMap을 돌려준다
+const OPENDOC = `
+class LocalCMapReader {
+  async fetch({ name }) {
+    const b64 = CMAPS[name];
+    if (!b64) throw new Error("CMap 없음: " + name);
+    const bin = atob(b64); const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return { cMapData: u, compressionType: 1 };   // 1 = 바이너리(.bcmap)
+  }
+}
+function openPdfDoc(src, extra) {
+  const o = (src && src.data !== undefined) ? Object.assign({}, src) : { data: src };
+  o.CMapReaderFactory = LocalCMapReader;
+  return pdfjsLib.getDocument(Object.assign(o, extra || {}));
+}`;
+
 const pdfjs = fs.readFileSync(path.join(ROOT, 'src/libs/pdf.min.js'), 'utf8');
 const worker = fs.readFileSync(path.join(ROOT, 'src/libs/pdf.worker.min.js'), 'utf8');
 
@@ -85,6 +112,8 @@ const UI = `
 `;
 
 const APP_JS = `
+${CMAPS}
+${OPENDOC}
 ${core}
 ${render}
 
