@@ -3856,7 +3856,9 @@
       try { o = currentImpOptions(); } catch (e) {}
       const mode = (o && o.mode) || _impMode;
       const cell = (a, b) => Math.max(1, parseInt(a) || 1) * Math.max(1, parseInt(b) || 1);
-      if (mode === 'booklet')  return '중철2up';
+      // 중철은 2up이 당연하므로 '2up'을 붙이지 않는다 — '문서_중철.pdf' (사용자 지시 2026-09-06).
+      // 중철 표지 분리 저장(generateBooklet)의 '_중철_표지/_중철_내지'와도 표기가 맞는다.
+      if (mode === 'booklet')  return '중철';
       if (mode === 'dup')      return '2up';
       if (mode === 'repeat') {
         const c = parseInt(o && o.cols) || 0, r = parseInt(o && o.rows) || 0;
