@@ -104,6 +104,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 폰트 대체 사전 감지 (gs nullpage) — opts.first/last = 훑을 페이지(1-based). 로그 문자열 반환
   probeFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:probeFonts', pdfPath, opts || {}),
 
+  // 파일 크기(바이트) — 변환 예상 시간 안내에 쓴다. 내용을 읽지 않으므로 대용량도 즉시.
+  fileSize: (p) => { try { return fs.statSync(p).size; } catch (e) { return 0; } },
+
+  // 이 PC의 물리 메모리(GB) — 분석 동시성(pdf.js 보조 문서 수) 상한 계산에 쓴다.
+  // navigator.deviceMemory는 8GB에서 잘려 62GB PC와 8GB PC를 구분하지 못한다.
+  totalMemoryGB: () => { try { return os.totalmem() / (1024 ** 3); } catch (e) { return 0; } },
+
   // 💼 작업 파일(.pdfw) 더블클릭 연결 — HKCU만 사용(관리자 권한 불필요)
 
   // 가상 프린터 'PDF Editor' 설치 (UAC 승격) — 어떤 앱에서든 인쇄로 문서 전달

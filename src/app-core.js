@@ -779,10 +779,51 @@
       } catch (e) { }
     }
 
+    // ── 변환 진행 표시 ──────────────────────────────────────────────────────
+    // 한글·Office·Adobe COM은 진행률을 알려주지 않는다(콜백이 없다). 그래서
+    // **경과 시간은 사실대로** 보여주고, 남은 시간은 파일 크기 기반 '추정'으로만 안내한다.
+    //
+    // 실측(한글 COM, 2026-09-08 · 구간별 계측): 4.15MB → 3.9초 / 21.8MB → 14.6초.
+    //   그중 **84%가 한글 자체의 PDF 내보내기**(FileSaveAsPdf)라 우리가 줄일 수 있는
+    //   구간이 아니다(우리 몫은 PowerShell 기동 0.37초 + 한글 실행 0.93초 + 열기 0.76초).
+    //   → 추정식 2.0 + 0.6×MB 초. 조금 넉넉하게 잡아 막대가 먼저 끝에 닿지 않게 한다.
+    // Office·Adobe는 실측이 없다 — **추정을 지어내지 않고 경과 시간만** 보여준다.
+    let _convTimer = null;
+    function convertEstSec(name, bytes) {
+      const mb = Math.max(0, (bytes || 0) / 1048576);
+      if (HWP_RE.test(name)) return 2 + mb * 0.6;
+      return 0;   // 실측이 없는 종류는 예상 시간을 표시하지 않는다
+    }
+    function startConvertProgress(label, estSec) {
+      stopConvertProgress();
+      const t0 = Date.now();
+      const tick = () => {
+        const sec = Math.round((Date.now() - t0) / 1000);
+        let msg = `${label} · ${sec}초 경과`;
+        if (estSec > 0) {
+          msg += sec > estSec + 1 ? ` (예상 ${Math.round(estSec)}초 — 조금 더 걸리는 중)`
+                                  : ` / 예상 ${Math.round(estSec)}초`;
+          // 추정이 빗나가도 막대는 95%에서 멈춘다 — 실제로 끝나야 100%가 된다
+          updateProgress(Math.min(95, (Date.now() - t0) / (estSec * 1000) * 100));
+        }
+        try { loadingMsg.textContent = msg; } catch (e) {}
+      };
+      tick();
+      _convTimer = setInterval(tick, 500);
+    }
+    function stopConvertProgress() {
+      if (_convTimer) { clearInterval(_convTimer); _convTimer = null; }
+    }
+
     async function prepareFiles(items) {
       const out = [];
       const failed = [];
-      for (const it of items) {
+      for (let _i = 0; _i < items.length; _i++) {
+        const it = items[_i];
+        // 여러 파일이면 몇 번째인지 함께 보여준다 (한글은 단일 인스턴스라 순차 변환된다)
+        const nth = items.length > 1 ? ` (${_i + 1}/${items.length})` : '';
+        let _size = 0;
+        try { _size = (it.path && window.electronAPI.fileSize) ? window.electronAPI.fileSize(it.path) : 0; } catch (e) {}
         try {
           let pdfPath = null;
           let directBytes = null;   // 이미 읽어둔 PDF 바이트 재사용(.ai PDF 호환본)
@@ -792,13 +833,19 @@
             directBytes = await imageToPdfBytes(window.electronAPI.readFile(it.path), it.name);
           } else if (HWP_RE.test(it.name)) {
             showLoading(`${it.name} → PDF로 변환 중…`);
-            pdfPath = await window.electronAPI.convertHwpToPdf(it.path);
+            startConvertProgress(`${it.name} → PDF 변환 중${nth}`, convertEstSec(it.name, _size));
+            try { pdfPath = await window.electronAPI.convertHwpToPdf(it.path); }
+            finally { stopConvertProgress(); }
           } else if (OFFICE_RE.test(it.name)) {
             showLoading(`${it.name} → PDF로 변환 중…`);
-            pdfPath = await window.electronAPI.convertOfficeToPdf(it.path);
+            startConvertProgress(`${it.name} → PDF 변환 중${nth}`, 0);
+            try { pdfPath = await window.electronAPI.convertOfficeToPdf(it.path); }
+            finally { stopConvertProgress(); }
           } else if (ADOBE_RE.test(it.name)) {
             showLoading(`${it.name} → PDF로 변환 중… (Adobe 앱 실행, 수십 초 걸릴 수 있어요)`);
-            pdfPath = await window.electronAPI.convertAdobeToPdf(it.path);
+            startConvertProgress(`${it.name} → PDF 변환 중${nth} (Adobe 앱 실행)`, 0);
+            try { pdfPath = await window.electronAPI.convertAdobeToPdf(it.path); }
+            finally { stopConvertProgress(); }
           } else if (AI_RE.test(it.name)) {
             // Illustrator .ai: PDF 호환 저장본(%PDF로 시작)이면 그대로 PDF로 사용
             const ab = window.electronAPI.readFile(it.path);
@@ -808,7 +855,9 @@
               directBytes = ab;
             } else {
               showLoading(`${it.name} → PDF로 변환 중… (Illustrator 실행)`);
-              pdfPath = await window.electronAPI.convertAdobeToPdf(it.path);
+              startConvertProgress(`${it.name} → PDF 변환 중${nth} (Illustrator 실행)`, 0);
+              try { pdfPath = await window.electronAPI.convertAdobeToPdf(it.path); }
+              finally { stopConvertProgress(); }
             }
           }
           const readPath = pdfPath || it.path;
@@ -830,6 +879,8 @@
         } catch (e) {
           console.error('파일 준비 실패:', it.name, e);
           failed.push({ name: it.name, path: it.path, reason: (e && e.message) || String(e) });
+        } finally {
+          stopConvertProgress();   // 어떤 경로로 빠져나가도 타이머는 반드시 멈춘다
         }
       }
       if (failed.length) { _failedImports = failed; showImportFailures(); }
@@ -1571,21 +1622,47 @@
         }
 
         // 페이지당 분석 동시 처리 — pdf.js 워커는 '문서당 1개'라 한 문서로는 렌더가
-        // 직렬화된다(동시성만 올려도 실병렬 X). 같은 바이트로 보조 문서를 2~3개 더
-        // 열면 각자 워커를 가져 페이지 렌더가 실제로 병렬화된다(코어 활용 극대화).
-        // 메모리 보호: 대용량 파일(>96MB)이나 짧은 문서(<8p)는 보조 문서 생략.
-        // 모바일(WebView)은 메모리가 훨씬 빡빡 — 보조 문서 상한 32MB·동시성 4로 제한.
+        // 직렬화된다(동시성만 올려도 실병렬 X). 같은 바이트로 보조 문서를 더 열면
+        // 각자 워커를 가져 페이지 렌더·이미지 디코드가 실제로 병렬화된다.
+        //
+        // 문서 수는 **메모리 예산 ÷ 파일 크기**로 정한다. 예전에는 '96MB 넘으면 0개,
+        // 아니면 3개'였는데, 두 경계 모두 실측과 어긋났다(2026-09-08 실측, 16코어):
+        //   · 스캔 원고 192쪽 20.9MB — 메인 스레드가 63.8% 놀고 있었다(워커 디코드 대기)
+        //       4문서 5.15초 → 8문서 3.55초 (**1.45배**)
+        //   · 벡터 원고 576쪽 141.8MB — 96MB 상한에 걸려 보조 문서를 아예 안 썼다
+        //       1문서 8.12초 → 3문서 6.41초 (**1.27배**), 4문서부터는 이득 없음
+        //   · 보조 문서를 여는 비용은 무시할 수준이다(8개 0.14초 — pdf.js는 지연 파싱).
+        // 예산 512MB는 위 두 지점(20.9MB→8개, 141.8MB→3개)을 그대로 재현한다.
+        // 모바일(WebView)은 메모리가 훨씬 빡빡 — 예산 64MB·상한 3.
+        //
+        // ⚠ 문서를 더 열면 **메모리도 그만큼 더 쓴다** — 바이트 사본보다 워커마다 쌓이는
+        //   디코드 이미지 캐시가 크다. 실측(스캔 192쪽 20.9MB): 4문서 최대 1,210MB →
+        //   8문서 1,911MB(+58%). 이 PC는 62GB라 여유롭지만 포터블로 다른 PC에서도 쓰므로
+        //   **실제 물리 메모리로 상한을 건다.** (navigator.deviceMemory는 8GB에서 잘려
+        //   62GB PC와 8GB PC를 구분하지 못한다 → preload의 totalMemoryGB를 쓴다)
         const isMobile = !!window.__MOBILE__;
-        const CONCURRENCY = Math.max(2, Math.min(navigator.hardwareConcurrency || 4, isMobile ? 4 : 8));
+        const srcLen = Math.max(1, tabState.originalPdfBytes.byteLength);
+        const budget = (isMobile ? 64 : 512) * 1024 * 1024;
+        let ramGB = 0;
+        try { ramGB = (window.electronAPI && window.electronAPI.totalMemoryGB) ? window.electronAPI.totalMemoryGB() : 0; } catch (e) {}
+        const ramCap = ramGB >= 24 ? 8 : ramGB >= 12 ? 6 : ramGB >= 8 ? 4 : 2;   // 알 수 없으면(0) 2
+        const maxDocs = isMobile ? 3 : Math.min(ramCap, Math.max(1, navigator.hardwareConcurrency || 4));
+        // 짧은 문서는 보조 문서를 열 이유가 없다(페이지보다 문서가 많아진다)
+        const wantDocs = totalPages >= 8
+          ? Math.max(1, Math.min(maxDocs, Math.floor(budget / srcLen)))
+          : 1;
+        // 레인은 문서당 2개까지, **다만 8개 밑으로 줄이지 않는다.**
+        // ⚠ 처음엔 레인을 문서 수에만 맞췄다가(문서 3개 → 레인 6개) 대형 벡터 원고에서
+        //   예전(레인 8개)보다 느려졌다 — 그 원고는 워커가 아니라 메인 스레드의 캔버스
+        //   연산이 병목이라 레인이 줄면 그대로 손해다(576쪽 141MB: 7.64초 vs 레인 8개 6.4초).
+        const CONCURRENCY = isMobile ? 4
+          : Math.max(4, Math.min(Math.max(wantDocs * 2, 8), navigator.hardwareConcurrency || 4, 16));
         const extraDocs = [];
-        const auxLimit = (isMobile ? 32 : 96) * 1024 * 1024;
-        if (totalPages >= 8 && tabState.originalPdfBytes.byteLength < auxLimit) {
-          const want = Math.min(3, Math.max(0, Math.floor(CONCURRENCY / 2) - 1));
-          for (let e = 0; e < want; e++) {
-            try {
-              extraDocs.push(await openPdfDoc({ data: tabState.originalPdfBytes.slice(0) }).promise);
-            } catch (err) { break; }
-          }
+        if (wantDocs > 1) {
+          // 병렬로 연다 — 지연 파싱이라 직렬로 열 이유가 없다
+          const opened = await Promise.allSettled(Array.from({ length: wantDocs - 1 },
+            () => openPdfDoc({ data: tabState.originalPdfBytes.slice(0) }).promise));
+          for (const o of opened) if (o.status === 'fulfilled') extraDocs.push(o.value);
         }
         const docs = [pdf, ...extraDocs];
         let qi = 0;
