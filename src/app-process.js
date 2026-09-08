@@ -3138,7 +3138,7 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const g = res.grid || { cols: 0, rows: 0 };
-        const outName = `${base}_반복${g.cols}x${g.rows}.pdf`;
+        const outName = `${nameWithImpTag(base, `반복${g.cols}x${g.rows}`)}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 반복 배치(Step&Repeat) 생성 완료 — 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${g.cols * g.rows}벌 (총 ${res.total}벌)`
           + (res.trimMm ? `\n재단 후 크기: ${res.trimMm[0]} × ${res.trimMm[1]} mm` + impTrimHint(opts) : '')
@@ -3241,7 +3241,7 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const single = res.sides === 1;
-        const outName = `${base}_2up${single ? '단면' : '양면'}.pdf`;
+        const outName = `${nameWithImpTag(base, `2up${single ? '단면' : '양면'}`)}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = single
           ? `📖 복제 2-up(단면 2부) 생성 완료 — 시트 ${res.sheets}장 (페이지당 1시트, 본문 ${res.n0}쪽)`
@@ -3290,7 +3290,7 @@
           await saveBookletCoverSplit(res, base, opts);
           return;
         }
-        const outName = `${base}_중철.pdf`;
+        const outName = `${nameWithImpTag(base, '중철')}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 북클릿(중철) 생성 완료 — 시트 ${res.sheets}장 (양면 ${res.n / 2}면, 본문 ${res.n0}쪽 + 빈 면 ${res.n - res.n0}쪽)`
           + `\n인쇄 설정: 가로 용지 · 양면 인쇄 · '짧은 쪽 넘김'(short-edge) → 반 접어 중철 제본`
@@ -3326,8 +3326,9 @@
       showLoading('표지/내지 분리 중…');
       const { cover, inner } = await splitBookletCover(res.bytes);
       hideLoading();
-      const savedCover = await window.electronAPI.saveFile({ defaultName: `${base}_중철_표지.pdf`, buffer: cover });
-      const savedInner = await window.electronAPI.saveFile({ defaultName: `${base}_중철_내지.pdf`, buffer: inner });
+      const bkBase = nameWithImpTag(base, '중철');
+      const savedCover = await window.electronAPI.saveFile({ defaultName: `${bkBase}_표지.pdf`, buffer: cover });
+      const savedInner = await window.electronAPI.saveFile({ defaultName: `${bkBase}_내지.pdf`, buffer: inner });
       if (!savedCover && !savedInner) return;   // 둘 다 취소
       setImpGenDone(true);
       let msg = `📕 중철 표지 분리 저장 완료 — 표지 1시트(양면 2면: 겉면 [뒤표지|앞표지] / 안쪽 [표2|표3])`
@@ -3359,7 +3360,7 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const grid = `${res.across}x${res.down}`;
-        const outName = `${base}_${isCut ? '1up' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}.pdf`;
+        const outName = `${nameWithImpTag(base, `${isCut ? '1up' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}`)}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 ${isCut ? '정합(Cut&Stack)' : '모아찍기(N-up)'} 생성 완료 — 시트 ${res.sheets}장 · ${grid} 배치(칸당 ${res.per}쪽) · ${res.sides === 2 ? '양면' : '단면'} (본문 ${res.n0}쪽)`
           + (isCut ? `\n인쇄 → 재단 → 좌상 묶음부터 차례로 겹치면 페이지 순서 완성` : `\n연속 페이지가 좌→우·상→하로 배치됩니다`)
@@ -3847,11 +3848,12 @@
         return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), sides: _cutSides });
       return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), creep: parseFloat(g('bkCreep')?.value) || 0, binding: _bkBind, sides: _cutSides });
     }
-    // 저장 파일명에 붙일 임포징 명칭 — 시트 한 장에 들어가는 페이지 수 기준(1up·2up·N-up).
-    // 임포징을 쓰지 않으면 '1up'(원고 그대로 한 장에 한 쪽). 프로파일을 불러온 상태도
-    // currentImpOptions()가 정규화해 주므로 그대로 반영된다.
+    // 저장 파일명에 붙일 임포징 명칭 — 시트 한 장에 들어가는 페이지 수 기준(2up·N-up).
+    // ⚠ 임포징을 쓰지 않으면 **아무 표기도 붙이지 않는다**(빈 문자열) — 조판을 하지도 않았는데
+    //   '_1up'이 붙는 게 실무에서 거슬린다는 지시(2026-09-08). 원본 이름 그대로 저장된다.
+    // 프로파일을 불러온 상태도 currentImpOptions()가 정규화해 주므로 그대로 반영된다.
     function impNameTag() {
-      if (typeof _impEnabled === 'undefined' || !_impEnabled) return '1up';
+      if (typeof _impEnabled === 'undefined' || !_impEnabled) return '';
       let o = null;
       try { o = currentImpOptions(); } catch (e) {}
       const mode = (o && o.mode) || _impMode;

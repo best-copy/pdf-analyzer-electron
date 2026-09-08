@@ -169,11 +169,15 @@
       return u8;
     }
     // 글꼴 드롭다운 채우기: 자주 쓰는 글꼴 + 전체 시스템 글꼴
+    // 글꼴 드롭다운은 머리글(esHfFont)과 페이지 번호(esPnFont) 두 곳이 같은 목록을 쓴다.
     function populateFontDropdown() {
-      const sel = document.getElementById('esHfFont');
-      if (!sel) return;
       const ls = activeLayoutSettings();
-      const cur = (ls && ls.hf.font) || DEFAULT_HF_FONT;
+      fillFontSelect('esHfFont', (ls && ls.hf && ls.hf.font) || DEFAULT_HF_FONT);
+      fillFontSelect('esPnFont', (ls && ls.pn && ls.pn.font) || DEFAULT_HF_FONT);
+    }
+    function fillFontSelect(selId, cur) {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
       sel.innerHTML = '';
       const favG = document.createElement('optgroup'); favG.label = '자주 쓰는 글꼴';
       FAVORITE_FONTS.forEach(f => {
@@ -188,12 +192,12 @@
         });
         sel.appendChild(allG);
       }
-      setFontSelectValue(cur);
+      setFontSelectValue(cur, selId);
     }
     // 선택값이 목록에 없으면 임시 옵션으로 추가 후 선택
-    function setFontSelectValue(path) {
-      const sel = document.getElementById('esHfFont');
-      if (!sel) return;
+    function setFontSelectValue(path, selId) {
+      const sel = document.getElementById(selId || 'esHfFont');
+      if (!sel || !path) return;
       if (![...sel.options].some(o => o.value === path)) {
         const o = document.createElement('option');
         o.value = path; o.textContent = path.split(/[\\/]/).pop();
@@ -231,7 +235,7 @@
         { wrap: 'secAdjust', title: '<span class="ic">🎯</span> 기울기 · 정렬 · 개별 보정', ids: ['secDeskew', 'secCenter', 'secPageAdjust'] },
         'secBorder'] },
       { key: 'cover', title: '📕 표지 만들기', ids: ['secCover'] },
-      { key: 'mark', title: '🔖 머릿말 · 꼬릿말 · 워터마크', ids: ['secHf', 'secWm'] },
+      { key: 'mark', title: '🔖 머릿말 · 꼬릿말 · 페이지 번호 · 워터마크', ids: ['secHf', 'secPn', 'secWm'] },
       { key: 'tool', title: '🛠 도구', ids: ['secContentEdit'] },
     ];
     function esGroupOpenState() { try { return JSON.parse(localStorage.getItem('esGroupOpen') || '{}') || {}; } catch (e) { return {}; } }
@@ -259,6 +263,7 @@
         if (ls.bind.enabled) parts.page.push('제본여백');
         if (ls.border !== 'none') parts.page.push('테두리');
         if (ls.hf && ls.hf.enabled) parts.mark.push('머리글/바닥글');
+        if (ls.pn && ls.pn.enabled) parts.mark.push('페이지 번호');
         if (ls.wm && ls.wm.enabled && ls.wm.text.trim()) parts.mark.push('워터마크');
       }
       const paN = editSettings && editSettings.pageAdjust ? Object.keys(editSettings.pageAdjust).length : 0;
@@ -457,7 +462,7 @@
     function getPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}') || {}; } catch (e) { return {}; } }
     function savePresetsObj(o) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(o)); } catch (e) {} }
     function presetFromSettings(es) {
-      return { scaling: es.scaling, margins: es.margins, nUp: es.nUp, gutter: es.gutter, border: es.border, deskew: es.deskew, center: es.center, bind: es.bind, hf: es.hf, wm: es.wm };
+      return { scaling: es.scaling, margins: es.margins, nUp: es.nUp, gutter: es.gutter, border: es.border, deskew: es.deskew, center: es.center, bind: es.bind, hf: es.hf, pn: es.pn, wm: es.wm };
     }
     // 프리셋에 담는 임포징 입력 컨트롤 전체 — 'v'=value, 'c'=checked.
     // 새 임포징 옵션을 UI에 추가하면 여기에도 등록해야 프리셋에 저장·복원된다
@@ -656,6 +661,7 @@
       t.center = Object.assign(def.center, c.center || {});
       t.bind   = Object.assign(def.bind,   c.bind   || {});
       t.hf = Object.assign(def.hf, c.hf || {});
+      t.pn = Object.assign(def.pn, c.pn || {});   // 🔢 페이지 번호(구버전 프로파일엔 없음)
       t.wm = Object.assign(def.wm, c.wm || {});
       applyExtraPreset(c);   // 처리 옵션·임포징 설정 복원 (구버전 프로파일엔 없으면 무시)
       syncEditUI();
@@ -1421,7 +1427,7 @@
       Object.assign(activeLayoutSettings(), {
         scaling: def.scaling, margins: def.margins, nUp: def.nUp,
         gutter: def.gutter, border: def.border, deskew: def.deskew, center: def.center, bind: def.bind,
-        hf: def.hf, wm: def.wm,
+        hf: def.hf, pn: def.pn, wm: def.wm,
       });
       syncEditUI();
       closePreview();
@@ -1493,6 +1499,7 @@
       const hfAltChk = document.getElementById('esHfAlt'); if (hfAltChk) hfAltChk.checked = !!ls.hf.alt;
       const hfStartEl = document.getElementById('esHfStart'); if (hfStartEl) hfStartEl.value = Math.max(1, (ls.hf.start | 0) || 1);
       const hfNumFromEl = document.getElementById('esHfNumFrom'); if (hfNumFromEl) hfNumFromEl.value = Math.max(1, (ls.hf.numFrom | 0) || 1);
+      syncPnUI();               // 🔢 페이지 번호 (머리글과 독립)
       syncHfApplyUI();          // 적용 범위(전체·이 쪽부터·체크 선택) + 체크 목록
       const hfOffXEl = document.getElementById('esHfOffX'); if (hfOffXEl) hfOffXEl.value = ls.hf.offX || 0;
       const hfOffYEl = document.getElementById('esHfOffY'); if (hfOffYEl) hfOffYEl.value = ls.hf.offY || 0;
@@ -1594,6 +1601,27 @@
       const bindAlt = document.getElementById('esBindAlt');
       if (bindAlt) bindAlt.addEventListener('change', () => { if (editSettings) ensureAdjustFields(activeLayoutSettings()).bind.alt = bindAlt.checked; scheduleLivePreview(); });
 
+      // 🔢 페이지 번호 (머리글·바닥글과 독립된 레이어)
+      const pnToggle = document.getElementById('esPnEnabled');
+      if (pnToggle) pnToggle.addEventListener('change', () => {
+        if (editSettings) activeLayoutSettings().pn.enabled = pnToggle.checked;
+        document.getElementById('esPnBody').classList.toggle('show', pnToggle.checked);
+        scheduleLivePreview();
+      });
+      onIn('esPnFmt',     el => { if (editSettings) activeLayoutSettings().pn.fmt = el.value; });
+      onIn('esPnSize',    el => { if (editSettings) activeLayoutSettings().pn.size = Math.max(5, parseFloat(el.value) || 12); });
+      onIn('esPnOffX',    el => { if (editSettings) activeLayoutSettings().pn.offX = parseFloat(el.value) || 0; });
+      onIn('esPnOffY',    el => { if (editSettings) activeLayoutSettings().pn.offY = parseFloat(el.value) || 0; });
+      onIn('esPnStart',   el => { if (editSettings) activeLayoutSettings().pn.start = Math.max(1, parseInt(el.value, 10) || 1); });
+      onIn('esPnNumFrom', el => { if (editSettings) activeLayoutSettings().pn.numFrom = Math.max(1, parseInt(el.value, 10) || 1); });
+      onIn('esPnExclude', el => { if (editSettings) activeLayoutSettings().pn.exclude = el.value; });
+      const pnBold = document.getElementById('esPnBold');
+      if (pnBold) pnBold.addEventListener('change', () => { if (editSettings) activeLayoutSettings().pn.bold = pnBold.checked; scheduleLivePreview(); });
+      const pnColor = document.getElementById('esPnColor');
+      if (pnColor) pnColor.addEventListener('input', () => { if (editSettings) activeLayoutSettings().pn.color = pnColor.value; scheduleLivePreview(); });
+      const pnFontSel = document.getElementById('esPnFont');
+      if (pnFontSel) pnFontSel.addEventListener('change', () => { if (editSettings) activeLayoutSettings().pn.font = pnFontSel.value; scheduleLivePreview(); });
+
       // 머리글/바닥글
       const hfToggle = document.getElementById('esHfEnabled');
       if (hfToggle) hfToggle.addEventListener('change', () => {
@@ -1668,6 +1696,54 @@
       updateHfTargetMarks();
       if (!ls.hf.enabled) { ls.hf.enabled = true; document.getElementById('esHfEnabled').checked = true; document.getElementById('esHfBody').classList.add('show'); }
       el.focus();
+      scheduleLivePreview();
+    }
+
+    // ── 🔢 페이지 번호 (머리글·바닥글과 독립) ────────────────────────────────
+    // 설정값 → 화면. 프로파일·작업파일 복원과 챕터 전환에서도 이 한 곳만 호출한다.
+    function syncPnUI() {
+      const ls = activeLayoutSettings();
+      if (!ls || !ls.pn) return;
+      const P = ls.pn;
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+      const chk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+      chk('esPnEnabled', P.enabled);
+      const body = document.getElementById('esPnBody');
+      if (body) body.classList.toggle('show', !!P.enabled);
+      set('esPnFmt', P.fmt != null ? P.fmt : '{page}');
+      set('esPnSize', P.size || 12);
+      chk('esPnBold', P.bold);
+      set('esPnOffX', P.offX || 0);
+      set('esPnOffY', P.offY || 0);
+      set('esPnStart', Math.max(1, (P.start | 0) || 1));
+      set('esPnNumFrom', Math.max(1, (P.numFrom | 0) || 1));
+      set('esPnExclude', P.exclude || '');
+      set('esPnColor', P.color || '#333333');
+      activateChip('pnpos', P.pos || 'bottom-center');
+      setFontSelectValue(P.font || DEFAULT_HF_FONT, 'esPnFont');
+    }
+    // 번호 배치 앵커 — 내각/외각은 제본 기준이라 홀·짝에서 좌우가 자동으로 바뀐다(hf-core.pnAnchor)
+    function setPnPos(pos) {
+      if (!editSettings) return;
+      activeLayoutSettings().pn.pos = pos;
+      activateChip('pnpos', pos);
+      scheduleLivePreview();
+    }
+    // 번호 서식 칸의 커서 위치에 코드 삽입 — 기능이 꺼져 있으면 함께 켠다
+    function pnInsertToken(token) {
+      const el = document.getElementById('esPnFmt');
+      if (!el || !editSettings) return;
+      const pos = (el.selectionStart != null) ? el.selectionStart : el.value.length;
+      el.value = el.value.slice(0, pos) + token + el.value.slice(pos);
+      const ls = activeLayoutSettings();
+      ls.pn.fmt = el.value;
+      if (!ls.pn.enabled) {
+        ls.pn.enabled = true;
+        const t = document.getElementById('esPnEnabled'); if (t) t.checked = true;
+        const b = document.getElementById('esPnBody'); if (b) b.classList.add('show');
+      }
+      el.focus();
+      el.setSelectionRange(pos + token.length, pos + token.length);
       scheduleLivePreview();
     }
 
@@ -1894,6 +1970,7 @@
         (es.pageAdjust && Object.keys(es.pageAdjust).length > 0) ||
         (es.bind && es.bind.enabled) ||
         (es.hf && es.hf.enabled) ||
+        (es.pn && es.pn.enabled) ||
         (es.wm && es.wm.enabled && es.wm.text.trim())
       );
     }
@@ -1918,7 +1995,7 @@
         if (!editSettings.byChapter) editSettings.byChapter = {};
         if (!editSettings.byChapter[ch]) {
           const def = newEditSettings();
-          editSettings.byChapter[ch] = { scaling: def.scaling, margins: def.margins, nUp: def.nUp, gutter: def.gutter, border: def.border, deskew: def.deskew, center: def.center, bind: def.bind, hf: def.hf, wm: def.wm };
+          editSettings.byChapter[ch] = { scaling: def.scaling, margins: def.margins, nUp: def.nUp, gutter: def.gutter, border: def.border, deskew: def.deskew, center: def.center, bind: def.bind, hf: def.hf, pn: def.pn, wm: def.wm };
         }
         return editSettings.byChapter[ch];
       }
@@ -2305,7 +2382,32 @@
         }
         return sel;
       };
+      // 🔢 페이지 번호 — 서식에 한글 등이 있으면 글꼴을 임베드한다(숫자만이면 표준폰트로 충분).
+      // 굵게(B)는 선택한 글꼴의 '굵은 짝'을 시스템 목록에서 찾아 함께 보낸다 — 없으면
+      // 워커가 살짝 겹쳐 그려 굵게 흉내낸다(벡터 유지).
+      const boldSibling = sel => {
+        if (!_systemFonts || !_systemFonts.length) return null;
+        const norm = t => String(t || '').toLowerCase().replace(/[\s_\-()]/g, '');
+        const cur = _systemFonts.find(f => f && f.file === sel);
+        const stem = norm((cur && cur.name) || String(sel).split(/[\\/]/).pop().replace(/\.[^.]+$/, ''));
+        if (!stem) return null;
+        const hit = _systemFonts.find(f => f && f.file !== sel && f.name
+          && (norm(f.name) === stem + 'bold' || norm(f.name) === stem + 'b'));
+        return hit ? hit.file : null;
+      };
+      const pnPrep = pn => {
+        if (!pn || !pn.enabled) return pn;
+        const sel = (pn.font && pn.font.trim()) ? pn.font : DEFAULT_HF_FONT;
+        const bold = pn.bold ? boldSibling(sel) : null;
+        // 서식이 ASCII(숫자·영문·기호)만이면 워커가 내장 표준폰트로 그린다 — 폰트를 읽지 않는다
+        const needEmbed = !asciiRe.test(String(pn.fmt || '{page}').replace(/\{page\}|\{total\}/g, '1'));
+        if (needEmbed) { loadHfFont(sel); if (bold) loadHfFont(bold); }
+        else if (bold) loadHfFont(bold);   // 굵은 짝은 ASCII라도 실제 파일이 필요하다
+        return Object.assign({}, pn, { font: sel, boldFont: bold });
+      };
       const workerGroups = groups.map(g => {
+        const pn0 = pnPrep(g.es.pn);
+        if (pn0 !== g.es.pn) g = { mask: g.mask, es: Object.assign({}, g.es, { pn: pn0 }) };
         const hf = g.es.hf;
         if (!hf || !hf.enabled) return g;
         // 확정 레이어 + 현재 입력 — 내용 있는 구성마다 폰트를 준비하고 경로를 해석해 전달

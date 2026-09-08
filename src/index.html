@@ -104,6 +104,7 @@
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
           <button class="opt-btn" id="spreadViewBtn2" onclick="toggleSpreadView()" title="실제 책을 펼친 모양으로 보기 — 1쪽은 오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임. 적용 전 썸네일과 적용 결과 모두에 적용">📖 펼침</button>
           <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
+          <button class="opt-btn" id="replaceFileBtn" onclick="replaceFileKeepSettings()" title="지금 설정(크기·여백·머리글·페이지 번호·임포징·흑백 옵션)은 그대로 두고 원고만 다른 파일로 바꿉니다. 같은 조판을 여러 원고에 반복 적용할 때 씁니다.&#10;⚠ 쪽에 매인 설정(흑백 선택 페이지·개별 보정·내부편집)은 원고가 달라 비워집니다."><span class="ic">🔁</span> 파일 교체</button>
           <button class="opt-btn" id="opt-outline" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '⇩ 다운로드'로 저장하는 파일에 폰트를 통째로 싣거나(완전 임베드) 글자를 곡선으로 바꿔(곡선화) 다른 PC·출력기에서도 동일하게 인쇄되게 합니다. 화면 모양은 그대로. 방식·평탄화는 좌측 사이드바 '⚙ 처리옵션'에서 선택"><span class="ic">✒</span> 폰트 출력 안전화</button>
           <button class="clear-opts-btn" id="clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <span class="action-btn-group">
@@ -1165,7 +1166,77 @@
       </div>
     </div>
 
-    <!-- 6. 워터마크 -->
+    <!-- 5-2. 페이지 번호 (머리글·바닥글과 독립) -->
+    <!-- ⚠ .es-input/.es-select는 CSS에서 flex:1 이라 좁은 사이드바에서 줄어들지 못하고 줄바꿈된다.
+         한 줄에 여러 칸을 두는 행은 반드시 min-width:0(또는 고정 폭)을 함께 준다. -->
+    <div class="es-section" id="secPn">
+      <label class="es-section-title" style="cursor:pointer;">
+        <input type="checkbox" id="esPnEnabled" style="accent-color:#48484a; width:15px; height:15px;">
+        <span class="ic">🔢</span> 페이지 번호
+      </label>
+      <div class="es-sub" id="esPnBody">
+        <div class="es-hint" style="margin:6px 0 0;">머리글·바닥글과 <b>따로</b> 동작합니다. 번호는 원본 페이지에 찍힌 뒤 임포징(2up·중철)으로 조판됩니다.</div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto; white-space:nowrap;">글꼴</span>
+          <select class="es-select" id="esPnFont" style="flex:1; min-width:0;" title="PDF에 임베드되는 시스템 글꼴">
+            <option value="C:\Windows\Fonts\malgun.ttf">맑은 고딕</option>
+          </select>
+          <input type="number" class="es-input" id="esPnSize" min="5" max="48" value="12" style="flex:0 0 48px;" title="글자 크기(pt)">
+          <input type="color" id="esPnColor" value="#333333" style="flex:0 0 30px; width:30px; height:28px; border:none; background:none; cursor:pointer;" title="번호 색상">
+          <label class="es-chip" style="flex:0 0 auto; display:flex; align-items:center; gap:4px; cursor:pointer;" title="굵게 — 선택한 글꼴의 굵은 짝을 찾아 씁니다(없으면 겹쳐 그려 굵게)">
+            <input type="checkbox" id="esPnBold" style="accent-color:#ffd60a; width:14px; height:14px;"><b>B</b>
+          </label>
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto; white-space:nowrap;" title="{page}=현재 쪽, {total}=전체 쪽. 그 밖의 글자는 그대로 찍힙니다 (예: - {page} -)">번호 서식</span>
+          <input type="text" class="es-input" id="esPnFmt" value="{page}" style="flex:1; min-width:0;" placeholder="{page}">
+        </div>
+        <div class="es-btngroup" style="margin-bottom:8px;">
+          <button class="es-chip" onclick="pnInsertToken('{page}')" title="현재 페이지 코드 삽입">＋ 현재 페이지</button>
+          <button class="es-chip" onclick="pnInsertToken('{total}')" title="전체 페이지 코드 삽입">＋ 전체 페이지</button>
+        </div>
+        <div class="es-hint" style="margin:0 0 8px;">예: <b>{page} / {total}</b> → 1 / 100 · <b>- {page} -</b> → - 1 - · <b>{page}p</b> → 1p</div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto; white-space:nowrap;" title="아래 '번호 배치'로 자리를 잡은 뒤 미세 이동합니다. + = 오른쪽·아래 (mm)">위치 이동</span>
+          <span class="es-hint" style="margin:0;">X</span>
+          <input type="number" class="es-input" id="esPnOffX" step="0.5" value="0" style="flex:1; min-width:0;" title="+ = 오른쪽, − = 왼쪽 (mm)">
+          <span class="es-hint" style="margin:0;">Y</span>
+          <input type="number" class="es-input" id="esPnOffY" step="0.5" value="0" style="flex:1; min-width:0;" title="+ = 아래, − = 위 (mm)">
+          <span class="es-hint" style="margin:0;">mm</span>
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto; white-space:nowrap;" title="이 쪽부터 번호를 찍습니다 — 앞 페이지(표지·목차)는 번호가 없습니다">시작 위치(P)</span>
+          <input type="number" class="es-input" id="esPnStart" min="1" value="1" style="flex:1; min-width:0;">
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto; white-space:nowrap;" title="그 시작 페이지에 찍힐 첫 번호 — 5면 5, 6, 7…(앞권에서 이어지는 책)">시작 번호</span>
+          <input type="number" class="es-input" id="esPnNumFrom" min="1" value="1" style="flex:1; min-width:0;">
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-label" style="min-width:auto; white-space:nowrap;" title="번호를 넣지 않을 페이지 — 쉼표로 나열하고 범위는 3-5 처럼">제외 페이지</span>
+          <input type="text" class="es-input" id="esPnExclude" style="flex:1; min-width:0;" placeholder="예: 1, 3-5">
+        </div>
+        <div class="es-hint" style="margin:0 0 6px;" title="내각=제본 쪽(안쪽) · 외각=바깥쪽 — 홀수쪽과 짝수쪽에서 좌우가 자동으로 바뀝니다"><b>번호 배치</b> — 내각=제본 쪽 · 외각=바깥쪽 (홀·짝 자동 대칭)</div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-hint" style="margin:0; flex:0 0 28px;">상단</span>
+          <div class="es-btngroup" style="flex:1; margin:0;">
+            <button class="es-chip" data-pnpos="top-inner"  onclick="setPnPos('top-inner')"  title="상단 안쪽(제본 쪽)">내각</button>
+            <button class="es-chip" data-pnpos="top-center" onclick="setPnPos('top-center')" title="상단 가운데">중간</button>
+            <button class="es-chip" data-pnpos="top-outer"  onclick="setPnPos('top-outer')"  title="상단 바깥쪽">외각</button>
+          </div>
+        </div>
+        <div class="es-row" style="gap:6px;">
+          <span class="es-hint" style="margin:0; flex:0 0 28px;">하단</span>
+          <div class="es-btngroup" style="flex:1; margin:0;">
+            <button class="es-chip" data-pnpos="bottom-inner"  onclick="setPnPos('bottom-inner')"  title="하단 안쪽(제본 쪽)">내각</button>
+            <button class="es-chip active" data-pnpos="bottom-center" onclick="setPnPos('bottom-center')" title="하단 가운데">중간</button>
+            <button class="es-chip" data-pnpos="bottom-outer"  onclick="setPnPos('bottom-outer')"  title="하단 바깥쪽">외각</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+<!-- 6. 워터마크 -->
     <div class="es-section" id="secWm">
       <label class="es-section-title" style="cursor:pointer;">
         <input type="checkbox" id="esWmEnabled" style="accent-color:#48484a; width:15px; height:15px;">

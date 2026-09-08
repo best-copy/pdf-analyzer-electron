@@ -47,6 +47,68 @@ function hfNumberCtx(H, absPage, totalAll) {
   };
 }
 
+/* ── 🔢 페이지 번호 (머리글·바닥글과 **독립된** 기능) ────────────────────────
+ * 머리글에 얹힌 번호 기능은 그대로 두고(기존 프로파일 호환), 번호만 따로 켜고
+ * 위치·서식·제외 페이지를 지정하는 별도 레이어. 여기도 순수 함수만 둔다.
+ * ⚠ 번호는 **원본 페이지 기준으로 찍힌 뒤** 임포징(2up·중철)으로 조판된다.
+ *   조판 순서가 바뀌면 시트 기준 번호가 되어 책이 엉킨다.
+ */
+
+// '1, 3-5, 8' → Set{1,3,4,5,8}. 공백·쉼표·다양한 대시(-, –, ~) 허용. 잘못된 조각은 무시.
+function pnParseRanges(str) {
+  const out = new Set();
+  for (const part of String(str || '').split(/[,\s]+/)) {
+    if (!part) continue;
+    const m = part.match(/^(\d+)\s*[-–~]\s*(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a > b) { const t = a; a = b; b = t; }
+      for (let i = a; i <= b && i - a < 10000; i++) out.add(i);
+    } else if (/^\d+$/.test(part)) {
+      out.add(parseInt(part, 10));
+    }
+  }
+  return out;
+}
+
+// 이 페이지에 번호를 찍을지 — 시작 위치(P) 이전이거나 제외 목록에 있으면 안 찍는다
+function pnInScope(P, absPage, excludeSet) {
+  if (!P || !P.enabled) return false;
+  if (absPage < Math.max(1, (P.start | 0) || 1)) return false;
+  const ex = excludeSet || pnParseRanges(P.exclude);
+  return !ex.has(absPage);
+}
+
+// 그 페이지에 찍힐 번호와 전체 쪽수 — 시작 위치·시작 번호 반영(hfNumberCtx와 같은 규약)
+function pnNumberCtx(P, absPage, totalAll) {
+  const start = Math.max(1, (P.start | 0) || 1);
+  const numFrom = Math.max(1, (P.numFrom | 0) || 1);
+  return {
+    page: absPage < start ? 0 : (absPage - start + numFrom),
+    total: Math.max(1, (totalAll | 0) - start + numFrom),
+  };
+}
+
+// 번호 서식 — {page}=현재 페이지, {total}=전체 페이지. 그 밖의 글자는 그대로 찍힌다.
+function pnFormat(fmt, page, total) {
+  const t = (fmt == null || fmt === '') ? '{page}' : String(fmt);
+  return t.replace(/\{page\}/g, page).replace(/\{total\}/g, total);
+}
+
+// 번호 배치 앵커 → 실제 정렬. 내각/외각은 **제본 기준**이라 홀·짝에서 좌우가 바뀐다.
+//   외각(바깥) = 홀수쪽 오른쪽 · 짝수쪽 왼쪽   |   내각(안쪽·제본 쪽) = 그 반대
+// pos: 'top-inner' | 'top-center' | 'top-outer' | 'bottom-inner' | 'bottom-center' | 'bottom-outer'
+function pnAnchor(pos, evenPage) {
+  const p = String(pos || 'bottom-center');
+  const isHeader = p.indexOf('top') === 0;
+  const side = p.split('-')[1] || 'center';
+  let align = 'center';
+  if (side === 'outer') align = evenPage ? 'left' : 'right';
+  else if (side === 'inner') align = evenPage ? 'right' : 'left';
+  return { isHeader, align, mirrored: side !== 'center' && evenPage };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { formatPageNumber, resolveHF, hfInScope, hfNumberCtx };
+  module.exports = { formatPageNumber, resolveHF, hfInScope, hfNumberCtx,
+                     pnParseRanges, pnInScope, pnNumberCtx, pnFormat, pnAnchor };
 }

@@ -137,6 +137,17 @@
               applyMode: 'all', applyFrom: 1, applyPages: [], applyChapters: [],
               offX: 0, offY: 0,   // 위치 미세조절 mm (+X=오른쪽, +Y=아래) — 머리글·바닥글 전체 이동
               font: 'C:\\Windows\\Fonts\\malgun.ttf' },
+        // 🔢 페이지 번호 — 머리글·바닥글과 **독립된** 기능(기존 머리글 번호는 그대로 둔다).
+        // 번호는 원본 페이지에 찍힌 뒤 임포징(2up·중철)으로 조판된다.
+        pn: { enabled: false,
+              fmt: '{page}',            // 번호 서식 — {page}=현재 쪽, {total}=전체 쪽
+              font: 'C:\\Windows\\Fonts\\malgun.ttf', size: 12, bold: false, color: '#333333',
+              // 번호 배치 앵커 — 내각/외각은 제본 기준(외각=홀수쪽 오른쪽·짝수쪽 왼쪽)
+              pos: 'bottom-center',
+              offX: 0, offY: 0,         // 앵커 기준 미세 이동 mm (+X=오른쪽, +Y=아래)
+              start: 1,                 // 시작 위치(P) — 이 쪽부터 번호를 찍는다
+              numFrom: 1,               // 그 쪽에 찍힐 첫 번호
+              exclude: '' },            // 제외 페이지 (예: 1, 3-5)
         // 워터마크
         wm: { enabled: false, text: '', size: 48, color: '#cccccc',
               opacity: 30, angle: 45, mode: 'center' },
@@ -905,6 +916,74 @@
         hideLoading();
         showError('파일 열기 오류: ' + (e && e.message ? e.message : String(e)));
         console.error('openFilesDialog 오류:', e);
+      }
+    }
+
+    // ── 🔁 파일 교체 — 설정은 그대로 두고 원고만 바꿔 같은 조판을 반복 적용 ────
+    // 같은 판형·머리글·페이지번호·임포징으로 여러 원고를 연달아 뽑을 때 쓴다.
+    // 지금 탭을 그대로 재사용한다(설정·프로파일·임포징 상태가 전역/탭에 남아 있으므로).
+    //
+    // ⚠ 페이지에 매인 설정은 새 원고에 그대로 옮길 수 없어 **비운다** —
+    //   흑백 선택 페이지 · 개별 보정 · 내부편집 · 머리글 '체크 선택' 목록 · 로마자 지정.
+    //   (원고가 다르면 3쪽이 같은 3쪽이 아니다 — 남겨두면 엉뚱한 쪽에 적용된다)
+    //   쪽수와 무관한 설정(크기·여백·제본여백·머리글 문구·페이지번호·워터마크·임포징)은 유지된다.
+    const PAGE_BOUND_KEYS = ['흑백 선택 페이지', '개별 보정', '내부편집', '머리글 체크 선택', '로마자'];
+    async function replaceFileKeepSettings() {
+      const tab = tabs.get(activeTabId);
+      if (!tab || !isTabReady(tab)) { showError('먼저 문서를 연 뒤에 사용하세요.'); return; }
+      try {
+        const picked = await window.electronAPI.openFile();
+        if (!picked || !picked.length) return;
+        if (picked.length > 1) { showError('파일 교체는 한 번에 한 개만 가능합니다.'); return; }
+        hideError(); hideSuccess();
+        const needConvert = CONVERT_RE.test(picked[0].name);
+        if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
+        const files = await prepareFiles(picked);
+        if (needConvert) hideLoading();
+        if (!files.length) return;
+        const file = files[0];
+
+        // 유지할 설정 — 깊은 복사(참조 공유로 옛 문서 상태가 새 문서에 새어들지 않게)
+        const keptEs = JSON.parse(JSON.stringify(tab.editSettings || newEditSettings()));
+        const keptOpts = Object.assign({}, tab.processingOptions);
+        // 페이지에 매인 것만 비운다
+        const dropped = [];
+        if (keptEs.pageAdjust && Object.keys(keptEs.pageAdjust).length) { keptEs.pageAdjust = {}; dropped.push('개별 보정'); }
+        const clearPicks = h => {
+          if (!h) return false;
+          let hit = false;
+          if (Array.isArray(h.applyPages) && h.applyPages.length) { h.applyPages = []; hit = true; }
+          if (Array.isArray(h.applyChapters) && h.applyChapters.length) { h.applyChapters = []; hit = true; }
+          if (h.perPage && Object.keys(h.perPage).length) { h.perPage = {}; hit = true; }
+          if (hit && h.applyMode === 'pick') h.applyMode = 'all';
+          return hit;
+        };
+        let hfPick = clearPicks(keptEs.hf);
+        Object.values(keptEs.byChapter || {}).forEach(o => { if (clearPicks(o && o.hf)) hfPick = true; });
+        if (hfPick) dropped.push('머리글 체크 선택');
+        if (tab.selectedPages && tab.selectedPages.size) dropped.push('흑백 선택 페이지');
+        if (tab.contentEdits && tab.contentEdits.size) dropped.push('내부편집');
+
+        // 문서에 매인 상태를 초기화하고 같은 탭에 새 원고를 싣는다
+        const fresh = newTabState(file);
+        fresh.id = tab.id;                       // 탭 id·순서는 유지 (화면 깜빡임 없음)
+        fresh.editSettings = keptEs;
+        fresh.processingOptions = keptOpts;
+        tabs.set(tab.id, fresh);
+        if (typeof clearProcessCaches === 'function') { try { clearProcessCaches(); } catch (e) {} }
+        processedPdfBytes = null; directOutputBytes = null; processedFileName = '';
+        if (typeof clearImpCache === 'function') { try { clearImpCache(); } catch (e) {} }
+        activateTab(tab.id);
+        await analyzePDF(file, fresh);
+        syncEditUI();
+        setDirty(false);
+        showSuccess(`🔁 원고를 '${file.name}'로 교체했습니다 — 편집·조판 설정은 그대로입니다.`
+          + (dropped.length ? `\n⚠ 쪽에 매인 설정은 비웠습니다: ${dropped.join(' · ')} (원고가 달라 같은 쪽이 아닙니다)` : '')
+          + `\n이어서 '✔ 적용' → '⇩ 다운로드' 하시면 같은 설정으로 뽑힙니다.`);
+      } catch (e) {
+        hideLoading();
+        showError('파일 교체 오류: ' + ((e && e.message) || String(e)));
+        console.error('replaceFileKeepSettings 오류:', e);
       }
     }
 
@@ -2825,13 +2904,31 @@
       if (!names.length || names.includes(base)) return base;
       return names[0];
     }
+    // ── 저장 파일명: 조판 표기가 겹쳐 쌓이지 않게 ────────────────────────────
+    // 원본 이름에 이미 조판 표기(2up·1up·중철·정합4up…)가 있으면 표기를 **또 붙이지 않고**
+    // 끝의 번호만 올린다. 예전에는 저장한 파일을 다시 열어 저장하면 이름이 계속 길어졌다
+    // ('국어_2up.pdf' → '국어_2up_2up.pdf' → '국어_2up_2up_2up.pdf').
+    //   국어.pdf        → 국어_2up.pdf
+    //   국어_2up.pdf    → 국어_2up-1.pdf
+    //   국어_2up-1.pdf  → 국어_2up-2.pdf
+    // 임포징 결과물 이름(중철·모아찍기 등)도 같은 규칙을 쓴다.
+    const IMP_TAG_RE = /(^|[ _\-])(\d+\s*up|중철|모아찍기|정합|반복)/i;
+    function nameWithImpTag(base, tag) {
+      // 이전 저장 때 붙은 금액 표기는 떼고 지금 값으로 다시 붙인다(이것도 쌓이던 항목)
+      const b = String(base || '').replace(/_[\d,]+원$/, '');
+      // tag가 비면(임포징 안 함) 표기를 붙이지 않는다 — 이름에 이미 표기가 있을 때만 번호를 올려
+      // 원본을 덮어쓰지 않게 한다.
+      if (!IMP_TAG_RE.test(b)) return tag ? `${b}_${tag}` : b;
+      const m = b.match(/^(.*?)-(\d+)$/);
+      return m ? `${m[1]}-${Number(m[2]) + 1}` : `${b}-1`;
+    }
     function defaultProcessedName() {
       const base = effectiveBaseName();
-      const tag = (typeof impNameTag === 'function') ? impNameTag() : '1up';
+      const tag = (typeof impNameTag === 'function') ? impNameTag() : '';
       const includeAmt = document.getElementById('includeAmountChk')?.checked;
       const totalSum = includeAmt ? quoteItems.reduce((s, it) => s + itemTotal(it), 0) : 0;
       const amountStr = (includeAmt && totalSum > 0) ? `_${totalSum}원` : '';
-      return `${base}_${tag}${amountStr}.pdf`;
+      return `${nameWithImpTag(base, tag)}${amountStr}.pdf`;
     }
 
     // ── 흑백 PDF / 편집 적용 (명시적 '적용' 버튼) ─────────────────────────────

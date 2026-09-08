@@ -377,11 +377,13 @@ async function handleLayoutTransform(payload) {
     if (!stdFont) stdFont = await out.embedFont(PDFLib.StandardFonts.Helvetica);
     return stdFont;
   }
+  const pnExclCache = new Map();   // 제외 페이지 문자열 → Set (쪽마다 재파싱하지 않게)
   for (let i = 0; i < total; i++) {
     const es = flagEs[i];
     if (!es) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
-    const hf = es.hf, wm = es.wm;
+    const hf = es.hf, wm = es.wm, pn = es.pn;
     const someHf = a => a.some(s => s && s.trim());
+    const pnOn = !!(pn && pn.enabled);
     // 확정(누적) 문구 레이어 + 현재 입력 — 순서대로 전부 겹쳐 인쇄한다.
     // 각 레이어는 자기 스타일(크기·색·글꼴·위치·교대·번호시작)을 그대로 보존.
     const hfHasContent = H => H && (
@@ -393,7 +395,7 @@ async function handleLayoutTransform(payload) {
     const hfCfgs = (hf && hf.enabled) ? [...(hf.layers || []), hf].filter(hfHasContent) : [];
     const hfOn = hfCfgs.length > 0;
     const wmOn = wm && wm.enabled && wm.text.trim();
-    if (!hfOn && !wmOn) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
+    if (!hfOn && !wmOn && !pnOn) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const p = outPages[i];
     const ps = p.getSize(), pw = ps.width, ph = ps.height;
     if (wmOn) {
@@ -467,6 +469,58 @@ async function handleLayoutTransform(payload) {
             const im = await textToPngEmbed(out, txt, { size: H.size, css: H.color, angle: 0 }, cache);
             const x = (align === 'left' ? ax : align === 'center' ? (ax - im.w / 2) : (ax - im.w)) + offX;
             const y = (isHeader ? (ph - mHF - im.h) : mHF) - offY;
+            p.drawImage(im.png, { x, y, width: im.w, height: im.h });
+          }
+        }
+      }
+    }
+    // ── 🔢 페이지 번호 — 머리글·바닥글과 **독립된** 레이어 ────────────────
+    // ⚠ 여기서 찍은 번호는 원본 페이지의 번호다. 임포징(2up·중철)은 이 뒤에 오므로
+    //   시트로 조판돼도 번호는 원고 순서를 그대로 따른다.
+    if (pnOn) {
+      const absPage = i + 1 + pageOff;
+      const even = absPage % 2 === 0;
+      const totalAll = totalPages || total;
+      if (!pnExclCache.has(pn.exclude || '')) pnExclCache.set(pn.exclude || '', pnParseRanges(pn.exclude));
+      if (pnInScope(pn, absPage, pnExclCache.get(pn.exclude || ''))) {
+        const nctx = pnNumberCtx(pn, absPage, totalAll);
+        const txt = pnFormat(pn.fmt, nctx.page, nctx.total);
+        if (txt && txt.trim()) {
+          const A = pnAnchor(pn.pos, even);
+          const mgOn = !!(es.margins && es.margins.enabled);
+          const mL = mgOn ? mm2pt(es.margins.left) : 0, mR = mgOn ? mm2pt(es.margins.right) : 0;
+          const mPN = mm2pt(10);   // 가장자리에서 기본 거리 — 미세 조정은 X·Y 이동으로
+          const size = Math.max(5, pn.size || 12);
+          // 굵게: 굵은 짝 글꼴이 있으면 그것으로, 없으면 살짝 겹쳐 그려 흉내낸다(벡터 유지)
+          const wantBold = !!pn.bold;
+          let font = null, fakeBold = false;
+          if (wantBold && pn.boldFont) font = await embedHfFont(pn.boldFont);
+          if (!font) {
+            font = isAsciiText(txt) ? await getStdFont() : await embedHfFont(pn.font);
+            fakeBold = wantBold && !!font;
+          }
+          if (font) {
+            const w = font.widthOfTextAtSize(txt, size);
+            const ax = A.align === 'left' ? mL : A.align === 'center' ? pw / 2 : pw - mR;
+            // 좌우가 뒤바뀌는 쪽(짝수쪽 내각·외각)에서는 가로 미세 이동도 거울로 적용한다
+            const offX = mm2pt(parseFloat(pn.offX) || 0) * (A.mirrored ? -1 : 1);
+            const offY = mm2pt(parseFloat(pn.offY) || 0);
+            const x = (A.align === 'left' ? ax : A.align === 'center' ? (ax - w / 2) : (ax - w)) + offX;
+            const y = (A.isHeader ? (ph - mPN - size) : mPN) - offY;
+            const col = hexToRgb(pn.color || '#333333');
+            p.drawText(txt, { x, y, size, font, color: col });
+            if (fakeBold) {   // 0.4% 크기만큼 겹쳐 그려 굵기를 흉내낸다
+              const d = size * 0.025;
+              p.drawText(txt, { x: x + d, y, size, font, color: col });
+              p.drawText(txt, { x, y: y + d * 0.5, size, font, color: col });
+            }
+          } else {
+            const im = await textToPngEmbed(out, txt, { size, css: pn.color || '#333333', angle: 0, bold: wantBold }, cache);
+            const ax = A.align === 'left' ? mL : A.align === 'center' ? pw / 2 : pw - mR;
+            const offX = mm2pt(parseFloat(pn.offX) || 0) * (A.mirrored ? -1 : 1);
+            const offY = mm2pt(parseFloat(pn.offY) || 0);
+            const x = (A.align === 'left' ? ax : A.align === 'center' ? (ax - im.w / 2) : (ax - im.w)) + offX;
+            const y = (A.isHeader ? (ph - mPN - im.h) : mPN) - offY;
             p.drawImage(im.png, { x, y, width: im.w, height: im.h });
           }
         }
