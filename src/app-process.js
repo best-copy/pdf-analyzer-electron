@@ -6381,6 +6381,64 @@
       win.document.close();
     }
 
+    // ── 📤 거래관리 시스템으로 견적 넘기기 ───────────────────────────────────
+    // 여기서는 '무엇을 얼마에 몇 장'까지만 만들어 넘기고, 고객 선택·신규 등록·견적번호
+    // 발급·저장은 거래관리 앱이 한다(그쪽이 고객·번호의 원장이라 한 곳에서만 관리해야 한다).
+    function buildBusinessQuotePayload() {
+      const customer = (document.getElementById('q-customer').value || '').trim();
+      const date = document.getElementById('q-date').value || new Date().toISOString().split('T')[0];
+      const copies = (quoteItems[0] && quoteItems[0].copies) || 1;
+      // 거래관리 품목 = {name, spec, qty, price, taxRate}. 이 앱의 '부수'와 '할인율'은
+      // 그쪽에 없는 개념이라 수량·단가에 녹여서 넘긴다(합계 금액이 양쪽에서 같아지도록).
+      const items = quoteItems
+        .filter(it => (it.name || '').trim() || it.qty > 0)
+        .map(it => {
+          const qty = Math.max(0, (it.qty || 0) * (it.copies || 1));
+          const disc = Math.max(0, Math.min(100, it.discount || 0));
+          const price = Math.round((it.price || 0) * (1 - disc / 100));
+          const spec = [it.spec || '', disc ? `${disc}% 할인 반영` : '',
+                        (it.copies || 1) > 1 ? `${it.copies}부` : ''].filter(Boolean).join(' · ');
+          return { name: it.name || '품목', spec, qty, price, taxRate: 0.1 };
+        });
+      const total = quoteItems.reduce((s, it) => s + itemTotal(it), 0);
+      const stat = {
+        total: +(totalPagesEl.textContent || 0) || 0,
+        color: +(colorPagesEl.textContent || 0) || 0,
+        gray:  +(grayscalePagesEl.textContent || 0) || 0,
+      };
+      const fileName = effectiveBaseName();
+      return {
+        source: 'pdf-analyzer', version: 1, sentAt: new Date().toISOString(),
+        customerName: customer, date,
+        title: `인쇄 견적 (${fileName})`,
+        memo: `PDF 편집기에서 산출 — 전체 ${stat.total}쪽 · 컬러 ${stat.color}쪽 · 흑백 ${stat.gray}쪽`
+            + (copies > 1 ? ` · ${copies}부` : ''),
+        items, expectedTotal: total,
+        pages: stat, fileName,
+      };
+    }
+
+    async function sendQuoteToBusiness() {
+      if (!quoteItems.length) { alert('견적 품목이 없습니다. 먼저 PDF를 분석해 주세요.'); return; }
+      const payload = buildBusinessQuotePayload();
+      if (!payload.items.length) { alert('넘길 품목이 없습니다.'); return; }
+      setBtnBusy('sendBizBtn', true);
+      try {
+        const res = await window.electronAPI.sendQuoteToBusiness(payload);
+        if (!res || !res.ok) { showError('거래관리로 보내기 실패: ' + ((res && res.error) || '알 수 없는 오류')); return; }
+        const money = payload.expectedTotal.toLocaleString() + '원';
+        showSuccess(
+          `📤 거래관리 시스템으로 견적을 넘겼습니다 — 품목 ${payload.items.length}건 · 합계 ${money}\n`
+          + (res.launched ? '거래관리 앱이 열립니다.' : '거래관리 앱을 실행하면 바로 받습니다.')
+          + `\n다음: 거래관리의 견적서 창에서 ① 고객을 고르거나 '＋ 고객등록'으로 새로 만들고 → ② 내용을 확인해 [저장]하면 견적번호가 발급됩니다.`
+        );
+      } catch (e) {
+        showError('거래관리로 보내기 실패: ' + e.message);
+      } finally {
+        setBtnBusy('sendBizBtn', false);
+      }
+    }
+
     // ── 🖨 가상 프린터 설치 — 어떤 앱에서든 '인쇄'로 이 앱에 문서 전달 ────────
     async function setupVirtualPrinter() {
       if (!confirm("가상 프린터 'PDF Editor'를 설치합니다.\n관리자 권한 창(UAC)이 뜨면 '예'를 눌러주세요.\n\n설치 후: 아크로뱃·한글 등 어떤 프로그램에서든\n인쇄 → 프린터 'PDF Editor' 선택 → 인쇄하면 이 앱으로 문서가 들어옵니다.\n(인쇄 대화상자에서 페이지 범위를 지정하면 그 페이지만 전달됩니다)")) return;

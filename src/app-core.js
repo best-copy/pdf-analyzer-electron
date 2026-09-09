@@ -1502,11 +1502,16 @@
     }
     // 화면에 보이는 저해상 썸네일만 순차 보정 — 줌이 캐시 폭을 넘겼을 때만 돈다.
     let _thumbUpgQueued = false;
+    // 페이지 이동 스크롤이 도는 동안에는 건드리지 않는다 — 그 사이 썸네일을 다시 그리면
+    // 스크롤이 끊기고 카드 크기가 변해 커서 밑의 요소가 바뀐다. (jumpToPage가 시각을 찍는다)
+    let _jumpScrollUntil = 0;
     function scheduleThumbUpgrade() {
       if (_thumbUpgQueued) return;
       _thumbUpgQueued = true;
       setTimeout(async () => {
         _thumbUpgQueued = false;
+        const wait = _jumpScrollUntil - Date.now();
+        if (wait > 0) { setTimeout(scheduleThumbUpgrade, wait + 60); return; }   // 멎은 뒤에 다시
         if (!anyThumbTooSmall()) return;
         const needPx = thumbDisplayPx();
         const els = [...document.querySelectorAll('#pagesGrid [data-page], #previewGrid [data-page]')];
@@ -1898,6 +1903,8 @@
       updateSelectedCount();
       initQuoteSection(colorCount, grayscaleCount);
       updateDownloadBtn();
+      syncJumpTotal();                      // 페이지 이동 막대의 '/ 전체 쪽수'
+      setTimeout(observeVisiblePage, 150);  // 현재 보고 있는 쪽을 입력칸에 반영
       if (activeTabId && tabs.has(activeTabId)) updateFileInfo(tabs.get(activeTabId));
       // 분석 완료 → 유휴 시간에 잉크 정규화 변환을 미리 수행(적용 즉시화)
       setTimeout(() => { if (typeof prewarmInkNorm === 'function') prewarmInkNorm(); }, 1200);
@@ -2447,12 +2454,134 @@
       }
       const el = document.querySelector(`[data-page="${num}"]`);
       if (!el) return;
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.remove('page-jump-highlight');
-      void el.offsetWidth;
-      el.classList.add('page-jump-highlight');
-      setTimeout(() => el.classList.remove('page-jump-highlight'), 1300);
+      _jumpTarget = num;
+      // 스크롤이 도는 동안에는 썸네일 재생성을 미룬다 — 스크롤 도중 이미지가 새로 그려지면
+      // 프레임이 끊기고, 카드 크기가 바뀌면서 커서 밑의 요소가 달라져 마우스가 튄 것처럼 느껴진다.
+      _jumpScrollUntil = Date.now() + 900;
+      // 'nearest' — 화면을 다시 가운데로 끌어오지 않고, 그 쪽이 보이는 데 필요한 만큼만 움직인다.
+      // 이미 보이는 쪽으로 넘기면 화면은 가만히 있고 빛만 지나간다(스크롤바를 조금 미는 느낌).
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      highlightJumpTarget(el);
     }
+    // 강조는 '멈춘 쪽' 하나에만, 그리고 스크롤이 멎은 뒤에. 스크롤과 애니메이션이 겹치면
+    // 둘 다 버벅인다. 연속으로 누르면 지나간 쪽마다 강조가 남던 문제도 함께 막는다.
+    // 표시는 깜박이지 않고, 시간이 지나도 안 사라진다. 지워지는 때는 딱 둘 —
+    // 다른 쪽으로 넘어갈 때, 그리고 사용자가 화면을 스크롤할 때(스크롤 처리부에서 지운다).
+    function highlightJumpTarget(el) {
+      clearJumpHighlight();
+      el.classList.add('page-jump-highlight');
+    }
+    function clearJumpHighlight() {
+      document.querySelectorAll('.page-jump-highlight')
+        .forEach(n => n.classList.remove('page-jump-highlight'));
+    }
+
+    // ── 페이지 이동 막대 (현재 쪽 / 전체 쪽) ─────────────────────────────────
+    // ▲ 이전 쪽 · ▼ 다음 쪽 · 칸 위에서 마우스 휠. 값이 바뀌면 바로 이동한다('이동' 버튼 없음).
+    // 칸의 숫자는 스크롤을 그대로 따라간다(오른쪽 스크롤바와 한 몸). 그래서 넘김은 '칸에 적힌
+    // 숫자'가 아니라 '지금 향하고 있는 쪽(_jumpTarget)'에서 이어 센다 — 스크롤이 도는 중에
+    // 칸이 중간 쪽으로 바뀌어도 연타가 제자리걸음 하지 않는다.
+    let _jumpTarget = 0, _jumpShown = 0;   // _jumpShown = 앱이 마지막으로 칸에 써 넣은 값
+    function setJumpField(n) {
+      const input = document.getElementById('jumpPageInput');
+      if (input) { input.value = n; _jumpShown = n; }
+    }
+    function jumpStep(delta) {
+      const input = document.getElementById('jumpPageInput');
+      const total = pageResults.filter(Boolean).length;
+      if (!input || !total) return;
+      const typed = Math.min(total, Math.max(1, parseInt(input.value, 10) || 1));
+      // 사용자가 칸에 직접 숫자를 쳤으면 그 값에서 이어 센다. 그게 아니면 향하던 목표에서 잇는다
+      // (스크롤 중 칸이 중간 쪽으로 바뀌어도 연타가 제자리걸음 하지 않도록).
+      const base = (typed !== _jumpShown) ? typed : (_jumpTarget || typed);
+      const next = Math.min(total, Math.max(1, base + delta));
+      if (next === base) return;         // 첫/마지막 쪽에서는 조용히 멈춘다
+      setJumpField(next);
+      jumpToPage();
+    }
+    // 전체 쪽수 표시 갱신 — 분석 완료·페이지 추가/삭제 때마다 호출
+    function syncJumpTotal() {
+      const el = document.getElementById('jumpTotal');
+      if (!el) return;
+      const total = pageResults.filter(Boolean).length;
+      el.textContent = '/ ' + total;
+      const input = document.getElementById('jumpPageInput');
+      if (input) {
+        input.max = total || 1;
+        if (total && (parseInt(input.value, 10) || 0) > total) setJumpField(total);
+      }
+      // 페이지가 있을 때만 띄운다 (빈 화면에 위젯만 떠 있지 않게)
+      const bar = document.getElementById('jumpBar');
+      if (bar) { bar.style.display = total ? 'flex' : 'none'; alignJumpBar(); }
+    }
+    // 떠 있는 위젯의 높이를 상단 툴바의 버튼 줄에 맞춘다.
+    // 기준 줄은 '🧾 프린터 판정'이 있는 첫 줄이다 — 다운로드가 있는 아랫줄에 맞추면 그 높이의
+    // 빈 공간이 115px뿐이라(위젯 114px) 다운로드 버튼을 덮는다. 첫 줄은 오른쪽이 268px 비어 있다.
+    // 스크롤에 따라 움직이면 안 되므로, '툴바가 상단에 붙었을 때의 자리'를 패널 기준 상대
+    // 위치로 계산해 정한다(스크롤과 무관한 고정값).
+    function alignJumpBar() {
+      const bar = document.getElementById('jumpBar');
+      const panel = document.querySelector('.sticky-panel');
+      const row = panel && panel.querySelector('.selection-controls');
+      const ref = row && row.querySelector('button:last-of-type, button');
+      if (!bar || !panel || !ref || bar.style.display === 'none') return;
+      const tabH = parseFloat(getComputedStyle(document.documentElement)
+        .getPropertyValue('--maintabbar-h')) || 0;
+      const r = ref.getBoundingClientRect(), pnl = panel.getBoundingClientRect();
+      if (!r.height) return;
+      const pinnedTop = tabH + (r.top - pnl.top);          // 툴바가 붙었을 때 그 줄의 화면 높이
+      bar.style.top = Math.round(pinnedTop + (r.height - bar.offsetHeight) / 2) + 'px';
+    }
+    window.addEventListener('resize', alignJumpBar);
+    // 칸 위에서 마우스 휠로도 넘긴다 (참고 UI와 동일). passive:false — 페이지 스크롤은 막는다.
+    (function bindJumpWheel() {
+      const bar = document.getElementById('jumpBar');
+      if (!bar) return;
+      bar.addEventListener('wheel', e => {
+        if (!pageResults.filter(Boolean).length) return;
+        e.preventDefault();
+        jumpStep(e.deltaY < 0 ? -1 : 1);   // 위로 굴리면 이전 쪽
+      }, { passive: false });
+    })();
+    // 화면에 보이는 쪽을 입력칸에 반영 — '현재 보고 있는 페이지'
+    // (스크롤 중 가장 위쪽에 보이는 카드를 현재 쪽으로 본다)
+    let _jumpObserver = null, _jumpVisible = new Set();
+    function observeVisiblePage() {
+      if (!('IntersectionObserver' in window)) return;
+      if (!_jumpObserver) {
+        _jumpObserver = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            const n = parseInt(e.target.dataset.page, 10);
+            if (!n) continue;
+            if (e.isIntersecting) _jumpVisible.add(n); else _jumpVisible.delete(n);
+          }
+          if (!_jumpVisible.size) return;
+          const input = document.getElementById('jumpPageInput');
+          // 입력 중(포커스)일 때만 사용자가 치는 값을 지킨다. 그 밖에는 스크롤을 그대로 따라간다 —
+          // 칸의 숫자와 오른쪽 스크롤바가 한 몸으로 움직인다.
+          if (!input || document.activeElement === input) return;
+          const now = Math.min(..._jumpVisible);
+          setJumpField(now);
+          if (_jumpTarget && now === _jumpTarget) _jumpTarget = 0;   // 목표에 닿았다
+        }, { threshold: 0.35 });
+      }
+      _jumpObserver.disconnect();
+      _jumpVisible.clear();
+      document.querySelectorAll('.page-item[data-page]').forEach(el => _jumpObserver.observe(el));
+    }
+    // 사용자가 직접 스크롤하면(휠·스크롤바·드래그) 향하던 목표는 버린다 — 그때부터는
+    // 화면에 보이는 쪽이 곧 현재 쪽이다.
+    // (위젯 자체는 화면비율 위젯처럼 늘 같은 자리에 있다 — 위치를 계산하지 않는다.
+    //  스크롤에 따라 움직이면 연속으로 누르는 동안 버튼이 커서 밑에서 달아난다.)
+    (function bindManualScrollResetsTarget() {
+      window.addEventListener('scroll', () => {
+        // 이동이 일으킨 스크롤이 잦아들기 전에는 건드리지 않는다 — 그러지 않으면 방금 켠
+        // 표시를 스스로 지운다. 그 뒤의 스크롤은 사용자가 한 것으로 보고 표시를 끈다.
+        if (Date.now() < _jumpScrollUntil) return;
+        _jumpTarget = 0;
+        clearJumpHighlight();
+      }, { passive: true });
+    })();
 
     // ── 처리 옵션 / 버튼 상태 ────────────────────────────────────────────────
     // 임포징 포함 여부를 app-core에서 안전하게 읽는다. _impEnabled는 뒤에 로드되는

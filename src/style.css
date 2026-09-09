@@ -658,23 +658,66 @@
       height: 29px; padding: 0 11px; font-size: 0.8em; border-radius: 8px; gap: 4px;
     }
     .sticky-panel .action-btn-group { gap: 6px; }
-    .sticky-panel .jump-bar { gap: 4px; }
-    .sticky-panel .jump-bar input[type=number] { width: 74px; padding: 4px 7px; font-size: 0.79em; }
-    .jump-bar { display:flex; align-items:center; gap:6px; }
+    /* 페이지 이동 위젯 — 화면비율(줌) 위젯과 같은 방식으로 화면의 '늘 같은 자리'에 떠 있다.
+       스크롤을 내려도 움직이지 않으므로 같은 지점에서 계속 클릭할 수 있다.
+       줌 위젯(bottom:84px) 바로 위에 둔다. */
+    /* 페이지 이동 — 화면비율(줌) 위젯과 같은 검정 알약. 화면 오른쪽 '위'에 고정이라
+       스크롤을 아무리 내려도 자리가 같다 → 같은 지점에서 계속 클릭할 수 있다.
+       상단 탭바(--maintabbar-h) 아래로 내려 겹치지 않게 한다. */
+    .jump-bar {
+      position:fixed; top:calc(var(--maintabbar-h, 0px) + 14px); right:28px; z-index:9998;
+      display:flex; align-items:center; justify-content:center; gap:6px;
+      width:114px; box-sizing:border-box;      /* = 줌 위젯 폭(36+1+40+1+36) */
+      padding:0 8px; height:36px; border-radius:12px;
+      background:rgba(29,29,31,0.88); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      box-shadow:0 4px 16px rgba(0,0,0,0.28);
+    }
     .jump-bar input[type=number] {
-      width:88px; padding:6px 9px; border:1px solid #d2d2d7; border-radius:8px;
-      font-size:0.85em; text-align:center; -moz-appearance:textfield;
-      font-family: inherit; color: #1d1d1f;
+      width:50px; padding:4px 5px; border:1px solid rgba(255,255,255,0.18); border-radius:7px;
+      font-size:0.8em; text-align:center; -moz-appearance:textfield;
+      font-family: inherit; color:#f5f5f7; background:rgba(255,255,255,0.10);
     }
     .jump-bar input[type=number]::-webkit-inner-spin-button,
     .jump-bar input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
-    .jump-bar input[type=number]:focus { outline:none; border-color:#ffd60a; box-shadow:0 0 0 3px rgba(255,214,10,0.25); }
-    @keyframes jumpPulse {
-      0%   { box-shadow:0 0 0 0 rgba(255,159,10,0.8); }
-      40%  { box-shadow:0 0 0 7px rgba(255,159,10,0.3); }
-      100% { box-shadow:0 0 0 0 rgba(255,159,10,0); }
+    .jump-bar input[type=number]:focus { outline:none; border-color:#ffd60a; box-shadow:none; }
+    /* 현재/전체 페이지 표시 + 넘김 버튼 — 화살표는 늘 보인다. */
+    .jump-bar .jump-label { display:none; }   /* 줌 위젯과 같은 폭에 맞추느라 생략 — 설명은 위젯 툴팁에 */
+    .jump-bar .jump-field { position:relative; display:flex; align-items:center; }
+    .jump-bar .jump-field input[type=number] { width:50px; padding-right:19px; }
+    .jump-bar .jump-step {
+      position:absolute; right:4px; top:50%; transform:translateY(-50%);
+      display:flex; flex-direction:column; gap:1px;
     }
-    .page-jump-highlight { animation: jumpPulse 1.2s ease-out; outline:2px solid #ff9f0a !important; }
+    .jump-bar .jump-arrow {
+      width:15px; height:10px; padding:0; line-height:1; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      font-size:7px; color:#f5f5f7; background:rgba(255,255,255,0.16);
+      border:none; border-radius:3px; font-family:inherit;
+    }
+    .jump-bar .jump-arrow:hover { background:#ffd60a; color:#1d1d1f; }
+    .jump-bar .jump-arrow:active { background:#ffd60a; transform:scale(0.92); }
+    .jump-bar .jump-total { font-size:0.74em; font-weight:600; color:#aeaeb2; white-space:nowrap; }
+    .jump-bar input[type=number]:focus { outline:none; border-color:#ffd60a; box-shadow:none; }
+    /* 이동한 페이지 강조 — 네 모서리에 굵은 ㄱ자 표시가 켜진다. 깜박이지 않는다.
+       더 넘기지 않으면 1초 뒤에 사라진다(끄는 일은 app-core.js의 타이머가 한다).
+       카드 테두리 색을 진하게 쓴다(컬러=진한 주황 / 그 외=검정). 카드 자체는 건드리지 않는다. */
+    .page-jump-highlight { --jc:#1d1d1f; z-index:12; }        /* 기본 = 검정 */
+    .page-jump-highlight.color { --jc:#b8860b; }              /* 컬러 페이지 = 진한 주황 */
+    .page-jump-highlight.selected { --jc:#ffd60a; }           /* 선택된 카드는 어두워서 노랑 */
+    .page-jump-highlight::after {
+      content:''; position:absolute; inset:1px; pointer-events:none; z-index:13;
+      /* ㄱ자 8조각 — 모서리마다 가로 막대 + 세로 막대 */
+      background:
+        linear-gradient(var(--jc),var(--jc)) left     top    / 30px 7px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) left     top    / 7px 30px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) right    top    / 30px 7px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) right    top    / 7px 30px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) left     bottom / 30px 7px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) left     bottom / 7px 30px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) right    bottom / 30px 7px no-repeat,
+        linear-gradient(var(--jc),var(--jc)) right    bottom / 7px 30px no-repeat;
+      border-radius:8px;
+    }
     .sticky-panel .processing-controls { margin: 0; }
 
     /* ---- 견적서 ---- */
@@ -1394,8 +1437,17 @@
     }
     .preview-close:hover { background: #eef4ff; border-color: #48484a; color: #48484a; }
     .pv-cell { text-align: center; cursor: pointer; position: relative; }
+    /* 컬러/흑백 표시 — 분석 그리드(.page-item)와 같은 규칙. 임포징 결과처럼 원본과 1:1로
+       맞지 않는 화면에서도 '이 시트가 컬러인지'를 눈으로 바로 알 수 있어야 한다.
+       (임포징 후 이 표시가 없어 "컬러/흑백 표시가 풀렸다"고 보이던 문제) */
+    .pv-cell.pv-color .pv-canvas { outline: 3px solid #e6a700; outline-offset: -3px; }
+    .pv-cell.pv-mono  .pv-canvas { outline: 1px solid #e8e8ed; outline-offset: -1px; }
+    .pv-type { font-size: 0.76em; font-weight: 600; margin-top: 1px; height: 15px; line-height: 15px; }
+    .pv-cell.pv-color .pv-type { color: #b8860b; }
+    .pv-cell.pv-mono  .pv-type { color: #6e6e73; }
+    .pv-cell.pv-pending .pv-type { visibility: hidden; }   /* 아직 안 그린 셀은 판정 전 */
     /* 기하 옵션 오버레이(편집 모드) — 여백 점선 박스 · 제본여백 빗금 띠 (재조립 전 선반영) */
-    .pv-geo { position: absolute; left: 0; right: 0; top: 0; bottom: 22px; pointer-events: none; z-index: 2; }
+    .pv-geo { position: absolute; left: 0; right: 0; top: 0; bottom: 38px; pointer-events: none; z-index: 2; }
     .pv-geo-margin { position: absolute; border: 1px dashed rgba(255, 214, 10, 0.85); }
     .pv-geo-bind {
       position: absolute;
@@ -1409,7 +1461,7 @@
     /* 아직 그리기 전인 셀 — 자리는 잡혀 있고 곧 채워진다(지연 렌더) */
     .pv-cell.pv-pending .pv-canvas { opacity: 0.35; background: #fff; }
     .pv-cell.pv-pending::after {
-      content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 22px;
+      content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 38px;
       background: repeating-linear-gradient(-45deg, rgba(0,0,0,0.035) 0 8px, transparent 8px 16px);
       pointer-events: none;
     }
@@ -1445,7 +1497,7 @@
     #spreadViewBtn.active, #spreadViewBtn2.active { background: #ffd60a; color: #1d1d1f; border-color: #ffd60a; filter: none; }
     /* ✚ 십자 가이드선 — 기울기·정렬 확인용 (previewGrid.pv-guides일 때 각 페이지 중앙에 수평·수직선) */
     #previewGrid.pv-guides .pv-cell::before {
-      content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 22px; /* 페이지 번호 영역 제외 */
+      content: ''; position: absolute; left: 0; right: 0; top: 0; bottom: 38px; /* 페이지 번호 영역 제외 */
       pointer-events: none; z-index: 3;
       background:
         linear-gradient(to bottom, transparent calc(50% - 0.5px), rgba(255, 214, 10, 0.9) calc(50% - 0.5px), rgba(255, 214, 10, 0.9) calc(50% + 0.5px), transparent calc(50% + 0.5px)),

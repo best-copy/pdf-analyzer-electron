@@ -92,21 +92,18 @@
           <button class="sel-btn" id="inkBtn" onclick="analyzeInkCoverage()" title="Ghostscript inkcov로 페이지별 CMY 잉크 사용을 검사해 '프린터가 셀 컬러 장수'를 예측합니다. 적용본이 있으면 적용본을, 없으면 원본을 검사합니다.">🧾 프린터 판정</button>
           <button class="sel-btn" id="undoBtn" onclick="undoEdit()" title="실행취소 (Ctrl+Z)" style="display:none;">↩ 실행취소</button>
           <button class="sel-btn" id="redoBtn" onclick="redoEdit()" title="다시실행 (Ctrl+Y)" style="display:none;">↪ 다시실행</button>
-          <span class="jump-bar" style="margin-left:auto;">
-            <input type="number" id="jumpPageInput" min="1" placeholder="페이지 번호"
-              onkeydown="if(event.key==='Enter')jumpToPage()">
-            <button class="sel-btn" onclick="jumpToPage()">↳ 이동</button>
-          </span>
         </div>
         <div class="processing-controls">
           <span class="proc-label">처리 옵션:</span>
+          <!-- 버튼 순서: 검사(프리플라이트) → 색 처리(흑백·잉크) → 출력 안전화·해제 → 보기·원고 교체
+               (사용자 지시 2026-09-08 — 실제 작업 순서대로 왼쪽에서 오른쪽) -->
+          <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
           <button class="opt-btn" id="opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
-          <button class="opt-btn" id="spreadViewBtn2" onclick="toggleSpreadView()" title="실제 책을 펼친 모양으로 보기 — 1쪽은 오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임. 적용 전 썸네일과 적용 결과 모두에 적용">📖 펼침</button>
-          <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
-          <button class="opt-btn" id="replaceFileBtn" onclick="replaceFileKeepSettings()" title="지금 설정(크기·여백·머리글·페이지 번호·임포징·흑백 옵션)은 그대로 두고 원고만 다른 파일로 바꿉니다. 같은 조판을 여러 원고에 반복 적용할 때 씁니다.&#10;⚠ 쪽에 매인 설정(흑백 선택 페이지·개별 보정·내부편집)은 원고가 달라 비워집니다."><span class="ic">🔁</span> 파일 교체</button>
           <button class="opt-btn" id="opt-outline" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '⇩ 다운로드'로 저장하는 파일에 폰트를 통째로 싣거나(완전 임베드) 글자를 곡선으로 바꿔(곡선화) 다른 PC·출력기에서도 동일하게 인쇄되게 합니다. 화면 모양은 그대로. 방식·평탄화는 좌측 사이드바 '⚙ 처리옵션'에서 선택"><span class="ic">✒</span> 폰트 출력 안전화</button>
           <button class="clear-opts-btn" id="clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
+          <button class="opt-btn" id="spreadViewBtn2" onclick="toggleSpreadView()" title="실제 책을 펼친 모양으로 보기 — 1쪽은 오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임. 적용 전 썸네일과 적용 결과 모두에 적용">📖 펼침</button>
+          <button class="opt-btn" id="replaceFileBtn" onclick="replaceFileKeepSettings()" title="지금 설정(크기·여백·머리글·페이지 번호·임포징·흑백 옵션)은 그대로 두고 원고만 다른 파일로 바꿉니다. 같은 조판을 여러 원고에 반복 적용할 때 씁니다.&#10;⚠ 쪽에 매인 설정(흑백 선택 페이지·개별 보정·내부편집)은 원고가 달라 비워집니다."><span class="ic">🔁</span> 파일 교체</button>
           <span class="action-btn-group">
             <button class="apply-btn" id="applyBtn" onclick="applyChanges()" style="margin-left:0;" disabled>✔ 적용</button>
             <button class="download-btn" id="downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>⇩ 다운로드</button>
@@ -186,6 +183,8 @@
           <span style="display:flex; gap:10px;">
             <button class="q-print-btn" onclick="printQuote()">🖨️ 견적서 인쇄</button>
             <button class="q-pdf-btn" onclick="saveQuotePDF()">📄 PDF로 저장</button>
+            <button class="q-pdf-btn" id="sendBizBtn" onclick="sendQuoteToBusiness()"
+              title="지금 산출된 품목·수량·단가를 거래관리 시스템으로 넘깁니다. 거래관리에서 고객을 고르거나 새로 등록한 뒤 견적서를 작성·저장하면 됩니다.">📤 거래관리로 보내기</button>
           </span>
         </div>
       </div>
@@ -1485,6 +1484,22 @@
       <button class="es-chip" onclick="pvvZoom(1)" title="확대" style="flex:0 0 auto;">＋</button>
       <button class="es-chip" onclick="pvvZoom(0)" title="화면에 맞춤" style="flex:0 0 auto;">맞춤</button>
     </div>
+  </div>
+
+  <!-- 페이지 이동 — 화면비율 위젯과 같은 모양의 떠 있는 위젯. 화면 오른쪽 '위'에 고정이라
+       스크롤과 무관하게 자리가 늘 같다(연속으로 눌러도 버튼이 커서 밑에서 달아나지 않는다).
+       ▲ 이전 쪽 / ▼ 다음 쪽 · 칸 위에서 마우스 휠 · 값이 바뀌면 바로 이동 -->
+  <div class="jump-bar" id="jumpBar" style="display:none;" title="현재 보고 있는 페이지 · ▲ 이전 쪽 / ▼ 다음 쪽 (마우스 휠로도 이동)">
+    <span class="jump-label">페이지</span>
+    <span class="jump-field">
+      <input type="number" id="jumpPageInput" min="1" value="1"
+        onkeydown="if(event.key==='Enter')jumpToPage()" onchange="jumpToPage()">
+      <span class="jump-step">
+        <button type="button" class="jump-arrow" onclick="jumpStep(-1)" title="이전 페이지">▲</button>
+        <button type="button" class="jump-arrow" onclick="jumpStep(1)" title="다음 페이지">▼</button>
+      </span>
+    </span>
+    <span class="jump-total" id="jumpTotal">/ 0</span>
   </div>
 
   <button id="scrollTopBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})">▲</button>

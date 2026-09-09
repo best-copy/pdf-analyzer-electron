@@ -1344,6 +1344,49 @@ ipcMain.handle('print:toPDF', (_, html) => {
   return renderHtmlToPdf(html);
 });
 
+// ── IPC: 견적을 거래관리 시스템(business-mgmt)으로 넘기기 ────────────────────
+// 두 앱이 약속한 받은편지함 폴더에 JSON 한 개를 떨어뜨린다. 거래관리 앱은 그 폴더를
+// 지켜보다가 파일이 생기면 견적서 작성 창을 품목까지 채워서 연다(고객은 거기서 고르거나 새로 등록).
+// 프로세스 간 결합을 파일 하나로만 두는 이유: 거래관리 앱이 꺼져 있어도 다음 실행 때 받는다.
+const BIZ_INBOX = path.join(os.homedir(), '.ilcheong', 'quote-inbox');
+// 거래관리 앱 실행 파일 후보 (설치 위치가 바뀌어도 찾도록 여러 곳을 본다)
+const BIZ_EXE_CANDIDATES = [
+  'D:\\claude\\projects\\business-mgmt\\dist\\win-unpacked\\거래관리시스템.exe',
+  path.join(os.homedir(), 'Desktop', '거래관리시스템.lnk'),
+  'D:\\바탕화면\\거래관리시스템.lnk',
+];
+
+function bizExePath() {
+  for (const p of BIZ_EXE_CANDIDATES) { try { if (fs.existsSync(p)) return p; } catch (e) {} }
+  return null;
+}
+
+ipcMain.handle('quote:sendToBusiness', async (_, payload) => {
+  try {
+    fs.mkdirSync(BIZ_INBOX, { recursive: true });
+    const name = `quote_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.json`;
+    const file = path.join(BIZ_INBOX, name);
+    // 임시 이름으로 다 쓴 뒤 옮긴다 — 절반만 쓰인 파일을 상대가 읽는 사고 방지
+    const tmp = file + '.part';
+    fs.writeFileSync(tmp, JSON.stringify(payload || {}, null, 2), 'utf8');
+    fs.renameSync(tmp, file);
+
+    // 거래관리 앱이 떠 있으면 그 앱이 폴더를 보고 바로 집어간다. 꺼져 있으면 띄워 준다.
+    let launched = false;
+    const exe = bizExePath();
+    if (exe) {
+      try {
+        if (exe.toLowerCase().endsWith('.lnk')) shell.openPath(exe);
+        else spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+        launched = true;
+      } catch (e) { console.warn('거래관리 실행 실패:', e.message); }
+    }
+    return { ok: true, file, launched, exeFound: !!exe, inbox: BIZ_INBOX };
+  } catch (e) {
+    return { ok: false, error: e.message, inbox: BIZ_INBOX };
+  }
+});
+
 // ── IPC: HWP/HWPX → PDF 변환 (한컴오피스 한글 COM 자동화) ────────────────────
 // 한글은 단일 인스턴스로만 동작하므로 동시 변환 시 충돌 → 큐로 순차 처리.
 // 변환된 임시 PDF 경로를 반환하고, 렌더러는 preload.readFile()로 직접 읽는다.

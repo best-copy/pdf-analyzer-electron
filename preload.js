@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
+  // 견적을 거래관리 시스템으로 넘긴다 (받은편지함 JSON + 앱 실행)
+  sendQuoteToBusiness: (payload) => ipcRenderer.invoke('quote:sendToBusiness', payload),
 
   // 이미 저장한 적 있는 파일에 덮어쓰기 ('저장') — 저장 위치를 다시 묻지 않는다.
   // 반환: 저장한 경로 / 거절되면 false

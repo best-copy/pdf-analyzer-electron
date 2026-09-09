@@ -451,11 +451,32 @@
     }
     // 편집이 하나도 없을 때 작업공간 오른쪽에 원본 페이지를 그대로 보여준다(빈 화면 방지).
     function showWorkspaceBasePreview() {
+      if (!originalPdfBytes) return;
+      // 페이지를 손댄 적이 있으면(챕터·페이지 삭제, 순서 바꾸기, 회전, 빈 페이지 삽입…)
+      // 원본 바이트를 띄우면 안 된다 — 지운 챕터가 편집 모드에서 되살아나 보인다.
+      // 이때는 지금의 페이지 구성 그대로 조립한 결과(적용·다운로드와 같은 것)를 보여 준다.
+      // (조립본은 pageResults와 1:1이라 source:'original' 표식을 붙이지 않는다)
+      let edited = false;
+      try { edited = !!pageEdited; } catch (e) {}
+      if (edited) {
+        const token = ++_wsBaseToken;
+        buildBaseProcessed()
+          .then(base => {
+            if (token !== _wsBaseToken) return;         // 그 사이 더 새 요청이 왔다
+            renderProcessedPreview(base.bytes, { live: true });
+          })
+          .catch(e => {                                  // 조립 실패 시에도 화면은 비우지 않는다
+            console.warn('편집 모드 기본 미리보기 조립 실패 — 원본으로 대체:', e);
+            renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+          });
+        return;
+      }
       // source:'original' — 아직 편집이 없어 원본 PDF를 그대로 띄우는 경우.
       // 이때는 출력↔원본 매핑이 1:1이 아닐 수 있어(빈 페이지 삽입·삭제) 챕터 집중이
       // 원본 인덱스 기준으로 판단해야 한다. 이 표식이 없으면 전체 페이지가 그대로 보였다.
-      if (originalPdfBytes) renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+      renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
     }
+    let _wsBaseToken = 0;
 
     // ── 편집 설정 프리셋 (localStorage) ──────────────────────────────────────
     const PRESET_KEY = 'editPresets';
@@ -2669,11 +2690,15 @@
           }
 
           const cell = document.createElement('div');
-          cell.className = 'pv-cell' + (selected ? ' pv-selected' : '') + (hit ? '' : ' pv-pending');
+          cell.className = 'pv-cell' + (selected ? ' pv-selected' : '') + (hit ? '' : ' pv-pending')
+                         + (isColor === true ? ' pv-color' : isColor === false ? ' pv-mono' : '');
           if (pagePtW > 0) { cell.dataset.pw = pagePtW; cell.dataset.ph = pagePtH; }
           const num = document.createElement('div'); num.className = 'pv-num';
           num.textContent = (numMap && numMap.get(i)) || i;
-          cell.append(canvas, num); mainFrag.appendChild(cell);
+          // 컬러/흑백 표시 — 분석 그리드와 같은 문구. 아직 안 그린 셀은 그려질 때 채워진다.
+          const type = document.createElement('div'); type.className = 'pv-type';
+          type.textContent = isColor === true ? '컬러' : isColor === false ? '흑백' : '';
+          cell.append(canvas, num, type); mainFrag.appendChild(cell);
 
           // 사이드바 미니 썸네일 (메인과 동일 모양으로 다운스케일)
           const sc = document.createElement('canvas');
@@ -2852,6 +2877,11 @@
             c.sbCanvas.getContext('2d').drawImage(off, 0, 0, sbw, sbh);
             c.sbItem.classList.toggle('sb-color-page', isColor);
             c.sbItem.classList.toggle('sb-mono-page', !isColor);
+            // 메인 셀에도 같은 판정을 반영 (임포징 시트도 컬러/흑백이 보이게)
+            c.cell.classList.toggle('pv-color', isColor);
+            c.cell.classList.toggle('pv-mono', !isColor);
+            const tEl = c.cell.querySelector('.pv-type');
+            if (tEl) tEl.textContent = isColor ? '컬러' : '흑백';
             cache.set(i, { sig: c.sig, canvas: off, w: off.width, h: off.height, isColor, pw: vp1.width, ph: vp1.height });
             if (onColor) onColor(i, isColor);
             page.cleanup();
