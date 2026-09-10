@@ -1036,6 +1036,180 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
   });
 });
 
+// ── IPC: 2GB 넘는 PDF를 여러 개로 쪼개기 ─────────────────────────────────────
+// 화면(Chromium)은 버퍼 하나를 최대 약 2,044MB까지만 잡는다(V8 한계, 플래그로도 안 올라감).
+// 그래서 2GB급 원고는 렌더러가 통째로 들 수 없다. Ghostscript는 메인(Node)에서 돌고
+// 파일을 스트리밍으로 읽으므로 크기에 상관없이 페이지 범위로 나눌 수 있다.
+//  · 먼저 쪽수를 세고(파일을 메모리에 다 올리지 않는다)
+//  · 목표 크기에 맞춰 균등한 페이지 범위로 나눠 각각 pdfwrite로 굽는다
+//  · 결과가 여전히 크면 그 조각만 한 번 더 잘게 나눈다(이미지가 몰린 구간 대비)
+ipcMain.handle('gs:pageCount', (_, pdfPath) => new Promise((resolve, reject) => {
+  execFile(findGhostscript(),
+    ['-q', '-dNODISPLAY', '-dNOSAFER', '-dBATCH',
+     '-sFile=' + pdfPath,
+     '-c', 'File (r) file runpdfbegin pdfpagecount = quit'],
+    { windowsHide: true, timeout: 600000, maxBuffer: 1 << 20 },
+    (err, stdout, stderr) => {
+      if (err) return reject(new Error((stderr || err.message || '').toString().slice(0, 300)));
+      const n = parseInt(String(stdout).trim().split(/\s+/).pop(), 10);
+      if (!(n > 0)) return reject(new Error('쪽수를 읽지 못했습니다.'));
+      resolve(n);
+    });
+}));
+
+function gsExtractRange(src, first, last, outPath) {
+  return new Promise((resolve, reject) => {
+    execFile(findGhostscript(),
+      ['-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite',
+       // 회전 자동보정 금지 — 없으면 pdfwrite가 글자 방향을 보고 페이지를 돌린다
+       '-dAutoRotatePages=/None',
+       // 이미지는 손대지 않는다 (아웃라인화 경로와 같은 조합 — 재압축·다운샘플 금지)
+       '-dAutoFilterColorImages=false', '-dColorImageFilter=/FlateEncode',
+       '-dAutoFilterGrayImages=false', '-dGrayImageFilter=/FlateEncode',
+       '-dPassThroughJPEGImages=true',
+       '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
+       '-dCompatibilityLevel=1.6',
+       `-dFirstPage=${first}`, `-dLastPage=${last}`, '-o', outPath, src],
+      { windowsHide: true, timeout: 1800000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error((stderr || err.message || '').toString().slice(0, 300)));
+        if (!fs.existsSync(outPath)) return reject(new Error('조각 PDF가 만들어지지 않았습니다.'));
+        resolve({ path: outPath, first, last, size: fs.statSync(outPath).size });
+      });
+  });
+}
+
+// ── IPC: 2GB 넘는 PDF를 '작업 가능한 크기'로 줄이기 ─────────────────────────
+// 나누지 않고 한 문서로 열기 위해, 이미지 해상도를 인쇄 품질 안에서 낮춰 용량을 줄인다.
+// 글자·벡터는 손대지 않는다(그대로 남는다) — 커지는 건 거의 언제나 이미지다.
+//  · 인쇄 실무 기준으로 400dpi면 충분하고, 300dpi가 표준이다. 그 아래는 품질 저하가 보인다.
+//  · 한 단계씩 낮추며 한계 아래로 내려가면 멈춘다. 매번 **원본에서** 다시 굽는다
+//    (앞 단계 결과를 또 줄이면 열화가 겹친다).
+//  · 사진은 JPEG로 다시 압축한다 — 무손실을 고수하면 2GB가 줄지 않는다.
+//    (평소 파이프라인은 무손실이 원칙이지만, 여기서는 '열 수 있게 만드는 것'이 목적이다)
+const SHRINK_STEPS = [
+  { dpi: 400, jpegQ: 95, label: '이미지 400dpi (고품질)' },
+  { dpi: 300, jpegQ: 92, label: '이미지 300dpi (인쇄 표준)' },
+  { dpi: 220, jpegQ: 88, label: '이미지 220dpi' },
+  { dpi: 150, jpegQ: 82, label: '이미지 150dpi (최후)' },
+];
+
+function gsShrinkOnce(src, outPath, step) {
+  return new Promise((resolve, reject) => {
+    execFile(findGhostscript(),
+      ['-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite',
+       '-dAutoRotatePages=/None',              // 페이지가 제멋대로 돌아가는 것 방지(필수)
+       '-dDownsampleColorImages=true', '-dColorImageDownsampleType=/Bicubic',
+       `-dColorImageResolution=${step.dpi}`,
+       '-dDownsampleGrayImages=true', '-dGrayImageDownsampleType=/Bicubic',
+       `-dGrayImageResolution=${step.dpi}`,
+       // 흑백 선화는 해상도가 곧 품질이라 넉넉히 남긴다
+       '-dDownsampleMonoImages=true', '-dMonoImageDownsampleType=/Subsample',
+       `-dMonoImageResolution=${Math.max(600, step.dpi * 3)}`,
+       '-dAutoFilterColorImages=false', '-dColorImageFilter=/DCTEncode',
+       '-dAutoFilterGrayImages=false', '-dGrayImageFilter=/DCTEncode',
+       `-dJPEGQ=${step.jpegQ}`,
+       '-dCompatibilityLevel=1.6',
+       '-o', outPath, src],
+      { windowsHide: true, timeout: 3600000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error((stderr || err.message || '').toString().slice(0, 300)));
+        if (!fs.existsSync(outPath)) return reject(new Error('줄인 PDF가 만들어지지 않았습니다.'));
+        resolve(fs.statSync(outPath).size);
+      });
+  });
+}
+
+ipcMain.handle('gs:shrinkPdf', async (evt, pdfPath, opts) => {
+  const o = opts || {};
+  const limit = o.limitBytes || 1900 * 1024 * 1024;
+  const before = fs.statSync(pdfPath).size;
+  const send = (msg) => { try { evt.sender.send('gs:shrinkProgress', { msg }); } catch (e) {} };
+  const stamp = Date.now();
+  const tried = [];
+  let lastPath = null, lastSize = 0, lastStep = null;
+
+  for (let k = 0; k < SHRINK_STEPS.length; k++) {
+    const step = SHRINK_STEPS[k];
+    send(`${step.label}로 줄이는 중… (${k + 1}/${SHRINK_STEPS.length})`);
+    const out = path.join(os.tmpdir(), `pdfedit_shrink_${stamp}_${step.dpi}.pdf`);
+    let size;
+    try { size = await gsShrinkOnce(pdfPath, out, step); }
+    catch (e) { tried.push({ dpi: step.dpi, error: e.message }); continue; }
+    tried.push({ dpi: step.dpi, size });
+    // ⚠ gs가 오히려 키우는 경우가 있다 — 이미 잘 압축된 이미지(Flate)를 JPEG로 다시 굽거나
+    //   원본이 이미 최적화돼 있으면 커진다. 그런 결과는 쓸모가 없으니 버리고 다음 단계로 간다.
+    if (size >= before) {
+      try { fs.unlinkSync(out); } catch (e) {}
+      continue;
+    }
+    // 앞 단계 결과는 지운다 (임시파일 누적 방지)
+    if (lastPath && lastPath !== out) { try { fs.unlinkSync(lastPath); } catch (e) {} }
+    lastPath = out; lastSize = size; lastStep = step;
+    if (size <= limit) break;                 // 한계 아래로 내려왔다 — 여기서 멈춘다
+  }
+  // 어느 단계도 원본보다 작아지지 않았다 — 줄이기로는 답이 안 나온다(호출부가 나누기로 넘어간다)
+  if (!lastPath) {
+    return { path: null, before, after: before, limit, dpi: 0, label: '',
+             fits: false, tried, noGain: true };
+  }
+
+  return {
+    path: lastPath, before, after: lastSize, limit,
+    dpi: lastStep ? lastStep.dpi : 0,
+    label: lastStep ? lastStep.label : '',
+    fits: lastSize <= limit,
+    tried,
+  };
+});
+
+ipcMain.handle('gs:splitPdf', async (evt, pdfPath, opts) => {
+  const o = opts || {};
+  const targetBytes = Math.max(64 * 1024 * 1024, o.targetBytes || 1200 * 1024 * 1024);
+  const LIMIT = 1900 * 1024 * 1024;      // 렌더러가 감당하는 상한(2,044MB)보다 여유 있게
+  const total = fs.statSync(pdfPath).size;
+  const pages = await new Promise((res, rej) => {
+    execFile(findGhostscript(),
+      ['-q', '-dNODISPLAY', '-dNOSAFER', '-dBATCH', '-sFile=' + pdfPath,
+       '-c', 'File (r) file runpdfbegin pdfpagecount = quit'],
+      { windowsHide: true, timeout: 600000, maxBuffer: 1 << 20 },
+      (err, stdout, stderr) => {
+        if (err) return rej(new Error((stderr || err.message || '').toString().slice(0, 300)));
+        const n = parseInt(String(stdout).trim().split(/\s+/).pop(), 10);
+        n > 0 ? res(n) : rej(new Error('쪽수를 읽지 못했습니다.'));
+      });
+  });
+
+  const send = (done, totalSteps, msg) => {
+    try { evt.sender.send('gs:splitProgress', { done, total: totalSteps, msg }); } catch (e) {}
+  };
+  const nParts = Math.max(2, Math.ceil(total / targetBytes));
+  const per = Math.ceil(pages / nParts);
+  const stamp = Date.now();
+  const parts = [];
+  let idx = 0;
+  for (let first = 1; first <= pages; first += per) {
+    const last = Math.min(pages, first + per - 1);
+    idx++;
+    send(idx - 1, nParts, `${idx}/${nParts} 조각 만드는 중 (${first}~${last}쪽)`);
+    const out = path.join(os.tmpdir(), `pdfedit_split_${stamp}_${idx}.pdf`);
+    let part = await gsExtractRange(pdfPath, first, last, out);
+    // 이미지가 몰린 구간이면 한 조각이 여전히 클 수 있다 — 그때만 반으로 더 쪼갠다
+    if (part.size > LIMIT && last > first) {
+      try { fs.unlinkSync(part.path); } catch (e) {}
+      const mid = Math.floor((first + last) / 2);
+      const a = path.join(os.tmpdir(), `pdfedit_split_${stamp}_${idx}a.pdf`);
+      const b2 = path.join(os.tmpdir(), `pdfedit_split_${stamp}_${idx}b.pdf`);
+      parts.push(await gsExtractRange(pdfPath, first, mid, a));
+      parts.push(await gsExtractRange(pdfPath, mid + 1, last, b2));
+      continue;
+    }
+    parts.push(part);
+  }
+  send(nParts, nParts, '완료');
+  return { pages, total, parts, limit: LIMIT };
+});
+
 // ── IPC: 폰트 대체 사전 감지 — gs nullpage 프로브 ──────────────────────────
 // 완전 임베드는 '이 PC에도 없는 폰트'를 만나면 gs가 내장 대체폰트로 바꿔 버린다.
 // 예전엔 pdfwrite 1차 실행 로그를 보고서야 그걸 알 수 있어 gs를 두 번 돌렸다.

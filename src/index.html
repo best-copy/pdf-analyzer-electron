@@ -275,6 +275,33 @@
             <button class="sbp-opt" data-ebbstyle="twinring" onclick="setEbBindStyle('twinring')" title="트윈링(더블와이어) — 낱장을 타공해 철사 고리로 엮습니다. 책등에 골이 없고 고리·타공 자국이 보입니다">🌀 트윈링</button>
           </div>
           <div class="sbp-row2">
+            <button class="sbp-opt" data-ebbstyle="hardcover" onclick="setEbBindStyle('hardcover')" title="양장(하드커버) — 두꺼운 표지판이 본문보다 3mm 물리고, 둥근 책등과 깊은 그림자가 집니다. 표지 안쪽에 빈 면지(앞·뒤)를 자동으로 끼웁니다">📗 하드커버(양장)</button>
+            <button class="sbp-opt" data-ebbstyle="leaflet" onclick="setEbBindStyle('leaflet')" title="접지 리플렛 — 시트 한 장을 접는 선대로 나눠 접었다 폈다 보여 줍니다. 원고는 '1쪽 = 시트 한 면'(앞/뒤 2쪽) 기준">📄 리플렛(접지)</button>
+          </div>
+          <div id="ebFoldRow" style="display:none;">
+            <div class="sbp-row2">
+              <select class="es-select" id="ebFoldSel" onchange="setEbFold(this.value)" style="flex:1; min-width:0;"
+                title="접는 방식 — 칸 수와 기본 폭이 달라집니다">
+                <option value="roll3">3단 두루마리접지 (안쪽으로 말아 접기)</option>
+                <option value="zig3">3단 지그재그접지 (Z접지)</option>
+                <option value="gate4">대문접지 (양쪽 날개를 가운데로)</option>
+              </select>
+            </div>
+            <div class="sbp-row2" title="접히는 자리 — 왼쪽부터 칸 너비를 mm로 적습니다. 합이 시트 폭과 달라도 비율로 맞춰집니다">
+              <span class="sbp-mini">칸 너비(mm)</span>
+              <input type="number" class="es-input" id="ebW1" min="1" step="0.1" style="flex:1; min-width:0;" oninput="ebFoldWidthsChanged()">
+              <input type="number" class="es-input" id="ebW2" min="1" step="0.1" style="flex:1; min-width:0;" oninput="ebFoldWidthsChanged()">
+              <input type="number" class="es-input" id="ebW3" min="1" step="0.1" style="flex:1; min-width:0;" oninput="ebFoldWidthsChanged()">
+              <input type="number" class="es-input" id="ebW4" min="1" step="0.1" style="flex:1; min-width:0; display:none;" oninput="ebFoldWidthsChanged()">
+            </div>
+            <div class="sbp-row2">
+              <button class="sbp-opt active" data-ebfdir="right" onclick="setEbFoldDir('right')" title="왼쪽 끝 칸을 고정하고 오른쪽 칸들이 왼쪽으로 접혀 들어옵니다">◀ 오른쪽에서 접기</button>
+              <button class="sbp-opt" data-ebfdir="left" onclick="setEbFoldDir('left')" title="오른쪽 끝 칸을 고정하고 왼쪽 칸들이 오른쪽으로 접혀 들어옵니다">▶ 왼쪽에서 접기</button>
+              <button class="sbp-opt" data-ebfdir="both" onclick="setEbFoldDir('both')" title="가운데를 고정하고 양쪽 날개가 안으로 접힙니다 (대문접지)">▶◀ 양쪽</button>
+            </div>
+            <div class="sbp-note" id="ebFoldNote" style="margin-top:2px;">시트 폭을 읽어 칸 너비를 자동으로 채웁니다.</div>
+          </div>
+          <div class="sbp-row2">
             <button class="sbp-opt active" data-ebbind="left" onclick="setEbBind('left')" title="가로쓰기 책 — 왼쪽에서 오른쪽으로 넘김">좌철(가로쓰기)</button>
             <button class="sbp-opt" data-ebbind="right" onclick="setEbBind('right')" title="세로쓰기·일본식 — 오른쪽에서 왼쪽으로 넘김">우철(세로쓰기)</button>
           </div>
@@ -526,9 +553,9 @@
         <span class="es-label">여백(mm)</span>
         <input type="number" class="es-input" id="impMargin" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="시트 가장자리 여백 — 그리퍼(급지 물림)·재단 여유 공간" oninput="impSettingsChanged()">
         <span class="es-label" style="flex:0 0 auto;" title="원고에 재단여백이 없을 때, 재단 밀림에 대비해 페이지를 재단선 밖으로 살짝 키워 채웁니다 (면당 mm, 보통 3). 거터를 블리드×2 이상으로 두세요">블리드 채움</span>
-        <input type="number" class="es-input" id="impBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="면당 mm (보통 3) — 원고를 키워 칸을 채웁니다" oninput="impSettingsChanged()">
+        <input type="number" class="es-input" id="impBleed" min="0" step="0.1" value="0" style="flex:0 0 64px;" title="면당 mm (보통 3) — 원고를 키워 칸을 채웁니다" oninput="impSettingsChanged()">
         <span class="es-label" style="flex:0 0 auto;" title="원고가 이미 사방으로 재단여백을 품고 있을 때 그 폭(mm). 예: 297×420 인쇄물을 303×426으로 만들어 온 파일 → 3. 이 값을 넣어야 재단선·재단 치수가 실제 재단 크기(297×420)에 찍힙니다. PDF에 TrimBox가 들어 있으면 자동 인식되므로 0으로 두세요">원고 블리드</span>
-        <input type="number" class="es-input" id="impSrcBleed" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="원고에 이미 포함된 재단여백 폭(mm) — 그만큼 안쪽이 실제 재단선" oninput="impSettingsChanged()">
+        <input type="number" class="es-input" id="impSrcBleed" min="0" step="0.1" value="0" style="flex:0 0 64px;" title="원고에 이미 포함된 재단여백 폭(mm) — 그만큼 안쪽이 실제 재단선" oninput="impSettingsChanged()">
       </div>
       <div class="es-row" style="margin-top:6px; gap:12px; flex-wrap:wrap;">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;">
@@ -833,7 +860,7 @@
       </label>
       <div class="es-row">
         <span class="es-label">폭(mm)</span>
-        <input type="number" class="es-input" id="bleedGenMm" value="3" min="0.5" max="20" step="0.5" style="flex:0 0 64px;" title="재단여백 폭 — 실무 표준 3mm" oninput="bleedSettingsChanged()">
+        <input type="number" class="es-input" id="bleedGenMm" value="3" min="0.5" max="20" step="0.1" style="flex:0 0 64px;" title="재단여백 폭 — 실무 표준 3mm" oninput="bleedSettingsChanged()">
         <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="트림(원본 크기) 위치에 재단선을 그립니다 — 블리드 영역 안에 표시">
           <input type="checkbox" id="bleedCrop" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="bleedSettingsChanged()">
           ✂ 재단선
@@ -938,7 +965,7 @@
         </div>
         <div class="es-row" style="margin-top:6px; gap:10px; flex-wrap:wrap;">
           <span class="es-label">블리드(mm)</span>
-          <input type="number" class="es-input" id="coverBleed" min="0" step="0.5" value="3" style="flex:0 0 56px;">
+          <input type="number" class="es-input" id="coverBleed" min="0" step="0.1" value="3" style="flex:0 0 56px;">
           <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12.5px; color:#d1d1d6;">
             <input type="checkbox" id="coverCrop" checked style="accent-color:#ffd60a; width:14px; height:14px;">
             ✂ 재단선

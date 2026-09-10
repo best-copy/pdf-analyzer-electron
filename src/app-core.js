@@ -826,6 +826,9 @@
       if (_convTimer) { clearInterval(_convTimer); _convTimer = null; }
     }
 
+    // 화면(Chromium)이 버퍼 하나로 잡을 수 있는 최대치는 실측 2,044MB. 그보다 여유를 둔
+    // 이 값을 넘는 PDF는 통째로 열지 않고 gs로 나눠서 연다. (2026-09-10 실측)
+    const BIG_PDF_LIMIT = 1900 * 1024 * 1024;
     async function prepareFiles(items) {
       const out = [];
       const failed = [];
@@ -872,6 +875,70 @@
             }
           }
           const readPath = pdfPath || it.path;
+          // ── 2GB 넘는 PDF는 통째로 못 연다 → gs로 나눠서 여러 개로 연다 ──────
+          // 화면(Chromium)이 버퍼 하나를 최대 2,044MB까지만 잡는다(실측, V8 한계라
+          // 설정으로 못 올림). gs는 메인에서 파일을 스트리밍으로 읽으므로 크기와 무관하게
+          // 페이지 범위로 자를 수 있다. 자른 조각들은 각각 별도 탭으로 열린다.
+          const bigBytes = (() => {
+            try { return window.electronAPI.fileSize(readPath) || _size || 0; } catch (e) { return _size || 0; }
+          })();
+          if (bigBytes > BIG_PDF_LIMIT && window.electronAPI.shrinkPdf) {
+            const gb = (bigBytes / 1073741824).toFixed(2);
+            showLoading(`${it.name} — ${gb}GB라 화면이 통째로 열 수 없습니다. 용량을 줄이는 중…`);
+            if (window.electronAPI.onShrinkProgress) {
+              window.electronAPI.onShrinkProgress(info => {
+                if (info && info.msg) showLoading(`${it.name} — ${info.msg}`);
+              });
+            }
+            try {
+              const r = await window.electronAPI.shrinkPdf(readPath, { limitBytes: BIG_PDF_LIMIT });
+              const afterGb = (r.after / 1073741824).toFixed(2);
+              if (r.fits) {
+                hideLoading();
+                showSuccess(`📄 ${it.name} — ${gb}GB → ${afterGb}GB로 줄여 한 문서로 엽니다.\n`
+                  + `줄인 방법: ${r.label} · 글자와 벡터는 그대로입니다(줄어든 것은 이미지뿐).\n`
+                  + `⚠ 원본 파일은 그대로 있습니다. 이 화면의 작업·저장본은 줄인 이미지 기준입니다.\n`
+                  + `화면이 한 번에 다룰 수 있는 크기가 약 2GB라 부득이한 처리입니다.`);
+                out.push({
+                  name: it.name, size: r.after, type: 'application/pdf',
+                  arrayBuffer: () => Promise.resolve(window.electronAPI.readFile(r.path))
+                    .then(buf => {
+                      if (window.electronAPI.cleanupTempFile) {
+                        try { window.electronAPI.cleanupTempFile(r.path); } catch (e) {}
+                      }
+                      return buf;
+                    }),
+                });
+                continue;
+              }
+              // 가장 낮은 단계까지 줄여도 한계를 못 넘겼다 — 이때만 나눠서 연다
+              showLoading(`${it.name} — 더 줄일 수 없어 나눠서 여는 중…`);
+              const res = await window.electronAPI.splitPdf(readPath, {});
+              const base = it.name.replace(/\.[^.]+$/, '');
+              (res.parts || []).forEach((part, k) => {
+                out.push({
+                  name: `${base} (${k + 1}_${res.parts.length}).pdf`,
+                  size: part.size || 0, type: 'application/pdf',
+                  arrayBuffer: () => Promise.resolve(window.electronAPI.readFile(part.path))
+                    .then(buf => {
+                      if (window.electronAPI.cleanupTempFile) {
+                        try { window.electronAPI.cleanupTempFile(part.path); } catch (e) {}
+                      }
+                      return buf;
+                    }),
+                });
+              });
+              hideLoading();
+              showSuccess(`📄 ${it.name} (${gb}GB · ${res.pages}쪽) — 이미지를 최대로 줄여도(${afterGb}GB) `
+                + `한 번에 열 수 있는 크기가 안 되어 ${res.parts.length}개로 나눠 엽니다.\n`
+                + `조각마다 탭이 하나씩 열리고, 페이지 순서는 원본 그대로입니다.`);
+              continue;
+            } catch (e) {
+              hideLoading();
+              failed.push(`${it.name} — 용량 줄이기 실패: ${e && e.message ? e.message : e}`);
+              continue;
+            }
+          }
           const tmpToClean = pdfPath; // 변환으로 생성된 임시 PDF만 정리 대상
           out.push({
             name: it.name,                       // 원본 이름(확장자 포함) 유지 — 표시·저장명에 사용

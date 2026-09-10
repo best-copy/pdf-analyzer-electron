@@ -3,6 +3,20 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
+// 큰 파일 쓰기 — writeFileSync도 2GiB가 넘으면 거부한다. 1GB씩 나눠 쓴다.
+// (2GB+ 원고를 열 수 있게 됐으니 저장 쪽도 같이 뚫어 둔다)
+function writeBig(filePath, buffer) {
+  const view = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (view.length <= (1 << 30)) { fs.writeFileSync(filePath, view); return; }
+  const fd = fs.openSync(filePath, 'w');
+  try {
+    const CHUNK = 1 << 30;
+    for (let off = 0; off < view.length; off += CHUNK) {
+      fs.writeSync(fd, view, off, Math.min(CHUNK, view.length - off), off);
+    }
+  } finally { fs.closeSync(fd); }
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 열기 다이얼로그 — 경로만 반환 (파일 내용은 readFile로 별도 요청)
   openFile: (opts) => ipcRenderer.invoke('dialog:openFile', opts || {}),
@@ -28,10 +42,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     try { if (fs.existsSync(p)) return p; } catch (e) {}
     return null;
   },
+  // 파일을 통째로 읽어 ArrayBuffer로 준다.
+  // ⚠ fs.readFileSync는 2GiB가 넘으면 무조건 거부한다("File size is greater than 2 GiB").
+  //   대용량 원고(2GB+)를 열 수 있어야 하므로 직접 열어 1GB씩 나눠 읽는다.
+  //   또 buf.buffer.slice()는 통째로 한 벌 더 복사한다 — 2GB 파일이면 4GB를 쓴다.
+  //   그래서 ArrayBuffer를 먼저 잡고 그 위로 바로 읽어 복사를 없앤다.
   readFile: (filePath) => {
-    const buf = fs.readFileSync(filePath);
-    // Buffer → ArrayBuffer (structured clone으로 고속 전달)
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const size = fs.statSync(filePath).size;
+    const ab = new ArrayBuffer(size);
+    const view = Buffer.from(ab);           // 같은 메모리를 가리키는 뷰 (복사 아님)
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const CHUNK = 1 << 30;                // 1GB씩 — 한 번에 읽으면 32비트 한계에 걸린다
+      let off = 0;
+      while (off < size) {
+        const n = fs.readSync(fd, view, off, Math.min(CHUNK, size - off), off);
+        if (!n) break;                      // 더 읽히지 않으면 중단(파일이 줄었거나 오류)
+        off += n;
+      }
+      if (off !== size) throw new Error(`파일을 끝까지 읽지 못했습니다 (${off}/${size} 바이트)`);
+    } finally { fs.closeSync(fd); }
+    return ab;
   },
 
   // PDF 저장: 경로는 main에서 다이얼로그로 취득, 파일 쓰기는 여기서 직접 처리
@@ -39,7 +70,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFile: async ({ defaultName, buffer, kind }) => {
     const filePath = await ipcRenderer.invoke('dialog:saveFilePath', { defaultName, kind });
     if (!filePath) return false;
-    fs.writeFileSync(filePath, Buffer.from(buffer));
+    writeBig(filePath, buffer);
     return filePath;
   },
 
@@ -68,7 +99,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFileTo: async ({ filePath, buffer, kind }) => {
     const ok = await ipcRenderer.invoke('dialog:confirmSavePath', { filePath, kind });
     if (!ok) return false;
-    fs.writeFileSync(ok, Buffer.from(buffer));
+    writeBig(ok, buffer);
     return ok;
   },
 
@@ -106,6 +137,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 폰트 대체 사전 감지 (gs nullpage) — opts.first/last = 훑을 페이지(1-based). 로그 문자열 반환
   probeFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:probeFonts', pdfPath, opts || {}),
 
+  // 2GB 넘는 PDF 쪼개기 — 화면은 버퍼 하나를 2GB까지만 잡으므로 gs로 나눠 연다
+  pdfPageCount: (p) => ipcRenderer.invoke('gs:pageCount', p),
+  splitPdf: (p, opts) => ipcRenderer.invoke('gs:splitPdf', p, opts || {}),
+  shrinkPdf: (p, opts) => ipcRenderer.invoke('gs:shrinkPdf', p, opts || {}),
+  onShrinkProgress: (cb) => {
+    if (typeof cb !== 'function') return;
+    ipcRenderer.on('gs:shrinkProgress', (_e, info) => { try { cb(info || {}); } catch (err) {} });
+  },
+  onSplitProgress: (cb) => {
+    if (typeof cb !== 'function') return;
+    ipcRenderer.on('gs:splitProgress', (_e, info) => { try { cb(info || {}); } catch (err) {} });
+  },
+
   // 파일 크기(바이트) — 변환 예상 시간 안내에 쓴다. 내용을 읽지 않으므로 대용량도 즉시.
   fileSize: (p) => { try { return fs.statSync(p).size; } catch (e) { return 0; } },
 
@@ -134,7 +178,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeTempFile: (bytes, ext) => {
     const name = `pdfedit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext === 'bin' ? 'bin' : 'pdf'}`;
     const p = path.join(os.tmpdir(), name);
-    fs.writeFileSync(p, Buffer.from(bytes));
+    writeBig(p, bytes);
     return p;
   },
   // 편집 임시파일 삭제 (tmpdir 내 pdfedit_ 파일만)

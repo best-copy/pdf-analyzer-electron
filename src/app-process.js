@@ -661,8 +661,24 @@
       _impProfile = null;                     // 사용자가 손대면 UI 기준으로 전환
       if (typeof updateImpSheetReadout === 'function') updateImpSheetReadout();
       if (!_impEnabled) return;
+      // 블리드와 같은 이유로 지연 반영 — 임포징도 켜 두면 키마다 전체를 다시 만든다
+      clearTimeout(_impTimer);
+      _impTimer = setTimeout(applyImpSettings, 700);
+    }
+    let _impTimer = 0;
+    function applyImpSettings() {
+      clearTimeout(_impTimer);
+      if (!_impEnabled) return;
+      const el = document.activeElement;
+      const inNumber = el && el.tagName === 'INPUT' && el.type === 'number';
+      const caret = inNumber ? el.selectionStart : null;
       invalidateProcessed();
       scheduleLivePreview();
+      if (inNumber) requestAnimationFrame(() => {
+        if (document.activeElement === el) return;
+        el.focus();
+        try { if (caret != null) el.setSelectionRange(caret, caret); } catch (e) {}
+      });
     }
     function setImpScale(mode) {
       _impScale = mode;
@@ -893,10 +909,31 @@
         showSuccess(`◲ 블리드 생성 켜짐 — 사방 ${o.mm}mm 미러 확장${o.crop ? ' + 트림 재단선' : ''}이 '✔ 적용'과 '⇩ 다운로드'에 항상 포함됩니다.\n다른 편집을 해도 유지됩니다. 끄려면 체크를 해제하세요.`);
       }
     }
+    // 숫자칸을 치는 동안에는 다시 만들지 않는다 ──────────────────────────────
+    // 블리드를 켜 두면 키 한 번마다 블리드를 새로 만들고 화면을 통째로 다시 그렸다.
+    // 그 사이 입력이 끊겨 '3.2' 같은 소수점을 칠 수 없었다(체크를 풀면 이 경로를
+    // 그냥 빠져나가므로 잘 쳐졌다 — 사용자가 이 차이로 원인을 짚어 주었다).
+    // → 손을 멈춘 뒤에 한 번만 반영하고, 그때 칸을 만지고 있었다면 커서 자리를 되돌려 준다.
+    let _bleedTimer = 0;
     function bleedSettingsChanged() {
       if (!_bleedEnabled) return;
+      clearTimeout(_bleedTimer);
+      _bleedTimer = setTimeout(applyBleedSettings, 700);
+    }
+    function applyBleedSettings() {
+      clearTimeout(_bleedTimer);
+      if (!_bleedEnabled) return;
+      const el = document.getElementById('bleedGenMm');
+      const editing = el && document.activeElement === el;
+      const caret = editing ? el.selectionStart : null;
       invalidateProcessed();
       scheduleLivePreview();
+      // 다시 그리느라 포커스를 잃었으면 되돌린다 — 이어서 칠 수 있게
+      if (editing) requestAnimationFrame(() => {
+        if (document.activeElement === el) return;
+        el.focus();
+        try { if (caret != null) el.setSelectionRange(caret, caret); } catch (e) {}
+      });
     }
     // 파이프라인 공용 블리드 단계 — 결과 캐시(입력 지문+옵션)로 라이브 미리보기 반복에 대비
     let _bleedCache = { sig: null, bytes: null };
@@ -920,18 +957,59 @@
         pg.drawPage(e, opts);
         pg.pushOperators(popGraphicsState());
       };
+      // 채우는 방식 두 가지 ────────────────────────────────────────────────
+      //  · 미러(mirror): 가장자리를 접어 반사. 사진·그라데이션 원고에 자연스럽다.
+      //    다만 원고 가장자리에 '테두리'가 있으면 그 테두리가 반사돼 트림선 바깥에
+      //    한 줄 더 생긴다 — 재단선 부근의 '얇은 선'으로 보인다.
+      //  · 늘리기(stretch, 기본): 가장자리 한 줄을 바깥으로 잡아 늘린다. 테두리가
+      //    있어도 색이 그대로 이어질 뿐이라 선이 생기지 않는다.
+      // 어느 쪽이든 이음매가 벌어지지 않게 eps만큼 겹쳐 그린 뒤, 원본을 맨 위에 덮는다.
+      // 기본은 지금까지와 같은 '미러'. 늘리기는 opts.mode='stretch'로 명시할 때만 쓴다
+      // (테두리 있는 원고에서 반사가 거슬릴 때를 위한 대안 — 아직 UI로는 노출하지 않았다).
+      const stretch = !!(opts && opts.mode === 'stretch');
+      const eps = Math.min(0.75, b * 0.5);   // pt (약 0.26mm 이하)
+      // ⚠ 원고 맨 가장자리의 '한 줄'을 쓰지 않는다 ────────────────────────────
+      // 실무 원고에는 맨 바깥 한 줄이 주변과 다른 경우가 흔하다(디자인 툴이 남긴 테두리
+      // 자국·이미지 가장자리). 원본에서는 페이지 끝이라 안 보이지만, 블리드를 만들면
+      // 그 줄이 트림선 안쪽으로 옮겨 앉아 **사방에 얇은 선**으로 인쇄된다.
+      // (사용자 원고에서 실측: 원고 맨 아랫줄 179 / 안쪽 238 → 블리드본에서 그대로 선이 됨)
+      // → 반사축을 가장자리가 아니라 ov만큼 안쪽으로 잡는다. 그러면 미러가 그 줄을
+      //   반사하지도 않고, 트림 바깥+안쪽 ov까지 덮어 원고의 그 줄을 가려 준다.
+      //   ov는 재단선 바로 옆(잘려 나가는 자리)이라 실제 인쇄물에는 영향이 없다.
+      const ov = Math.min(1.5, Math.max(0.6, b * 0.35));   // pt (0.2~0.5mm)
+      // 늘리기: 가장자리 sl(pt) 한 줄을 b+eps 폭으로 확대한다. 배율이 클수록 '한 줄'에
+      // 가까워 색이 깔끔하게 이어지고, 너무 얇으면 안티에일리어싱된 반투명 줄을 늘려
+      // 흐린 띠가 된다 → 0.5pt 정도가 안정적.
+      const sl = 0.5, sx = (b + eps) / sl, sy = (b + eps) / sl;
       for (let i = 0; i < embedded.length; i++) {
         const { e, w, h } = embedded[i];
         const pg = out.addPage([w + 2*b, h + 2*b]);
-        pg.drawPage(e, { x: b, y: b });                                             // 중앙 원본
-        clipDraw(pg, 0,     b,     b, h, e, { x: b,       y: b,       xScale:-1 });               // 좌
-        clipDraw(pg, b+w,   b,     b, h, e, { x: b+2*w,   y: b,       xScale:-1 });               // 우
-        clipDraw(pg, b,     0,     w, b, e, { x: b,       y: b,       yScale:-1 });               // 하
-        clipDraw(pg, b,     b+h,   w, b, e, { x: b,       y: b+2*h,   yScale:-1 });               // 상
-        clipDraw(pg, 0,     0,     b, b, e, { x: b,       y: b,       xScale:-1, yScale:-1 });    // 좌하
-        clipDraw(pg, b+w,   0,     b, b, e, { x: b+2*w,   y: b,       xScale:-1, yScale:-1 });    // 우하
-        clipDraw(pg, 0,     b+h,   b, b, e, { x: b,       y: b+2*h,   xScale:-1, yScale:-1 });    // 좌상
-        clipDraw(pg, b+w,   b+h,   b, b, e, { x: b+2*w,   y: b+2*h,   xScale:-1, yScale:-1 });    // 우상
+        // ① 원본을 먼저 깐다. 바깥 띠는 그 **위에** 덮는다 — 원고 가장자리의 얇은 줄을
+        //    띠가 가려 주도록(위에서 설명한 ov). 순서를 바꾸면 그 줄이 그대로 남는다.
+        pg.drawPage(e, { x: b, y: b });
+        if (stretch) {
+          // 좌: 원고 x∈[0,sl] → 캔버스 [b+eps-(b+eps), b+eps] = [0, b+eps]
+          clipDraw(pg, 0,       b-eps,   b+eps,   h+2*eps, e, { x: b+eps-sl*sx,      y: b,               xScale: sx });
+          clipDraw(pg, b+w-eps, b-eps,   b+eps,   h+2*eps, e, { x: b+w-eps-(w-sl)*sx, y: b,              xScale: sx });
+          clipDraw(pg, b-eps,   0,       w+2*eps, b+eps,   e, { x: b,                y: b+eps-sl*sy,     yScale: sy });
+          clipDraw(pg, b-eps,   b+h-eps, w+2*eps, b+eps,   e, { x: b,                y: b+h-eps-(h-sl)*sy, yScale: sy });
+          // 모서리 — 양쪽으로 함께 늘린다
+          clipDraw(pg, 0,       0,       b+eps, b+eps, e, { x: b+eps-sl*sx,       y: b+eps-sl*sy,        xScale: sx, yScale: sy });
+          clipDraw(pg, b+w-eps, 0,       b+eps, b+eps, e, { x: b+w-eps-(w-sl)*sx, y: b+eps-sl*sy,        xScale: sx, yScale: sy });
+          clipDraw(pg, 0,       b+h-eps, b+eps, b+eps, e, { x: b+eps-sl*sx,       y: b+h-eps-(h-sl)*sy,  xScale: sx, yScale: sy });
+          clipDraw(pg, b+w-eps, b+h-eps, b+eps, b+eps, e, { x: b+w-eps-(w-sl)*sx, y: b+h-eps-(h-sl)*sy,  xScale: sx, yScale: sy });
+        } else {
+          // 반사축을 가장자리에서 ov만큼 안쪽으로 — 가장자리 한 줄은 반사도 안 하고 가려진다.
+          // 좌: 축 x=b+ov → 원고 x=s 는 캔버스 b+2ov-s. 클립은 [0, b+ov].
+          clipDraw(pg, 0,       b-ov,    b+ov, h+2*ov, e, { x: b+2*ov,        y: b,             xScale:-1 });          // 좌
+          clipDraw(pg, b+w-ov,  b-ov,    b+ov, h+2*ov, e, { x: b+2*w-2*ov,    y: b,             xScale:-1 });          // 우
+          clipDraw(pg, b-ov,    0,       w+2*ov, b+ov, e, { x: b,             y: b+2*ov,        yScale:-1 });          // 하
+          clipDraw(pg, b-ov,    b+h-ov,  w+2*ov, b+ov, e, { x: b,             y: b+2*h-2*ov,    yScale:-1 });          // 상
+          clipDraw(pg, 0,       0,       b+ov, b+ov, e, { x: b+2*ov,     y: b+2*ov,     xScale:-1, yScale:-1 });       // 좌하
+          clipDraw(pg, b+w-ov,  0,       b+ov, b+ov, e, { x: b+2*w-2*ov, y: b+2*ov,     xScale:-1, yScale:-1 });       // 우하
+          clipDraw(pg, 0,       b+h-ov,  b+ov, b+ov, e, { x: b+2*ov,     y: b+2*h-2*ov, xScale:-1, yScale:-1 });       // 좌상
+          clipDraw(pg, b+w-ov,  b+h-ov,  b+ov, b+ov, e, { x: b+2*w-2*ov, y: b+2*h-2*ov, xScale:-1, yScale:-1 });       // 우상
+        }
         // 재단 정보 기록 — 임포징·출력기가 트림 위치를 알 수 있게
         pg.node.set(PDFName.of('TrimBox'),  out.context.obj([b, b, b+w, b+h]));
         pg.node.set(PDFName.of('BleedBox'), out.context.obj([0, 0, w+2*b, h+2*b]));
@@ -7393,6 +7471,82 @@
       return bind === 'right' ? out.map(s => [s[1], s[0]]) : out;
     }
 
+    // 📗 하드커버(양장) — 표지 안쪽에 빈 면지를 앞·뒤로 한 장씩 끼운다.
+    // 실제 양장책은 표지를 열면 바로 본문이 아니라 면지가 나온다. 표지(0쪽)와 뒤표지(마지막)는
+    // 그대로 두고 그 안쪽에만 넣는다. 반환값은 새 페이지 배열(원본 배열은 건드리지 않는다).
+    // blank = { u:'', w, h } — 뷰어가 u가 비면 백지로 그린다.
+    function ebookWithEndpapers(pages) {
+      if (!Array.isArray(pages) || pages.length < 2) return pages || [];
+      const ref = pages[0] || {};
+      const blank = () => ({ u: '', w: ref.w || 0, h: ref.h || 0, blank: true });
+      const out = pages.slice();
+      out.splice(1, 0, blank());              // 앞표지 바로 뒤
+      out.splice(out.length - 1, 0, blank()); // 뒤표지 바로 앞
+      return out;
+    }
+
+    // 📄 접지 리플렛 — 시트 한 면을 접는 선대로 나눈 '패널' 구성.
+    // 원고는 1쪽 = 시트 한 면(앞/뒤 2쪽). 여기서는 계산만 하고 3D 접기는 뷰어가 그린다.
+    //
+    // 실제로 접히려면 칸을 '경첩으로 이어 붙인 사슬'로 봐야 한다. 고정된 기준 칸(base)에서
+    // 바깥쪽으로 한 칸씩 매달리고, 각 경첩이 최대 180°까지 돌아가면 이전 칸 위로 포개진다.
+    //   dir='right' 왼쪽 끝이 기준 → 오른쪽 칸들이 왼쪽으로 접혀 들어온다
+    //   dir='left'  오른쪽 끝이 기준 → 왼쪽 칸들이 오른쪽으로 접혀 들어온다
+    //   dir='both'  가운데가 기준 → 양쪽 날개가 안으로 접힌다(대문접지)
+    // alt=true(지그재그)면 경첩 방향이 한 칸씩 번갈아 든다.
+    //
+    // widths를 주면 그 값(같은 단위)을 그대로 쓴다. 합이 시트 폭과 달라도 비율로 맞춘다.
+    function ebookFoldPlan(fold, sheetW, widths) {
+      const W = sheetW || 1;
+      const norm = (arr) => {                       // 합을 시트 폭에 맞춘다
+        const nums = (arr || []).map(v => Math.max(0, +v || 0)).filter(v => v > 0);
+        if (nums.length < 2) return null;
+        const s = nums.reduce((a, b) => a + b, 0);
+        return nums.map(v => v / s * W);
+      };
+      const custom = norm(widths);
+      let panels, base, dir, alt = false, name;
+
+      if (fold === 'gate4') {
+        name = '대문접지';
+        // 날개 두 장이 가운데에서 맞닿는다 — 맞물리게 아주 조금 좁힌다(실무 관행)
+        const wing = W * 0.2485, mid = (W - wing * 2) / 2;
+        panels = custom || [wing, mid, mid, wing];
+        dir = 'both';
+      } else if (fold === 'zig3') {
+        name = '3단 지그재그접지(Z)';
+        panels = custom || [W / 3, W / 3, W / 3];
+        dir = 'right'; alt = true;
+      } else {
+        name = '3단 두루마리접지';
+        const inner = W * 0.327, rest = (W - inner) / 2;   // 말려 들어가는 칸을 좁게
+        panels = custom || [rest, rest, inner];
+        dir = 'right';
+      }
+
+      // 기준 칸 — 접어도 자리가 움직이지 않는 칸
+      if (dir === 'both') base = Math.max(0, Math.floor(panels.length / 2) - 1);
+      else if (dir === 'left') base = panels.length - 1;
+      else base = 0;
+
+      // 접었을 때 겉으로 보이는 폭 = 기준 칸 폭 (양쪽 접기는 가운데 두 칸)
+      const closedW = (dir === 'both')
+        ? (panels[base] || 0) + (panels[base + 1] || 0)
+        : (panels[base] || 0);
+      return { name, panels, base, dir, alt, closedW, sheetW: W };
+    }
+
+    // 접는 방향을 바꿔 끼운다 — 방식(칸 수·폭)은 그대로 두고 기준 칸만 옮긴다
+    function ebookFoldWithDir(plan, dir) {
+      if (!plan) return plan;
+      const p = plan.panels || [];
+      const d = (dir === 'left' || dir === 'right' || dir === 'both') ? dir : plan.dir;
+      const base = d === 'both' ? Math.max(0, Math.floor(p.length / 2) - 1)
+                 : d === 'left' ? p.length - 1 : 0;
+      const closedW = (d === 'both') ? (p[base] || 0) + (p[base + 1] || 0) : (p[base] || 0);
+      return Object.assign({}, plan, { dir: d, base, closedW });
+    }
+
     // 📄 단면(한 면만 인쇄한) 책자의 펼침면 — 펼치면 **왼쪽은 백지**(앞장의 뒷면)이고
     // 오른쪽에 인쇄면이 온다. 우철이면 좌우가 뒤집힌다.
     // (양면 책처럼 두 쪽을 맞붙이면 실제 인쇄물과 다르게 보인다)
@@ -7487,6 +7641,39 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
   border-style:solid;border-color:#9b9ba1;background:transparent;
   box-shadow:0 1px 2px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.6),
              inset 0 -1px 0 rgba(0,0,0,.25)}
+/* ── 📗 하드커버(양장) ──
+   표지판이 두껍고 본문보다 사방으로 물린다(오버행). 표지를 열면 면지가 먼저 나온다.
+   본문 종이는 그대로 두고, 펼침면 바깥으로 '판'을 덧대 두께와 물림을 만든다. */
+.hardcover .spread::before{content:"";position:absolute;left:-1.1%;right:-1.1%;top:-1.0%;bottom:-1.0%;
+  background:linear-gradient(160deg,#2f3238,#1d2024 55%,#26292f);
+  border-radius:3px 6px 6px 3px;z-index:-1;
+  box-shadow:0 18px 40px rgba(0,0,0,.55),0 3px 8px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.10)}
+/* 책등 — 둥글게 말린 느낌(양장은 등이 둥글다) */
+.hardcover .spread::after{content:"";position:absolute;left:50%;top:-1.0%;bottom:-1.0%;width:2.2%;
+  transform:translateX(-50%);z-index:-1;border-radius:2px;
+  background:linear-gradient(90deg,rgba(0,0,0,.55),rgba(255,255,255,.10) 40%,rgba(255,255,255,.06) 60%,rgba(0,0,0,.55))}
+.hardcover .gut{opacity:.85}                          /* 등이 두꺼워 골이 조금 더 깊다 */
+.hardcover .pg.blank{background:#f3efe6}              /* 면지는 살짝 미색 */
+/* ── 📄 리플렛(접지) ──
+   시트 한 면을 접는 선대로 나눠, 슬라이더로 접었다 폈다 한다. */
+.leafwrap{position:relative;margin:0 auto;perspective:2200px}
+.leafrow{position:relative;height:100%;transform-style:preserve-3d;display:flex;align-items:stretch}
+.panel{position:relative;flex:0 0 auto;background:#fff no-repeat;background-size:auto 100%;
+  transform-style:preserve-3d;transform-origin:left center;
+  box-shadow:0 1px 3px rgba(0,0,0,.18);will-change:transform}
+.panel.pk{transform-origin:right center}
+.panel::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,rgba(0,0,0,.13),rgba(0,0,0,0) 12%,rgba(0,0,0,0) 88%,rgba(0,0,0,.10))}
+.paper .panel::after{opacity:1}
+.panel::after{opacity:0}
+.foldline{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed rgba(255,214,10,.85);z-index:5;pointer-events:none}
+.leafbar{position:fixed;left:50%;transform:translateX(-50%);bottom:72px;z-index:40;
+  display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:12px;
+  background:rgba(29,29,31,.88);backdrop-filter:blur(12px);box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.leafbar label{color:#aeaeb2;font-size:12px;font-weight:600;white-space:nowrap}
+.leafbar input[type=range]{width:180px}
+.leafbar .b{padding:5px 10px;font-size:12px}
+.leafname{color:#f5f5f7;font-size:12px;font-weight:700}
 /* 타공 — 종이에 뚫린 구멍. 고리보다 뒤에 있어야 철사가 구멍을 지나가는 것처럼 보인다 */
 .punch{position:absolute;background:#3a3a40;border-radius:1.5px;z-index:1;
   box-shadow:inset 0 1px 2px rgba(0,0,0,.7)}
@@ -7615,8 +7802,12 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '// 화면 구성은 양면과 같고, 왼쪽이 늘 비어 있을 뿐이다.',
       'var SOLO=(D.meta.view==="single");',
       '// 제본 형태 — book: 무선·중철(책등에 골) / twinring: 트윈링(고리·타공)',
-      'var TWIN=(D.meta.bindStyle==="twinring");',
+      '//            / hardcover: 양장(두꺼운 표지판·면지) / leaflet: 접지 리플렛',
+      'var BS=D.meta.bindStyle||"book";',
+      'var TWIN=(BS==="twinring"), HARD=(BS==="hardcover"), LEAF=(BS==="leaflet");',
       'document.body.classList.toggle("twinring",TWIN);',
+      'document.body.classList.toggle("hardcover",HARD);',
+      'document.body.classList.toggle("leaflet",LEAF);',
       'document.body.classList.toggle("solo",SOLO);',
       'function imgs(){return V==="book"?D.book:D.sheets;}',
       'function views(){',
@@ -7741,7 +7932,129 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  addRings(d);',   // ⚠ 무대에 붙인 뒤라야 offsetLeft/Width가 잡힌다(앞서 부르면 고리가 한 점에 뭉친다)
       '  return d;',
       '}',
+      '// ── 📄 리플렛(접지) 보기 ─────────────────────────────────────────────',
+      '// 원고 1쪽 = 시트 한 면. 그 면을 접는 선대로 패널로 나눠, 0(펼침)~100(접힘)으로',
+      '// 접었다 폈다 한다. 패널 폭 비율·접는 방향은 만들 때 계산해 D.fold에 담겨 온다.',
+      'var leafT=0;   // 0=완전히 펼침, 1=완전히 접음',
+      '// 칸 한 장 — 시트 그림에서 자기 몫만 보이게 배경을 밀어 붙인다',
+      'function leafPanel(im,W,H,x0,pw){',
+      '  var d=document.createElement("div"); d.className="panel";',
+      '  d.style.width=pw+"px"; d.style.height=H+"px";',
+      '  d.style.backgroundImage="url(\\""+im.u+"\\")";',
+      '  d.style.backgroundSize=W+"px "+H+"px";',
+      '  d.style.backgroundPosition=(-x0)+"px 0";',
+      '  return d;',
+      '}',
+      '// 실제로 접히게 하려면 칸을 "경첩으로 이어 붙인 사슬"로 쌓아야 한다.',
+      '// 기준 칸은 제자리에 두고, 바깥 칸을 이전 칸의 자식으로 넣어 맞닿은 모서리를 축으로 돌린다.',
+      '// 자식이 부모 안에 있으므로 부모가 접히면 자식도 함께 딸려 간다 — 종이와 같은 움직임.',
+      'function leafChain(im,W,H,offs,widths,from,to,step,leftward,alt){',
+      '  var host=null, root=null, sign=1;',
+      '  for(var p=from; step>0?p<=to:p>=to; p+=step){',
+      '    var d=leafPanel(im,W,H,offs[p],widths[p]);',
+      '    d.style.position="absolute"; d.style.top="0";',
+      '    if(leftward){ d.style.right="100%"; d.style.transformOrigin="right center"; }',
+      '    else        { d.style.left="100%";  d.style.transformOrigin="left center"; }',
+      '    // 180°까지 돌면 이전 칸 위에 정확히 포개진다',
+      '    var ang=leafT*180*sign*(leftward?-1:1);',
+      '    d.style.transform="rotateY("+ang+"deg)";',
+      '    // 접힐수록 뒷면이 보이므로 살짝 어둡게 — 종이가 겹친 느낌',
+      '    d.style.filter="brightness("+(1-0.18*leafT)+")";',
+      '    if(host) host.appendChild(d); else root=d;',
+      '    host=d;',
+      '    if(alt) sign=-sign;   // 지그재그는 한 칸씩 반대로',
+      '  }',
+      '  return root;',
+      '}',
+      'function drawLeaflet(pageIdx){',
+      '  var list=D.book, im=list[pageIdx]; if(!im){stage.innerHTML="";return;}',
+      '  var P=D.fold||{panels:[1/3,1/3,1/3],base:0,dir:"right",name:"3단"};',
+      '  var ws=P.panels||[], n=ws.length;',
+      '  var sum=0; for(var q=0;q<n;q++) sum+=ws[q]; if(!(sum>0)) return;',
+      '  var pad=MOB?16:40;',
+      '  var availW=stage.clientWidth-pad*2, availH=stage.clientHeight-pad*2-(MOB?54:110);',
+      '  var k=Math.min(availW/im.w, availH/im.h); if(!(k>0))k=1;',
+      '  var W=im.w*k, H=im.h*k;',
+      '  // 칸 폭(화면 px)과 각 칸의 시트 안 시작 위치',
+      '  var widths=[], offs=[], acc=0;',
+      '  for(var p=0;p<n;p++){ var pw=ws[p]/sum*W; widths.push(pw); offs.push(acc); acc+=pw; }',
+      '  var base=Math.max(0,Math.min(n-1,P.base||0));',
+      '  var both=(P.dir==="both");',
+      '  var wrap=document.createElement("div"); wrap.className="leafwrap";',
+      '  wrap.style.width=W+"px"; wrap.style.height=H+"px";',
+      '  var row=document.createElement("div"); row.className="leafrow";',
+      '  // 기준 칸(양쪽 접기면 가운데 두 칸)은 제자리 — 화면에서 가운데로 오게 여백을 준다',
+      '  var fixedFrom=base, fixedTo=both?Math.min(n-1,base+1):base;',
+      '  var lead=offs[fixedFrom];',
+      '  row.style.paddingLeft=lead+"px";',
+      '  var host=null;',
+      '  for(var f=fixedFrom;f<=fixedTo;f++){',
+      '    var fx=leafPanel(im,W,H,offs[f],widths[f]);',
+      '    fx.style.position="relative";',
+      '    row.appendChild(fx);',
+      '    if(f===fixedTo) host=fx;',
+      '    if(f===fixedFrom&&fixedFrom!==fixedTo) { /* 왼쪽 고정 칸에는 왼쪽 사슬을 매단다 */',
+      '      var lc0=leafChain(im,W,H,offs,widths,fixedFrom-1,0,-1,true,P.alt);',
+      '      if(lc0) fx.appendChild(lc0);',
+      '    }',
+      '  }',
+      '  // 오른쪽 사슬 — 기준(또는 오른쪽 고정 칸) 바깥의 칸들',
+      '  var rc=leafChain(im,W,H,offs,widths,fixedTo+1,n-1,1,false,P.alt);',
+      '  if(rc&&host) host.appendChild(rc);',
+      '  // 한쪽 접기일 때 반대편 사슬',
+      '  if(!both){',
+      '    var lc=leafChain(im,W,H,offs,widths,fixedFrom-1,0,-1,true,P.alt);',
+      '    if(lc) row.firstChild.appendChild(lc);',
+      '  }',
+      '  wrap.appendChild(row);',
+      '  // 접는 선 안내 — 펼쳤을 때만 보인다',
+      '  if(leafT<0.02){',
+      '    var xx=0;',
+      '    for(var g=0;g<n-1;g++){ xx+=widths[g];',
+      '      var fl=document.createElement("div"); fl.className="foldline";',
+      '      fl.style.left=xx+"px"; wrap.appendChild(fl); }',
+      '  }',
+      '  stage.innerHTML=""; stage.appendChild(wrap);',
+      '}',
+      'function leafBar(){',
+      '  if(!LEAF) return;',
+      '  var bar=document.createElement("div"); bar.className="leafbar";',
+      '  var P=D.fold||{}; var nm=document.createElement("span"); nm.className="leafname";',
+      '  nm.textContent=(P.name||"접지")+" · "+((D.fold&&D.fold.panels)?D.fold.panels.length:3)+"칸";',
+      '  var lab=document.createElement("label"); lab.textContent="접기";',
+      '  var sl=document.createElement("input"); sl.type="range"; sl.min="0"; sl.max="100"; sl.value="0";',
+      '  sl.oninput=function(){ leafT=(+sl.value)/100; render(); };',
+      '  var side=document.createElement("button"); side.className="b"; side.textContent="앞/뒤 뒤집기";',
+      '  side.onclick=function(){ i=(i+1)%Math.max(1,D.book.length); render(); };',
+      '  bar.appendChild(nm); bar.appendChild(lab); bar.appendChild(sl); bar.appendChild(side);',
+      '  // 접는 방향 — 보는 사람이 바로 바꿔 볼 수 있게 (만들 때 정한 값이 처음 상태)',
+      '  var dl=document.createElement("label"); dl.textContent="방향"; bar.appendChild(dl);',
+      '  var dirs=[["right","오른쪽"],["left","왼쪽"],["both","양쪽"]];',
+      '  dirs.forEach(function(t){',
+      '    var b=document.createElement("button"); b.className="b"+(D.fold&&D.fold.dir===t[0]?" on":"");',
+      '    b.textContent=t[1];',
+      '    b.onclick=function(){',
+      '      if(!D.fold) return;',
+      '      var p=D.fold.panels||[];',
+      '      D.fold.dir=t[0];',
+      '      D.fold.base=(t[0]==="both")?Math.max(0,Math.floor(p.length/2)-1):(t[0]==="left"?p.length-1:0);',
+      '      [].forEach.call(bar.querySelectorAll("button"),function(x){',
+      '        if(x.textContent==="오른쪽"||x.textContent==="왼쪽"||x.textContent==="양쪽") x.className="b";',
+      '      });',
+      '      b.className="b on"; render();',
+      '    };',
+      '    bar.appendChild(b);',
+      '  });',
+      '  document.body.appendChild(bar);',
+      '}',
       'function render(){',
+      '  if(LEAF){',
+      '    var n=Math.max(1,D.book.length); if(i<0)i=0; if(i>=n)i=n-1;',
+      '    drawLeaflet(i);',
+      '    rng.max=String(n-1); rng.value=String(i);',
+      '    lbl.textContent=(i+1)+" / "+n+" 면";',
+      '    markRail(); return;',
+      '  }',
       '  var Ls=views(); if(i<0)i=0; if(i>=Ls.length)i=Ls.length-1;',
       '  drawSpread(Ls[i]||[]);',
       '  rng.max=String(Math.max(0,Ls.length-1)); rng.value=String(i);',
@@ -8263,6 +8576,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'if(jump) jump.max=String(imgs().length);',
       'updateMode();',
       'buildRail();',
+      'leafBar();',
       'render();',
       'armImmersive();',
       '})();',
@@ -8283,18 +8597,29 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     function buildEbookProofHtml(data) {
       const esc = s => String(s == null ? '' : s)
         .replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-      const book = data.book || [];
       const sheets = data.sheets || [];
       const meta = data.meta || {};
       const opts = data.opts || {};
+      // 하드커버는 표지 안쪽에 면지를 끼운 뒤 펼침면을 계산해야 짝이 맞는다
+      const book = meta.bindStyle === 'hardcover'
+        ? ebookWithEndpapers(data.book || [])
+        : (data.book || []);
       const payload = {
         book, sheets,
+        // 리플렛은 시트 한 면을 접는 선대로 나눈다 (원고 1쪽 = 시트 한 면)
+        // 폭은 비율(합=1)로 넘긴다 — 뷰어가 화면 폭에 맞춰 쓴다.
+        // 사용자가 mm로 적은 칸 너비(meta.foldW)가 있으면 그 비율을 그대로 따른다.
+        fold: meta.bindStyle === 'leaflet'
+          ? ebookFoldWithDir(ebookFoldPlan(meta.fold, 1, meta.foldW), meta.foldDir)
+          : null,
         spreads: (meta.view === 'single')
           ? ebookSoloSpreads(book.length, meta.bind)
           : ebookSpreads(book.length, opts.coverSingle !== false, meta.bind),
         meta: { mm: meta.mm || null, bind: meta.bind || 'left', target: meta.target === 'mobile' ? 'mobile' : 'web',
                 view: meta.view === 'single' ? 'single' : 'spread',
-                bindStyle: meta.bindStyle === 'twinring' ? 'twinring' : 'book' },
+                bindStyle: ['twinring', 'hardcover', 'leaflet'].indexOf(meta.bindStyle) >= 0
+                           ? meta.bindStyle : 'book',
+                fold: meta.fold || 'roll3' },
         opts: { wm: opts.watermark ? ebookWatermarkUri(opts.wmText) : '', trimPct: +opts.trimPct || 0 },
       };
       const hasSheets = sheets.length > 0;
@@ -8346,7 +8671,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // 위 코어는 순수 함수, 여기부터는 앱 상태·DOM·pdf.js를 쓰는 연결부다.
     // 기본값 = 고화질·좌철·부가 표시 없음(워터마크·인쇄대수·재단선). 필요할 때만 켠다.
     let _ebOpts = { dpi: 200, wm: false, sheets: false, bind: 'left', trim: false, target: 'web',
-                    view: 'spread', bindStyle: 'book' };
+                    view: 'spread', bindStyle: 'book', fold: 'roll3', foldW: null, foldDir: 'right' };
 
     function setEbDpi(v) {
       _ebOpts.dpi = v;
@@ -8366,11 +8691,80 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       document.querySelectorAll('[data-ebview]').forEach(b =>
         b.classList.toggle('active', b.dataset.ebview === v));
     }
-    // 제본 형태 — book: 무선·중철(책등에 골이 진다) / twinring: 트윈링(철사 고리·타공)
+    // 제본 형태 — book: 무선·중철(책등에 골) / twinring: 트윈링(고리·타공)
+    //           / hardcover: 양장(두꺼운 표지판·물림·면지) / leaflet: 접지 리플렛
     function setEbBindStyle(v) {
       _ebOpts.bindStyle = v;
       document.querySelectorAll('[data-ebbstyle]').forEach(b =>
         b.classList.toggle('active', b.dataset.ebbstyle === v));
+      // 리플렛일 때만 접는 방식 고르기를 보여 준다
+      const row = document.getElementById('ebFoldRow');
+      if (row) row.style.display = (v === 'leaflet') ? '' : 'none';
+      if (v === 'leaflet') syncEbFoldUI();
+    }
+    // 접는 방식 — roll3: 두루마리(안으로 말아 접기) / zig3: 지그재그(Z) / gate4: 대문접지
+    function setEbFold(v) {
+      _ebOpts.fold = v;
+      _ebOpts.foldW = null;          // 방식이 바뀌면 칸 너비를 기본값으로 다시 채운다
+      _ebOpts.foldDir = (v === 'gate4') ? 'both' : 'right';
+      syncEbFoldUI();
+    }
+    // 접는 방향 — right: 오른쪽 칸들이 왼쪽으로 / left: 그 반대 / both: 양쪽 날개가 안으로
+    function setEbFoldDir(v) {
+      _ebOpts.foldDir = v;
+      document.querySelectorAll('[data-ebfdir]').forEach(b =>
+        b.classList.toggle('active', b.dataset.ebfdir === v));
+    }
+    // 칸 너비 입력 → 옵션에 반영 (빈 칸이 있으면 기본값으로 되돌린다)
+    function ebFoldWidthsChanged() {
+      const n = (_ebOpts.fold === 'gate4') ? 4 : 3;
+      const vals = [];
+      for (let k = 1; k <= n; k++) {
+        const el = document.getElementById('ebW' + k);
+        const v = el ? parseFloat(el.value) : NaN;
+        if (!(v > 0)) { _ebOpts.foldW = null; updateEbFoldNote(); return; }
+        vals.push(v);
+      }
+      _ebOpts.foldW = vals;
+      updateEbFoldNote();
+    }
+    // 지금 원고의 시트 폭(mm) — 첫 페이지 기준. 없으면 null
+    function ebSheetWmm() {
+      const r = (pageResults || []).filter(Boolean)[0];
+      const pt = (typeof pagePtSize === 'function') ? pagePtSize(r) : null;
+      return pt ? pt[0] * 25.4 / 72 : null;
+    }
+    // 칸 수·기본 너비를 화면에 채운다 (방식이 바뀌거나 문서를 열었을 때)
+    function syncEbFoldUI() {
+      const n = (_ebOpts.fold === 'gate4') ? 4 : 3;
+      const w4 = document.getElementById('ebW4');
+      if (w4) w4.style.display = (n === 4) ? '' : 'none';
+      const sheet = ebSheetWmm();
+      if (sheet) {
+        // 기본 배분은 실제 접지 계산과 같은 규칙을 쓴다 — 화면과 결과가 어긋나지 않게
+        const plan = ebookFoldPlan(_ebOpts.fold, sheet, null);
+        for (let k = 1; k <= 4; k++) {
+          const el = document.getElementById('ebW' + k);
+          if (!el) continue;
+          el.value = (k <= n) ? (Math.round(plan.panels[k - 1] * 10) / 10) : '';
+        }
+        _ebOpts.foldW = null;   // 기본값 상태 — 사용자가 고치면 그때부터 사용자 값
+      }
+      document.querySelectorAll('[data-ebfdir]').forEach(b =>
+        b.classList.toggle('active', b.dataset.ebfdir === (_ebOpts.foldDir || 'right')));
+      updateEbFoldNote();
+    }
+    function updateEbFoldNote() {
+      const el = document.getElementById('ebFoldNote');
+      if (!el) return;
+      const sheet = ebSheetWmm();
+      if (!sheet) { el.textContent = '문서를 열면 시트 폭에 맞춰 자동으로 채웁니다.'; return; }
+      const n = (_ebOpts.fold === 'gate4') ? 4 : 3;
+      const vals = _ebOpts.foldW;
+      const sum = vals ? vals.reduce((a, b) => a + b, 0) : sheet;
+      el.textContent = `시트 폭 ${Math.round(sheet * 10) / 10}mm · ${n}칸`
+        + (vals ? ` · 입력 합 ${Math.round(sum * 10) / 10}mm`
+                  + (Math.abs(sum - sheet) > 0.5 ? ' (비율로 맞춰집니다)' : '') : ' · 기본 배분');
     }
     function setEbBind(v) {
       _ebOpts.bind = v;
@@ -8467,7 +8861,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           title: base + ' 출력 시안',
           meta: {
             mm: book.mm, bind: _ebOpts.bind, spec: specBits.join(' · '), target: _ebOpts.target,
-            view: _ebOpts.view, bindStyle: _ebOpts.bindStyle,
+            view: _ebOpts.view, bindStyle: _ebOpts.bindStyle, fold: _ebOpts.fold,
+            foldW: _ebOpts.foldW, foldDir: _ebOpts.foldDir,
             date: new Date().toLocaleDateString('ko-KR'), by: '일청기획',
           },
           book: book.pages,
