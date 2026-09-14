@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 const TOOL = path.join(ROOT, 'dist', 'E북시안도구.html');
 
@@ -12,7 +13,7 @@ const ck = (n, c, x) => { if (c) { pass++; console.log('  ✔', n); } else { fai
 app.whenReady().then(async () => {
   ck('도구 파일이 있다', fs.existsSync(TOOL));
   if (!fs.existsSync(TOOL)) { console.log('\n결과: ' + pass + ' 통과 / ' + (++fail) + ' 실패'); app.exit(1); return; }
-  const win = new BrowserWindow({ show: true, width: 1000, height: 800 });
+  const win = new BrowserWindow({ show: true, width: 1000, height: 800, ...leftWin(1000, 800) });
   const errs = [];
   // Electron 개발 경고(CSP)는 제품 문제와 무관하므로 제외한다
   win.webContents.on('console-message', (e, l, m) => {
@@ -29,7 +30,8 @@ app.whenReady().then(async () => {
       cmaps: typeof CMAPS === 'object' ? Object.keys(CMAPS).length : -1,
       korean: typeof CMAPS === 'object' ? ['UniKS-UTF16-H','Adobe-Korea1-UCS2'].filter(n => !CMAPS[n]) : ['?'],
       pdfjs: typeof pdfjsLib === 'object',
-      builders: ['ebookRenderPages','buildEbookProofHtml','ebookSpreads','ebookSoloSpreads']
+      builders: ['ebookRenderPages','buildEbookProofHtml','ebookSpreads','ebookSoloSpreads',
+                 'renderPageNoSeams','seamTrackImageRects','seamLines','seamRepairPixels','seamRepairCanvas']
         .filter(n => typeof window[n] !== 'function'),
     }))()`);
     console.log('\n[1] 화면·옵션');

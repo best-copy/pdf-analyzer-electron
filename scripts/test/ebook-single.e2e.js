@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 // 코어를 실제 앱 파일에서 그대로 떼어 쓴다 (복사본을 만들면 드리프트)
@@ -75,7 +76,7 @@ app.whenReady().then(async () => {
   };
   const fSingle = mk('single'), fSpread = mk('spread');
 
-  const win = new BrowserWindow({ show: true, width: 1400, height: 900 });
+  const win = new BrowserWindow({ show: true, width: 1400, height: 900, ...leftWin(1400, 900) });
   // 이전 실행이 남긴 '책 느낌 끔' 등이 결과를 바꾸지 않도록 저장소를 비운다
   try { await win.webContents.session.clearStorageData({ storages: ['localstorage'] }); } catch (e) {}
 

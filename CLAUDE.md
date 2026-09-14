@@ -30,6 +30,7 @@ src/app-core.js    분석(멀티 pdf.js 문서 병렬)·탭·흑백 파이프라
 src/app-process.js 변환기(convertPageToGrayscaleVector)·다운로드 최적화·병합·견적·임포징 4종
 src/app-ui.js      좌측 사이드바·우측 편집 사이드바·미리보기(renderProcessedPreview)·부트스트랩
 src/editor.html    페이지 내부 콘텐츠 편집기 (별도 BrowserWindow, 임시파일로 PDF 수수)
+src/seam-repair.js 사진 띠 이음매 흰 줄 보정 — pdf.js 렌더 공용(renderPageNoSeams). index·editor·E-book 독립 도구가 같은 파일
 src/worker-gray.js 흑백변환 워커 — 콘텐츠 스트림 연산자 치환·이미지 그레이화 (CMYK JPEG 정밀 디코드)
 src/worker-assemble.js 병합·조립 워커
 src/libs/          vendored: pdf.js, pdf-lib, fontkit, pako, jpeg-decoder.js(jpeg-js 0.4.4)
@@ -83,6 +84,7 @@ scripts/smoke.js   npm run smoke
 6. **HWP 변환**: convert_hwp.ps1은 UTF-8 BOM 필수, 한글은 단일 인스턴스라 큐 직렬화. 가로형(WIDELY) 문서 용지 폴백 이슈는 미해결(사후보정 금지 — 실패했던 접근).
 7. **PGM/PPM 파싱 시 `#` 주석 줄 스킵** — 안 하면 전체 오판정.
 8. **Grep 도구가 한글+특수문자를 깨져 보이게 렌더링할 수 있음** — 파일 손상으로 오판하지 말고 `cat -A`나 Read로 재확인 후 수정할 것.
+10. **pdf.js로 쪽을 그림으로 굽는 곳은 `renderPageNoSeams`를 쓸 것** — 한글·오피스 변환 PDF는 사진을 가로 띠로 잘라 넣어, pdf.js 렌더에 띠 경계마다 1px 흰 줄이 구워진다. 그림 위치는 렌더 중 drawImage 가로채기로 얻는다(`getOperatorList`를 따로 부르면 페이지를 두 번 해석해 렌더 +93%).
 9. **탭 전환 시 캐시 오염**: 백그라운드 프리웜은 시작 시점 탭 id를 기억하고, 끝났을 때 탭이 바뀌었으면 `clearProcessCaches()`로 전부 폐기한다. 새 백그라운드 작업도 같은 패턴을 따를 것.
 
 ## 6. UI 규약
@@ -105,6 +107,7 @@ scripts/smoke.js   npm run smoke
 4. **계조·색 문제는 정답 기준 캘리브레이션**: 추측으로 공식을 고르지 말고, (a) 문제 이미지를 담은 최소 PDF를 수제작 → (b) gs pgmraw 1:1 렌더 = 정답 → (c) 후보 공식들을 픽셀 대조해 평균 오차로 확정한다. (CMYK JPEG 수정이 이 방법으로 해결됨)
 5. **워커 검증**: 오프스크린 Electron 스크립트로 실제 워커를 구동해 입출력을 확인한다 (worker는 DOM 없는 노드에서 못 돌림).
 6. **회귀**: 3comp JPEG 등 기존 경로가 깨지지 않았는지 함께 확인.
+7. **검사 창은 가장 왼쪽 모니터**: 주 모니터는 사용자 작업 공간이다. 창을 띄우는 하네스는 `{ show:true, width, height, ...leftWin(width, height) }`(scripts/test/_leftwin.js — 크기 **뒤에** 둬야 좁은 화면에 맞춰 줄인다), 앱 본체를 띄울 때는 환경변수 `TEST_WINDOW=left`(모든 프로젝트 공통 이름 · 옛 이름 `PDFEDIT_TEST_WINDOW`도 받는다 · smoke가 넘긴다). 애니메이션을 재지 않으면 `show:false`(숨긴 창은 rAF가 1fps로 조여진다).
 
 ## 8. 작업 완료 체크리스트
 

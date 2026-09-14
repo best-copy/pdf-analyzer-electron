@@ -1448,6 +1448,10 @@
     const ANALYSIS_CACHE_V = 1;
     const THUMB_CACHE_W = 300;          // 저장용 썸네일 폭(px)
     const THUMB_CACHE_Q = 0.72;
+    // 썸네일을 **그리는 방식**의 버전 — 판정 규칙이 아니라서 ANALYSIS_CACHE_V는 그대로 둔다
+    // (올리면 컬러/흑백 판정까지 전부 다시 분석한다). 다르면 판정은 캐시를 쓰고 썸네일만 다시 굽는다.
+    // 2: 사진 띠 이음매 흰 줄 보정(renderPageNoSeams) — 옛 .pdfw의 썸네일에는 흰 줄이 구워져 있다.
+    const THUMB_RENDER_V = 2;
 
     // 현재 탭의 분석 결과 → { meta, blob(썸네일 JPEG 이어붙임) }
     async function captureAnalysisCache(tabState) {
@@ -1475,7 +1479,7 @@
       const blob = new Uint8Array(total);
       let p = 0; parts.forEach(b => { blob.set(b, p); p += b.length; });
       return {
-        meta: { v: ANALYSIS_CACHE_V, pdfLen: tabState.originalPdfBytes.byteLength,
+        meta: { v: ANALYSIS_CACHE_V, tv: THUMB_RENDER_V, pdfLen: tabState.originalPdfBytes.byteLength,
                 thumbW: THUMB_CACHE_W, defaultPageSize: tabState.defaultPageSize || null, pages },
         blob,
       };
@@ -1516,6 +1520,8 @@
     function pageResultsFromCache(meta, blob, numPages) {
       const total = numPages || meta.pages.length;
       const arr = new Array(total).fill(null);
+      // 옛 방식으로 구운 썸네일은 폭을 0으로 둬 '흐림(thumbLow)'으로 취급 → 화면에 보일 때 다시 굽는다
+      const staleThumb = meta.tv !== THUMB_RENDER_V;
       let off = 0;
       meta.pages.forEach(p => {
         let thumb = null;
@@ -1526,7 +1532,7 @@
         off += p.tlen || 0;
         if (p.oi < total) {
           arr[p.oi] = { pageNum: p.oi + 1, originalIdx: p.oi, isColor: !!p.isColor, thumbnail: thumb,
-                        thumbW: p.w, thumbH: p.h, pageWpt: p.pw, pageHpt: p.ph, thumbLow: !!thumb };
+                        thumbW: staleThumb ? 0 : p.w, thumbH: p.h, pageWpt: p.pw, pageHpt: p.ph, thumbLow: !!thumb };
         }
       });
       return arr;
@@ -1912,7 +1918,9 @@
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         canvas.width  = Math.ceil(vp.width);
         canvas.height = Math.ceil(vp.height);
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        // 사진 띠 흰 줄 보정 (renderPageNoSeams는 app-process.js — 이 함수가 불릴 때는 이미 로드돼 있다)
+        if (typeof renderPageNoSeams === 'function') await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });
+        else await page.render({ canvasContext: ctx, viewport: vp }).promise;
 
         // 색상 분석
         const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;

@@ -418,7 +418,8 @@ let licWin = null;
 function openLicenseWindow(focusAdmin) {
   if (licWin && !licWin.isDestroyed()) { licWin.focus(); return licWin; }
   licWin = new BrowserWindow({
-    width: 720, height: 640, title: 'PDF Editor — 체험판 인증',
+    // 검사 모드(TEST_WINDOW=left)면 가장 왼쪽 모니터·그 화면 크기 안으로 (크기 뒤에 둬야 줄인 값이 산다)
+    width: 720, height: 640, ...testWindowPos(720, 640), title: 'PDF Editor — 체험판 인증',
     icon: path.join(__dirname, 'src', 'icon.ico'),
     parent: mainWin && !mainWin.isDestroyed() ? mainWin : undefined,
     autoHideMenuBar: true,
@@ -514,10 +515,29 @@ ipcMain.handle('lic:admin:tunnelInstall', async () => {
 // 메인 화면에서 인증 창 열기 (배지 클릭 / Ctrl+Shift+Alt+L)
 ipcMain.handle('lic:open', () => { openLicenseWindow(); return true; });
 
+// 검사(npm run smoke 등)로 띄울 때는 TEST_WINDOW=left — 창을 가장 왼쪽 모니터에 둔다.
+// 주 모니터는 사용자의 실제 작업 공간이라, 검사 창이 그 위에 뜨면 작업을 가리고 포커스를 빼앗는다.
+// 창이 그 화면보다 크면 주 모니터로 넘치므로(왼쪽 모니터가 1280px인 PC) 크기도 작업 영역 안으로 줄인다.
+// ⚠ 옵션에서 width/height **뒤에** 펼쳐 넣을 것 — 앞에 두면 뒤의 크기가 줄인 값을 덮어쓴다.
+function testWindowPos(w, h) {
+  // 공용 이름 TEST_WINDOW(모든 프로젝트 공통) · 옛 이름 PDFEDIT_TEST_WINDOW 둘 다 받는다
+  if (process.env.TEST_WINDOW !== 'left' && process.env.PDFEDIT_TEST_WINDOW !== 'left') return {};
+  try {
+    const all = require('electron').screen.getAllDisplays();
+    const L = all.reduce((m, d) => (d.bounds.x < m.bounds.x ? d : m), all[0]);
+    const A = L.workArea || L.bounds;   // 작업 표시줄을 뺀 영역
+    const out = { x: A.x + 20, y: A.y + 20 };
+    if (w) out.width = Math.min(w, A.width - 40);
+    if (h) out.height = Math.min(h, A.height - 40);
+    return out;
+  } catch (e) { return {}; }
+}
+
 function createWindow() {
   const win = mainWin = new BrowserWindow({
     width:  1280,
     height: 900,
+    ...testWindowPos(1280, 900),   // 검사 모드(TEST_WINDOW=left)면 가장 왼쪽 모니터·그 화면 크기 안으로
     minWidth:  900,
     minHeight: 600,
     title: 'PDF Editor',
@@ -533,6 +553,10 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   // win.webContents.openDevTools(); // 디버그 시 주석 해제
+  // 검사 모드에서는 렌더러가 여는 창(견적서 인쇄 window.open 등)도 왼쪽 모니터에 — 평소에는 핸들러를 달지 않는다
+  if (process.env.TEST_WINDOW === 'left' || process.env.PDFEDIT_TEST_WINDOW === 'left') {
+    win.webContents.setWindowOpenHandler(() => ({ action: 'allow', overrideBrowserWindowOptions: testWindowPos(900, 900) }));
+  }
 
   // 실행 인자로 받은 문서를 렌더러 준비 후 전달 (목차 검증기 연동)
   // Ctrl+R / Ctrl+Shift+R — 기본 메뉴의 새로고침을 가로채 렌더러의 확인 절차를 태운다.
@@ -647,7 +671,8 @@ const pendingEditorPayload = new Map();
 function createEditorWindow(openerId, payload) {
   const parent = BrowserWindow.getAllWindows().find(w => w.webContents.id === openerId);
   const win = new BrowserWindow({
-    width: 1400, height: 950,
+    // 검사 모드(TEST_WINDOW=left)면 가장 왼쪽 모니터·그 화면 크기 안으로 (크기 뒤에 둬야 줄인 값이 산다)
+    width: 1400, height: 950, ...testWindowPos(1400, 950),
     minWidth: 1000, minHeight: 640,
     title: '내부 편집기 — PDF 분석기',
     icon: path.join(__dirname, 'src', 'icon.ico'),

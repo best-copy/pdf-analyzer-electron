@@ -2862,7 +2862,7 @@
             const vp = page.getViewport({ scale: pxW / vp1.width });
             const off = document.createElement('canvas');
             off.width = Math.ceil(vp.width); off.height = Math.ceil(vp.height);
-            await page.render({ canvasContext: off.getContext('2d', { willReadFrequently: true }), viewport: vp }).promise;
+            await renderPageNoSeams(page, { canvasContext: off.getContext('2d', { willReadFrequently: true }), viewport: vp });   // 사진 띠 흰 줄 보정
             if (cancelled || myToken !== previewRenderToken) break;
             const isColor = canvasIsColor(off);
             // 자리 잡아둔 캔버스에 실제 그림을 옮겨 담는다(요소 교체 없이 → 스크롤 위치 유지)
@@ -3266,7 +3266,7 @@
         cv.style.width = Math.round(vp1.width * cssScale) + 'px';
         cv.style.height = Math.round(vp1.height * cssScale) + 'px';
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });   // 사진 띠 흰 줄 보정
         try { page.cleanup(); } catch (e) {}
         if (my !== _pvvToken) return;
         _pvvBase = ctx.getImageData(0, 0, cv.width, cv.height);

@@ -3,6 +3,7 @@
 // 확인 항목: 번호 서식 · 시작 위치/시작 번호 · 제외 페이지 · 내각/외각 홀짝 대칭 · 상단/하단
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0;
@@ -10,7 +11,7 @@ const ck = (n, c, x) => { if (c) { pass++; console.log('  ✔', n); } else { fai
 
 app.whenReady().then(async () => {
   setTimeout(() => { console.log('\n✘ 시간 초과(5분)'); app.exit(1); }, 300000).unref();
-  const win = new BrowserWindow({ show: true, width: 1440, height: 900,
+  const win = new BrowserWindow({ show: true, width: 1440, height: 900, ...leftWin(1440, 900),
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });
   win.webContents.on('console-message', (_e, lvl, msg) => { if (lvl >= 2) console.log('    [renderer]', msg); });
   try {

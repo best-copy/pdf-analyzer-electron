@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 const MODE = process.argv.includes('single') ? 'single' : 'spread';
 
@@ -35,7 +36,7 @@ app.whenReady().then(async () => {
   const f = path.join(os.tmpdir(), `pdfedit_flick_${Date.now()}.html`);
   fs.writeFileSync(f, html, 'utf8');
 
-  const win = new BrowserWindow({ show: true, width: 1200, height: 860 });
+  const win = new BrowserWindow({ show: true, width: 1200, height: 860, ...leftWin(1200, 860) });
   try { await win.webContents.session.clearStorageData({ storages: ['localstorage'] }); } catch (e) {}
   await win.loadFile(f);
   await new Promise(r => setTimeout(r, 1200));
@@ -49,6 +50,7 @@ app.whenReady().then(async () => {
       const imgs = [...document.querySelectorAll('.spread .pg img')];
       const leaf = document.querySelector('.leaf');
       const gu = document.querySelector('.spread .pg .gut');
+      const gt = document.querySelector('.spread .gtop');   // 넘기는 동안 낱장 위를 덮는 제본선 그늘
       const fg = leaf ? leaf.querySelector('.stgu') : null;
       const bg = leaf ? leaf.querySelectorAll('.stgu')[1] : null;
       log.push({
@@ -58,6 +60,13 @@ app.whenReady().then(async () => {
         // 아직 디코드가 안 끝난 그림 — 이 프레임에 흰 자리가 보인다는 뜻
         undecoded: imgs.filter(im => !im.complete || !im.naturalWidth).length,
         gut: gu ? +(getComputedStyle(gu).opacity) : null,
+        // 그 프레임에 **실제로 보이는** 제본선 그늘 — 덮개(.gtop)가 있으면 그것, 없으면 펼침면의 골.
+        // 낱장이 살아 있는데 덮개가 없으면 낱장(z:9)이 골(z:auto)을 가려 책등이 허옇게 뜬다.
+        spine: gt ? +(getComputedStyle(gt).opacity) : ((gu && getComputedStyle(gu).display !== 'none') ? +(getComputedStyle(gu).opacity) : 0),
+        covered: !!(leaf && !gt && gu && getComputedStyle(gu).display !== 'none'),
+        // 착지해 녹는 낱장은 조각(.st)이 아니라 **평평한 한 장**이어야 한다 —
+        // 조각인 채로 녹이면 이음매가 아래 페이지와 어긋나 자잘하게 떨려 보인다.
+        landStrips: !!(leaf && leaf.classList.contains('land') && leaf.querySelector('.st')),
         leafGutF: fg ? +fg.style.opacity : null,
         leafGutB: bg ? +bg.style.opacity : null,
       });
@@ -77,11 +86,16 @@ app.whenReady().then(async () => {
   const bad = rows.filter(r => r.undecoded > 0);
   console.log(`  그림이 아직 안 그려진 프레임: ${bad.length}장` + (bad.length ? `  (t=${bad.map(b => b.t - rows[0].t).join(',')})` : ''));
   // 착지 전후 책등 그늘 농도 흐름
-  const gline = rows.map(r => (r.leafGutF != null ? r.leafGutF : (r.gut != null ? r.gut : 0)));
+  const strp = rows.filter(r => r.landStrips).length;
+  console.log(`  조각인 채로 녹은 프레임: ${strp}장` + (strp ? '  ⚠ 이음매가 어긋나 페이지가 떨린다' : '  ✔ 평평한 한 장으로 녹음'));
+  const cov = rows.filter(r => r.covered).length;
+  console.log(`  낱장이 제본선 골을 덮은 프레임: ${cov}장` + (cov ? '  ⚠ 착지 순간 책등이 밝아진다(깜박임)' : '  ✔ 없음'));
+  const gline = rows.map(r => (r.spine != null ? r.spine : 0));
   let jump = 0, jat = -1;
   for (let k = 1; k < gline.length; k++) { const d = Math.abs(gline[k] - gline[k - 1]); if (d > jump) { jump = d; jat = k; } }
   console.log(`  책등 그늘 프레임 간 최대 변화: ${jump.toFixed(3)} (프레임 ${jat}/${gline.length})`);
   console.log('  그늘 흐름:', gline.filter((_, k) => k % 3 === 0).map(v => v.toFixed(2)).join(' '));
   try { fs.unlinkSync(f); } catch (e) {}
-  app.exit(0);
+  // 착지 회귀(조각인 채 녹음·골 덮임)는 실패로 끝낸다 — 로그만 찍으면 다시 생겨도 모른다
+  app.exit(strp || cov ? 1 : 0);
 });

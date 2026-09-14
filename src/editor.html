@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <title>내부 편집기 — PDF 분석기</title>
   <script src="./libs/pdf.min.js"></script>
+  <script src="./seam-repair.js"></script><!-- 사진 띠 이음매 흰 줄 보정 (앱과 같은 파일) -->
   <script src="./libs/pdf-lib.min.js"></script>
   <script src="./libs/fontkit.umd.min.js"></script>
   <style>
@@ -344,7 +345,7 @@ async function buildPageThumbs() {
       const pg = await pdfjsDoc.getPage(p.originalIdx + 1);
       const vp = pg.getViewport({ scale: 0.18, rotation: 0 });
       c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
-      await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      await renderPageNoSeams(pg, { canvasContext: c.getContext('2d'), viewport: vp });   // 사진 띠 흰 줄 보정
     } catch(e){}
   }
   refreshThumbState();
@@ -379,7 +380,7 @@ async function renderPage() {
   canvas.width = Math.ceil(vpR.width); canvas.height = Math.ceil(vpR.height);
   canvas.style.width = Math.ceil(vp.width) + 'px'; canvas.style.height = Math.ceil(vp.height) + 'px';
   stage.style.width = Math.ceil(vp.width) + 'px'; stage.style.height = Math.ceil(vp.height) + 'px';
-  await curPage.render({ canvasContext: canvas.getContext('2d'), viewport: vpR }).promise;
+  await renderPageNoSeams(curPage, { canvasContext: canvas.getContext('2d'), viewport: vpR });   // 사진 띠 흰 줄 보정(배경색 추출도 이 그림을 쓴다)
   bgCanvasCtx = canvas.getContext('2d', { willReadFrequently: true });
   // 텍스트 아이템 bbox (기존 텍스트 편집용) — view-units
   curTextItems = [];
@@ -1932,7 +1933,7 @@ async function getMosaicRaster(){
   if (_mosaicRaster) return _mosaicRaster;
   const R=2; const vpR=_mosaicPjs.getViewport({ scale:R, rotation:0 });
   const cv=document.createElement('canvas'); cv.width=Math.ceil(vpR.width); cv.height=Math.ceil(vpR.height);
-  await _mosaicPjs.render({ canvasContext:cv.getContext('2d'), viewport:vpR }).promise;
+  await renderPageNoSeams(_mosaicPjs, { canvasContext:cv.getContext('2d'), viewport:vpR });   // 사진 띠 흰 줄 보정
   _mosaicRaster={ cv, R }; return _mosaicRaster;
 }
 

@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0;
@@ -37,7 +38,7 @@ function makePdf() {
 app.whenReady().then(async () => {
   const f = path.join(os.tmpdir(), `pdfedit_cmap_${Date.now()}.pdf`);
   fs.writeFileSync(f, makePdf());
-  const win = new BrowserWindow({ show: true, width: 800, height: 600,
+  const win = new BrowserWindow({ show: true, width: 800, height: 600, ...leftWin(800, 600),
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });
   await win.loadFile(path.join(ROOT, 'src/index.html'));
   await new Promise(r => setTimeout(r, 1500));

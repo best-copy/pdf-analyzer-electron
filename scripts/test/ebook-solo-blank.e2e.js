@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 function loadCore() {
@@ -31,7 +32,7 @@ app.whenReady().then(async () => {
     const f = path.join(os.tmpdir(), `pdfedit_blank_${view}_${Date.now()}.html`);
     fs.writeFileSync(f, html, 'utf8'); return f;
   };
-  const win = new BrowserWindow({ show: true, width: 1200, height: 860 });
+  const win = new BrowserWindow({ show: true, width: 1200, height: 860, ...leftWin(1200, 860) });
   try { await win.webContents.session.clearStorageData({ storages: ['localstorage'] }); } catch (e) {}
 
   const probe = async (f, advance) => {

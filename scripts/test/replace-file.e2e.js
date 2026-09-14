@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0;
@@ -30,7 +31,7 @@ app.whenReady().then(async () => {
   // 파일 선택 대역 — 교체할 원고(B)를 돌려준다
   ipcMain.handle('dialog:openFile', () => [{ name: path.basename(b), path: b }]);
 
-  const win = new BrowserWindow({ show: true, width: 1440, height: 900,
+  const win = new BrowserWindow({ show: true, width: 1440, height: 900, ...leftWin(1440, 900),
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });
   win.webContents.on('console-message', (_e, lvl, msg) => { if (lvl >= 2) console.log('    [renderer]', msg); });
   try {

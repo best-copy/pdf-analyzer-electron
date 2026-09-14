@@ -23,7 +23,8 @@ function exFn(name) {
 
 const core = slice('// <EBOOK-CORE>', '// </EBOOK-CORE>').replace(/^\s{4}/gm, '');
 // 렌더는 앱과 완전히 같은 함수를 쓴다(화질·여백 처리가 갈라지지 않게)
-const render = 'let _yieldAt = 0;\n' + exFn('uiYield') + '\n' + exFn('ebookRenderPages');
+// 사진 띠 이음매 보정(src/seam-repair.js)은 렌더가 부르므로 파일째 넣는다 — 앱·편집기와 같은 파일
+const render = 'let _yieldAt = 0;\n' + exFn('uiYield') + '\n' + fs.readFileSync(path.join(ROOT, 'src/seam-repair.js'), 'utf8') + '\n' + exFn('ebookRenderPages');
 
 // 사전 정의 CMap(한국어 CID 인코딩) — 안 넣으면 pdf.js가 그 폰트를 통째로 못 읽어
 // 아크로뱃이 넣은 머리글·바닥글 같은 글자가 시안에서 사라진다.

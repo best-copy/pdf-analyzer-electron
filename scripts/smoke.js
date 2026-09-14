@@ -10,7 +10,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const JS_FILES = [
   'main.js', 'preload.js',
-  'src/app-core.js', 'src/app-process.js', 'src/app-ui.js',
+  'src/app-core.js', 'src/app-process.js', 'src/app-ui.js', 'src/seam-repair.js',
   'src/worker-gray.js', 'src/worker-assemble.js',
 ];
 
@@ -59,7 +59,19 @@ for (const f of HTML_FILES) {
 }
 
 
-if (failed) { console.error('\n구문 검사 실패'); process.exit(1); }
+// ── 1-c) 창 없이 도는 단위 테스트 (Electron을 띄우지 않는다) ─────────────────
+for (const t of ['scripts/test/seam-repair.test.js', 'scripts/test/inline-image.test.js']) {
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, t)], { stdio: 'pipe' });
+    console.log(`  ✔ test    ${t}`);
+  } catch (e) {
+    const bad = (e.stdout || '').toString().split(/\r?\n/).filter(l => /✘/.test(l)).join('\n');
+    console.error(`  ✘ test    ${t}\n${bad || e.stderr}`);
+    failed = true;
+  }
+}
+
+if (failed) { console.error('\n구문 검사·단위 테스트 실패'); process.exit(1); }
 
 // ── 2) 부팅 검사 ─────────────────────────────────────────────────────────────
 const electron = require('electron'); // plain node에서는 실행 파일 경로 문자열
@@ -70,7 +82,8 @@ const NOISE = /network service|gpu process|dxgi|d3d11|disk_cache|gpu_channel|Cre
 const ERROR_RE = /Uncaught|ReferenceError|TypeError|SyntaxError|is not defined|is not a function/;
 
 console.log(`\n  ⏳ 앱 부팅 검사 (${BOOT_MS / 1000}초)…`);
-const child = spawn(electron, ['.', '--enable-logging'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+// TEST_WINDOW=left(옛 이름 PDFEDIT_TEST_WINDOW도 함께 넘긴다) — 검사로 띄우는 앱 창은 가장 왼쪽 모니터에 (주 모니터는 사용자 작업 공간)
+const child = spawn(electron, ['.', '--enable-logging'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: Object.assign({}, process.env, { TEST_WINDOW: 'left', PDFEDIT_TEST_WINDOW: 'left' }) });
 let logs = '';
 child.stdout.on('data', d => { logs += d; });
 child.stderr.on('data', d => { logs += d; });

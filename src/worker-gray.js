@@ -122,105 +122,126 @@ function buildDotGainLUT(gain) {
   return lut;
 }
 
-// ── 인라인 이미지(BI/EI) 바이트 레벨 전처리 ────────────────────────────────────
-// grayifyStream 이전에 실행 — RGB/CMYK 인라인 이미지를 DeviceGray로 변환
-// 바이트 배열 직접 처리로 string regex 오염 문제 완전 회피
+// ── 인라인 이미지(BI … ID … EI) ─────────────────────────────────────────────
+// PDF 규격의 구분자는 **아무 공백**(LF·CR·CRLF·스페이스·탭)이다. 예전에는 \nBI\n·\nID\n만 찾아서,
+// CR 줄바꿈으로 만든 PDF(실측: 양졸당파 세계도 — 콘텐츠 스트림 전체가 \r)에서
+//  ① 인라인 RGB 그림이 흑백으로 바뀌지 않았고(프린터 컬러 과금),
+//  ② 문자열 단계가 'BI'를 인식한 뒤 \nID\n을 못 찾으면 'B' 한 글자를 버려 BI → I 로 깨졌다
+//     → 그림의 바이너리 데이터가 페이지 명령으로 읽혀 Acrobat "이 페이지에 오류가 있습니다".
+// 원칙: 경계를 **확신할 때만** 바꾸고, 조금이라도 애매하면 원본 바이트를 그대로 둔다.
+const _isWS = b => b === 0x20 || b === 0x0A || b === 0x0D || b === 0x09 || b === 0x0C || b === 0x00;
+
+// j 위치가 인라인 이미지 시작 토큰 BI인가 — 앞뒤가 공백이고, 이어지는 첫 글자가 '/'(사전 키)여야 한다.
+// 괄호 문자열 속 여부는 모른다(바이트 단계는 문자열을 해석하지 않는다) — 그래서 변환하지 않는 그림은
+// 원본 바이트를 그대로 복사해, 우연히 걸린 글자 문자열도 바뀌지 않게 한다.
+function isInlineBIAt(raw, j) {
+  if (raw[j] !== 0x42 || raw[j + 1] !== 0x49 || !_isWS(raw[j + 2]) || (j > 0 && !_isWS(raw[j - 1]))) return false;
+  let k = j + 3;
+  while (k < raw.length && _isWS(raw[k])) k++;
+  return raw[k] === 0x2F;
+}
+// from부터 가장 가까운 BI 위치, 없으면 -1
+function findInlineBI(raw, from) {
+  for (let j = from; j <= raw.length - 3; j++) if (isInlineBIAt(raw, j)) return j;
+  return -1;
+}
+
+// bi(= 'B' 위치)에서 시작하는 인라인 이미지 한 개의 경계와 속성 — 순수 함수 (scripts/test/inline-image.test.js).
+// 성공: { ok:true, dict, dataStart, dataEnd, end(= 'EI' 다음), w, h, bpc, channels, isRGB, isCMYK,
+//         hasFilter, hasDecode, imageMask, exact(길이로 확정), ambiguous(두 해석이 모두 성립) }
+// 실패: { ok:false, next } — next 이전의 다른 BI 후보도 **같은 이유로 반드시 실패**하므로 부르는 쪽은
+//       next부터 다시 찾는다(조작된 스트림에서 후보마다 끝까지 훑는 제곱 시간을 막는다). 바이트는 버리지 않는다.
+function scanInlineImage(raw, bi) {
+  const n = raw.length;
+  let id = -1;
+  for (let j = bi + 3; j <= n - 3; j++) {
+    if (!_isWS(raw[j - 1]) || !_isWS(raw[j + 2])) continue;
+    if (raw[j] === 0x49 && raw[j + 1] === 0x44) { id = j; break; }       // ID
+    if (raw[j] === 0x45 && raw[j + 1] === 0x49) return { ok: false, next: j + 2 };   // ID보다 EI가 먼저 = BI가 아니다
+  }
+  if (id < 0) return { ok: false, next: n };                              // 끝까지 ID 없음 — 뒤의 BI도 마찬가지
+  const dict = decodeLatin1(raw.subarray(bi + 3, id - 1));
+  const num = (...keys) => { for (const k of keys) { const m = dict.match(new RegExp('\\/' + k + '\\s+(\\d+)')); if (m) return +m[1]; } return 0; };
+  const cs = (dict.match(/\/(?:CS|ColorSpace)\s*(\/\w+|\[)/) || [])[1] || '';
+  const imageMask = /\/(?:IM|ImageMask)\s+true/.test(dict);
+  const w = num('W', 'Width'), h = num('H', 'Height');
+  const bpc = imageMask ? 1 : (num('BPC', 'BitsPerComponent') || 8);
+  const isRGB = ['/RGB', '/DeviceRGB', '/CalRGB'].includes(cs);
+  const isCMYK = ['/CMYK', '/DeviceCMYK'].includes(cs);
+  const channels = imageMask || ['/G', '/DeviceGray', '/CalGray', '/I', '/Indexed'].includes(cs) ? 1
+    : isRGB ? 3 : isCMYK ? 4 : 0;                                          // 0 = 이름 붙은 색공간 등(크기 모름)
+  const hasFilter = /\/(?:F|Filter)(?=[\s\/\[])/.test(dict);
+  const hasDecode = /\/(?:D|Decode)(?=[\s\[])/.test(dict);
+  const base = { ok: true, dict, w, h, bpc, channels, isRGB, isCMYK, hasFilter, hasDecode, imageMask };
+  const dataStart = id + 3;
+  // 데이터 끝 p 뒤에 (공백) EI (공백|끝|q|Q) 가 오면 'EI' 다음 위치, 아니면 -1
+  const eiAt = p => {
+    let k = p;
+    while (k < n && _isWS(raw[k])) k++;
+    const t = raw[k + 2];
+    return (raw[k] === 0x45 && raw[k + 1] === 0x49 && (k + 2 >= n || _isWS(t) || t === 0x51 || t === 0x71)) ? k + 2 : -1;
+  };
+  // 비압축이고 크기를 알면 길이로 자른다 — 데이터 안에 우연히 " EI "가 있어도 속지 않는다.
+  // ID 뒤가 CRLF인 파일(규격은 공백 1바이트)은 \n까지 건너뛴 해석도 본다. 두 해석이 **모두** 성립하면
+  // (마지막 바이트가 0x00 같은 공백 값일 때) 어느 쪽인지 알 수 없으므로 ambiguous — 변환하지 않는다.
+  if (!hasFilter && w > 0 && h > 0 && channels) {
+    const len = Math.ceil(w * channels * bpc / 8) * h;
+    const cands = [dataStart];
+    if (raw[id + 2] === 0x0D && raw[id + 3] === 0x0A) cands.push(dataStart + 1);
+    const hits = cands.map(ds => ({ ds, end: eiAt(ds + len) })).filter(x => x.end > 0);
+    if (hits.length) return { ...base, dataStart: hits[0].ds, dataEnd: hits[0].ds + len, end: hits[0].end, exact: true, ambiguous: hits.length > 1 };
+  }
+  // 압축됐거나 크기를 모르면 — 공백 + EI + (공백|끝|q|Q)
+  for (let k = dataStart; k <= n - 3; k++) {
+    const t = raw[k + 3];
+    if (_isWS(raw[k]) && raw[k + 1] === 0x45 && raw[k + 2] === 0x49 && (k + 3 >= n || _isWS(t) || t === 0x51 || t === 0x71))
+      return { ...base, dataStart, dataEnd: k, end: k + 3, exact: false, ambiguous: false };
+  }
+  return { ok: false, next: n };                                          // EI가 끝까지 없음 — 뒤의 BI도 마찬가지
+}
+
+// 인라인 이미지를 바이트 단계에서 처리 — grayifyStream 이전에 실행한다.
+//  · 비압축 8비트 RGB/CMYK이고 경계가 길이로 **확정**된 그림만 DeviceGray로 변환
+//    (Decode 배열·ImageMask·경계가 애매한 그림은 성분 수나 위치가 틀어질 수 있어 그대로 둔다)
+//  · 그 밖의 그림은 **원본 바이트를 그대로** 복사한다(구분자도 바꾸지 않는다)
+// 변환한 그림이 하나도 없으면 원래 배열을 그대로 돌려준다.
 function preprocessInlineImages(raw, dotGain) {
   const chunks = [];
-  let pos = 0;
-
-  while (pos < raw.length) {
-    // \nBI\n (0x0A 0x42 0x49 0x0A) 탐색
-    let biPos = -1;
-    for (let j = pos; j <= raw.length - 4; j++) {
-      if (raw[j] === 0x0A && raw[j+1] === 0x42 && raw[j+2] === 0x49 && raw[j+3] === 0x0A) {
-        biPos = j; break;
-      }
-    }
-    if (biPos < 0) { chunks.push(raw.slice(pos)); break; }
-
-    // BI 이전 바이트 그대로 추가 (\n 포함)
-    chunks.push(raw.slice(pos, biPos + 1));
-
-    // \nID\n (0x0A 0x49 0x44 0x0A) 탐색
-    let idPos = -1;
-    for (let j = biPos + 4; j <= raw.length - 4; j++) {
-      if (raw[j] === 0x0A && raw[j+1] === 0x49 && raw[j+2] === 0x44 && raw[j+3] === 0x0A) {
-        idPos = j; break;
-      }
-    }
-    if (idPos < 0) { chunks.push(raw.slice(biPos + 1)); break; }
-
-    // 딕셔너리 파싱 (biPos+4 ~ idPos)
-    const dictStr = decodeLatin1(raw.slice(biPos + 4, idPos));
-    const getNum = (s, ...keys) => { for (const k of keys) { const m = s.match(new RegExp('\\/' + k + '\\s+(\\d+)')); if (m) return +m[1]; } return 0; };
-    const getWord = (s, ...keys) => { for (const k of keys) { const m = s.match(new RegExp('\\/' + k + '\\s+\\/?([A-Za-z]+)')); if (m) return m[1]; } return ''; };
-
-    const w = getNum(dictStr, 'W', 'Width');
-    const h = getNum(dictStr, 'H', 'Height');
-    const bpc = getNum(dictStr, 'BPC', 'BitsPerComponent') || 8;
-    const csWord = getWord(dictStr, 'CS', 'ColorSpace');
-    const fWord  = getWord(dictStr, 'F', 'Filter');
-
-    const isRGB  = ['RGB','DeviceRGB','CalRGB'].includes(csWord);
-    const isCMYK = ['CMYK','DeviceCMYK'].includes(csWord);
-    const hasFilter = fWord !== '' && fWord !== 'None';
-    const channels  = isCMYK ? 4 : isRGB ? 3 : 1;
-    const dataStart = idPos + 4;
-
-    if (!hasFilter && (isRGB || isCMYK) && bpc === 8 && w > 0 && h > 0) {
-      // 비압축 RGB/CMYK → Gray 변환
-      const dataLen = w * h * channels;
-      const pix = raw.slice(dataStart, dataStart + dataLen);
-      const gray = new Uint8Array(w * h);
-      if (channels === 3) {
-        for (let pi = 0; pi < w * h; pi++)
-          gray[pi] = Math.round(0.299*pix[pi*3] + 0.587*pix[pi*3+1] + 0.114*pix[pi*3+2]);
-      } else {
-        for (let pi = 0; pi < w * h; pi++) {
-          const c=pix[pi*4]/255, m2=pix[pi*4+1]/255, y=pix[pi*4+2]/255, k=pix[pi*4+3]/255;
-          gray[pi] = Math.round(255*(0.299*(1-c)*(1-k) + 0.587*(1-m2)*(1-k) + 0.114*(1-y)*(1-k)));
-        }
-      }
-      if (dotGain) { const lut = buildDotGainLUT(dotGain); for (let pi = 0; pi < gray.length; pi++) gray[pi] = lut[gray[pi]]; }
-
-      const newDict = encodeLatin1(dictStr.replace(/\/(CS|ColorSpace)\s+\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G'));
-      chunks.push(encodeLatin1('BI\n'));
-      chunks.push(newDict);
-      chunks.push(encodeLatin1('\nID\n'));
-      chunks.push(gray);
-
-      let nextPos = dataStart + dataLen;
-      if (nextPos + 2 < raw.length && raw[nextPos] === 0x0A && raw[nextPos+1] === 0x45 && raw[nextPos+2] === 0x49) {
-        chunks.push(encodeLatin1('\nEI')); pos = nextPos + 3;
-      } else { chunks.push(encodeLatin1('\nEI')); pos = nextPos; }
-
-    } else if (!hasFilter && w > 0 && h > 0 && bpc === 8) {
-      // 이미 그레이 또는 알 수 없는 CS — 그대로 통과 (바이너리 데이터 경계는 확정)
-      const dataLen = w * h * channels;
-      const nextPos = dataStart + dataLen;
-      chunks.push(raw.slice(biPos + 1, nextPos));
-      if (nextPos + 2 < raw.length && raw[nextPos] === 0x0A && raw[nextPos+1] === 0x45 && raw[nextPos+2] === 0x49) {
-        chunks.push(encodeLatin1('\nEI')); pos = nextPos + 3;
-      } else { chunks.push(encodeLatin1('\nEI')); pos = nextPos; }
-
+  const lut = dotGain ? buildDotGainLUT(dotGain) : null;
+  let pos = 0, j = 0;
+  for (;;) {
+    const bi = findInlineBI(raw, j);
+    if (bi < 0) break;
+    const img = scanInlineImage(raw, bi);
+    if (!img.ok) { j = img.next; continue; }                   // 경계 불명 — 바이트를 버리지 않고 넘어간다
+    j = img.end;
+    const { w, h } = img;
+    const ch = img.isRGB ? 3 : 4;
+    if (!(img.exact && !img.ambiguous && !img.hasFilter && !img.hasDecode && !img.imageMask
+          && (img.isRGB || img.isCMYK) && img.bpc === 8 && w > 0 && h > 0
+          && img.dataEnd - img.dataStart === w * h * ch)) continue;   // 변환 대상 아님 — 원본 그대로(아래 pos 복사)
+    chunks.push(raw.slice(pos, bi));
+    const pix = raw.subarray(img.dataStart, img.dataEnd);
+    const gray = new Uint8Array(w * h);
+    if (img.isRGB) {
+      for (let pi = 0; pi < w * h; pi++)
+        gray[pi] = Math.round(0.299 * pix[pi * 3] + 0.587 * pix[pi * 3 + 1] + 0.114 * pix[pi * 3 + 2]);
     } else {
-      // 필터 있음 또는 크기 불명 — heuristic EI 탐색 후 그대로 통과
-      let eiPos = dataStart;
-      while (eiPos < raw.length - 2) {
-        if (raw[eiPos] === 0x0A && raw[eiPos+1] === 0x45 && raw[eiPos+2] === 0x49) {
-          const after = (eiPos + 3 < raw.length) ? raw[eiPos+3] : 0;
-          if (after <= 0x20 || after === 0x51 || after === 0x71) break;
-        }
-        eiPos++;
+      for (let pi = 0; pi < w * h; pi++) {
+        const c = pix[pi * 4] / 255, m2 = pix[pi * 4 + 1] / 255, y = pix[pi * 4 + 2] / 255, k = pix[pi * 4 + 3] / 255;
+        gray[pi] = Math.round(255 * (0.299 * (1 - c) * (1 - k) + 0.587 * (1 - m2) * (1 - k) + 0.114 * (1 - y) * (1 - k)));
       }
-      chunks.push(raw.slice(biPos + 1, eiPos));
-      chunks.push(encodeLatin1('\nEI'));
-      pos = eiPos + 3;
     }
+    if (lut) for (let pi = 0; pi < gray.length; pi++) gray[pi] = lut[gray[pi]];
+    const newDict = img.dict.replace(/\/(CS|ColorSpace)\s*\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G');
+    chunks.push(encodeLatin1('BI\n' + newDict + '\nID\n'));
+    chunks.push(gray);
+    chunks.push(encodeLatin1('\nEI'));
+    pos = img.end;
   }
-
-  const total = chunks.reduce((s, c) => s + c.length, 0);
+  if (!chunks.length) return raw;
+  chunks.push(raw.slice(pos));
+  const total = chunks.reduce((t, c) => t + c.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
   for (const c of chunks) { out.set(c, off); off += c.length; }
@@ -388,12 +409,8 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
     return seg;
   };
 
-  // BI 딕셔너리에서 숫자/이름 파싱 헬퍼
-  const biGetNum = (d, ...keys) => { for (const k of keys) { const m = d.match(new RegExp('\\/' + k + '\\s+(\\d+)')); if (m) return +m[1]; } return 0; };
-  const biGetCS  = (d) => { const m = d.match(/\/(CS|ColorSpace)\s+\/(\w+)/); return m ? '/' + m[2] : ''; };
-  const biGetF   = (d) => { const m = d.match(/\/(F(?:ilter)?)\s+\/(\w+)/); return m ? '/' + m[2] : ''; };
-
   let result = '', i = 0, segStart = 0;
+  let biSkipUntil = 0;   // 이 위치 전의 BI 후보는 경계를 못 찾는 것이 확정됨(scanInlineImage의 next)
   while (i < s.length) {
     const ch = s[i];
     if (ch === '(') {
@@ -414,72 +431,15 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
         result += s.slice(i, end + 1);
         i = end + 1; segStart = i;
       } else { i++; }
-    } else if (ch === 'B' && s[i+1] === 'I' && (s[i+2] === '\n' || s[i+2] === '\r') &&
-               (i === 0 || s[i-1] === '\n' || s[i-1] === '\r')) {
-      // ── 인라인 이미지 (BI...ID...EI) ──────────────────────────────────────
-      // 바이너리 픽셀 데이터가 regex에 오염되지 않도록 보호 + RGB/CMYK → Gray 변환
+    } else if (ch === 'B' && i >= biSkipUntil && isInlineBIAt(bytes, i)) {
+      // ── 인라인 이미지 (BI … ID … EI) ──────────────────────────────────────
+      // 바이너리 데이터가 색상 치환 정규식에 걸리지 않게 통째로 보호한다.
+      // (RGB/CMYK → 회색 변환은 앞 단계 preprocessInlineImages가 이미 했다)
+      const img = scanInlineImage(bytes, i);
+      if (!img.ok) { biSkipUntil = img.next; i++; continue; }   // 인라인 이미지가 아니다 — segStart를 그대로 둬 글자를 버리지 않는다
       result += applyOps(s.slice(segStart, i));
-
-      const idIdx = s.indexOf('\nID\n', i + 3);
-      if (idIdx < 0) { i++; segStart = i; continue; }  // BI 파싱 불가 → 스킵
-
-      const dictStr = s.slice(i + 3, idIdx);  // 'BI\n' 이후 ~ '\nID\n' 이전
-      const w  = biGetNum(dictStr, 'W', 'Width');
-      const h  = biGetNum(dictStr, 'H', 'Height');
-      const bpc = biGetNum(dictStr, 'BPC', 'BitsPerComponent') || 8;
-      const csName = biGetCS(dictStr);
-      const filterName = biGetF(dictStr);
-
-      const isRGB  = ['/RGB','/DeviceRGB','/CalRGB'].includes(csName);
-      const isCMYK = ['/CMYK','/DeviceCMYK'].includes(csName);
-      const hasFilter = filterName !== '' && filterName !== '/None';
-      const channels  = isCMYK ? 4 : isRGB ? 3 : 1;
-      const dataStart = idIdx + 4;  // '\nID\n' 이후
-
-      if (!hasFilter && (isRGB || isCMYK) && bpc === 8 && w > 0 && h > 0) {
-        // 비압축 RGB/CMYK 인라인 이미지 → 그레이스케일 변환
-        const dataLen = w * h * channels;
-        const grayChars = new Array(w * h);
-        if (channels === 3) {
-          for (let pi = 0; pi < w * h; pi++) {
-            const si = dataStart + pi * 3;
-            const r = s.charCodeAt(si) & 0xff, g2 = s.charCodeAt(si+1) & 0xff, b2 = s.charCodeAt(si+2) & 0xff;
-            grayChars[pi] = String.fromCharCode(Math.round(dgApply(0.299*r/255 + 0.587*g2/255 + 0.114*b2/255) * 255));
-          }
-        } else {
-          for (let pi = 0; pi < w * h; pi++) {
-            const si = dataStart + pi * 4;
-            const c=s.charCodeAt(si)&0xff, m2=s.charCodeAt(si+1)&0xff, y2=s.charCodeAt(si+2)&0xff, k2=s.charCodeAt(si+3)&0xff;
-            const R=(255-c)*(255-k2)/65025, G=(255-m2)*(255-k2)/65025, B2=(255-y2)*(255-k2)/65025;
-            grayChars[pi] = String.fromCharCode(Math.round(dgApply(0.299*R + 0.587*G + 0.114*B2) * 255));
-          }
-        }
-        const newDict = dictStr.replace(/\/(CS|ColorSpace)\s+\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G');
-        result += 'BI\n' + newDict + '\nID\n' + grayChars.join('');
-        i = dataStart + dataLen;
-        // EI 종결자 처리 ('\nEI' 또는 그냥 'EI')
-        if (s[i] === '\n' && s[i+1] === 'E' && s[i+2] === 'I') { result += '\nEI'; i += 3; }
-        else { result += '\nEI'; }
-      } else if (!hasFilter && w > 0 && h > 0 && bpc === 8) {
-        // 이미 그레이 또는 알 수 없는 CS — 바이너리 데이터 보호 후 그대로 통과
-        const dataLen = w * h * channels;
-        result += 'BI\n' + dictStr + '\nID\n' + s.slice(dataStart, dataStart + dataLen);
-        i = dataStart + dataLen;
-        if (s[i] === '\n' && s[i+1] === 'E' && s[i+2] === 'I') { result += '\nEI'; i += 3; }
-        else { result += '\nEI'; }
-      } else {
-        // 필터 있음 또는 크기 불명 — heuristic으로 EI 탐색 후 그대로 통과
-        let eiPos = dataStart;
-        while (eiPos < s.length - 2) {
-          if (s[eiPos] === '\n' && s[eiPos+1] === 'E' && s[eiPos+2] === 'I') {
-            const after = eiPos + 3 < s.length ? s.charCodeAt(eiPos + 3) : 0;
-            if (after <= 0x20 || after === 0x51 /*Q*/ || after === 0x71 /*q*/) break;
-          }
-          eiPos++;
-        }
-        result += 'BI\n' + dictStr + '\nID\n' + s.slice(dataStart, eiPos) + '\nEI';
-        i = eiPos + 3;
-      }
+      result += s.slice(i, img.end);
+      i = img.end;
       segStart = i;
     } else { i++; }
   }

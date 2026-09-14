@@ -5,13 +5,14 @@
 //   실행: npx electron scripts/test/apply-outline-state.e2e.js
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0;
 const ck = (n, c, x) => { if (c) { pass++; console.log('  ✔', n); } else { fail++; console.log('  ✘', n, x !== undefined ? JSON.stringify(x) : ''); } };
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: true, width: 1440, height: 900,
+  const win = new BrowserWindow({ show: true, width: 1440, height: 900, ...leftWin(1440, 900),
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });
   await win.loadFile(path.join(ROOT, 'src/index.html'));
   await new Promise(r => setTimeout(r, 1500));

@@ -4,11 +4,12 @@
 //   실행: npx electron scripts/test/save-tick.e2e.js "D:\경로\문서.pdf"
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 const TARGET = process.argv.find(a => /\.pdf$/i.test(a));
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: true, width: 1440, height: 900,
+  const win = new BrowserWindow({ show: true, width: 1440, height: 900, ...leftWin(1440, 900),
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });
   await win.loadFile(path.join(ROOT, 'src/index.html'));
   await new Promise(r => setTimeout(r, 1500));

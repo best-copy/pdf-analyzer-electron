@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { leftWin } = require('./_leftwin');   // 검사 창은 늘 가장 왼쪽 모니터에
 const ROOT = path.join(__dirname, '..', '..');
 
 function loadCore() {
@@ -55,7 +56,7 @@ async function look(win, bindStyle, view, mm) {
 }
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: true, width: 1200, height: 860 });
+  const win = new BrowserWindow({ show: true, width: 1200, height: 860, ...leftWin(1200, 860) });
   const edge = async (bindStyle, view) => {
     const { buildEbookProofHtml } = loadCore();
     const html = buildEbookProofHtml({

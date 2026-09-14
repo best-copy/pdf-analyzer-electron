@@ -293,7 +293,7 @@
           const vp = page.getViewport({ scale: pxW / vp1.width });
           const canvas = document.createElement('canvas');
           canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-          await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+          await renderPageNoSeams(page, { canvasContext: canvas.getContext('2d'), viewport: vp });   // 사진 띠 흰 줄 보정
           if (myToken !== previewRenderToken) return;
           canvas.className = 'pv-canvas';
           const cell = cells[i];
@@ -1272,7 +1272,7 @@
           srcCanvas.width = Math.ceil(vp.width); srcCanvas.height = Math.ceil(vp.height);
           const ctx = srcCanvas.getContext('2d');
           ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, srcCanvas.width, srcCanvas.height);
-          await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });   // 사진 띠 흰 줄 보정
           page.cleanup();
         } finally { try { await pdf.destroy(); } catch (e) {} }
       } else {
@@ -1589,7 +1589,7 @@
         c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
         const ctx = c.getContext('2d', { willReadFrequently: true });
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });   // 사진 띠 흰 줄 보정(흐림 잔상에 비치지 않게)
         page.cleanup();
         // 주 배경색 = 가장자리 6% 띠의 최빈색 (16단계 양자화 — 그라데이션도 대표색으로 수렴)
         const img = ctx.getImageData(0, 0, c.width, c.height).data;
@@ -2578,7 +2578,9 @@
           canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
           const ctx = canvas.getContext('2d');
           ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-          await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          // 사진 띠 이음매 흰 줄 메우기 — 이 경로는 **출력 PDF의 페이지 자체**를 그림으로 바꾸므로,
+          // pdf.js가 띠 경계에 남긴 1px 흰 줄이 그대로 인쇄된다.
+          await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });
           page.cleanup();
           const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.92));
           const jpg = await doc.embedJpg(new Uint8Array(await blob.arrayBuffer()));
@@ -4820,123 +4822,8 @@
       } catch(e) { console.warn('Separation 이미지 변환 실패:', e); }
     }
 
-    // Latin-1 인코딩으로 바이너리 안전하게 처리 (청크 fromCharCode — O(n), 정확한 1:1 왕복)
-    // 주의: TextDecoder('latin1')은 windows-1252라서 0x80~0x9F 바이트가 손상됨 — 사용 금지
-    function decodeLatin1(bytes) {
-      const CHUNK = 0x8000;
-      if (bytes.length <= CHUNK) return String.fromCharCode.apply(null, bytes);
-      const parts = [];
-      for (let i = 0; i < bytes.length; i += CHUNK)
-        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
-      return parts.join('');
-    }
-    function encodeLatin1(str) {
-      const b = new Uint8Array(str.length);
-      for (let i = 0; i < str.length; i++) b[i] = str.charCodeAt(i) & 0xff;
-      return b;
-    }
-
-    // applyOps용 정규식 pre-compile (매 호출 new RegExp 생성 방지 — 속도 최적화)
-    const _MS_NB = '(-?\\d*\\.?\\d+)', _MS_WS = '\\s+', _MS_TL = '(?=[\\s\\r\\n]|$)';
-    const _MS_RE_rg   = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}rg${_MS_TL}`, 'gm');
-    const _MS_RE_RG   = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}RG${_MS_TL}`, 'gm');
-    const _MS_RE_k    = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}k${_MS_TL}`, 'gm');
-    const _MS_RE_K    = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}K${_MS_TL}`, 'gm');
-    const _MS_RE_SCN4 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SCN${_MS_TL}`, 'gm');
-    const _MS_RE_scn4 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}scn${_MS_TL}`, 'gm');
-    const _MS_RE_SC4  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SC${_MS_TL}`, 'gm');
-    const _MS_RE_sc4  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}sc${_MS_TL}`, 'gm');
-    const _MS_RE_SCN3 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SCN${_MS_TL}`, 'gm');
-    const _MS_RE_scn3 = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}scn${_MS_TL}`, 'gm');
-    const _MS_RE_SC3  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}SC${_MS_TL}`, 'gm');
-    const _MS_RE_sc3  = new RegExp(`${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}${_MS_NB}${_MS_WS}sc${_MS_TL}`, 'gm');
-    const _MS_RE_SCN1 = new RegExp(`${_MS_NB}${_MS_WS}SCN${_MS_TL}`, 'gm');
-    const _MS_RE_scn1 = new RegExp(`${_MS_NB}${_MS_WS}scn${_MS_TL}`, 'gm');
-    const _MS_RE_SC1  = new RegExp(`${_MS_NB}${_MS_WS}SC${_MS_TL}`, 'gm');
-    const _MS_RE_sc1  = new RegExp(`${_MS_NB}${_MS_WS}sc${_MS_TL}`, 'gm');
-
-    // PDF 콘텐츠 스트림의 색상 연산자를 그레이스케일로 치환
-    function grayifyStream(bytes) {
-      const s = decodeLatin1(bytes);
-      const lum = (r, g, b) => (0.2126*+r + 0.7152*+g + 0.0722*+b).toFixed(4);
-      const lumCmyk = (c, m, y, k) => {
-        const R=(1-+c)*(1-+k), G=(1-+m)*(1-+k), B=(1-+y)*(1-+k);
-        return (0.2126*R + 0.7152*G + 0.0722*B).toFixed(4);
-      };
-
-      // 색상 연산자 치환 함수 (세그먼트 단위 적용)
-      const applyOps = seg => {
-        // ── rg/RG (RGB) ──
-        seg = seg.replace(_MS_RE_rg, (_, r, g, b) => `${lum(r,g,b)} g`);
-        seg = seg.replace(_MS_RE_RG, (_, r, g, b) => `${lum(r,g,b)} G`);
-        // ── k/K (CMYK) ──
-        seg = seg.replace(_MS_RE_k, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-        seg = seg.replace(_MS_RE_K, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-        // ── sc/SC/scn/SCN (명명된 색공간·Separation·DeviceN) ──
-        // 처리 순서: 4인수 → 3인수 → 1인수 (다인수 패턴 먼저)
-        // 4인수 CMYK 계열
-        seg = seg.replace(_MS_RE_SCN4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-        seg = seg.replace(_MS_RE_scn4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-        seg = seg.replace(_MS_RE_SC4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-        seg = seg.replace(_MS_RE_sc4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-        // 3인수 RGB 계열
-        seg = seg.replace(_MS_RE_SCN3, (_, r, g, b) => `${lum(r,g,b)} G`);
-        seg = seg.replace(_MS_RE_scn3, (_, r, g, b) => `${lum(r,g,b)} g`);
-        seg = seg.replace(_MS_RE_SC3,  (_, r, g, b) => `${lum(r,g,b)} G`);
-        seg = seg.replace(_MS_RE_sc3,  (_, r, g, b) => `${lum(r,g,b)} g`);
-        // 1인수 Separation 계열 (tint 1=어둠·0=밝음 → 반전하여 그레이)
-        seg = seg.replace(_MS_RE_SCN1, (_, t) => `${(1 - +t).toFixed(4)} G`);
-        seg = seg.replace(_MS_RE_scn1, (_, t) => `${(1 - +t).toFixed(4)} g`);
-        seg = seg.replace(_MS_RE_SC1,  (_, t) => `${(1 - +t).toFixed(4)} G`);
-        seg = seg.replace(_MS_RE_sc1,  (_, t) => `${(1 - +t).toFixed(4)} g`);
-        // ── /name cs, /name CS 제거 (색공간 지정 연산자 — 이미 위에서 색값 치환 완료) ──
-        seg = seg.replace(/\/\w+\s+cs(?=[\s\r\n]|$)/gm, '');
-        seg = seg.replace(/\/\w+\s+CS(?=[\s\r\n]|$)/gm, '');
-        return seg;
-      };
-
-      // PDF 문자열 리터럴 (...)과 헥스 문자열 <...> 내부는 색상 연산자 치환 대상에서 제외
-      // — 바이너리 글리프 ID나 임의 바이트가 패턴과 오인식되어 스트림이 깨지는 것을 방지
-      let result = '';
-      let i = 0, segStart = 0;
-
-      while (i < s.length) {
-        const ch = s[i];
-
-        if (ch === '(') {
-          // 이전 일반 구간에 색상 연산자 치환 적용
-          result += applyOps(s.slice(segStart, i));
-          // 괄호 문자열 통째로 복사 (중첩 괄호 + 백슬래시 이스케이프 처리)
-          let depth = 1, j = i + 1;
-          while (j < s.length && depth > 0) {
-            if (s[j] === '\\') { j += 2; continue; }   // 이스케이프 건너뜀
-            if (s[j] === '(') depth++;
-            else if (s[j] === ')') depth--;
-            j++;
-          }
-          result += s.slice(i, j);
-          i = j; segStart = i;
-
-        } else if (ch === '<' && (i + 1 >= s.length || s[i + 1] !== '<')) {
-          // 헥스 문자열 <...> (딕셔너리 << 는 제외)
-          const end = s.indexOf('>', i + 1);
-          if (end >= 0) {
-            result += applyOps(s.slice(segStart, i));
-            result += s.slice(i, end + 1);
-            i = end + 1; segStart = i;
-          } else {
-            i++;
-          }
-
-        } else {
-          i++;
-        }
-      }
-      // 마지막 구간 처리
-      result += applyOps(s.slice(segStart));
-
-      return encodeLatin1(result);
-    }
+    // (콘텐츠 스트림 색상 치환은 워커 worker-gray.js의 grayifyStream 하나만 쓴다 — 메인 스레드 사본은 지웠다.
+    //  사본에는 좌측경계 _LB와 인라인 이미지 보호가 없어, 되살리면 '/P-N g' 깨짐과 BI→I 깨짐이 함께 돌아온다)
 
     // 전역 dotGain 취득 (UI 드롭다운)
     function getDotGain() {
@@ -7652,7 +7539,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .hardcover .spread::after{content:"";position:absolute;left:50%;top:-1.0%;bottom:-1.0%;width:2.2%;
   transform:translateX(-50%);z-index:-1;border-radius:2px;
   background:linear-gradient(90deg,rgba(0,0,0,.55),rgba(255,255,255,.10) 40%,rgba(255,255,255,.06) 60%,rgba(0,0,0,.55))}
-.hardcover .gut{opacity:.85}                          /* 등이 두꺼워 골이 조금 더 깊다 */
+.hardcover .gut,.hardcover .gtop{opacity:.85}         /* 등이 두꺼워 골이 조금 더 깊다 — 넘김 덮개도 같은 농도라야 책등이 튀지 않는다 */
 .hardcover .pg.blank{background:#f3efe6}              /* 면지는 살짝 미색 */
 /* ── 📄 리플렛(접지) ──
    시트 한 면을 접는 선대로 나눠, 슬라이더로 접었다 폈다 한다. */
@@ -7684,6 +7571,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .sfc{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:#fff no-repeat;overflow:hidden}
 .sbc{transform:rotateY(180deg)}
 .stsh,.stgu{position:absolute;inset:0;pointer-events:none;will-change:opacity}
+/* 들리기 전의 낱장을 덮는 평평한 한 장 — 낱장(z:9) 위, 제본선 덮개(z:12) 아래.
+   낱장 **안**에 두면 3D 층과 함께 픽셀 스냅돼 1px 들썩이므로 펼침면의 평범한 2D 형제로 둔다. */
+.lflat{position:absolute;pointer-events:none;z-index:10}
 .stwm{position:absolute;inset:0;background-repeat:repeat;opacity:.15;pointer-events:none}
 /* 넘김 표시 — 예전에는 띠 전체를 흐렸다 나타냈지만, 그 안에 늘 보여야 하는 버튼이 생겨
    **화살표(i)만** 흐리게 한다. 세로 배치라 버튼이 화살표 위에 온다(눕히면 옆으로). */
@@ -7810,6 +7700,47 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'document.body.classList.toggle("leaflet",LEAF);',
       'document.body.classList.toggle("solo",SOLO);',
       'function imgs(){return V==="book"?D.book:D.sheets;}',
+      '// ── 쪽 그림 요소 돌려쓰기 ──',
+      '// 펼침면을 새로 그릴 때마다 <img>를 새로 만들지 않고, 무대에서 내려온 것을 돌려받아 다시 쓴다.',
+      '// (넘김 멈춤을 없앤 것은 목록 썸네일(pumpThumbs)과 blob 주소(pageUrl)다 — 여기는 요소 낭비를 줄이는 몫.',
+      '//  JS decode()로 미리 풀어 두는 방법은 GPU 래스터의 디코드 캐시를 채우지 못해 효과가 없었다.)',
+      'var POOL={};',
+      'function poolKey(p){ return V+":"+p; }',
+      '// 쪽 그림 주소 — 파일에 든 data URL(쪽마다 수백 KB~1MB 넘는 문자열)을 처음 쓸 때 한 번만 blob: 주소로',
+      '// 바꿔 둔다. 넘김을 시작할 때 조각 36개의 배경에 그 긴 문자열을 넣느라 47ms가 걸려 첫 프레임이',
+      '// 멈췄다(실측: data URL 47.2ms → blob 주소 0.1ms, 바꾸는 비용은 쪽당 한 번 2.7ms).',
+      '// 쪽 그림을 그리는 모든 자리가 **같은 주소**를 써야 그림을 한 번만 풀어 함께 쓴다.',
+      'function pageUrl(im){',
+      '  if(!im)return "";',
+      '  if(im.b)return im.b;',
+      '  var u=im.u, c=u.indexOf(","), head=u.slice(0,c);',
+      '  im.b=u;   // 바꿀 수 없으면 원래 주소 그대로',
+      '  if(c>0&&head.slice(0,5)==="data:"&&head.indexOf(";base64")>0&&window.Blob&&window.URL&&URL.createObjectURL){',
+      '    try{ var bin=atob(u.slice(c+1)), a=new Uint8Array(bin.length);',
+      '      for(var q=0;q<bin.length;q++)a[q]=bin.charCodeAt(q);',
+      '      im.b=URL.createObjectURL(new Blob([a],{type:head.slice(5,head.indexOf(";"))}));',
+      '      im.u=im.b;   // 원본 data URL 문자열은 버린다 — 둘 다 들고 있으면 쪽 그림 메모리가 두 배다',
+      '    }catch(e){}',
+      '  }',
+      '  return im.b;',
+      '}',
+      'function take(p){',
+      '  var k=poolKey(p), a=POOL[k], g=(a&&a.length)?a.pop():null;',
+      '  if(!g){ g=new Image(); g.draggable=false; g.src=pageUrl(imgs()[p]); }',
+      '  g.setAttribute("data-k",k);',
+      '  return g;',
+      '}',
+      '// 무대에서 내려오는 그림을 풀에 돌려준다 (drawSpread가 새 펼침면을 붙이기 직전에 부른다)',
+      'function giveBack(root){',
+      '  if(!root)return; var gs=root.querySelectorAll("img[data-k]");',
+      '  for(var q=0;q<gs.length;q++){ var g=gs[q], k=g.getAttribute("data-k");',
+      '    if(g.parentNode)g.parentNode.removeChild(g); g.removeAttribute("style");',
+      '    (POOL[k]||(POOL[k]=[])).push(g); }',
+      '}',
+      '// 쌓아 두는 양 제한 — 지금 펼침 앞뒤 두 펼침의 쪽만, 쪽마다 두 벌까지 남긴다(메모리).',
+      'function trimPool(keep){',
+      '  for(var k in POOL){ if(!keep[k])delete POOL[k]; else if(POOL[k].length>2)POOL[k].length=2; }',
+      '}',
       'function views(){',
       '  if(V!=="book")return D.sheets.map(function(_,k){return [k,null];});',
       '  return single?D.book.map(function(_,k){return [k];}):S;',
@@ -7836,9 +7767,46 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '}',
       'function viewOfPage(p){ var Ls=views();',
       '  for(var k=0;k<Ls.length;k++){ if(Ls[k][0]===p||Ls[k][1]===p) return k; } return -1; }',
+      '// ── 목록 썸네일 ──',
+      '// 목록에 원본 크기 쪽 그림(A4 200dpi JPEG)을 그대로 넣었더니, 넘김이 끝나 목록이 다음 줄로',
+      '// 스크롤될 때마다 처음 보이는 칸의 큰 그림을 그 자리에서 풀어야 해서 착지 순간 한 프레임이',
+      '// 60ms 넘게 멈췄다(실측: 목록을 숨기면 착지 멈춤이 사라짐 · 트레이스 GpuImageDecode 140ms).',
+      '// 작은 썸네일을 따로 만들어 쓴다. createImageBitmap이 줄이면서 푸는 일을 메인 스레드 밖에서',
+      '// 하므로 만드는 동안에도 화면이 멈추지 않는다. 지금 쪽 가까운 것부터 한 장씩 만든다.',
+      'var THUMB={}, thumbBusy=false, railFocus=null;   // railFocus = 목록에서 지금 보이는 첫 줄(스크롤하면 그 근처부터 만든다)',
+      'function thumbKey(p){ return V+":"+p; }',
+      'function pumpThumbs(){',
+      '  if(thumbBusy||!railEl)return;',
+      '  if(anim||drag){ setTimeout(pumpThumbs,300); return; }   // 넘기는 중에는 쉰다',
+      '  var list=imgs(), Ls=views(), p=null;',
+      '  var ctr=(railFocus!=null)?railFocus:i;   // 목록을 멀리 스크롤했으면 보이는 줄부터',
+      '  for(var d=0;d<Ls.length&&p==null;d++){ var ks=d?[ctr-d,ctr+d]:[ctr];',
+      '    for(var z=0;z<ks.length&&p==null;z++){ var sp=Ls[ks[z]]; if(!sp)continue;',
+      '      for(var q=0;q<sp.length;q++){ var c=sp[q]; if(c!=null&&list[c]&&!THUMB[thumbKey(c)]){ p=c; break; } } } }',
+      '  if(p==null)return;',
+      '  var key=thumbKey(p), im=list[p];',
+      '  var put=function(u){ THUMB[key]=u; var gs=railEl.querySelectorAll("img[data-t]");',
+      '    for(var q=0;q<gs.length;q++) if(gs[q].getAttribute("data-t")===key) gs[q].src=u; };',
+      '  if(!window.createImageBitmap||!window.fetch){ put(pageUrl(im)); setTimeout(pumpThumbs,0); return; }   // 옛 브라우저: 예전처럼 원본',
+      '  thumbBusy=true;',
+      '  fetch(pageUrl(im)).then(function(r){ return r.blob(); })',
+      '    .then(function(b){ return createImageBitmap(b,{resizeWidth:200,resizeQuality:"medium"}); })',
+      '    .then(function(bm){ var cv=document.createElement("canvas"); cv.width=bm.width; cv.height=bm.height;',
+      '      cv.getContext("2d").drawImage(bm,0,0); if(bm.close)bm.close();',
+      '      return new Promise(function(res){ cv.toBlob(res,"image/jpeg",0.8); }); })',
+      '    .then(function(b2){ put(b2?URL.createObjectURL(b2):pageUrl(im)); })',
+      '    .catch(function(){ put(pageUrl(im)); })',
+      '    .then(function(){ thumbBusy=false; setTimeout(pumpThumbs,0); });',
+      '}',
       '// 왼쪽 목록 — 화면과 똑같이 펼침면(두 쪽)을 한 줄에. 아무 쪽이나 누르면 그 펼침면으로.',
       'function buildRail(){',
       '  if(!railEl)return;',
+      '  if(!railEl.__sc){ railEl.__sc=1;   // 목록 스크롤 → 보이는 첫 줄을 기억하고 그 근처 썸네일부터',
+      '    railEl.addEventListener("scroll",function(){',
+      '      var st=railEl.scrollTop, ks=railEl.children;',
+      '      for(var q=0;q<ks.length;q++){ if(ks[q].offsetTop+ks[q].offsetHeight>st){ railFocus=+ks[q].getAttribute("data-v"); break; } }',
+      '      pumpThumbs();',
+      '    },{passive:true}); }',
       '  var list=imgs(), Ls=views(); railEl.innerHTML="";',
       '  Ls.forEach(function(sp,k){',
       '    var row=document.createElement("div"); row.className="ri"; row.setAttribute("data-v",String(k));',
@@ -7846,7 +7814,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '      var im=(p==null)?null:list[p];',
       '      if(!im&&(V!=="book"||SOLO))return;   // 단면 목록에는 백지 칸을 넣지 않는다',
       '      var cell=document.createElement("div"); cell.className="rp"+(im?"":" empty");',
-      '      if(im){ var g=new Image(); g.src=im.u; g.loading="lazy"; g.alt=""; cell.appendChild(g);',
+      '      if(im){ var g=new Image(); g.alt=""; g.width=im.w; g.height=im.h;',
+      '        // 칸 비율을 원본 쪽 비율로 **고정**한다 — 썸네일은 정수 크기(200×283)라 비율이 조금 달라서,',
+      '        // 속성만 주면 썸네일이 올 때마다 줄이 조금씩 밀렸다(실측 140번째 줄에서 10px).',
+      '        g.style.aspectRatio=im.w+" / "+im.h;',
+      '        g.setAttribute("data-t",thumbKey(p)); if(THUMB[thumbKey(p)])g.src=THUMB[thumbKey(p)]; cell.appendChild(g);',
       '        var n=document.createElement("div"); n.className="rn";',
       '        n.textContent=(V==="book")?((p+1)+" 쪽"):((p+1)+" 시트"); cell.appendChild(n); }',
       '      else if(list[0]){',
@@ -7863,6 +7835,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '}',
       'function markRail(){',
       '  if(!railEl)return;',
+      '  pumpThumbs();',
       '  var kids=railEl.children, cur=null;',
       '  for(var k=0;k<kids.length;k++){',
       '    var on=(+kids[k].getAttribute("data-v")===i);',
@@ -7878,6 +7851,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '// (목적지 펼침면을 통째로 깔면, 넘기기 시작하는 순간 반대쪽 페이지가 툭 바뀌어 보인다)',
       'function drawSpread(sp){',
       '  var list=imgs(), sc=fit(sp), book=(V==="book");',
+      '  giveBack(stage);   // 지금 화면의 풀린 그림을 돌려받아 새 펼침면에 다시 쓴다',
       '  var d=document.createElement("div"); d.className="spread";',
       '  var nose=0, pw=0;   // 종이 없는 쪽(-1 왼쪽 / +1 오른쪽), 한 면의 폭',
       '  sp.forEach(function(p,k){',
@@ -7905,7 +7879,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    if(real&&D.meta.mm){ W=D.meta.mm[0]*MM; H=D.meta.mm[1]*MM; }',
       '    else { W=refW*sc; H=refH*sc; }',
       '    box.style.width=W+"px"; box.style.height=H+"px"; pw=W;',
-      '    if(im){ var g=new Image(); g.src=im.u; g.draggable=false; box.appendChild(g); }',
+      '    if(im){ var g=take(p); box.appendChild(g); }',
       '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
       '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
       '      t.style.left=(W*q)+"px"; t.style.top=(H*q)+"px"; t.style.width=(W*(1-2*q))+"px"; t.style.height=(H*(1-2*q))+"px";',
@@ -7940,7 +7914,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       'function leafPanel(im,W,H,x0,pw){',
       '  var d=document.createElement("div"); d.className="panel";',
       '  d.style.width=pw+"px"; d.style.height=H+"px";',
-      '  d.style.backgroundImage="url(\\""+im.u+"\\")";',
+      '  d.style.backgroundImage="url(\\""+pageUrl(im)+"\\")";',
       '  d.style.backgroundSize=W+"px "+H+"px";',
       '  d.style.backgroundPosition=(-x0)+"px 0";',
       '  return d;',
@@ -8057,6 +8031,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  }',
       '  var Ls=views(); if(i<0)i=0; if(i>=Ls.length)i=Ls.length-1;',
       '  drawSpread(Ls[i]||[]);',
+      '  var keep={}; for(var z=Math.max(0,i-2);z<=Math.min(Ls.length-1,i+2);z++)',
+      '    (Ls[z]||[]).forEach(function(p){ if(p!=null)keep[poolKey(p)]=1; });',
+      '  trimPool(keep);',
       '  rng.max=String(Math.max(0,Ls.length-1)); rng.value=String(i);',
       '  lbl.textContent=(i+1)+" / "+Ls.length+(V!=="book"?" 시트":((single||SOLO)?" 쪽":" 펼침"));',
       '  markRail();',
@@ -8069,7 +8046,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '}',
       'function stripFace(im,slice,W,H,w,back,u0,u1,rev){',
       '  var d=document.createElement("div"); d.className="sfc"+(back?" sbc":"");',
-      '  if(im){ d.style.backgroundImage="url(\\""+im.u+"\\")";',
+      '  if(im){ d.style.backgroundImage="url(\\""+pageUrl(im)+"\\")";',
       '    d.style.backgroundSize=W+"px "+H+"px";',
       '    d.style.backgroundPosition=(-slice*w)+"px 0"; }',
       '  if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="stwm";',
@@ -8113,7 +8090,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    parent.appendChild(st); parent=st;',
       '    strips.push({el:st, fs:f.sh, bs:b.sh, fg:f.gu, bg:b.gu});',
       '  }',
-      '  return {el:lf, strips:strips};',
+      '  return {el:lf, strips:strips, flat:null};',
       '}',
       '// 진행도 p(0~1)에 맞춰 낱장의 자세를 잡는다 — 시간으로 굴리든(자동), 손으로 끌든(드래그) 같은 함수.',
       '// 책등 조각이 주 회전을 맡고 바깥 조각일수록 조금씩 더 돌아 종이가 활처럼 휜다.',
@@ -8135,6 +8112,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  // 휨은 그 각도의 **비율**로 준다 — 잘라 낼 필요가 없어(항상 c<E) 기울기가 꺾이지 않고,',
       '  // 시작·끝에서 저절로 0이 되어 억지로 휘었다 갑자기 펴지는 구간이 생기지 않는다.',
       '  var E=180*p;',
+      '  if(T.leaf.flat) T.leaf.flat.style.visibility=(E<2?"visible":"hidden");   // 2°까지는 평평한 한 장',
       '  var c=E*BEND*Math.pow(Math.sin(Math.PI*pp),1.6);',
       '  var m=E-c;               // 책등 쪽은 휜 만큼 뒤에 남는다',
       '  // 조각별 분배 — 얇은 종이는 한곳이 접히지 않고 전체가 고르게 휜다(완만한 원호).',
@@ -8189,7 +8167,12 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  else { for(var q=0;q<pgs.length;q++){',
       '    if(pgs[q].getAttribute("data-side")===String(want))box=pgs[q]; } }',
       '  var r=null;',
-      '  if(box){ r={l:box.offsetLeft,t:box.offsetTop,w:box.offsetWidth,h:box.offsetHeight}; }',
+      '  // 크기·위치는 **소수점 그대로** 잡는다 — offset*는 정수로 반올림돼, 낱장이 페이지보다',
+      '  // 1px 어긋난 채 얹혀 넘김 시작 순간 페이지가 들썩였다. drawSpread가 style에 넣은 값이',
+      '  // 정확한 크기이고, 면들은 flex로 틈 없이 붙어 있으므로 앞 면 폭의 합이 곧 x 위치다.',
+      '  if(box){ var bl=0, sb=box.previousElementSibling;',
+      '    while(sb){ if(sb.classList&&sb.classList.contains("pg"))bl+=parseFloat(sb.style.width)||sb.offsetWidth; sb=sb.previousElementSibling; }',
+      '    r={l:bl,t:box.offsetTop,w:parseFloat(box.style.width)||box.offsetWidth,h:parseFloat(box.style.height)||box.offsetHeight}; }',
       '  else {   // 트윈링에서 그쪽에 종이가 없을 때 — 맞은편 면에서 자리를 옮겨 잡는다',
       '    var other=sp.querySelector(".pg"); if(!other)return null;',
       '    var ow=other.offsetWidth;',
@@ -8200,11 +8183,23 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  // 예전에는 뒷면에 다음 쪽을 그려 넣어, 넘기는 도중 아직 오지 않은 페이지가 비쳐 보였다.',
       '  // 뒷장(다음 쪽)은 낱장 아래 펼침면이 이미 깔고 있으므로, 종이가 젖혀지면 그대로 드러난다.',
       '  var backImg=single?(SOLO?null:to[0]):(to[leafR?0:1]);',
-      '  var leaf=buildLeaf(r,(single?from[0]:from[leafR?1:0]),backImg,leafR,list);',
+      '  var frontImg=single?from[0]:from[leafR?1:0];',
+      '  var leaf=buildLeaf(r,frontImg,backImg,leafR,list);',
       '  sp.appendChild(leaf.el);',
+      '  // 조각(.st)은 저마다 3D 면이라 페이지와 똑같은 그림이어도 래스터가 이음매마다 조금씩',
+      '  // 다르다. 그래서 넘김이 **시작되는 순간** 넘어갈 페이지가 제자리에서 자잘하게 떨려 보였다',
+      '  // (실측: 가로선 픽셀의 5.5%, 최대 166/255 — 앞으로 넘기면 오른쪽, 뒤로 넘기면 왼쪽 페이지).',
+      '  // 종이가 아직 들리지 않은 동안에는 평평한 한 장(페이지와 픽셀까지 같다)으로 덮어 두고,',
+      '  // 실제로 들리기 시작하면(poseLeaf) 걷어 조각을 보인다 — 움직이는 중이라 차이가 안 보인다.',
+      '  var fo=(frontImg==null)?null:list[frontImg];',
+      '  if(fo){ var fl=document.createElement("div"); fl.className="lflat";',
+      '    fl.style.left=r.l+"px"; fl.style.top=r.t+"px"; fl.style.width=r.w+"px"; fl.style.height=r.h+"px";',
+      '    paintFlat(fl,fo,leafR?"0 3px 3px 0":"3px 0 0 3px",frontImg); sp.appendChild(fl); leaf.flat=fl; }',
       '  var spineTop=addSpineShade(sp);',
       '  var rw=sp.querySelector(".ringwrap"); if(rw)sp.appendChild(rw);   // 철사는 늘 종이 앞',
-      '  var T={leaf:leaf,sign:(leafR?-1:1),leafR:leafR,n:n,w:r.w,spineTop:!!spineTop};',
+      '  var T={leaf:leaf,sign:(leafR?-1:1),leafR:leafR,n:n,w:r.w,r:r,spineTop:!!spineTop,',
+      '         fimg:(frontImg==null?null:list[frontImg]), bimg:(backImg==null?null:list[backImg]),',
+      '         fIdx:frontImg, bIdx:backImg};',
       '  poseLeaf(T,0);',
       '  return T;',
       '}',
@@ -8282,6 +8277,15 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  }',
       '  return true;',
       '}',
+      '// 덮개 걷기 — 낱장이 사라지면 펼침면 자신의 골(.gut)로 되돌린다.',
+      '// 모양·농도가 같으므로 바꿔 끼워도 화면은 그대로다.',
+      'function dropSpineShade(sp){',
+      '  if(!sp)return;',
+      '  var o=sp.querySelectorAll(".gtop");',
+      '  for(var k=0;k<o.length;k++){ if(o[k].parentNode)o[k].parentNode.removeChild(o[k]); }',
+      '  var g=sp.querySelectorAll(".pg .gut");',
+      '  for(var q=0;q<g.length;q++)g[q].style.display="";',
+      '}',
       '// 낱장을 p0에서 p1까지 굴린 뒤 마무리 — 끝까지 넘겼으면 그 펼침면으로 확정, 아니면 원래대로.',
       'function settle(T,p0,p1,ms){',
       '  anim=1; var t0=0;',
@@ -8291,22 +8295,63 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    poseLeaf(T,p0+(p1-p0)*ease(t));',
       '    if(t<1){ requestAnimationFrame(frame); return; }',
       '    if(p1>=1)i=T.n;',
-      '    anim=0; landLeaf(T);',
+      '    anim=0; landLeaf(T,p1<1);',   // p1<1 = 제자리로 돌아옴(앞면이 보인 채 착지)
       '  }',
       '  requestAnimationFrame(frame);',
       '}',
+      '// 착지한 낱장을 **평평한 한 장**으로 바꿔 놓는다.',
+      '// 조각(.st)은 저마다 3D 변환면이라 이음매마다 래스터가 미세하게 어긋난다. 그대로 녹이면',
+      '// 아래 페이지와 어긋난 이음매가 유령처럼 겹쳐 보여, 착지할 때마다 페이지가 자잘하게',
+      '// 떨리는 느낌이 났다(실측: 가로선 픽셀의 11%가 6단계 이상 차이, 최대 164/255).',
+      '// 평평한 한 장이면 아래 페이지와 그림이 정확히 같아 녹임이 눈에 보이지 않는다.',
+      '// 그림이 없는 면(백지 자리)은 종이가 아니라 빈 자리라 흰색으로 덮으면 안 된다 — 그냥 지운다.',
+      'function flattenLeaf(T,front){',
+      '  var el=T.leaf.el, im=front?T.fimg:T.bimg;',
+      '  if(!im)return false;',
+      '  el.innerHTML="";',
+      '  el.style.transform="none";',
+      '  // 끝까지 넘어갔으면 낱장은 경첩 너머 **맞은편 면 자리**에 누워 있다. 회전을 걷어 내면',
+      '  // 원래 자리로 되돌아가, 방금 넘어온 쪽 그림이 반대편 페이지 위에 유령처럼 겹쳐 녹았다',
+      '  // (실측: 사용자 시안 — 착지 직후 오른쪽 페이지에 새 왼쪽 쪽이 겹쳐 보임 = 깜박임).',
+      '  if(!front) el.style.left=(T.r.l+(T.leafR?-T.r.w:T.r.w))+"px";',
+      '  paintFlat(el,im,((front===T.leafR)?"0 3px 3px 0":"3px 0 0 3px"),front?T.fIdx:T.bIdx);',
+      '  return true;',
+      '}',
+      '// 한 면 그림을 평평하게 칠한다 — 페이지와 **같은 <img>**로 그려야 픽셀까지 같다.',
+      '// CSS 배경 그림(background-image contain)은 <img> object-fit과 래스터가 달라 1px 들썩였다',
+      '// (실측: 좌표는 소수점까지 같은데 가로선 픽셀의 6.9%가 달랐다).',
+      '// 책 느낌에서는 바깥 모서리가 둥글다 — 각진 흰 모서리가 잠깐 비어져 나오지 않게 맞춘다.',
+      'function paintFlat(el,im,radius,p){',
+      '  el.style.background="#fff"; el.style.overflow="hidden";',
+      '  if(p==null)p=imgs().indexOf(im);   // 호출부가 쪽 번호를 알면 넘긴다(목록 전체를 훑지 않게)',
+      '  var g;',
+      '  if(p>=0) g=take(p); else { g=new Image(); g.src=pageUrl(im); g.draggable=false; }',
+      '  g.style.cssText="display:block;width:100%;height:100%;object-fit:contain;background:#fff";',
+      '  el.appendChild(g);',
+      '  // 페이지 모서리는 책 느낌에서만 둥글다(.paper .pg.l/.r/.s) — 한 쪽 보기는 네 모서리 모두',
+      '  el.style.borderRadius=paper?(single?"3px":radius):"";',
+      '  if(D.opts.wm){ var wm=document.createElement("div"); wm.className="wm";',
+      '    wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; el.appendChild(wm); }',
+      '}',
       '// 착지 — 최종 펼침면을 먼저 깔고, 넘어간 낱장만 그 위에서 짧게 녹여 없앤다.',
-      '// 곧바로 교체하면 원근 때문에 조금 크고 기울어 있던 낱장이 정확한 페이지로 툭 바뀌면서',
-      '// 그늘 농도까지 함께 튀어 "깜박임"으로 보인다. 140ms 녹임이면 눈에는 이어져 보인다.',
-      'function landLeaf(T){',
+      '// 곧바로 지우면 새로 그린 그림이 아직 안 올라온 프레임에 흰 자리가 보일 수 있다.',
+      '// 140ms 녹임이면 그 틈을 덮고도 눈에는 이어져 보인다.',
+      'function landLeaf(T,front){',
       '  var el=T&&T.leaf&&T.leaf.el;',
       '  render();',
       '  var sp=stage.firstChild;',
       '  if(!el||!sp){ return; }',
+      '  if(!flattenLeaf(T,!!front))return;   // 덮을 그림이 없으면 녹일 것도 없다',
       '  sp.appendChild(el);',
+      '  // 녹아 없어지는 낱장(z:9)이 펼침면의 제본선 골(.gut, z:auto)을 덮어 버려서,',
+      '  // 착지하는 순간 책등이 허옇게 떴다가(실측 밝기 190→244) 낱장이 사라지며 되돌아왔다',
+      '  // — 넘길 때마다 책등이 한 번 번쩍이던 깜박임의 정체다.',
+      '  // 넘기는 동안 쓰던 덮개(.gtop, z:12)를 **녹는 동안에도** 그대로 씌워 둔다.',
+      '  var top=addSpineShade(sp);',
       '  var rw=sp.querySelector(".ringwrap"); if(rw)sp.appendChild(rw);   // 철사는 늘 종이 앞',
       '  requestAnimationFrame(function(){ el.classList.add("land"); });',
-      '  setTimeout(function(){ if(el.parentNode)el.parentNode.removeChild(el); },220);',
+      '  setTimeout(function(){ if(el.parentNode)el.parentNode.removeChild(el);',
+      '    if(top)dropSpineShade(sp); },220);',
       '}',
       'function go(d){',
       '  var Ls=views(), n=i+d; if(!d||n<0||n>=Ls.length||anim||drag)return;',
@@ -8402,7 +8447,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '}',
       'function zoom(im){',
       '  zIm=im; zv.innerHTML="";',
-      '  zImg=new Image(); zImg.className="zimg"; zImg.src=im.u; zImg.draggable=false;',
+      '  zImg=new Image(); zImg.className="zimg"; zImg.src=pageUrl(im); zImg.draggable=false;',
       '  zImg.style.width=im.w+"px"; zImg.style.height=im.h+"px";',
       '  zv.appendChild(zImg);',
       '  var x=document.createElement("div"); x.className="zx"; x.textContent="✕";',
@@ -8789,7 +8834,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         + (mb > 20 ? ' — 메일 첨부 한도를 넘을 수 있습니다(화질을 낮추세요)' : '');
     }
 
-    // PDF 바이트 → 페이지별 JPEG data URI 배열
+    // PDF 바이트 → 페이지별 JPEG data URI 배열 (사진 띠 흰 줄 보정은 seam-repair.js의 renderPageNoSeams)
     async function ebookRenderPages(bytes, dpi, onProgress) {
       const pdf = await openPdfDoc({ data: bytes.slice(0) }).promise;
       const out = [];
@@ -8803,7 +8848,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           canvas.height = Math.max(1, Math.round(vp.height));
           ctx.fillStyle = '#fff';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
-          await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });   // 사진 띠 흰 줄을 메운 뒤 굽는다
           out.push({ u: canvas.toDataURL('image/jpeg', 0.82), w: canvas.width, h: canvas.height });
           page.cleanup();
           if (onProgress) onProgress(Math.round(i / pdf.numPages * 100));
@@ -8915,6 +8960,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // 깨졌을 때 진단하기도 쉽다(앞 14바이트만 보면 우리 파일인지 안다).
     // <WORKFILE-CORE>
     const WORK_MAGIC = 'PDFEDITWORK1\n';
+    // 흑백 변환 방식 버전 — 적용본을 담은 작업 파일이 이보다 낮으면(=없으면) 열 때 적용본을 버리고 다시 만든다.
+    // 2: CR 줄바꿈 PDF의 인라인 이미지(BI…EI)가 BI→I로 깨져 Acrobat "이 페이지에 오류"가 나던 적용본 (2026-09-14)
+    const GRAY_PIPELINE_V = 2;
 
     function packWorkFile(manifest, blobs) {
       const enc = new TextEncoder();
@@ -9028,6 +9076,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 
         const manifest = {
           v: 1,
+          // 흑백 변환 방식 버전 — 적용본을 그대로 되살려도 되는지 판단한다(아래 GRAY_PIPELINE_V 참조)
+          grayV: GRAY_PIPELINE_V,
           savedAt: Date.now(),
           doc: {
             name: workFileBaseName(),
@@ -9204,7 +9254,18 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         // 매번 '✔ 적용'을 다시 눌러야 해서 새로 여는 것과 다를 바가 없었다.
         const resAt = (manifest.entries || []).findIndex(e => e.k === 'result');
         const dirAt = (manifest.entries || []).findIndex(e => e.k === 'direct');
-        if (resAt >= 0 && blobs[resAt]) {
+        // 흑백 변환이 고쳐지기 전에 저장한 적용본은 깨져 있을 수 있다 → 그대로 되살리지 않고 다시 만든다.
+        // 블리드·곡선화 같은 외부 변환 결과(direct)는 여기서 다시 만들 수 없으므로 사용자에게 알린다.
+        const staleResult = resAt >= 0 && blobs[resAt] && (manifest.grayV || 1) < GRAY_PIPELINE_V;
+        if (staleResult) {
+          showSuccess(restoreMsg + '\n⏳ 이전 버전에서 저장한 적용 결과라 흑백 변환을 새 방식으로 다시 만드는 중…');
+          try { await applyChanges(); }
+          catch (e) { console.warn('작업 파일 재적용 실패:', e); }
+          showSuccess(restoreMsg
+            + '\n✔ 적용 결과를 새로 만들었습니다(이전 버전의 흑백 변환은 일부 PDF에서 Acrobat 페이지 오류를 냈습니다).'
+            + (dirAt >= 0 ? '\n⚠ 블리드·폰트 곡선화 결과는 다시 만들어야 합니다 — 해당 기능을 한 번 더 실행한 뒤 저장하세요.' : '')
+            + `\n→ 확인 후 [💼 작업 저장]으로 덮어 저장하면 다음부터는 바로 열립니다.`);
+        } else if (resAt >= 0 && blobs[resAt]) {
           // 저장된 적용본을 그대로 — 재계산 없음. 화면·다운로드 모두 저장 시점 그대로다.
           processedPdfBytes = blobs[resAt];
           processedFileName = st.resultName || defaultProcessedName();
