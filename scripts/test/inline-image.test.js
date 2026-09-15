@@ -80,6 +80,14 @@ for (const [name, nl] of [['LF', '\n'], ['CR (문제 파일)', '\r'], ['CRLF', '
   ck('크기 값과 실제 데이터 길이가 다르면 변환하지 않음(원본 그대로)', S(preprocessInlineImages(B(short), 0)) === short);
   const none = B('q 1 0 0 rg 0 0 10 10 re f Q\n');
   ck('인라인 그림이 없으면 원래 배열 그대로', preprocessInlineImages(none, 0) === none);
+  // 사전 안에 색상표를 적은 Indexed — 색상표만 회색으로, 사전 뒤 바이트(데이터·EI·뒤 연산자)는 원본 그대로 (교안 PDF 실파일)
+  const idx = 'q\rBI\r/W 2/H 1/BPC 4/CS[/I/RGB 1<FF8000 FFFFFF>]\rID \x01\rEI Q\r';
+  const idxOut = S(preprocessInlineImages(B(idx), 0));
+  ck('인라인 Indexed RGB 색상표 → [/I /G 1 <97FF>]', idxOut === 'q\rBI\r/W 2/H 1/BPC 4/CS[/I /G 1 <97FF>]\rID \x01\rEI Q\r', idxOut);
+  const idxK = S(preprocessInlineImages(B('BI /W 1 /H 1 /BPC 8 /CS [/Indexed /DeviceCMYK 0 <00000080>] ID \x00 EI'), 0));
+  ck('인라인 Indexed CMYK 색상표 → 회색(K 0x80 → 7F)', /\[\/I \/G 0 <7F>\]/.test(idxK), idxK);
+  const idxShort = 'BI /W 1 /H 1 /BPC 8 /CS [/I /RGB 3 <FF0000>] ID \x00 EI';
+  ck('색상표 길이가 모자라면 그대로', S(preprocessInlineImages(B(idxShort), 0)) === idxShort);
 }
 
 console.log('\n[3] 전체 흑백 치환 — 글자 하나도 버리지 않는다 (Acrobat 오류 회귀)');

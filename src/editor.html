@@ -6,6 +6,7 @@
   <script src="./libs/pdf.min.js"></script>
   <script src="./seam-repair.js"></script><!-- 사진 띠 이음매 흰 줄 보정 (앱과 같은 파일) -->
   <script src="./libs/pdf-lib.min.js"></script>
+  <script src="./libs/gray-blend.js"></script><!-- 저장 직전 투명도 흑백 합성 그룹 (앱과 같은 파일) -->
   <script src="./libs/fontkit.umd.min.js"></script>
   <style>
     :root { --bar:#2c2c2e; --panel:#f3f4f6; --accent:#ffd60a; --sel:#1d1d1f; }
@@ -241,7 +242,8 @@ function pdfSaveOpts(doc, extra) {
   return Object.assign({ useObjectStreams: false, updateFieldAppearances: false,
                          objectsPerTick: Math.max(1000, per) }, extra || {});
 }
-function savePdfDoc(doc, extra) { return doc.save(pdfSaveOpts(doc, extra)); }
+// 저장 직전: 투명도를 쓰는 무채색 쪽에 DeviceGray 페이지 그룹(libs/gray-blend.js) — 없으면 gs·프린터가 겹친 회색을 CMY로 섞는다
+function savePdfDoc(doc, extra) { return addGrayBlendGroups(doc).then(() => doc.save(pdfSaveOpts(doc, extra))); }
 // ══════════════════════════════════════════════════════════════════════════
 //  페이지 내부 편집기 (별도 창). 원본 페이지 위 오버레이 오브젝트를 편집하고
 //  저장 시 각 페이지를 단일페이지 PDF로 구워 메인 창으로 돌려준다.
@@ -1898,6 +1900,10 @@ async function bakePage(originalIdx, model) {
     const srcPage = srcDoc.getPage(srcIdx);
     const sz = srcPage.getSize(); const W=sz.width, Hh=sz.height;
     pg = out.addPage([W, Hh]);
+    // embedPage는 /Rotate를 무시하고(CLAUDE.md 함정 1) 새 페이지는 0°라, 가로로 돌려 둔 스캔 쪽에 기울기를
+    // 넣으면 쪽 방향이 사라졌다. 그림은 회전 전 좌표로 그리므로 원래 /Rotate만 그대로 옮기면 된다
+    // (각도 0 경로의 copyPages와 같은 결과).
+    pg.setRotation(srcPage.getRotation());
     const emb = await out.embedPage(srcPage);
     // 화면 시계방향 angle → pdf 회전 -angle. 좌하단을 중심기준 -angle 회전 위치로 두고 그 점 기준 회전.
     const aR = -angle*Math.PI/180, cs=Math.cos(aR), sn=Math.sin(aR);

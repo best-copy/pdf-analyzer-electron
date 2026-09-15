@@ -5,16 +5,42 @@ const os   = require('os');
 
 // 큰 파일 쓰기 — writeFileSync도 2GiB가 넘으면 거부한다. 1GB씩 나눠 쓴다.
 // (2GB+ 원고를 열 수 있게 됐으니 저장 쪽도 같이 뚫어 둔다)
+// buffer가 배열이면 조각을 차례로 이어 쓴다 — 작업 파일(.pdfw)은 원본·적용본을 한 버퍼로 합치면
+// 2GB 버퍼 한계를 넘을 수 있어 조각 목록으로 넘어온다.
+const asBuffer = b => (Buffer.isBuffer(b) ? b
+  : ArrayBuffer.isView(b) ? Buffer.from(b.buffer, b.byteOffset, b.byteLength)
+  : Buffer.from(b));
 function writeBig(filePath, buffer) {
-  const view = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-  if (view.length <= (1 << 30)) { fs.writeFileSync(filePath, view); return; }
+  const views = (Array.isArray(buffer) ? buffer : [buffer]).map(asBuffer);
+  if (views.length === 1 && views[0].length <= (1 << 30)) { fs.writeFileSync(filePath, views[0]); return; }
   const fd = fs.openSync(filePath, 'w');
   try {
     const CHUNK = 1 << 30;
-    for (let off = 0; off < view.length; off += CHUNK) {
-      fs.writeSync(fd, view, off, Math.min(CHUNK, view.length - off), off);
+    let pos = 0;
+    for (const view of views) {
+      for (let off = 0; off < view.length; off += CHUNK) {
+        const n = Math.min(CHUNK, view.length - off);
+        fs.writeSync(fd, view, off, n, pos);
+        pos += n;
+      }
     }
   } finally { fs.closeSync(fd); }
+}
+
+// 사용자 파일 저장 — 같은 폴더의 '이름.part'에 끝까지 쓰고 디스크에 확정(fsync)한 뒤 바꿔 끼운다.
+// 원래 파일에 곧바로 쓰면 쓰기 시작 순간 0바이트가 되어, 도중에 디스크가 차거나 네트워크 드라이브가
+// 끊기거나 앱이 죽으면 **유일한 작업 파일(.pdfw)까지 사라졌다**. 실패하면 원래 파일은 그대로 남는다.
+function writeFileSafe(filePath, buffer) {
+  const part = filePath + '.part';
+  try {
+    writeBig(part, buffer);
+    const fd = fs.openSync(part, 'r+');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(part, filePath);   // Windows에서도 기존 파일을 한 번에 대체한다
+  } catch (e) {
+    try { fs.unlinkSync(part); } catch (e2) {}
+    throw e;
+  }
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -41,6 +67,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const p = path.join(__dirname, "src", "libs", "cmaps");
     try { if (fs.existsSync(p)) return p; } catch (e) {}
     return null;
+  },
+  // 파일의 한 구간만 읽는다 — 2GB 넘는 작업 파일(.pdfw)을 조각별로 열 때 쓴다(위치는 2GB 넘어도 된다)
+  readFileRange: (filePath, offset, length) => {
+    const ab = new ArrayBuffer(length);
+    const u8 = new Uint8Array(ab);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      let off = 0;
+      while (off < length) {
+        const n = fs.readSync(fd, u8, off, Math.min(1 << 30, length - off), offset + off);
+        if (!n) break;
+        off += n;
+      }
+      if (off !== length) throw new Error('파일을 끝까지 읽지 못했습니다 (' + off + '/' + length + ' 바이트)');
+    } finally { fs.closeSync(fd); }
+    return ab;
   },
   // 파일을 통째로 읽어 ArrayBuffer로 준다.
   // ⚠ fs.readFileSync는 2GiB가 넘으면 무조건 거부한다("File size is greater than 2 GiB").
@@ -70,7 +112,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFile: async ({ defaultName, buffer, kind }) => {
     const filePath = await ipcRenderer.invoke('dialog:saveFilePath', { defaultName, kind });
     if (!filePath) return false;
-    writeBig(filePath, buffer);
+    writeFileSafe(filePath, buffer);
     return filePath;
   },
 
@@ -99,7 +141,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFileTo: async ({ filePath, buffer, kind }) => {
     const ok = await ipcRenderer.invoke('dialog:confirmSavePath', { filePath, kind });
     if (!ok) return false;
-    writeBig(ok, buffer);
+    writeFileSafe(ok, buffer);
     return ok;
   },
 
@@ -141,12 +183,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pdfPageCount: (p) => ipcRenderer.invoke('gs:pageCount', p),
   splitPdf: (p, opts) => ipcRenderer.invoke('gs:splitPdf', p, opts || {}),
   shrinkPdf: (p, opts) => ipcRenderer.invoke('gs:shrinkPdf', p, opts || {}),
+  // 파일을 열 때마다 등록하므로 앞 파일의 리스너를 먼저 떼어 낸다(쌓이면 진행 문구에 앞 파일 이름이 섞였다)
   onShrinkProgress: (cb) => {
     if (typeof cb !== 'function') return;
+    ipcRenderer.removeAllListeners('gs:shrinkProgress');
     ipcRenderer.on('gs:shrinkProgress', (_e, info) => { try { cb(info || {}); } catch (err) {} });
   },
   onSplitProgress: (cb) => {
     if (typeof cb !== 'function') return;
+    ipcRenderer.removeAllListeners('gs:splitProgress');
     ipcRenderer.on('gs:splitProgress', (_e, info) => { try { cb(info || {}); } catch (err) {} });
   },
 

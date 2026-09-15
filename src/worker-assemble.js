@@ -3,7 +3,7 @@
  * pdf-lib 문서 레벨 연산(load/copyPages/addPage/save)을 메인 스레드 밖에서 수행한다.
  */
 
-importScripts('./libs/pdf-lib.min.js', './libs/fontkit.umd.min.js', './hf-core.js');
+importScripts('./libs/pdf-lib.min.js', './libs/gray-blend.js', './libs/fontkit.umd.min.js', './hf-core.js');
 
 // ── PDF 저장 옵션 (pdf-lib) ────────────────────────────────────────────────
 // ⚠ src/app-core.js의 같은 이름 함수와 **같은 내용을 유지할 것** — 워커/편집기 창은
@@ -26,7 +26,8 @@ function pdfSaveOpts(doc, extra) {
   return Object.assign({ useObjectStreams: false, updateFieldAppearances: false,
                          objectsPerTick: Math.max(1000, per) }, extra || {});
 }
-function savePdfDoc(doc, extra) { return doc.save(pdfSaveOpts(doc, extra)); }
+// 저장 직전: 투명도를 쓰는 무채색 쪽에 DeviceGray 페이지 그룹(libs/gray-blend.js) — 없으면 gs·프린터가 겹친 회색을 CMY로 섞는다
+function savePdfDoc(doc, extra) { return addGrayBlendGroups(doc).then(() => doc.save(pdfSaveOpts(doc, extra))); }
 
 // ── 레이아웃 변환에 쓰이는 순수 계산 헬퍼 (index.html의 동명 함수와 동일) ──
 const PT_PER_MM = 72 / 25.4;

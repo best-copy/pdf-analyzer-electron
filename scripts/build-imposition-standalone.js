@@ -7,6 +7,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
 const appSrc = fs.readFileSync(path.join(ROOT, 'src/app-process.js'), 'utf8');
+const coreSrc = fs.readFileSync(path.join(ROOT, 'src/app-core.js'), 'utf8');   // savePdfDoc 등 공용 헬퍼
 const pdflib = fs.readFileSync(path.join(ROOT, 'src/libs/pdf-lib.min.js'), 'utf8');
 // 원본 미리보기(썸네일·본문)를 그리려면 pdf.js가 필요하다 — 워커는 스크립트 블록에 담아
 // blob URL로 띄운다(파일이 하나뿐이라 외부 파일을 못 읽으므로).
@@ -15,17 +16,17 @@ const pdfWorker = fs.readFileSync(path.join(ROOT, 'src/libs/pdf.worker.min.js'),
 if (pdfWorker.includes('</scr' + 'ipt>')) throw new Error('워커 소스에 </script>가 있어 인라인 불가');
 
 // ── app-process.js에서 함수/상수 추출 (이름 → 소스 텍스트) ──
-function exFn(name) {
-  let s = appSrc.indexOf('async function ' + name);
-  if (s < 0) s = appSrc.indexOf('function ' + name);
+function exFn(name, src = appSrc) {
+  let s = src.indexOf('async function ' + name + '(');
+  if (s < 0) s = src.indexOf('function ' + name + '(');
   if (s < 0) throw new Error('함수 없음: ' + name);
-  const e = appSrc.indexOf('\n    }', s) + 6;
-  return appSrc.slice(s, e).replace(/^\s{4}/gm, '');   // 4칸 들여쓰기 제거
+  const e = src.indexOf('\n    }', s) + 6;
+  return src.slice(s, e).replace(/^\s{4}/gm, '');   // 4칸 들여쓰기 제거
 }
-function exConst(name) {
-  const s = appSrc.indexOf('const ' + name);
+function exConst(name, src = appSrc) {
+  const s = src.indexOf('const ' + name);
   if (s < 0) throw new Error('상수 없음: ' + name);
-  return appSrc.slice(s, appSrc.indexOf('\n', s)).trim();
+  return src.slice(s, src.indexOf('\n', s)).trim();
 }
 
 const BUILDERS = [
@@ -36,7 +37,16 @@ const BUILDERS = [
   'drawCropMarks', 'drawTrimMarks', 'drawCutDims',
   'bookletSheetOrder', 'cutStackOrder', 'dup2upOrder',
   'buildBookletBytes', 'buildNupBytes', 'buildStepRepeatBytes', 'buildDup2upBytes',
-].map(exFn).join('\n\n');
+].map(n => exFn(n)).join('\n\n');
+// 빌더가 저장에 쓰는 공용 헬퍼(app-core.js) — 9/2 성능 작업 뒤 빌더가 savePdfDoc을 부르는데 목록에 없어,
+// 다시 빌드하면 모든 생성 버튼이 ReferenceError로 죽는 상태였다.
+const CORE_HELPERS = [exConst('SAVE_CHUNK_MS', coreSrc), exConst('SAVE_OBJS_PER_MS', coreSrc),
+  exFn('pdfSaveOpts', coreSrc), exConst('savePdfDoc', coreSrc.replace('function savePdfDoc', 'const savePdfDoc'))
+    .replace('const savePdfDoc', 'function savePdfDoc')].join('\n');   // 한 줄짜리 함수 — exFn의 '\n    }' 끝 찾기로는 뒤 코드까지 딸려 온다
+
+// savePdfDoc이 저장 직전에 부르는 투명도 흑백 합성 그룹(앱·워커·편집기와 같은 파일을 그대로 싣는다)
+const GRAY_BLEND = fs.readFileSync(path.join(ROOT, 'src/libs/gray-blend.js'), 'utf8');
+if (GRAY_BLEND.includes('</scr' + 'ipt>')) throw new Error('gray-blend.js에 </script>가 있어 인라인 불가');
 
 const IMP_PAPERS = exConst('IMP_PAPERS');
 const SEED = exConst('IMP_PROFILE_SEED');   // 71종 프로파일 시드
@@ -50,8 +60,24 @@ const core = `
 ${GLOBALS}
 ${IMP_PAPERS}
 ${SEED}
+${GRAY_BLEND}
+${CORE_HELPERS}
 ${BUILDERS}
 `;
+
+// ── 드리프트 검사: 추출한 코드가 부르는 앱 함수가 전부 함께 들어왔는지 ──
+// 앱 세 파일의 함수 이름 중 여기서 호출되는데 정의되지 않은 것이 있으면 빌드를 멈춘다
+// (브라우저에서 버튼을 눌러야 드러나던 'is not defined'를 빌드 시점에 잡는다).
+{
+  const uiSrc = fs.readFileSync(path.join(ROOT, 'src/app-ui.js'), 'utf8');
+  const appFns = new Set([...(coreSrc + appSrc + uiSrc).matchAll(/^\s{4}(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm)].map(m => m[1]));
+  const defined = new Set([...core.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map(m => m[1]));
+  const called = new Set([...core.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g)].map(m => m[1]));
+  // `typeof X === 'function'`으로 있을 때만 부르는 것은 선택 기능(없는 환경에서는 기본값) — 빠져도 된다
+  const guarded = new Set([...core.matchAll(/typeof\s+([A-Za-z_$][\w$]*)\s*===\s*'function'/g)].map(m => m[1]));
+  const missing = [...called].filter(n => appFns.has(n) && !defined.has(n) && !guarded.has(n));
+  if (missing.length) throw new Error('독립 도구에 빠진 앱 함수: ' + missing.join(', ') + ' — BUILDERS/CORE_HELPERS에 추가하세요');
+}
 
 const ui = String.raw`
 const $ = id => document.getElementById(id);

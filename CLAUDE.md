@@ -33,7 +33,9 @@ src/editor.html    페이지 내부 콘텐츠 편집기 (별도 BrowserWindow, �
 src/seam-repair.js 사진 띠 이음매 흰 줄 보정 — pdf.js 렌더 공용(renderPageNoSeams). index·editor·E-book 독립 도구가 같은 파일
 src/worker-gray.js 흑백변환 워커 — 콘텐츠 스트림 연산자 치환·이미지 그레이화 (CMYK JPEG 정밀 디코드)
 src/worker-assemble.js 병합·조립 워커
-src/libs/          vendored: pdf.js, pdf-lib, fontkit, pako, jpeg-decoder.js(jpeg-js 0.4.4)
+src/libs/          vendored: pdf.js, pdf-lib, fontkit, pako, jpeg-decoder.js(jpeg-js 0.4.4),
+                   gray-jpeg.js(자체 1성분 JPEG 인코더 — 흑백 사진 재인코딩),
+                   gray-blend.js(저장 직전 투명도 흑백 합성 그룹 — 앱·조립 워커·편집기·임포징 도구 공용)
 src/convert_*.ps1  한글/Office/Adobe COM 변환 스크립트 (convert_hwp.ps1은 UTF-8 BOM 필수)
 scripts/smoke.js   npm run smoke
 ```
@@ -52,7 +54,8 @@ scripts/smoke.js   npm run smoke
 - **대상 판정은 `isBwTarget(r)`(app-core.js) 단일 함수** — 적용(buildBaseProcessed)과 다운로드(buildBaseOptimized) 두 파이프라인이 공유한다. 한쪽에만 조건을 추가하면 과거처럼 "다운로드본에서 정규화 누락" 버그가 재발한다.
 - 잉크 정규화(`processingOptions.inkNorm`, 기본 ON): 흑백 판정 페이지도 DeviceGray로 강제 — 프린터가 흑백으로 과금하게 함.
 - Dot Gain은 `_dotGainCtx`(WeakMap, pdfDoc별) — 회색 판정 페이지는 항상 0 강제.
-- 캐시: `_bwCache`(originalIdx→단일페이지 doc, 상한 800 FIFO), 분석 후 `prewarmInkNorm`, 적용 후 `prewarmOptimizedOutput`이 유휴 시간에 미리 계산.
+- 캐시: `_bwCache`(originalIdx→변환 문서의 쪽, **상한 없음** — 함정 9), 분석 후 `prewarmInkNorm`, 적용 후 `prewarmOptimizedOutput`이 유휴 시간에 미리 계산.
+- **Dot Gain**(◐ 없음·10·15·20%): 앱 전체 설정(localStorage `dotGainLevel`, 출력기 성질). 곡선은 `dotGainCurve` 하나 — **worker-gray.js와 app-process.js 두 벌이 같은 식**이어야 한다(`gray-colorspace.test.js`가 대조). 값은 `baseSignature`에 들어가 캐시가 갈린다.
 
 ### 3.3 임포징 (app-process.js, 모드 4종)
 - 공용: `embedAllPages(out, src, onProgress, extraRot)` — **pdf-lib `embedPage`는 `/Rotate`를 무시하므로 변환행렬로 굽는다** (90°: `[0,-1,1,0,0,w]`, 180°: `[-1,0,0,-1,w,h]`, 270°: `[0,1,-1,0,h,0]`).
@@ -85,7 +88,14 @@ scripts/smoke.js   npm run smoke
 7. **PGM/PPM 파싱 시 `#` 주석 줄 스킵** — 안 하면 전체 오판정.
 8. **Grep 도구가 한글+특수문자를 깨져 보이게 렌더링할 수 있음** — 파일 손상으로 오판하지 말고 `cat -A`나 Read로 재확인 후 수정할 것.
 10. **pdf.js로 쪽을 그림으로 굽는 곳은 `renderPageNoSeams`를 쓸 것** — 한글·오피스 변환 PDF는 사진을 가로 띠로 잘라 넣어, pdf.js 렌더에 띠 경계마다 1px 흰 줄이 구워진다. 그림 위치는 렌더 중 drawImage 가로채기로 얻는다(`getOperatorList`를 따로 부르면 페이지를 두 번 해석해 렌더 +93%).
-9. **탭 전환 시 캐시 오염**: 백그라운드 프리웜은 시작 시점 탭 id를 기억하고, 끝났을 때 탭이 바뀌었으면 `clearProcessCaches()`로 전부 폐기한다. 새 백그라운드 작업도 같은 패턴을 따를 것.
+9. **탭 전환·파일 교체·내부편집 중 캐시 오염**: 탭 id 비교만으로는 부족하다(파일 교체는 탭 id를 유지). 모든 비동기 빌드는 시작할 때 `_cacheGen`을 기억하고 **캐시에 쓰기 전·결과를 붙이기 전** 비교해 다르면 `staleCacheError()`를 던진다(`clearProcessCaches`가 세대를 올린다). 진행 중 빌드 합류(`_optInflight`)도 서명+세대로. `_bwCache`에 상한(FIFO)을 두지 말 것 — 800쪽 넘으면 방금 넣은 쪽이 지워져 적용본이 빈 A4가 됐다. `scripts/test/cache-generation.e2e.js`.
+11. **흑백 색 연산자는 성분 수로 색을 짐작하지 말 것** — `/DeviceGray cs 0 sc`(검정)를 별색으로 보고 흰색으로 뒤집었다. 색공간 정의를 `buildCsDesc`(app-process)로 설명자로 만들어 워커 `csToGray`가 계산한다(별색·DeviceN 함수 Type 0/2/3/4, Indexed 번호표, Lab). **ICCBased N=3이 RGB라는 보장이 없다** — 팬톤 대체 색공간은 Lab ICC라 헤더 서명(16~19바이트)으로 가린다. 모르면 성분 수 추정으로라도 회색화(컬러 과금 방지). 회귀: `gray-colorspace.test.js`, 실파일은 옛/새 코드를 gs로 원본 밝기와 대조(흰색 반전 픽셀 수).
+12. **콘텐츠 스트림을 못 풀었으면(LZW·필터 배열·inflate 실패) 그 쪽의 색공간 리소스를 지우지 말 것** — 남은 `/CS0 cs`가 없는 리소스를 불러 Acrobat 페이지 오류. `streamSkipped` 참조.
+14. **작업 파일(.pdfw)은 한 버퍼로 합치지 말 것** — 원본·적용본을 합치면 2GB 버퍼 한계를 넘어 저장이 실패했다. 저장은 `packWorkFileParts` 조각을 preload `writeBig`이 이어 쓰고, 열기는 `readWorkFileFromPath`가 `readFileRange`로 조각별로 읽는다(형식은 그대로). 압축 저장은 PDF가 이미 압축돼 실측 86.6%(대부분 95~99%)라 채택하지 않았다. `workfile-2gb.e2e.js`.
+15. **흑백 사진을 캔버스 JPEG로 되돌리지 말 것** — Chromium 캔버스는 1성분 JPEG를 못 만들어 회색을 R=G=B **RGB JPEG**로 담았고, 프린터·gs inkcov가 CMY를 잡아 컬러로 셀 수 있었다. `jpeg2gray`는 `libs/gray-jpeg.js`(허프만 최적화, q82)로 **DeviceGray JPEG**를 만든다 — 실측 158장에서 용량 94%·PSNR 동일, 실파일 28개 회귀에서 사진 CMY 9개 파일 → 0. Flate 무손실은 177~213%라 폴백 전용. DHT 길이 1바이트만 틀려도 jpeg-js는 받고 Chromium은 거부하니 `gray-jpeg.test.js`와 pdf.js 렌더로 함께 확인.
+16. **흑백으로 다 바꿔도 투명도 쪽은 프린터가 컬러로 셀 수 있다** — 페이지에 투명도 그룹(/Group)이 없으면 gs·RIP이 기본 출력 색공간에서 합성해, **격리 투명도 그룹 폼(/Group /I true)**이 있는 쪽은 회색이 C=M=Y+K로 나온다(단순 ca·SMask는 재현 안 됨). 흑백변환 쪽만 고치면 안 된다 — 임포징·모아찍기의 `embedPage` 판에는 그룹이 없어 되살아나고 폼에 그룹을 달아도 무효(실측). 그래서 **모든 저장이 지나는 `savePdfDoc`**(app-core·worker-assemble·editor·임포징 독립 도구 네 벌 — 한 줄 그대로 유지)이 `libs/gray-blend.js` `addGrayBlendGroups`로 "그룹 없음 + 투명도 사용 + 그리는 색이 전부 무채색"인 쪽에만 DeviceGray 그룹을 단다. 컬러가 한 점이라도 있으면 달지 않는다(색이 회색으로 합성됨). 실파일 28개 CMY 11개 → 0. `gray-blend.test.js`, `gray-blend-imposition.e2e.js`(중철·다운로드까지 gs inkcov).
+17. **부속 스트림(색상표·ICC·함수 표본)을 Flate만 풀지 말 것** — ASCII85 색상표 Indexed 이미지가 통째로 건너뛰어져 컬러로 남았다. `pdfStreamDecoded`(Flate는 잘린 스트림 복구, 그 밖은 pdf-lib 디코더, 예측자 있으면 null). 인라인 이미지 사전 안 색상표(`/CS [/I /RGB n <…>]`)는 워커 `inlineIndexedToGray`가 색상표만 회색으로.
+13. **COM 변환(한글·Office·Adobe)은 사용자가 켜 둔 앱에 붙을 수 있다** — 스크립트가 새로 띄운 프로세스만 `COMPID:n`으로 알리고, 그때만 Quit·시간 초과 시 taskkill. 켜져 있던 앱이면 우리가 연 문서만 닫는다. Office는 `AutomationSecurity=3`(매크로 차단).
 
 ## 6. UI 규약
 
@@ -99,7 +109,7 @@ scripts/smoke.js   npm run smoke
 
 **"동작한다"의 기준은 눈과 수치다. 코드가 그럴듯한 것은 증거가 아니다.**
 
-1. **스모크**: `npm run smoke` — 모든 커밋 전.
+1. **스모크**: `npm run smoke` — 모든 커밋 전. 검사 모드(`TEST_WINDOW=left`)는 사용자 폴더를 따로 써서(사용자가 켜 둔 앱과 단일 인스턴스 잠금이 겹치지 않게) 부팅하고, 앱이 찍는 `[SMOKE] BOOT_OK`가 없으면 실패다 — 예전엔 앱이 곧바로 꺼져도 로그가 비어 '통과'였다. 검사 모드는 임시파일 정리·원격 서버·인쇄 감시를 돌리지 않는다.
 2. **파이프라인 로직**: 순수 함수(순서 계산 등)는 스크래치 폴더에 노드 테스트를 만들어 **앱 파일에서 함수를 추출(eval)해 실제 코드로** 검증한다. 테스트용 복사본을 따로 만들지 말 것(드리프트).
 3. **PDF 출력 시각 검증**: Ghostscript로 렌더해 이미지를 직접 확인한다.
    `"C:\Program Files\gs\gs10.07.1\bin\gswin64c.exe" -q -dNOPAUSE -dBATCH -sDEVICE=png16m -r72 -o out_%d.png in.pdf`

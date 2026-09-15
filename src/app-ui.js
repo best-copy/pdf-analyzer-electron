@@ -2355,6 +2355,7 @@
     // 순서 기준이며 그룹끼리 겹치지 않는다(챕터별 개별 설정 + 전역 설정 나머지).
     // 폰트 파일 읽기(electronAPI.readFile)는 워커에서 접근 불가한 API라 여기서 미리 읽어 전달한다.
     async function applyLayoutTransform(srcBytes, groups, baseSig, opts) {
+      const gen = _cacheGen;
       // 로마자 번호(목차·지정 페이지) — 문서 전체 기준으로 배정 후, 표본 미리보기면 창만큼 슬라이스
       const win = opts && opts.window;
       const pick = opts && opts.pick;          // 표본 창이 연속 구간이 아닐 때(챕터 집중)의 인덱스 목록
@@ -2462,7 +2463,7 @@
         }, transfer
       );
       const out = new Uint8Array(resultBytes);
-      _layoutCache = { sig, bytes: out };
+      if (gen === _cacheGen) _layoutCache = { sig, bytes: out };   // 도중에 문서가 바뀌었으면 캐시에 남기지 않는다
       return out;
     }
 
@@ -3712,6 +3713,11 @@
 
     // ✂ 재단선 설정(모양·간격·길이·굵기·중앙마크) 마지막 값 복원 — 문서와 무관한 작업 습관이라
     // localStorage에 남겨 앱을 다시 켜도 그대로 쓴다. (저장은 impCropStyleChanged에서)
+    // ◐ Dot Gain 보정 — 앱 전체 설정(출력기 성질)이라 마지막 값을 복원한다
+    (function initDotGain() {
+      if (typeof restoreDotGain === 'function') restoreDotGain();
+    })();
+
     (function initImpCropStyle() {
       if (typeof restoreImpCropStyle === 'function') restoreImpCropStyle();
     })();

@@ -11,7 +11,7 @@ const ROOT = path.join(__dirname, '..');
 const JS_FILES = [
   'main.js', 'preload.js',
   'src/app-core.js', 'src/app-process.js', 'src/app-ui.js', 'src/seam-repair.js',
-  'src/worker-gray.js', 'src/worker-assemble.js',
+  'src/worker-gray.js', 'src/worker-assemble.js', 'src/libs/gray-jpeg.js', 'src/libs/gray-blend.js',
 ];
 
 // 인라인 스크립트를 품은 HTML — 구문이 깨져도 앱은 조용히 '그 창만' 죽으므로 꼭 검사한다
@@ -60,7 +60,8 @@ for (const f of HTML_FILES) {
 
 
 // ── 1-c) 창 없이 도는 단위 테스트 (Electron을 띄우지 않는다) ─────────────────
-for (const t of ['scripts/test/seam-repair.test.js', 'scripts/test/inline-image.test.js']) {
+for (const t of ['scripts/test/seam-repair.test.js', 'scripts/test/inline-image.test.js', 'scripts/test/gray-colorspace.test.js', 'scripts/test/gray-jpeg.test.js', 'scripts/test/gray-blend.test.js',
+                 'scripts/test/workfile.test.js', 'scripts/test/download-name.test.js']) {
   try {
     execFileSync(process.execPath, [path.join(ROOT, t)], { stdio: 'pipe' });
     console.log(`  ✔ test    ${t}`);
@@ -96,7 +97,15 @@ setTimeout(() => {
     bad.slice(0, 10).forEach(l => console.error('    ' + l.trim()));
     process.exit(1);
   }
-  console.log('  ✔ 부팅 오류 없음');
+  // 부팅 완료 신호(main.js 검사 모드가 세 app-*.js의 전역 함수를 확인해 찍는다).
+  // 오류 로그가 없다는 것만으로는 부팅을 증명하지 못한다 — 앱이 곧바로 꺼져도 로그는 비어 있다.
+  const missing = (logs.match(/\[SMOKE\] BOOT_MISSING (.*)/) || [])[1];
+  if (missing || !/\[SMOKE\] BOOT_OK/.test(logs)) {
+    console.error(missing ? `  ✘ 스크립트가 끝까지 실행되지 않음 — 없는 전역: ${missing}`
+      : '  ✘ 부팅 완료 신호가 없음 — 앱이 곧바로 꺼졌거나(단일 인스턴스 잠금 등) 화면이 로드되지 않음');
+    process.exit(1);
+  }
+  console.log('  ✔ 부팅 완료 신호 확인 · 부팅 오류 없음');
   console.log('\n스모크 테스트 통과 ✅');
   process.exit(0);
 }, BOOT_MS);

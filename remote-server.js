@@ -61,12 +61,17 @@ function lanInfo() {
 
 // ── 토큰 검사 (헤더 X-Auth-Token 또는 쿼리 ?t=) ─────────────────────────────
 // PC가 공인 IP를 직접 가진 환경도 있으므로(사무실 회선에 따라) 무차별 대입 방어:
-// 최근 1분간 인증 실패 10회 초과 시 잠시 차단(429).
-let _authFails = [];
-function authThrottled() {
-  const now = Date.now();
-  _authFails = _authFails.filter(t => now - t < 60000);
-  return _authFails.length >= 10;
+// 최근 1분간 인증 실패 10회 초과 시 잠시 차단(429) — **보낸 주소(IP)별로** 센다.
+// 예전에는 전체 합계라, 인터넷 포트 스캔·브라우저의 /favicon.ico 요청만으로 정상 폰까지 막혔다.
+// 토큰을 아예 보내지 않은 요청은 대입 시도가 아니므로 세지 않는다(401만 돌려준다).
+const _authFails = new Map();   // ip → [실패 시각…]
+function clientIp(req) { return String((req.socket && req.socket.remoteAddress) || ''); }
+function authThrottled(req) {
+  const now = Date.now(), ip = clientIp(req);
+  const list = (_authFails.get(ip) || []).filter(t => now - t < 60000);
+  if (list.length) _authFails.set(ip, list); else _authFails.delete(ip);
+  if (_authFails.size > 5000) _authFails.clear();   // 주소가 끝없이 바뀌는 스캔에도 메모리가 늘지 않게
+  return list.length >= 10;
 }
 function checkToken(req, url) {
   const got = String(req.headers['x-auth-token'] || url.searchParams.get('t') || '');
@@ -75,7 +80,10 @@ function checkToken(req, url) {
   if (got.length === want.length) {
     try { ok = crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want)); } catch (e) { ok = false; }
   }
-  if (!ok) _authFails.push(Date.now());
+  if (!ok && got) {
+    const ip = clientIp(req);
+    _authFails.set(ip, (_authFails.get(ip) || []).concat(Date.now()));
+  }
   return ok;
 }
 
@@ -140,7 +148,7 @@ async function handle(req, res) {
     } catch (e) { return json(res, 500, { error: String(e && e.message || e) }); }
   }
 
-  if (authThrottled()) return json(res, 429, { error: '인증 시도가 너무 많습니다 — 1분 후 다시 시도하세요.' });
+  if (authThrottled(req)) return json(res, 429, { error: '인증 시도가 너무 많습니다 — 1분 후 다시 시도하세요.' });
   if (!checkToken(req, url)) return json(res, 401, { error: '인증 실패 — QR을 다시 스캔하거나 토큰을 확인하세요.' });
 
   // 서버 정보 (토큰 필요) — 연결 화면·WoL 정보

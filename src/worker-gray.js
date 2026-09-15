@@ -8,6 +8,7 @@
 
 importScripts('./libs/pako.min.js');
 importScripts('./libs/jpeg-decoder.js');   // jpeg-js: Adobe CMYK/YCCK JPEG 정밀 디코드용
+importScripts('./libs/gray-jpeg.js');      // 1성분(DeviceGray) JPEG 인코더 — 흑백 사진 재인코딩
 
 // ── JPEG SOF 마커 파싱: 이미지 컴포넌트 수 반환 ────────────────────────────────
 // 3 = YCbCr (일반 RGB JPEG), 4 = CMYK / YCCK (PowerPoint·InDesign 등), 1 = Grayscale
@@ -98,27 +99,22 @@ function applyPNGPredictorGray(raw, w, h) {
 }
 
 // ── Dot Gain 보정 LUT ────────────────────────────────────────────────────────
-// Dot Gain G%: 잉크 닷이 인쇄 시 번져 보이는 현상 보정
-// 모델: apparent_coverage = t + 4G·t·(1-t) (파라볼라)
-// 역산: 원하는 표시 농도 L에서 장치값 d 도출 → PDF 저장값 = 1-d
-// G=25% 특수: (1-t)² = L → t = 1-√L → stored = √L (간단한 sqrt)
-// G=20%: 0.8·d²-1.8·d+(1-L)=0 → d = (1.8-√(0.04+3.2L))/1.6
+// Dot Gain 보정 곡선 — v: 밝기(0=검정·1=흰색) → 인쇄에서 망점이 번져 어두워질 것을 미리 밝게 한 값.
+// 망점 번짐 모델: 인쇄 농도 = c + 4g·c·(1−c) (50% 망점에서 g만큼 더 진해짐) → 원하는 농도 t가 나오도록 c를 역산한다.
+// gain: 0(보정 없음) · 10 · 15 · 20 (%) — 25는 예전 프리셋 호환(√v).
+// ⚠ app-process.js dotGainCurve와 **같은 식**이어야 한다(scripts/test/gray-colorspace.test.js가 대조).
+function dotGainCurve(v, gain) {
+  v = v < 0 ? 0 : v > 1 ? 1 : v;
+  if (!gain) return v;
+  if (gain === 25) return Math.sqrt(v);
+  const g = gain / 100, t = 1 - v, b = 1 + 4 * g;
+  const disc = b * b - 16 * g * t;
+  const c = (b - Math.sqrt(disc < 0 ? 0 : disc)) / (8 * g);
+  return 1 - (c < 0 ? 0 : c > 1 ? 1 : c);
+}
 function buildDotGainLUT(gain) {
   const lut = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) {
-    const v = i / 255; // v: 0=검정, 1=흰색 (PDF DeviceGray 기준)
-    let out;
-    if (gain === 25) {
-      out = Math.sqrt(v);
-    } else if (gain === 20) {
-      const disc = 0.04 + 3.2 * v;
-      const d = disc < 0 ? 0 : (1.8 - Math.sqrt(disc)) / 1.6;
-      out = 1 - Math.max(0, Math.min(1, d));
-    } else {
-      out = v;
-    }
-    lut[i] = Math.round(Math.max(0, Math.min(255, out * 255)));
-  }
+  for (let i = 0; i < 256; i++) lut[i] = Math.round(dotGainCurve(i / 255, gain) * 255);
   return lut;
 }
 
@@ -200,6 +196,26 @@ function scanInlineImage(raw, bi) {
   return { ok: false, next: n };                                          // EI가 끝까지 없음 — 뒤의 BI도 마찬가지
 }
 
+// 인라인 Indexed 색공간의 색상표(16진 문자열)를 회색으로 — 순수 함수. 바꿀 것이 없거나 모르면 null.
+// (XObject Indexed의 app-process.js convertIndexedImagePalette와 같은 식: RGB는 BT.601 휘도, CMYK는 보색×(1-K))
+function inlineIndexedToGray(dict) {
+  const re = /(\/(?:CS|ColorSpace)\s*)\[\s*\/(?:I|Indexed)\s*\/(RGB|DeviceRGB|CMYK|DeviceCMYK)\s+(\d+)\s*<([0-9A-Fa-f\s]*)>\s*\]/;
+  const m = dict.match(re);
+  if (!m) return null;
+  const nc = /RGB/.test(m[2]) ? 3 : 4, hival = +m[3];
+  const hex = m[4].replace(/\s+/g, '');
+  if (!(hival >= 0 && hival <= 255) || hex.length < (hival + 1) * nc * 2) return null;
+  const b = i => parseInt(hex.substr(i * 2, 2), 16) / 255;
+  let out = '';
+  for (let i = 0; i <= hival; i++) {
+    const o = i * nc;
+    const g = nc === 3 ? 0.299 * b(o) + 0.587 * b(o + 1) + 0.114 * b(o + 2)
+      : 0.299 * (1 - b(o)) * (1 - b(o + 3)) + 0.587 * (1 - b(o + 1)) * (1 - b(o + 3)) + 0.114 * (1 - b(o + 2)) * (1 - b(o + 3));
+    out += Math.round(Math.max(0, Math.min(1, g)) * 255).toString(16).padStart(2, '0').toUpperCase();
+  }
+  return dict.replace(re, `${m[1]}[/I /G ${hival} <${out}>]`);
+}
+
 // 인라인 이미지를 바이트 단계에서 처리 — grayifyStream 이전에 실행한다.
 //  · 비압축 8비트 RGB/CMYK이고 경계가 길이로 **확정**된 그림만 DeviceGray로 변환
 //    (Decode 배열·ImageMask·경계가 애매한 그림은 성분 수나 위치가 틀어질 수 있어 그대로 둔다)
@@ -215,6 +231,16 @@ function preprocessInlineImages(raw, dotGain) {
     const img = scanInlineImage(raw, bi);
     if (!img.ok) { j = img.next; continue; }                   // 경계 불명 — 바이트를 버리지 않고 넘어간다
     j = img.end;
+    // 사전 안에 색상표를 직접 적은 Indexed(/CS [/I /RGB 15 <…>]) — 색상표만 회색으로 바꾼다(픽셀·데이터 바이트는 그대로).
+    // 예전엔 성분 수를 몰라 통째로 건너뛰어 컬러가 남았다(교안 PDF 실파일의 주황 아이콘).
+    const palDict = inlineIndexedToGray(img.dict);
+    if (palDict !== null) {
+      const dictStart = bi + 3;
+      chunks.push(raw.slice(pos, dictStart));
+      chunks.push(encodeLatin1(palDict));
+      pos = dictStart + img.dict.length;               // 사전 뒤(ID·데이터·EI)는 원본 바이트 그대로 복사된다
+      continue;
+    }
     const { w, h } = img;
     const ch = img.isRGB ? 3 : 4;
     if (!(img.exact && !img.ambiguous && !img.hasFilter && !img.hasDecode && !img.imageMask
@@ -289,42 +315,206 @@ function encodeLatin1(str) {
   return b;
 }
 
-// applyOps용 정규식 pre-compile (매 호출 new RegExp 생성 방지 — 속도 최적화)
+// ── 색 연산자 인식 (한 번에, 스트림 순서대로) ─────────────────────────────────
+// 예전에는 연산자 종류마다 정규식을 따로 돌리고 성분 수(4·3·1)만 보고 색을 짐작했다. 그래서
+//  · '/DeviceGray cs 0 sc'(이미 회색인 검정)를 별색 틴트로 보고 1-t = 흰색으로 뒤집었고 → 글자가 사라짐
+//  · 성분 2개·5개(DeviceN)는 뒤쪽 숫자만 잡혀 '0.3 0.2000 g'처럼 피연산자가 남았고 → Acrobat 페이지 오류
+//  · 한 조각 안에 cs가 여럿이면 마지막 cs 기준으로 모든 sc를 바꿨다.
+// 이제는 cs/CS·q/Q·색 연산자를 나온 순서대로 읽어 '지금 색공간'을 따라가고, 색공간 정의(app-process.js
+// buildCsDesc가 만든 설명자)로 **실제 색을 계산해** DeviceGray(g/G)로 바꾼다 — 별색·DeviceN은 변환 함수를,
+// Indexed는 색 번호표를 풀어서. 정의를 끝내 모르면 성분 수로 추정해서라도 회색으로 바꾼다
+// (색으로 남기면 프린터가 컬러로 과금한다). 원본대로 두는 것은 패턴 채우기 지정뿐 — 패턴 내용은 따로 변환된다.
 // _LB: 좌측 경계. 패턴 이름(/P8, /Meta682 등) 내부의 숫자를 색상 틴트로 오매칭하면
 //      '/P8 scn' → '/P-7.0000 g' 처럼 토큰이 깨져 Acrobat이 페이지 오류를 낸다.
 //      → 숫자 토큰 앞이 이름/숫자 구성문자가 아닐 때만(공백·연산자 경계) 매칭.
-const _NB = '(-?\\d*\\.?\\d+)', _WS = '\\s+', _TL = '(?=[\\s\\r\\n]|$)', _LB = '(?<![\\w/.#-])';
-const _RE_rg   = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}rg${_TL}`, 'gm');
-const _RE_RG   = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}RG${_TL}`, 'gm');
-const _RE_k    = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}k${_TL}`, 'gm');
-const _RE_K    = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}K${_TL}`, 'gm');
-const _RE_SCN4 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn4 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC4  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc4  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
-const _RE_SCN3 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn3 = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC3  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc3  = new RegExp(`${_LB}${_NB}${_WS}${_NB}${_WS}${_NB}${_WS}sc${_TL}`, 'gm');
-const _RE_SCN1 = new RegExp(`${_LB}${_NB}${_WS}SCN${_TL}`, 'gm');
-const _RE_scn1 = new RegExp(`${_LB}${_NB}${_WS}scn${_TL}`, 'gm');
-const _RE_SC1  = new RegExp(`${_LB}${_NB}${_WS}SC${_TL}`, 'gm');
-const _RE_sc1  = new RegExp(`${_LB}${_NB}${_WS}sc${_TL}`, 'gm');
+const _NB = '-?\\d*\\.?\\d+', _TL = '(?=[\\s\\r\\n]|$)', _LB = '(?<![\\w/.#-])';
+const _RE_OPS = new RegExp(
+  '\\/([^\\s/\\[\\]<>(){}%]+)\\s+(cs|CS)' + _TL +                               // 1,2: /이름 cs
+  '|' + _LB + '((?:' + _NB + '\\s+)*)(rg|RG|k|K|scn|SCN|sc|SC|g|G)' + _TL +     // 3,4: 숫자들 색연산자
+  '|' + _LB + '(q|Q)' + _TL,                                                     // 5: 그래픽 상태 저장/복원
+  'gm');
+// 인라인 이미지에서 쓰는 약어·내장 색공간 이름 (리소스를 부르지 않는 것)
+const _INLINE_CS_ABBR = new Set(['G', 'RGB', 'CMYK', 'I', 'DeviceGray', 'DeviceRGB', 'DeviceCMYK', 'Indexed', 'CalGray', 'CalRGB']);
+// 리소스 없이 쓰는 내장 색공간 이름
+const _DEVICE_CS = {
+  DeviceGray: { kind: 'Gray', n: 1 }, CalGray: { kind: 'Gray', n: 1 },
+  DeviceRGB: { kind: 'RGB', n: 3 }, CalRGB: { kind: 'RGB', n: 3 },
+  DeviceCMYK: { kind: 'CMYK', n: 4 }, Pattern: { kind: 'Pattern' },
+};
 
-function grayifyStream(bytes, csGrayMap, dotGain) {
+// ── PDF 함수·색공간 계산 ────────────────────────────────────────────────────────
+// 설명자(desc)는 app-process.js buildCsDesc가 만든 순수 데이터(워커로 보낼 수 있게):
+//  { kind:'Gray'|'RGB'|'CMYK'|'Lab'|'Pattern'|'Sep'|'DeviceN'|'Indexed'|'Unknown', n, fn, alt, base, hival, lookup }
+//  fn: { t:0, domain, range, size, bps, encode, decode, samples } | { t:2, domain, range, c0, c1, N }
+//    | { t:3, domain, range, fns, bounds, encode } | { t:4, domain, range, ops }
+const _clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+// PostScript 계산식(Type 4) — ops는 숫자·연산자 이름·'{' '}' 토큰 배열
+function runPsCalc(ops, input) {
+  const st = input.slice();
+  const pop = () => st.pop();
+  const matchBrace = (i, e) => { let d = 1, j = i + 1; for (; j < e && d; j++) { if (ops[j] === '{') d++; else if (ops[j] === '}') d--; } return j; }; // '}' 다음 위치
+  const run = (s, e) => {
+    for (let i = s; i < e; i++) {
+      const t = ops[i];
+      if (typeof t === 'number') { st.push(t); continue; }
+      if (t === '{') {
+        const j = matchBrace(i, e);                     // 첫 블록 [i+1, j-1)
+        if (ops[j] === '{') {                           // cond {a} {b} ifelse
+          const k = matchBrace(j, e);
+          if (pop()) run(i + 1, j - 1); else run(j + 1, k - 1);
+          i = k;                                        // ops[k] === 'ifelse'
+        } else {                                        // cond {a} if
+          if (pop()) run(i + 1, j - 1);
+          i = j;                                        // ops[j] === 'if'
+        }
+        continue;
+      }
+      let a, b;
+      switch (t) {
+        case 'abs': st.push(Math.abs(pop())); break;
+        case 'add': b = pop(); a = pop(); st.push(a + b); break;
+        case 'sub': b = pop(); a = pop(); st.push(a - b); break;
+        case 'mul': b = pop(); a = pop(); st.push(a * b); break;
+        case 'div': b = pop(); a = pop(); st.push(b === 0 ? 0 : a / b); break;
+        case 'idiv': b = pop(); a = pop(); st.push(b === 0 ? 0 : Math.trunc(a / b)); break;
+        case 'mod': b = pop(); a = pop(); st.push(b === 0 ? 0 : a % b); break;
+        case 'neg': st.push(-pop()); break;
+        case 'ceiling': st.push(Math.ceil(pop())); break;
+        case 'floor': st.push(Math.floor(pop())); break;
+        case 'round': st.push(Math.round(pop())); break;
+        case 'truncate': case 'cvi': st.push(Math.trunc(pop())); break;
+        case 'cvr': break;
+        case 'sqrt': st.push(Math.sqrt(Math.max(0, pop()))); break;
+        case 'sin': st.push(Math.sin(pop() * Math.PI / 180)); break;
+        case 'cos': st.push(Math.cos(pop() * Math.PI / 180)); break;
+        case 'atan': b = pop(); a = pop(); { let r = Math.atan2(a, b) * 180 / Math.PI; if (r < 0) r += 360; st.push(r); } break;
+        case 'exp': b = pop(); a = pop(); st.push(Math.pow(a, b)); break;
+        case 'ln': st.push(Math.log(pop())); break;
+        case 'log': st.push(Math.log10(pop())); break;
+        case 'eq': b = pop(); a = pop(); st.push(a === b); break;
+        case 'ne': b = pop(); a = pop(); st.push(a !== b); break;
+        case 'gt': b = pop(); a = pop(); st.push(a > b); break;
+        case 'ge': b = pop(); a = pop(); st.push(a >= b); break;
+        case 'lt': b = pop(); a = pop(); st.push(a < b); break;
+        case 'le': b = pop(); a = pop(); st.push(a <= b); break;
+        case 'and': b = pop(); a = pop(); st.push(typeof a === 'boolean' ? a && b : a & b); break;
+        case 'or': b = pop(); a = pop(); st.push(typeof a === 'boolean' ? a || b : a | b); break;
+        case 'xor': b = pop(); a = pop(); st.push(typeof a === 'boolean' ? a !== b : a ^ b); break;
+        case 'not': a = pop(); st.push(typeof a === 'boolean' ? !a : ~a); break;
+        case 'bitshift': b = pop(); a = pop(); st.push(b >= 0 ? a << b : a >> -b); break;
+        case 'true': st.push(true); break;
+        case 'false': st.push(false); break;
+        case 'pop': pop(); break;
+        case 'dup': st.push(st[st.length - 1]); break;
+        case 'exch': b = pop(); a = pop(); st.push(b, a); break;
+        case 'copy': { const n = pop(); st.push(...st.slice(st.length - n)); break; }
+        case 'index': { const n = pop(); st.push(st[st.length - 1 - n]); break; }
+        case 'roll': {
+          const j = pop(), n = pop();
+          if (n > 0) { const part = st.splice(st.length - n, n); const s2 = ((j % n) + n) % n; st.push(...part.slice(n - s2), ...part.slice(0, n - s2)); }
+          break;
+        }
+        default: throw new Error('ps op ' + t);
+      }
+    }
+  };
+  run(0, ops.length);
+  return st.map(v => (typeof v === 'boolean' ? (v ? 1 : 0) : +v));
+}
+
+// 함수 설명자 → (입력 배열 → 출력 배열) 함수. 만들 수 없으면 null
+function makePdfFn(fd) {
+  if (!fd) return null;
+  const dom = fd.domain || [0, 1];
+  const clampIn = x => x.map((v, i) => _clamp(+v || 0, dom[2 * i] ?? 0, dom[2 * i + 1] ?? 1));
+  const clampOut = y => (fd.range ? y.map((v, i) => (fd.range[2 * i] == null ? v : _clamp(v, fd.range[2 * i], fd.range[2 * i + 1]))) : y);
+  if (fd.t === 2) {
+    return x => { const t = clampIn(x)[0]; const tn = Math.pow(t, fd.N); return clampOut(fd.c0.map((c, i) => c + tn * ((fd.c1[i] ?? c) - c))); };
+  }
+  if (fd.t === 3) {
+    const subs = (fd.fns || []).map(makePdfFn);
+    if (subs.some(f => !f)) return null;
+    return x => {
+      const t = clampIn(x)[0], bd = fd.bounds || [];
+      let k = 0; while (k < bd.length && t >= bd[k]) k++;
+      const lo = k === 0 ? dom[0] : bd[k - 1], hi = k === bd.length ? dom[1] : bd[k];
+      const e0 = fd.encode[2 * k], e1 = fd.encode[2 * k + 1];
+      return clampOut(subs[k]([hi === lo ? e0 : e0 + (t - lo) * (e1 - e0) / (hi - lo)]));
+    };
+  }
+  if (fd.t === 0) {
+    const m = fd.size.length, nOut = fd.range.length / 2, maxS = Math.pow(2, fd.bps) - 1;
+    const enc = fd.encode || fd.size.flatMap(s => [0, s - 1]);
+    const dec = fd.decode || fd.range;
+    const at = idx => { let off = 0, mul = 1; for (let i = 0; i < m; i++) { off += idx[i] * mul; mul *= fd.size[i]; } return off * nOut; };
+    return x => {
+      x = clampIn(x);
+      const pos = x.map((v, i) => {
+        const d0 = dom[2 * i], d1 = dom[2 * i + 1];
+        return _clamp(enc[2 * i] + (d1 === d0 ? 0 : (v - d0) * (enc[2 * i + 1] - enc[2 * i]) / (d1 - d0)), 0, fd.size[i] - 1);
+      });
+      const out = new Array(nOut);
+      if (m === 1) {                                  // 1차원(별색 틴트)은 선형 보간
+        const i0 = Math.floor(pos[0]), i1 = Math.min(i0 + 1, fd.size[0] - 1), f = pos[0] - i0;
+        const a = at([i0]), b = at([i1]);
+        for (let j = 0; j < nOut; j++) out[j] = fd.samples[a + j] + f * (fd.samples[b + j] - fd.samples[a + j]);
+      } else {                                        // 다차원은 가장 가까운 칸
+        const o = at(pos.map(Math.round));
+        for (let j = 0; j < nOut; j++) out[j] = fd.samples[o + j];
+      }
+      return clampOut(out.map((sv, j) => dec[2 * j] + sv * (dec[2 * j + 1] - dec[2 * j]) / maxS));
+    };
+  }
+  if (fd.t === 4 && fd.ops) return x => clampOut(runPsCalc(fd.ops, clampIn(x)));
+  return null;
+}
+
+// 성분 수만으로 추정 — 색공간 정의를 끝내 알 수 없을 때(그래도 회색으로 바꿔 프린터 컬러 과금을 막는다)
+function guessGray(v) {
+  if (v.length === 1) return _clamp(+v[0], 0, 1);
+  if (v.length === 3) return _clamp(0.299 * v[0] + 0.587 * v[1] + 0.114 * v[2], 0, 1);
+  if (v.length === 4) return _clamp(0.299 * (1 - v[0]) * (1 - v[3]) + 0.587 * (1 - v[1]) * (1 - v[3]) + 0.114 * (1 - v[2]) * (1 - v[3]), 0, 1);
+  return 1 - _clamp(v.reduce((s, x) => s + +x, 0), 0, 1);   // 여러 잉크 — 잉크 합이 많을수록 어둡게
+}
+
+// 색공간 설명자 + 성분 → 밝기 0~1. 정의대로 계산할 수 없으면 null
+function csToGray(d, v) {
+  if (!d) return null;
+  v = v.map(Number);
+  switch (d.kind) {
+    case 'Gray': return v.length === 1 ? _clamp(v[0], 0, 1) : null;
+    case 'RGB': return v.length === 3 ? _clamp(0.299 * v[0] + 0.587 * v[1] + 0.114 * v[2], 0, 1) : null;
+    case 'CMYK': return v.length === 4 ? guessGray(v) : null;
+    case 'Lab': return v.length === 3 ? _clamp(v[0] / 100, 0, 1) : null;   // L* 0~100
+    case 'XYZ': return v.length === 3 ? _clamp(v[1], 0, 1) : null;         // Y = 휘도
+    case 'Sep': case 'DeviceN': {
+      if (v.length !== (d.n || 1)) return null;
+      if (d.fn && d._fn === undefined) { try { d._fn = makePdfFn(d.fn); } catch (e) { d._fn = null; } }
+      if (d._fn) {
+        try { const g = csToGray(d.alt, d._fn(v)); if (g != null && isFinite(g)) return g; } catch (e) { d._fn = null; }
+      }
+      return 1 - _clamp(v.reduce((s, x) => s + x, 0), 0, 1);             // 변환 함수를 못 풀면 잉크 양으로
+    }
+    case 'Indexed': {
+      const nb = d.base && d.base.n;
+      if (v.length !== 1 || !nb || !d.lookup) return null;
+      const idx = _clamp(Math.round(v[0]), 0, d.hival | 0);
+      const comps = [];
+      for (let j = 0; j < nb; j++) comps.push((d.lookup[idx * nb + j] || 0) / 255);
+      if (d.base.kind === 'Lab') { comps[0] *= 100; }                     // 번호표 바이트 → L* 범위
+      return csToGray(d.base, comps);
+    }
+  }
+  return null;
+}
+
+// csGrayMap: { '/이름': 색공간 설명자 } (app-process.js buildCsDesc)
+// info(선택): { stat: {} } — guessed(정의를 몰라 성분 수로 추정한 색 연산자 수) 등을 모은다.
+function grayifyStream(bytes, csGrayMap, dotGain, info) {
   const s = decodeLatin1(bytes);
   // dotGain 보정 함수 (0-1 범위, 0=검정 1=흰색)
-  const dgApply = (v) => {
-    if (!dotGain) return v;
-    const vv = Math.max(0, Math.min(1, v));
-    if (dotGain === 25) return Math.sqrt(vv);
-    if (dotGain === 20) {
-      const disc = 0.04 + 3.2 * vv;
-      const d = (1.8 - Math.sqrt(disc < 0 ? 0 : disc)) / 1.6;
-      return 1 - Math.max(0, Math.min(1, d));
-    }
-    return vv;
-  };
+  const dgApply = (v) => dotGainCurve(v, dotGain);
   // BT.601 휘도: JPEG Y채널 공식과 일치 → 이미지·벡터 동일 기준
   const lum = (r, g, b) => dgApply(0.299*+r + 0.587*+g + 0.114*+b).toFixed(4);
   const lumCmyk = (c, m, y, k) => {
@@ -332,82 +522,56 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
     return dgApply(0.299*R + 0.587*G + 0.114*B).toFixed(4);
   };
 
-  // csGrayMap을 사용하여 Separation tint → 정확한 그레이 변환
-  // Type 2 함수: f(t) = C0 + t^N * (C1 - C0)
-  const tintToGray = (csInfo, t) => {
-    const tv = +t;
-    const tN = Math.pow(tv, csInfo.N);
-    const ch = csInfo.c0.map((c0v, i) => c0v + tN * (csInfo.c1[i] - c0v));
-    const alt = csInfo.altName;
-    if (alt === '/DeviceCMYK' && ch.length >= 4) {
-      return lumCmyk(ch[0], ch[1], ch[2], ch[3]);
-    } else if (alt === '/DeviceRGB' && ch.length >= 3) {
-      return lum(ch[0], ch[1], ch[2]);
-    } else if (alt === '/DeviceGray' && ch.length >= 1) {
-      return dgApply(+ch[0]).toFixed(4);
+  // 지금 채우기·선 색공간 { name, d(설명자) } — q/Q로 저장·복원된다(색공간은 그래픽 상태의 일부)
+  const DEV_GRAY = { name: 'DeviceGray', d: _DEVICE_CS.DeviceGray };
+  let fill = DEV_GRAY, stroke = DEV_GRAY;
+  const gsStack = [];
+  const stat = (info && info.stat) || {};
+  const bump = k => { stat[k] = (stat[k] || 0) + 1; };
+  // 명명 색공간 이름 → 설명자. 리소스에 없는 이름은 Unknown(성분 수로 추정)
+  const descOf = name => (csGrayMap && csGrayMap['/' + name]) || _DEVICE_CS[name] || { kind: 'Unknown' };
+  const f4 = v => dgApply(_clamp(+v, 0, 1)).toFixed(4);
+  // cs 직후의 초기색(규격) — 별색·DeviceN은 틴트 1(잉크 가득), Indexed는 0번, 나머지는 검정
+  const initialGray = d => {
+    if (d.kind === 'Sep' || d.kind === 'DeviceN') { const g = csToGray(d, new Array(d.n || 1).fill(1)); return f4(g == null ? 0 : g); }
+    if (d.kind === 'Indexed') { const g = csToGray(d, [0]); return f4(g == null ? 0 : g); }
+    return '0.0000';
+  };
+
+  const applyOps = seg => seg.replace(_RE_OPS, (m, csName, csOp, nums, op, qop) => {
+    if (qop) {
+      if (qop === 'q') gsStack.push([fill, stroke]);
+      else if (gsStack.length) [fill, stroke] = gsStack.pop();
+      return m;
     }
-    // 알 수 없는 색공간 — 단순 반전 폴백
-    return dgApply(1 - tv).toFixed(4);
-  };
-
-  // 현재 스트로크/채우기 색공간 이름 추적 (cs/CS 연산자 파싱)
-  // → scn/SCN에서 색공간 이름별 정확한 변환 적용
-  let fillCS = null, strokeCS = null;
-
-  const applyOps = seg => {
-    // /name cs, /name CS 색공간 지정
-    // Pattern 색공간은 제거하지 않음 (제거 시 /P0 SCN 등 패턴 호출이 오류 유발)
-    seg = seg.replace(/\/(\w+)\s+cs(?=[\s\r\n]|$)/gm, (_, name) => {
-      fillCS = '/' + name;
-      // csGrayMap 키는 '/' 포함 형태 (예: '/CS2') → '/' + name 으로 조회
-      const info = csGrayMap && csGrayMap['/' + name];
-      // Pattern CS는 유지 — 제거하면 뒤따르는 '/Pn scn' 패턴 호출이 깨진다.
-      // 내장 '/Pattern' 은 csGrayMap에 없으므로 이름으로도 직접 판정.
-      if (name === 'Pattern' || (info && info.type === 'Pattern')) return `/${name} cs`;
-      return '';
-    });
-    seg = seg.replace(/\/(\w+)\s+CS(?=[\s\r\n]|$)/gm, (_, name) => {
-      strokeCS = '/' + name;
-      const info = csGrayMap && csGrayMap['/' + name];
-      if (name === 'Pattern' || (info && info.type === 'Pattern')) return `/${name} CS`;
-      return '';
-    });
-    // rg/RG (RGB)
-    seg = seg.replace(_RE_rg, (_, r, g, b) => `${lum(r,g,b)} g`);
-    seg = seg.replace(_RE_RG, (_, r, g, b) => `${lum(r,g,b)} G`);
-    // k/K (CMYK)
-    seg = seg.replace(_RE_k, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-    seg = seg.replace(_RE_K, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-    // sc/SC/scn/SCN (Separation, DeviceN, 명명된 색공간) — 4인수→3인수→1인수 순서
-    // 4인수 CMYK 계열
-    seg = seg.replace(_RE_SCN4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-    seg = seg.replace(_RE_scn4, (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-    seg = seg.replace(_RE_SC4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} G`);
-    seg = seg.replace(_RE_sc4,  (_, c, m, y, k) => `${lumCmyk(c,m,y,k)} g`);
-    // 3인수 RGB 계열
-    seg = seg.replace(_RE_SCN3, (_, r, g, b) => `${lum(r,g,b)} G`);
-    seg = seg.replace(_RE_scn3, (_, r, g, b) => `${lum(r,g,b)} g`);
-    seg = seg.replace(_RE_SC3,  (_, r, g, b) => `${lum(r,g,b)} G`);
-    seg = seg.replace(_RE_sc3,  (_, r, g, b) => `${lum(r,g,b)} g`);
-    // 1인수 Separation 계열 — csGrayMap으로 정확한 변환, 없으면 반전 폴백
-    seg = seg.replace(_RE_SCN1, (_, t) => {
-      const info = strokeCS && csGrayMap && csGrayMap[strokeCS];
-      return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} G`;
-    });
-    seg = seg.replace(_RE_scn1, (_, t) => {
-      const info = fillCS && csGrayMap && csGrayMap[fillCS];
-      return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} g`;
-    });
-    seg = seg.replace(_RE_SC1, (_, t) => {
-      const info = strokeCS && csGrayMap && csGrayMap[strokeCS];
-      return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} G`;
-    });
-    seg = seg.replace(_RE_sc1, (_, t) => {
-      const info = fillCS && csGrayMap && csGrayMap[fillCS];
-      return `${info ? tintToGray(info, t) : (1 - +t).toFixed(4)} g`;
-    });
-    return seg;
-  };
+    if (csOp) {
+      const cs = { name: csName, d: descOf(csName) };
+      const isStroke = csOp === 'CS';
+      if (isStroke) stroke = cs; else fill = cs;
+      // 패턴은 원본 유지 — 지우면 뒤따르는 '/P0 scn' 패턴 호출이 깨진다(패턴 내용은 따로 회색으로 바뀐다)
+      if (cs.d.kind === 'Pattern') return m;
+      // 그 밖의 색공간 지정은 없애고 초기색을 회색 연산자로 — 뒤따르는 sc/scn은 아래에서 g/G로 바뀐다
+      return initialGray(cs.d) + (isStroke ? ' G' : ' g');
+    }
+    const isStroke = op === op.toUpperCase();
+    const G = isStroke ? 'G' : 'g';
+    const v = nums ? nums.trim().split(/\s+/) : [];
+    const lower = op.toLowerCase();
+    if (lower === 'g' || lower === 'rg' || lower === 'k') {
+      if (isStroke) stroke = DEV_GRAY; else fill = DEV_GRAY;           // 장치 색 연산자 뒤에는 DeviceGray
+      if (lower === 'g') return m;                                      // 이미 회색
+      if (v.length !== (lower === 'rg' ? 3 : 4)) return m;              // 피연산자 수가 틀린 원본 — 손대지 않음
+      return (lower === 'rg' ? lum(v[0], v[1], v[2]) : lumCmyk(v[0], v[1], v[2], v[3])) + ' ' + G;
+    }
+    // sc/scn — 지금 색공간의 정의로 실제 색을 계산한다
+    const cs = isStroke ? stroke : fill;
+    if (!v.length) return m;                                            // '/P0 scn' 같은 패턴 호출
+    if (cs.d.kind === 'Pattern') return m;                              // 무채색 패턴의 성분(뒤에 이름이 붙음) — 여기 오지 않지만 방어
+    let g = csToGray(cs.d, v);
+    if (g == null) { g = guessGray(v); bump('guessed'); }               // 정의를 모름 — 성분 수로 추정
+    if (isStroke) stroke = DEV_GRAY; else fill = DEV_GRAY;
+    return f4(g) + ' ' + G;
+  });
 
   let result = '', i = 0, segStart = 0;
   let biSkipUntil = 0;   // 이 위치 전의 BI 후보는 경계를 못 찾는 것이 확정됨(scanInlineImage의 next)
@@ -424,6 +588,13 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
       }
       result += s.slice(i, j);
       i = j; segStart = i;
+    } else if (ch === '%') {
+      // 주석 — 줄 끝까지 그대로 (주석 속의 '(' 가 뒤쪽 전체를 문자열로 오인시키지 않게)
+      result += applyOps(s.slice(segStart, i));
+      let j = i + 1;
+      while (j < s.length && s[j] !== '\n' && s[j] !== '\r') j++;
+      result += s.slice(i, j);
+      i = j; segStart = i;
     } else if (ch === '<' && (i + 1 >= s.length || s[i + 1] !== '<')) {
       const end = s.indexOf('>', i + 1);
       if (end >= 0) {
@@ -438,6 +609,9 @@ function grayifyStream(bytes, csGrayMap, dotGain) {
       const img = scanInlineImage(bytes, i);
       if (!img.ok) { biSkipUntil = img.next; i++; continue; }   // 인라인 이미지가 아니다 — segStart를 그대로 둬 글자를 버리지 않는다
       result += applyOps(s.slice(segStart, i));
+      // 변환하지 못한 인라인 이미지가 명명 색공간(/CS /CS1 — 흔히 Indexed)을 부르면 그 리소스는 지우면 안 된다
+      const csRef = (img.dict.match(/\/(?:CS|ColorSpace)\s*\/([^\s/\[\]<>(){}%]+)/) || [])[1];
+      if (csRef && !_INLINE_CS_ABBR.has(csRef)) (stat.inlineCS = stat.inlineCS || []).push(csRef);
       result += s.slice(i, img.end);
       i = img.end;
       segStart = i;
@@ -601,17 +775,11 @@ self.onmessage = async function(e) {
       if (dotGain) { const dl = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = dl[gray[i]]; }
 
       // ★ 용량 최적화: 원본이 JPEG(사진)이므로 흑백도 JPEG(DCTDecode)로 재인코딩.
-      // 픽셀을 Flate로 재압축하면 JPEG 압축이 사라져 원본보다 몇 배 커진다.
-      // gray → RGBA(R=G=B) → OffscreenCanvas → JPEG. (실패 시 아래 Flate로 폴백)
+      // 픽셀을 Flate로 재압축하면 JPEG 압축이 사라져 원본보다 약 2배 커진다(실측 177~213%).
+      // 1성분(DeviceGray) JPEG — 예전엔 캔버스로 R=G=B RGB JPEG를 만들었는데, 프린터·gs inkcov가 CMY를
+      // 잡아 컬러로 셀 수 있었다. 1성분은 같은 q82에서 화질 같고 용량은 94%(실측 158장). (실패 시 Flate 폴백)
       try {
-        const canvas = new OffscreenCanvas(iw, ih);
-        const cx = canvas.getContext('2d');
-        const imgd = cx.createImageData(iw, ih);
-        const dd = imgd.data;
-        for (let pi = 0; pi < gray.length; pi++) { const v = gray[pi]; dd[pi*4] = v; dd[pi*4+1] = v; dd[pi*4+2] = v; dd[pi*4+3] = 255; }
-        cx.putImageData(imgd, 0, 0);
-        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
-        const jb = new Uint8Array(await blob.arrayBuffer());
+        const jb = encodeGrayJpeg(gray, iw, ih, 82);
         const jpegBuf = jb.buffer.slice(jb.byteOffset, jb.byteOffset + jb.length);
         self.postMessage({ id, result: { jpeg: jpegBuf, w: iw, h: ih } }, [jpegBuf]);
         return;
@@ -749,10 +917,11 @@ self.onmessage = async function(e) {
       // Phase A: 바이트 레벨에서 인라인 이미지(BI/EI) RGB→Gray 변환
       // grayifyStream보다 먼저 실행 — 바이너리 픽셀 데이터가 스트링 regex에 오염되지 않도록 격리
       try { raw = preprocessInlineImages(raw, dotGain || 0); } catch(e) { /* 실패해도 grayifyStream은 계속 */ }
-      const processed = grayifyStream(raw, csGrayMap || {}, dotGain || 0);
+      const info = { stat: {} };
+      const processed = grayifyStream(raw, csGrayMap || {}, dotGain || 0, info);
       let out = processed;
       if (wasCompressed) out = pako.deflate(processed, { level: 1 });
-      self.postMessage({ id, result: { bytes: out.buffer, length: out.length } }, [out.buffer]);
+      self.postMessage({ id, result: { bytes: out.buffer, length: out.length, stat: info.stat } }, [out.buffer]);
 
     } else {
       self.postMessage({ id, error: 'unknown_type' });

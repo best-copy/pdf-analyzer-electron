@@ -8,6 +8,7 @@
   <script src="./libs/pdf-lib.min.js"></script>
   <script src="./libs/fontkit.umd.min.js"></script>
   <script src="./libs/pako.min.js"></script>
+  <script src="./libs/gray-blend.js"></script><!-- 저장 직전 투명도 흑백 합성 그룹 — savePdfDoc (워커·편집기·임포징 도구 공용) -->
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -100,6 +101,12 @@
           <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
           <button class="opt-btn" id="opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
+          <select class="opt-select" id="dotGainSelect" onchange="setDotGain(this.value)" title="Dot Gain 보정 — 인쇄기에서 망점이 번져 흑백 출력이 탁해지는 만큼, 컬러→흑백 변환 페이지의 중간 톤을 미리 밝게 합니다.&#10;원래 흑백인 페이지는 바뀌지 않습니다. 출력물이 탁하면 한 단계 올리세요.">
+            <option value="0">◐ Dot Gain 없음</option>
+            <option value="10">◐ Dot Gain 약 (10%)</option>
+            <option value="15">◐ Dot Gain 보통 (15%)</option>
+            <option value="20">◐ Dot Gain 강 (20%)</option>
+          </select>
           <button class="opt-btn" id="opt-outline" onclick="setOutlineEnabled(!_outlineEnabled)" title="켜면 '⇩ 다운로드'로 저장하는 파일에 폰트를 통째로 싣거나(완전 임베드) 글자를 곡선으로 바꿔(곡선화) 다른 PC·출력기에서도 동일하게 인쇄되게 합니다. 화면 모양은 그대로. 방식·평탄화는 좌측 사이드바 '⚙ 처리옵션'에서 선택"><span class="ic">✒</span> 폰트 출력 안전화</button>
           <button class="clear-opts-btn" id="clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <button class="opt-btn" id="spreadViewBtn2" onclick="toggleSpreadView()" title="실제 책을 펼친 모양으로 보기 — 1쪽은 오른쪽 단독, 이후 [짝수|홀수] 두 쪽 맞붙임. 적용 전 썸네일과 적용 결과 모두에 적용">📖 펼침</button>
@@ -226,6 +233,12 @@
         <div class="sbp-opts sbp-grid2">
           <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="sbp-opt active" id="sb-opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백 판정 페이지의 색공간을 DeviceGray로 통일 — 프린터 컬러 과금 방지">🖨 잉크 정규화</button>
+          <select class="sbp-select" id="sb-dotGainSelect" onchange="setDotGain(this.value)" title="Dot Gain 보정 — 인쇄기에서 망점이 번져 흑백 출력이 탁해지는 만큼, 컬러→흑백 변환 페이지의 중간 톤을 미리 밝게 합니다. 원래 흑백인 페이지는 바뀌지 않습니다.">
+            <option value="0">◐ Dot Gain 없음</option>
+            <option value="10">◐ Dot Gain 약 (10%)</option>
+            <option value="15">◐ Dot Gain 보통 (15%)</option>
+            <option value="20">◐ Dot Gain 강 (20%)</option>
+          </select>
           <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
           <button class="sbp-clear" id="sb-forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다">⟳ 앱 새로고침 (Force Reload)</button>
           <button class="sbp-clear" id="sbPfBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·색공간·페이지 크기 혼재를 점검합니다"><span class="ic">🧪</span> 프리플라이트 검사</button>

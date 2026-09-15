@@ -75,6 +75,7 @@
       // 조립을 시작하는 시점의 설정 지문 — 조립 도중 사용자가 값을 바꿨다면 결과 바이트는
       // 이미 낡은 것이므로 '저장하고 닫기'가 재사용하지 못하게 표식을 남기지 않는다.
       const sigAtStart = optSignature();
+      const genAtStart = _cacheGen;   // 반영 도중 탭·원고가 바뀌면 결과를 그 문서에 붙이지 않는다
       try {
         const base = await buildBaseProcessed();
         let pdfBytes = base.bytes;
@@ -99,6 +100,7 @@
           pdfBytes = await applyBleedStage(pdfBytes);   // ◲ 블리드 옵션 (임포징 앞)
           if (_impEnabled) pdfBytes = await buildImposedBytes(pdfBytes);
         }
+        if (genAtStart !== _cacheGen) throw staleCacheError();
         processedPdfBytes = pdfBytes;
         directOutputBytes = null;   // 파이프라인 결과 — 다운로드는 재조립 경로 사용
         processedFileName = defaultProcessedName();
@@ -109,6 +111,7 @@
         updateDownloadBtn();
         await renderProcessedPreview(pdfBytes, { live: true });
       } catch (e) {
+        if (e && e.stale) return;   // 문서가 바뀌었다 — 바뀐 문서의 미리보기는 그쪽 갱신이 다시 만든다
         console.error('실시간 미리보기 오류:', e);
         const note = document.getElementById('previewNote');
         if (note) note.textContent = '⚠️ 미리보기 생성 실패 (콘솔 확인)';
@@ -364,6 +367,7 @@
     //   이 결과는 baseSignature 캐시에 넣지 않는다(같은 서명의 흑백본과 섞이면 사고).
     async function buildBaseOptimized(onProgress, opts) {
       const skipBw = !!(opts && opts.skipBw);
+      const gen = _cacheGen;   // 만드는 도중 문서가 바뀌면(탭 전환·파일 교체·내부편집) 캐시에 남기지 않는다
       // base는 편집 옵션·임포징 옵션과 무관하다(페이지 순서·회전·흑백변환·내부편집만 반영).
       // 그래서 baseSignature()로 캐시해 두면 여백 1mm·거터 1mm 같은 조작에서 전 페이지
       // 재변환을 통째로 건너뛴다. 캐시 무효화는 clearProcessCaches 한 곳에서만.
@@ -421,6 +425,7 @@
       if (onProgress) onProgress(94);
       const outBytes = await savePdfDoc(outDoc);
       // 저장 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않는다 — 낡은 base가 남는 사고 방지
+      if (gen !== _cacheGen) throw staleCacheError();
       if (!skipBw && baseSignature() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
       return { bytes: outBytes, stats };
     }
@@ -452,11 +457,13 @@
       if (onProgress) onProgress(100);
       return bytes;
     }
-    let _optInflight = null; // { sig, promise, cbs:Set }
+    let _optInflight = null; // { sig, gen, promise, cbs:Set }
     async function buildOptimizedOutput(onProgress) {
       const sig = optSignature();
+      // 서명만 같다고 합류하면 안 된다 — 파일 교체는 쪽 수·설정이 같아 서명이 같은데 원고는 다르다
+      const gen = _cacheGen;
       if (_optCache.sig === sig && _optCache.bytes) { if (onProgress) onProgress(100); return _optCache.bytes; }
-      if (_optInflight && _optInflight.sig === sig) {
+      if (_optInflight && _optInflight.sig === sig && _optInflight.gen === gen) {
         if (onProgress) _optInflight.cbs.add(onProgress);   // 진행률 실시간 합류
         const bytes = await _optInflight.promise;
         if (onProgress) onProgress(100);
@@ -482,10 +489,11 @@
         }
         report(100);
         // 생성 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않음
+        if (gen !== _cacheGen) throw staleCacheError();
         if (optSignature() === sig) _optCache = { sig, bytes };
         return bytes;
       })();
-      _optInflight = { sig, promise, cbs };
+      _optInflight = { sig, gen, promise, cbs };
       try { return await promise; }
       finally { if (_optInflight && _optInflight.promise === promise) _optInflight = null; }
     }
@@ -510,7 +518,7 @@
           }
         }
       }
-      catch (e) { console.warn('다운로드 최적화 프리웜 실패:', e); }
+      catch (e) { if (!e.stale) console.warn('다운로드 최적화 프리웜 실패:', e); }
       finally { _optPrewarming = false; }
     }
 
@@ -1979,7 +1987,9 @@
           const presetData = coverPresets()[cfg.preset];
           if (!presetData) throw new Error(`핫폴더 프리셋 '${cfg.preset}'이 없습니다`);
           const r = await hotfolderProcess(job, presetData);
-          await window.electronAPI.hotfolderFinish({ srcPath: job.path, ok: true, outTmp: r.outTmp, outName: r.outName });
+          const moved = await window.electronAPI.hotfolderFinish({ srcPath: job.path, ok: true, outTmp: r.outTmp, outName: r.outName });
+          if (moved === 'license') continue;   // 인증 안내는 메인이 띄웠다
+          if (moved !== true) { showError(`📂 핫폴더: ${job.name} — 표지는 만들었지만 완료 폴더로 옮기지 못했습니다. 핫폴더 권한·남은 공간을 확인한 뒤 핫폴더를 다시 켜 주세요.`); continue; }
           showSuccess(`📂 핫폴더: ${job.name} → 표지 생성 완료 (책등 ${r.spine}mm) — 완료 폴더를 확인하세요.`);
         } catch (e) {
           console.error('핫폴더 처리 실패:', job, e);
@@ -3440,7 +3450,9 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const grid = `${res.across}x${res.down}`;
-        const outName = `${nameWithImpTag(base, `${isCut ? '1up' : '모아찍기'}${grid}${res.sides === 2 ? '양면' : '단면'}`)}.pdf`;
+        // 파일명 표기는 '⇩ 다운로드'(impNameTag)와 같게 — 같은 결과인데 생성 버튼은 '1up2x2양면',
+        // 다운로드는 '정합4up'으로 달랐다(사용자 지시 2026-09-15: 정합4up으로 통일).
+        const outName = `${nameWithImpTag(base, `${isCut ? '정합' : ''}${res.across * res.down}up`)}.pdf`;
         adoptImposedResult(res.bytes, outName);
         let msg = `📖 ${isCut ? '정합(Cut&Stack)' : '모아찍기(N-up)'} 생성 완료 — 시트 ${res.sheets}장 · ${grid} 배치(칸당 ${res.per}쪽) · ${res.sides === 2 ? '양면' : '단면'} (본문 ${res.n0}쪽)`
           + (isCut ? `\n인쇄 → 재단 → 좌상 묶음부터 차례로 겹치면 페이지 순서 완성` : `\n연속 페이지가 좌→우·상→하로 배치됩니다`)
@@ -4518,6 +4530,27 @@
       } catch(e) { return null; }
     }
 
+    // ── 작은 부속 스트림(색상표·ICC·함수 표본) 본문 풀기 ─────────────────────────
+    // Flate만 풀던 곳들이 ASCII85·16진·LZW·RunLength·필터 배열을 만나면 null → 그 색공간을 통째로 건너뛰어
+    // 컬러가 남았다(ASCII85 색상표 Indexed 이미지 실파일). Flate 단독은 잘린 스트림 복구를 위해 inflateLenient,
+    // 나머지는 pdf-lib 디코더. pdf-lib은 /DecodeParms 예측자를 적용하지 않으므로 예측자가 있으면 모른다고(null) 한다.
+    function pdfStreamDecoded(pdfDoc, st, expectedLen) {
+      if (!st || !st.contents || !st.dict) return null;
+      const Nm = n => PDFLib.PDFName.of(n);
+      const fname = imgFilterNameOf(pdfDoc, st.dict);
+      if (fname === '') return st.contents;
+      try {
+        let dp = st.dict.get(Nm('DecodeParms'));
+        if (dp && dp.objectNumber != null) dp = pdfDoc.context.lookup(dp);
+        const dps = dp && typeof dp.size === 'function' ? Array.from({ length: dp.size() }, (_, i) => pdfDoc.context.lookup(dp.get(i)) ?? dp.get(i)) : [dp];
+        if (dps.some(p => { const v = p && p.get ? pdfDoc.context.lookup(p.get(Nm('Predictor'))) : null; return v && +(v.numberValue ?? v.asNumber?.() ?? 1) > 1; })) {
+          return null;
+        }
+      } catch (e) { return null; }
+      if (fname === '/FlateDecode' || fname === '/Fl') return inflateLenient(st.contents, expectedLen);
+      try { return PDFLib.decodePDFRawStream(st).decode(); } catch (e) { return null; }
+    }
+
     // ── 이미지 딕셔너리 공용 헬퍼 ────────────────────────────────────────────────
     function imgFilterNameOf(pdfDoc, dict) {
       const Nm = n => PDFLib.PDFName.of(n);
@@ -4577,10 +4610,7 @@
         const bps = num(fd.get(Nm('BitsPerSample')));
         if (!range || !sizeA || sizeA.length !== 1 || ![1,2,4,8,16,32].includes(bps)) return null;
         const nOut = range.length / 2;
-        const fname = imgFilterNameOf(pdfDoc, fd);
-        let raw = fnObj.contents;
-        if (fname === '/FlateDecode' || fname === '/Fl') raw = inflateLenient(raw, null);
-        else if (fname !== '') return null;
+        const raw = pdfStreamDecoded(pdfDoc, fnObj, null);
         const total = sizeA[0];
         if (!raw || raw.length * 8 < total * nOut * bps) return null;
         const maxS = Math.pow(2, bps) - 1;
@@ -4681,11 +4711,8 @@
         const luRaw = csArr.get(3);
         const lu = lkf(luRaw);
         let pal = null;
-        if (lu && lu.contents) {
-          const fname = lu.dict ? imgFilterNameOf(pdfDoc, lu.dict) : '';
-          if (fname === '/FlateDecode' || fname === '/Fl') pal = inflateLenient(lu.contents, (hival + 1) * nCh);
-          else if (fname === '') pal = lu.contents;
-        } else if (lu && lu.asBytes) pal = lu.asBytes();
+        if (lu && lu.contents) pal = pdfStreamDecoded(pdfDoc, lu, (hival + 1) * nCh);
+        else if (lu && lu.asBytes) pal = lu.asBytes();
         else if (luRaw && luRaw.asBytes) pal = luRaw.asBytes();
         if (!pal) return false;
         // 그레이 팔레트 생성 → [/Indexed /DeviceGray hival <hex>]
@@ -4783,15 +4810,7 @@
           const gray = new Uint8Array(w * h);
           for (let i = 0; i < w * h; i++) gray[i] = lutF[tBytes[i] ?? 0];
           const _dg = ctxDotGain(pdfDoc);
-          if (_dg) {
-            for (let i = 0; i < gray.length; i++) {
-              const v = gray[i] / 255;
-              let out;
-              if (_dg === 25) out = Math.sqrt(v);
-              else { const disc = 0.04+3.2*v; const d = (1.8-Math.sqrt(disc<0?0:disc))/1.6; out = 1-Math.max(0,Math.min(1,d)); }
-              gray[i] = Math.round(Math.max(0, Math.min(255, out * 255)));
-            }
-          }
+          if (_dg) for (let i = 0; i < gray.length; i++) gray[i] = Math.round(dotGainCurve(gray[i] / 255, _dg) * 255);
           const predicted = applyPNGPredictorGray(gray, w, h);
           const compressed = pako.deflate(predicted, { level: 1 });
           img.contents = compressed;
@@ -4825,14 +4844,188 @@
     // (콘텐츠 스트림 색상 치환은 워커 worker-gray.js의 grayifyStream 하나만 쓴다 — 메인 스레드 사본은 지웠다.
     //  사본에는 좌측경계 _LB와 인라인 이미지 보호가 없어, 되살리면 '/P-N g' 깨짐과 BI→I 깨짐이 함께 돌아온다)
 
-    // 전역 dotGain 취득 (UI 드롭다운)
+    // ── Dot Gain 보정 (컬러 → 흑백 변환 페이지에만 적용, 회색 판정 페이지는 항상 0) ──
+    // 인쇄기 망점 번짐은 문서가 아니라 **출력기의 성질**이라 앱 전체 설정으로 기억한다(localStorage).
+    const DOT_GAIN_LEVELS = [0, 10, 15, 20];
+    const DOT_GAIN_KEY = 'dotGainLevel';
+    // Dot Gain 보정 곡선 — v: 밝기(0=검정·1=흰색) → 인쇄에서 망점이 번져 어두워질 것을 미리 밝게 한 값.
+    // 망점 번짐 모델: 인쇄 농도 = c + 4g·c·(1−c) (50% 망점에서 g만큼 더 진해짐) → 원하는 농도 t가 나오도록 c를 역산한다.
+    // gain: 0(보정 없음) · 10 · 15 · 20 (%) — 25는 예전 프리셋 호환(√v).
+    // ⚠ worker-gray.js dotGainCurve와 **같은 식**이어야 한다(scripts/test/gray-colorspace.test.js가 대조).
+    function dotGainCurve(v, gain) {
+      v = v < 0 ? 0 : v > 1 ? 1 : v;
+      if (!gain) return v;
+      if (gain === 25) return Math.sqrt(v);
+      const g = gain / 100, t = 1 - v, b = 1 + 4 * g;
+      const disc = b * b - 16 * g * t;
+      const c = (b - Math.sqrt(disc < 0 ? 0 : disc)) / (8 * g);
+      return 1 - (c < 0 ? 0 : c > 1 ? 1 : c);
+    }
     function getDotGain() {
       const sel = document.getElementById('dotGainSelect');
-      return sel ? (parseInt(sel.value) || 0) : 0;
+      const v = sel ? (parseInt(sel.value) || 0) : 0;
+      return (DOT_GAIN_LEVELS.includes(v) || v === 25) ? v : 0;
+    }
+    // 드롭다운 변경 — 변환 결과가 바뀌므로 흑백 캐시·적용본을 전부 버리고 다시 만든다
+    function setDotGain(v) {
+      v = parseInt(v) || 0;
+      if (!DOT_GAIN_LEVELS.includes(v)) v = 0;
+      ['dotGainSelect', 'sb-dotGainSelect'].forEach(id => { const s = document.getElementById(id); if (s) s.value = String(v); });   // 상단·사이드바 두 곳 동기
+      try { localStorage.setItem(DOT_GAIN_KEY, String(v)); } catch (e) {}
+      if (typeof clearProcessCaches === 'function') clearProcessCaches();
+      if (typeof invalidateProcessed === 'function') invalidateProcessed();
+      if (typeof previewVisible === 'function' && previewVisible() && typeof scheduleLivePreview === 'function') scheduleLivePreview();
+      if (typeof scheduleBwPrewarm === 'function' && (processingOptions.bw || processingOptions.inkNorm)) scheduleBwPrewarm(300);
+      showSuccess(v
+        ? `◐ Dot Gain 보정 ${v}% — 컬러에서 흑백으로 바꾸는 페이지의 중간 톤을 인쇄 번짐만큼 밝게 합니다(원래 흑백인 페이지는 그대로).
+'✔ 적용'을 다시 누르면 반영됩니다. 출력물이 탁하면 한 단계 올리고, 너무 밝으면 내리세요.`
+        : `◐ Dot Gain 보정을 껐습니다 — 흑백 변환 밝기를 원고 그대로 씁니다. '✔ 적용'을 다시 누르면 반영됩니다.`);
+    }
+    function restoreDotGain() {
+      let v = 0;
+      try { v = parseInt(localStorage.getItem(DOT_GAIN_KEY)) || 0; } catch (e) {}
+      ['dotGainSelect', 'sb-dotGainSelect'].forEach(id => { const s = document.getElementById(id); if (s) s.value = String(DOT_GAIN_LEVELS.includes(v) ? v : 0); });
     }
     // 문서(pdfDoc) 단위 dotGain 오버라이드 — 이미 회색으로 판정된 페이지(잉크 정규화 대상)에
     // Dot Gain 보정을 걸면 밝기가 변하므로 그런 변환은 0으로 강제한다. 전역 변수가 아니라
     // WeakMap(문서별)이라 병렬 변환(프리웜 + 적용 동시 진행)에서도 서로 간섭하지 않는다.
+    // ── 색공간 설명자 — 흑백 워커(worker-gray.js csToGray)가 실제 색을 계산하도록 정의를 순수 데이터로 ──
+    // 예전 csGrayMap은 '별색 + Type 2 함수'만 담아서, 그 밖의 색공간(회색 ICC·Indexed·DeviceN·다른 함수형)은
+    // 워커가 성분 수로 짐작했다 → 이미 회색인 검정이 흰색으로 뒤집히거나(1-t) 연산자가 깨졌다.
+    // 반환: { kind:'Gray'|'RGB'|'CMYK'|'Lab'|'Pattern'|'Sep'|'DeviceN'|'Indexed'|'Unknown', n, fn, alt, base, hival, lookup }
+    const _CS_DEVICE_KIND = {
+      '/DeviceGray': 'Gray', '/G': 'Gray', '/CalGray': 'Gray', '/DeviceRGB': 'RGB', '/RGB': 'RGB', '/CalRGB': 'RGB',
+      '/DeviceCMYK': 'CMYK', '/CMYK': 'CMYK', '/Lab': 'Lab', '/Pattern': 'Pattern',
+    };
+    const _CS_KIND_N = { Gray: 1, RGB: 3, CMYK: 4, Lab: 3 };
+    function _pdfLook(pdfDoc, v) { return v && v.objectNumber != null ? pdfDoc.context.lookup(v) : v; }
+    function _pdfNum(pdfDoc, v) {
+      v = _pdfLook(pdfDoc, v);
+      if (v == null) return NaN;
+      if (typeof v.asNumber === 'function') return v.asNumber();
+      return v.numberValue != null ? +v.numberValue : NaN;
+    }
+    function _pdfNums(pdfDoc, v) {
+      v = _pdfLook(pdfDoc, v);
+      return v && typeof v.size === 'function' ? Array.from({ length: v.size() }, (_, i) => _pdfNum(pdfDoc, v.get(i))) : null;
+    }
+    // 스트림 본문 바이트 (풀 수 없으면 null) — pdfStreamDecoded 참조
+    function _pdfStreamBytes(pdfDoc, st) { return pdfStreamDecoded(pdfDoc, st, null); }
+    // ICC 프로필 헤더(16~19바이트)의 데이터 색공간 서명 — 'GRAY' 'RGB ' 'CMYK' 'Lab ' 'XYZ ' …, 모르면 ''
+    const _iccSigCache = new WeakMap();   // 같은 프로필 스트림을 쪽·폼마다 다시 풀지 않게
+    function _iccColorSig(pdfDoc, st) {
+      if (_iccSigCache.has(st)) return _iccSigCache.get(st);
+      let sig = '';
+      try {
+        const raw = _pdfStreamBytes(pdfDoc, st);
+        if (raw && raw.length >= 20) sig = String.fromCharCode(raw[16], raw[17], raw[18], raw[19]);
+      } catch (e) {}
+      _iccSigCache.set(st, sig);
+      return sig;
+    }
+    function buildFnDesc(pdfDoc, ref, depth = 0) {
+      const Nm = PDFLib.PDFName.of;
+      const f = _pdfLook(pdfDoc, ref);
+      if (!f || depth > 4) return null;
+      const d = f.dict || f;
+      if (typeof d.get !== 'function') return null;
+      const t = _pdfNum(pdfDoc, d.get(Nm('FunctionType')));
+      const domain = _pdfNums(pdfDoc, d.get(Nm('Domain'))) || [0, 1];
+      const range = _pdfNums(pdfDoc, d.get(Nm('Range')));
+      if (t === 2) {
+        return { t, domain, range, c0: _pdfNums(pdfDoc, d.get(Nm('C0'))) || [0], c1: _pdfNums(pdfDoc, d.get(Nm('C1'))) || [1],
+                 N: _pdfNum(pdfDoc, d.get(Nm('N'))) || 1 };
+      }
+      if (t === 3) {
+        const arr = _pdfLook(pdfDoc, d.get(Nm('Functions')));
+        const fns = arr && typeof arr.size === 'function' ? Array.from({ length: arr.size() }, (_, i) => buildFnDesc(pdfDoc, arr.get(i), depth + 1)) : [];
+        if (!fns.length || fns.some(x => !x)) return null;
+        return { t, domain, range, fns, bounds: _pdfNums(pdfDoc, d.get(Nm('Bounds'))) || [], encode: _pdfNums(pdfDoc, d.get(Nm('Encode'))) || [] };
+      }
+      if (t === 4) {
+        const raw = _pdfStreamBytes(pdfDoc, f);
+        if (!raw || !range) return null;
+        let txt = '';
+        for (let i = 0; i < raw.length; i++) txt += String.fromCharCode(raw[i]);
+        const toks = txt.replace(/[{}]/g, ' $& ').trim().split(/\s+/).filter(Boolean).map(x => (/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(x) ? +x : x));
+        if (toks[0] !== '{' || toks[toks.length - 1] !== '}') return null;
+        return { t, domain, range, ops: toks.slice(1, -1) };
+      }
+      if (t === 0) {
+        const raw = _pdfStreamBytes(pdfDoc, f);
+        const size = _pdfNums(pdfDoc, d.get(Nm('Size')));
+        const bps = _pdfNum(pdfDoc, d.get(Nm('BitsPerSample')));
+        if (!raw || !size || !range || ![1, 2, 4, 8, 12, 16, 24, 32].includes(bps)) return null;
+        const nOut = range.length / 2;
+        const count = size.reduce((p, x) => p * x, 1) * nOut;
+        if (!(count > 0) || count > 1 << 20) return null;               // 비정상·거대한 표는 포기(성분 수 추정으로)
+        const samples = new Array(count);
+        let bit = 0;
+        for (let i = 0; i < count; i++) {
+          let v = 0;
+          for (let k = 0; k < bps; k++) { const by = raw[bit >> 3] || 0; v = v * 2 + ((by >> (7 - (bit & 7))) & 1); bit++; }
+          samples[i] = v;
+        }
+        return { t, domain, range, size, bps, encode: _pdfNums(pdfDoc, d.get(Nm('Encode'))), decode: _pdfNums(pdfDoc, d.get(Nm('Decode'))), samples };
+      }
+      return null;
+    }
+    function buildCsDesc(pdfDoc, v, depth = 0) {
+      const Nm = PDFLib.PDFName.of;
+      v = _pdfLook(pdfDoc, v);
+      if (!v || depth > 6) return { kind: 'Unknown' };
+      if (v.encodedName) {
+        const k = _CS_DEVICE_KIND[v.encodedName];
+        return k ? { kind: k, n: _CS_KIND_N[k] } : { kind: 'Unknown' };
+      }
+      if (typeof v.size !== 'function' || !v.size()) return { kind: 'Unknown' };
+      const fam = (_pdfLook(pdfDoc, v.get(0)) || {}).encodedName || '';
+      if (_CS_DEVICE_KIND[fam]) { const k = _CS_DEVICE_KIND[fam]; return { kind: k, n: _CS_KIND_N[k] }; }   // [/CalRGB <<>>] 등
+      if (fam === '/ICCBased') {
+        const st = _pdfLook(pdfDoc, v.get(1));
+        const N = st && st.dict ? _pdfNum(pdfDoc, st.dict.get(Nm('N'))) : NaN;
+        // 성분 3개가 곧 RGB는 아니다 — 팬톤 별색의 대체 색공간은 흔히 Lab ICC(N=3)라서 RGB로 보면
+        // L*=50(중간 회색)이 R=50 → 흰색으로 계산됐다(명함 원고 실측). ICC 헤더의 색공간 서명으로 가린다.
+        const sig = st ? _iccColorSig(pdfDoc, st) : '';
+        if (sig === 'Lab ' && N === 3) return { kind: 'Lab', n: 3 };
+        if (sig === 'XYZ ' && N === 3) return { kind: 'XYZ', n: 3 };
+        if (N === 1) return { kind: 'Gray', n: 1 };
+        if (N === 3) return { kind: 'RGB', n: 3 };
+        if (N === 4) return { kind: 'CMYK', n: 4 };
+        const alt = st && st.dict && st.dict.get(Nm('Alternate'));
+        return alt ? buildCsDesc(pdfDoc, alt, depth + 1) : { kind: 'Unknown' };
+      }
+      if (fam === '/Separation') {
+        return { kind: 'Sep', n: 1, alt: buildCsDesc(pdfDoc, v.get(2), depth + 1), fn: buildFnDesc(pdfDoc, v.get(3)) };
+      }
+      if (fam === '/DeviceN') {
+        const names = _pdfLook(pdfDoc, v.get(1));
+        const n = names && typeof names.size === 'function' ? names.size() : 0;
+        return { kind: 'DeviceN', n, alt: buildCsDesc(pdfDoc, v.get(2), depth + 1), fn: buildFnDesc(pdfDoc, v.get(3)) };
+      }
+      if (fam === '/Indexed' || fam === '/I') {
+        const base = buildCsDesc(pdfDoc, v.get(1), depth + 1);
+        const hival = _pdfNum(pdfDoc, v.get(2));
+        const lk = _pdfLook(pdfDoc, v.get(3));
+        let bytes = null;
+        if (lk && typeof lk.asBytes === 'function') bytes = lk.asBytes();          // (문자열) · <16진>
+        else if (lk && lk.contents) bytes = _pdfStreamBytes(pdfDoc, lk);             // 스트림
+        return { kind: 'Indexed', n: 1, base, hival, lookup: bytes ? Array.from(bytes) : null };
+      }
+      return { kind: 'Unknown' };
+    }
+    // 리소스 딕셔너리의 /ColorSpace → { '/이름': 설명자 }
+    function buildCsGrayMap(pdfDoc, resDict) {
+      const map = {};
+      const csDict = resDict && _pdfLook(pdfDoc, resDict.get(PDFLib.PDFName.of('ColorSpace')));
+      if (!csDict || typeof csDict.entries !== 'function') return map;
+      for (const [nameObj, val] of csDict.entries()) {
+        const name = typeof nameObj === 'string' ? nameObj : (nameObj.encodedName || String(nameObj));
+        try { map[name] = buildCsDesc(pdfDoc, val); } catch (e) { map[name] = { kind: 'Unknown' }; }
+      }
+      return map;
+    }
+
     const _dotGainCtx = new WeakMap();
     function ctxDotGain(doc) {
       const o = _dotGainCtx.get(doc);
@@ -4860,9 +5053,12 @@
         return '';
       };
 
-      // Separation 색공간별 그레이 변환 맵 (페이지 리소스에서 빌드)
-      // { '/CsName': { altName, N, c0:[...], c1:[...] } }
+      // 명명 색공간 설명자 { '/CsName': buildCsDesc(...) } — 페이지 리소스에서 빌드.
+      // 폼·패턴·SMask 스트림은 자기 /Resources의 색공간을 덧씌워 쓴다(같은 이름이 다른 정의일 수 있다).
       let csGrayMap = {};
+      let streamSkipped = 0;               // 회색으로 못 바꾼 콘텐츠 스트림 수 — 있으면 색공간 리소스를 지우지 않는다
+      let guessedOps = 0;                  // 색공간 정의를 몰라 성분 수로 추정한 색 연산자 수
+      const inlineCSNames = new Set();     // 변환 못 한 인라인 이미지가 부르는 명명 색공간 — 지우면 안 된다
 
       // 콘텐츠 스트림 색상 연산자 변환 (Worker 오프로드)
       const processContentStream = async (streamObj) => {
@@ -4872,8 +5068,14 @@
         if (filter) {
           const fn = resolveFilterName(filter);
           if (fn === '/FlateDecode' || fn === '/Fl') wasCompressed = true;
-          else return;
+          else { streamSkipped++; return; }   // LZW·필터 배열 등 — 풀 수 없어 원본 유지
         }
+        let map = csGrayMap;
+        try {
+          const ownRef = streamObj.dict.get(Nm('Resources'));
+          const own = ownRef && pdfDoc.context.lookup(ownRef);
+          if (own && own.get && own.get(Nm('ColorSpace'))) map = Object.assign({}, csGrayMap, buildCsGrayMap(pdfDoc, own));
+        } catch (e) {}
         try {
           const buf = streamObj.contents.buffer.slice(
             streamObj.contents.byteOffset,
@@ -4881,13 +5083,17 @@
           );
           const result = await grayWorkerPool.run(
             'stream-grayify',
-            { bytes: buf, wasCompressed, csGrayMap, dotGain },
+            { bytes: buf, wasCompressed, csGrayMap: map, dotGain },
             [buf]
           );
           const out = new Uint8Array(result.bytes, 0, result.length);
           streamObj.contents = out;
           try { streamObj.dict.set(Nm('Length'), PDFLib.PDFNumber.of(out.length)); } catch(e) {}
-        } catch(e) { console.warn('stream-grayify 실패:', e); }
+          if (result.stat) {
+            guessedOps += result.stat.guessed || 0;
+            (result.stat.inlineCS || []).forEach(n => inlineCSNames.add(n));
+          }
+        } catch(e) { streamSkipped++; console.warn('stream-grayify 실패:', e); }
       };
 
       // Resources 딕셔너리 취득 — 페이지 자체에 없으면 부모 Pages 노드까지 상속 탐색
@@ -4956,6 +5162,8 @@
               if (formResRef) {
                 const formRes = pdfDoc.context.lookup(formResRef);
                 await processXObjects(formRes, depth + 1);
+                // 폼 안에서 gs로 거는 SMask 투명도 그룹 — 빠져 있어 /Group /CS /DeviceRGB가 남았다(실파일)
+                await processExtGState(formRes, depth + 1);
                 processShading(formRes);
                 await processPatterns(formRes, depth + 1);
               }
@@ -5512,62 +5720,9 @@
         } catch(e) {}
       };
 
-      // 페이지 Resources 취득 + csGrayMap 빌드 (①보다 먼저 실행해야 함)
+      // 페이지 Resources 취득 + 색공간 설명자 빌드 (①보다 먼저 실행해야 함)
       const resDict = findResDict(node);
-      if (resDict) {
-        try {
-          const csResRef = resDict.get(Nm('ColorSpace'));
-          if (csResRef) {
-            const csResDict = pdfDoc.context.lookup(csResRef);
-            if (csResDict && typeof csResDict.entries === 'function') {
-              for (const [csNameObj, csValRef] of csResDict.entries()) {
-                try {
-                  const csName = typeof csNameObj === 'string' ? csNameObj
-                    : (csNameObj.encodedName || String(csNameObj));
-                  const csArr = pdfDoc.context.lookup(csValRef);
-                  // Pattern 색공간: cs/CS 연산자 제거 금지 표시
-                  if (csArr && typeof csArr.size === 'function') {
-                    const csType0 = (pdfDoc.context.lookup(csArr.get(0)))?.encodedName || '';
-                    if (csType0 === '/Pattern') { csGrayMap[csName] = { type: 'Pattern' }; continue; }
-                  } else if (csArr && csArr.encodedName === '/Pattern') {
-                    csGrayMap[csName] = { type: 'Pattern' }; continue;
-                  }
-                  if (!csArr || typeof csArr.size !== 'function' || csArr.size() < 4) continue;
-                  const csType = (pdfDoc.context.lookup(csArr.get(0)))?.encodedName || '';
-                  if (csType !== '/Separation') continue;
-                  // altSpaceName (index 2)
-                  const altObj = pdfDoc.context.lookup(csArr.get(2));
-                  const altName = altObj?.encodedName || '';
-                  // tintTransform function (index 3)
-                  const funcRef = csArr.get(3);
-                  const funcObj = pdfDoc.context.lookup(funcRef);
-                  if (!funcObj?.get) continue;
-                  const ftObj = funcObj.get(Nm('FunctionType'));
-                  const ft = ftObj != null ? +(ftObj.numberValue ?? ftObj.asNumber?.() ?? -1) : -1;
-                  if (ft !== 2) continue; // Type 2 (exponential) 만 처리
-                  const nObj = funcObj.get(Nm('N'));
-                  const N = nObj != null ? +(nObj.numberValue ?? nObj.asNumber?.() ?? 1) : 1;
-                  const getNumArr = key => {
-                    const ref = funcObj.get(Nm(key));
-                    if (!ref) return null;
-                    const arr = pdfDoc.context.lookup(ref);
-                    if (!arr || typeof arr.size !== 'function') return null;
-                    return Array.from({ length: arr.size() }, (_, i) => {
-                      const v = pdfDoc.context.lookup(arr.get(i));
-                      return v != null ? +(v.numberValue ?? v.asNumber?.() ?? 0) : 0;
-                    });
-                  };
-                  const c0 = getNumArr('C0');
-                  const c1 = getNumArr('C1');
-                  if (c0 && c1 && c0.length === c1.length) {
-                    csGrayMap[csName] = { altName, N, c0, c1 };
-                  }
-                } catch(e) { /* 개별 색공간 파싱 실패는 무시 */ }
-              }
-            }
-          }
-        } catch(e) {}
-      }
+      if (resDict) { try { csGrayMap = buildCsGrayMap(pdfDoc, resDict); } catch (e) {} }
 
       // ① 페이지 콘텐츠 스트림 변환
       const contentsVal = node.get(Nm('Contents'));
@@ -5596,6 +5751,7 @@
       await processPatterns(resDict);
 
       // ② 페이지 자체의 투명도 그룹 색공간 → DeviceGray
+      //    (그룹이 없는데 투명도를 쓰는 쪽은 저장 직전 savePdfDoc → addGrayBlendGroups가 단다 — 임포징 판까지)
       try {
         const pageGrpRef = node.get(Nm('Group'));
         if (pageGrpRef) {
@@ -5610,7 +5766,9 @@
       // ③ 명명된 색공간 리소스 정리
       // Separation /All DeviceCMYK 등 비-그레이 색공간을 Resources.ColorSpace에서 제거
       // → 프린터 RIP이 리소스 딕셔너리를 스캔해서 칼라로 오인식하는 것을 방지
-      if (resDict) {
+      // ⚠ 회색으로 못 바꾼 콘텐츠 스트림이 하나라도 있으면 지우지 않는다 — 그 스트림의 '/CS0 cs'가
+      //   사라진 리소스를 부르게 되어 Acrobat "페이지 오류"가 난다(과거 _LB 버그와 같은 부류).
+      if (resDict && !streamSkipped) {
         try {
           const csResRef = resDict.get(Nm('ColorSpace'));
           if (csResRef) {
@@ -5618,7 +5776,7 @@
             if (csResDict && typeof csResDict.entries === 'function') {
               // 변환 후에도 XObject가 여전히 참조 중인 색공간은 보존
               // (변환 실패한 이미지의 색공간을 지우면 Acrobat 렌더링 오류 발생)
-              const stillUsedCSNames = new Set();
+              const stillUsedCSNames = new Set(inlineCSNames);
               try {
                 const xRef2 = resDict.get(Nm('XObject'));
                 if (xRef2) {
@@ -5659,6 +5817,12 @@
             }
           }
         } catch(e) {}
+      }
+      if (guessedOps) console.warn(`흑백 변환: 색공간 정의를 몰라 성분 수로 추정한 색 ${guessedOps}곳`);
+      if (streamSkipped) {
+        const err = new Error(`콘텐츠 스트림 ${streamSkipped}개를 풀 수 없어 원래 색으로 남음`);
+        err.partial = true;
+        throw err;
       }
     }
 
@@ -5749,7 +5913,7 @@
         else if (n === 1) { r = g = b = num(0); }
         const gray = Math.max(0, Math.min(1, 0.299*r + 0.587*g + 0.114*b));
         // ★ /Matte 성분 수는 '부모 이미지'의 색공간과 일치해야 한다 (Acrobat 오류 방지).
-        //   흑백 변환 후 부모 색공간이 DeviceGray(1)일 수도, JPEG 재인코딩으로 DeviceRGB(3)일 수도 있음.
+        //   흑백 변환 후 부모 색공간이 DeviceGray(1)일 수도, 원본 색공간을 유지한 경우(RGB 3·CMYK 4)일 수도 있음.
         const csName = img.dict.get(Nm('ColorSpace'));
         const csn = csName && csName.encodedName;
         const comps = csn === '/DeviceRGB' ? 3 : csn === '/DeviceCMYK' ? 4 : 1;
@@ -5777,12 +5941,12 @@
         const { w, h } = res;
         const Nm = n => PDFLib.PDFName.of(n);
         if (res.jpeg) {
-          // ★ 흑백을 JPEG(DCTDecode)로 유지 → 용량 최소화. 중성 회색(R=G=B) RGB.
+          // ★ 흑백을 JPEG(DCTDecode)로 유지 → 용량 최소화. 1성분 JPEG라 DeviceGray(프린터 흑백 과금).
           const jbytes = new Uint8Array(res.jpeg);
           img.contents = jbytes;
           img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(jbytes.length));
           img.dict.set(Nm('Filter'),           Nm('DCTDecode'));
-          img.dict.set(Nm('ColorSpace'),       Nm('DeviceRGB'));
+          img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
           img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
           img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(w));
           img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(h));
@@ -5845,15 +6009,7 @@
 
         // Dot Gain 보정 적용 (main thread — worker 미사용)
         const _dg = ctxDotGain(pdfDoc);
-        if (_dg) {
-          for (let i = 0; i < grayBytes.length; i++) {
-            const v = grayBytes[i] / 255;
-            let out;
-            if (_dg === 25) out = Math.sqrt(v);
-            else { const disc = 0.04+3.2*v; const d=(1.8-Math.sqrt(disc<0?0:disc))/1.6; out=1-Math.max(0,Math.min(1,d)); }
-            grayBytes[i] = Math.round(Math.max(0, Math.min(255, out * 255)));
-          }
-        }
+        if (_dg) for (let i = 0; i < grayBytes.length; i++) grayBytes[i] = Math.round(dotGainCurve(grayBytes[i] / 255, _dg) * 255);
 
         const predicted  = applyPNGPredictorGray(grayBytes, iw, ih);
         const compressed = pako.deflate(predicted, { level: 1 });
@@ -8964,7 +9120,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // 2: CR 줄바꿈 PDF의 인라인 이미지(BI…EI)가 BI→I로 깨져 Acrobat "이 페이지에 오류"가 나던 적용본 (2026-09-14)
     const GRAY_PIPELINE_V = 2;
 
-    function packWorkFile(manifest, blobs) {
+    // 작업 파일을 '조각 목록'으로 — [머리(표식+정보 길이+정보 JSON), 원본 PDF, 적용본, …].
+    // 저장은 조각을 파일에 차례로 이어 쓴다. 예전에는 조각을 **한 버퍼로 합친 뒤** 저장해서,
+    // 2GB 가까운 원고(줄여 연 대용량 등) + 적용본이면 합친 크기가 버퍼 한계(약 2,044MB)를 넘어
+    // "Array buffer allocation failed"로 작업 저장·닫기 전 저장이 실패했다. 파일 형식은 그대로다.
+    function packWorkFileParts(manifest, blobs) {
       const enc = new TextEncoder();
       const list = (blobs || []).map(b => (b instanceof Uint8Array ? b : new Uint8Array(b)));
       const man = Object.assign({}, manifest);
@@ -8972,15 +9132,44 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       if (man.entries.length !== list.length) throw new Error('entries와 blobs 개수가 다릅니다.');
       const magic = enc.encode(WORK_MAGIC);
       const json = enc.encode(JSON.stringify(man));
-      let total = magic.length + 4 + json.length;
-      list.forEach(b => { total += b.length; });
+      const head = new Uint8Array(magic.length + 4 + json.length);
+      head.set(magic, 0);
+      new DataView(head.buffer).setUint32(magic.length, json.length, true);
+      head.set(json, magic.length + 4);
+      const parts = [head, ...list];
+      return { parts, total: parts.reduce((t, b) => t + b.length, 0) };
+    }
+    // 한 버퍼로 합친 작업 파일 — 작은 파일·테스트용(저장 경로는 조각을 그대로 쓴다)
+    function packWorkFile(manifest, blobs) {
+      const { parts, total } = packWorkFileParts(manifest, blobs);
       const out = new Uint8Array(total);
       let p = 0;
-      out.set(magic, p); p += magic.length;
-      new DataView(out.buffer).setUint32(p, json.length, true); p += 4;
-      out.set(json, p); p += json.length;
-      list.forEach(b => { out.set(b, p); p += b.length; });
+      parts.forEach(b => { out.set(b, p); p += b.length; });
       return out;
+    }
+    // 디스크의 작업 파일을 조각별로 읽는다 — 파일 전체를 한 버퍼로 읽지 않아 2GB가 넘어도 열린다.
+    // 조각(원본·적용본) 하나하나는 화면이 다룰 수 있는 크기여야 한다(원래 그 크기로 만든 것이다).
+    // size: 파일 크기, readRange(offset, length) → Uint8Array|ArrayBuffer (순수 — 읽기 함수를 받는다)
+    function readWorkFileRanges(size, readRange) {
+      const dec = new TextDecoder();
+      const mlen = new TextEncoder().encode(WORK_MAGIC).length;
+      if (size < mlen + 4) throw new Error('이 앱의 작업 파일(.pdfw)이 아닙니다.');
+      const head = new Uint8Array(readRange(0, mlen + 4));
+      if (dec.decode(head.subarray(0, mlen)) !== WORK_MAGIC) throw new Error('이 앱의 작업 파일(.pdfw)이 아닙니다.');
+      const jsonLen = new DataView(head.buffer, head.byteOffset).getUint32(mlen, true);
+      if (jsonLen <= 0 || mlen + 4 + jsonLen > size) throw new Error('작업 파일이 손상되었습니다(정보 영역).');
+      let man;
+      try { man = JSON.parse(dec.decode(new Uint8Array(readRange(mlen + 4, jsonLen)))); }
+      catch (e) { throw new Error('작업 파일이 손상되었습니다(정보 해석 실패).'); }
+      let p = mlen + 4 + jsonLen;
+      const blobs = [];
+      for (const e of (man.entries || [])) {
+        const len = +e.len || 0;
+        if (p + len > size) throw new Error('작업 파일이 손상되었습니다(내용이 잘렸습니다).');
+        blobs.push(new Uint8Array(readRange(p, len)));
+        p += len;
+      }
+      return { manifest: man, blobs };
     }
 
     function unpackWorkFile(bytes) {
@@ -9019,6 +9208,12 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       return bits.join(' · ');
     }
     // </WORKFILE-CORE>
+    // 디스크 경로에서 작업 파일 읽기 — 조각별 구간 읽기(preload readFileRange)로, 2GB 넘어도 한 버퍼로 읽지 않는다
+    function readWorkFileFromPath(filePath) {
+      const api = window.electronAPI;
+      if (!api.readFileRange || !api.fileSize) return unpackWorkFile(new Uint8Array(api.readFile(filePath)));
+      return readWorkFileRanges(api.fileSize(filePath), (off, len) => api.readFileRange(filePath, off, len));
+    }
 
     // ── 작업 파일 저장/열기 (앱 연결부) ────────────────────────────────────────
     // 저장 = 원본 PDF + 설정(편집·처리·임포징·블리드·표지) + 문서 상태(순서·회전·빈페이지·
@@ -9105,7 +9300,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           entries,
         };
 
-        return { bytes: packWorkFile(manifest, blobs), manifest, edits: edits.length };
+        const { parts, total } = packWorkFileParts(manifest, blobs);
+        // bytes(한 버퍼)는 필요할 때만 만든다 — 저장은 parts를 이어 쓰므로 합치지 않는다
+        return { parts, total, get bytes() { return packWorkFile(manifest, blobs); }, manifest, edits: edits.length };
     }
 
     // 지금 탭이 어떤 작업 파일(.pdfw)에서 왔는지 / 어디에 저장했는지 — '저장'은 그 파일에 덮어쓴다
@@ -9129,19 +9326,20 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     async function saveWorkFile(opts) {
       if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요 — 저장할 작업이 없습니다.'); return false; }
       try {
-        const { bytes, manifest, edits } = await buildWorkFileBytes();
+        const { parts, total, manifest, edits } = await buildWorkFileBytes();
         const reuse = (!opts || !opts.saveAs) ? currentWorkPath() : '';
+        // 조각 목록을 그대로 넘긴다 — preload가 파일에 차례로 이어 쓴다(2GB 넘는 작업도 저장)
         const saved = reuse
-          ? await window.electronAPI.saveFileTo({ filePath: reuse, buffer: bytes, kind: 'pdfw' })
+          ? await window.electronAPI.saveFileTo({ filePath: reuse, buffer: parts, kind: 'pdfw' })
           : await window.electronAPI.saveFile({
-              defaultName: workFileBaseName() + '.pdfw', buffer: bytes, kind: 'pdfw',
+              defaultName: workFileBaseName() + '.pdfw', buffer: parts, kind: 'pdfw',
             });
         if (!saved) return false;                    // 저장 다이얼로그 취소
         // 저장 완료 → 지금 상태는 이 파일에 들어 있다. '저장 안 한 작업' 표시도 함께 해제해
         // 창을 닫을 때 저장을 다시 묻지 않게 한다.
         noteWorkSaved(typeof saved === 'string' ? saved : '');
         const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
-        showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(bytes.length / 1048576).toFixed(1)}MB`
+        showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(total / 1048576).toFixed(1)}MB`
           + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
           + (manifest.state.applied ? ' · 적용본 포함' : '')
           + (manifest.state.analysis ? ' · 분석 포함' : '')
@@ -9170,9 +9368,10 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // 작업 파일로 여는 중 표시 — 분석 완료 후 뜨는 '지난 작업 기록' 안내를 억제한다
     let _openingWorkFile = false;
     // 작업 파일 열기 — 바이트를 받아 새 탭으로 분석한 뒤 상태를 되씌운다.
+    // bytes: 작업 파일 전체(Uint8Array) 또는 이미 조각으로 읽은 { manifest, blobs }
     async function openWorkFileBytes(bytes, srcLabel) {
       let un;
-      try { un = unpackWorkFile(bytes); }
+      try { un = (bytes && bytes.manifest && bytes.blobs) ? bytes : unpackWorkFile(bytes); }
       catch (e) { showError((e && e.message) || '작업 파일을 읽을 수 없습니다.'); return false; }
       const { manifest, blobs } = un;
       const pdfAt = (manifest.entries || []).findIndex(e => e.k === 'pdf');
@@ -9261,10 +9460,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           showSuccess(restoreMsg + '\n⏳ 이전 버전에서 저장한 적용 결과라 흑백 변환을 새 방식으로 다시 만드는 중…');
           try { await applyChanges(); }
           catch (e) { console.warn('작업 파일 재적용 실패:', e); }
-          showSuccess(restoreMsg
-            + '\n✔ 적용 결과를 새로 만들었습니다(이전 버전의 흑백 변환은 일부 PDF에서 Acrobat 페이지 오류를 냈습니다).'
-            + (dirAt >= 0 ? '\n⚠ 블리드·폰트 곡선화 결과는 다시 만들어야 합니다 — 해당 기능을 한 번 더 실행한 뒤 저장하세요.' : '')
-            + `\n→ 확인 후 [💼 작업 저장]으로 덮어 저장하면 다음부터는 바로 열립니다.`);
+          // applyChanges는 오류를 스스로 표시하고 삼킨다 — 결과가 실제로 생겼는지로 문구를 가른다
+          const directNote = dirAt >= 0 ? '\n⚠ 블리드·폰트 곡선화·챕터 범위 임포징 결과는 다시 만들어야 합니다 — 해당 기능을 한 번 더 실행한 뒤 저장하세요.' : '';
+          if (processedPdfBytes) {
+            showSuccess(restoreMsg
+              + '\n✔ 적용 결과를 새로 만들었습니다(이전 버전의 흑백 변환은 일부 PDF에서 Acrobat 페이지 오류를 냈습니다).'
+              + directNote
+              + `\n→ 확인 후 [💼 작업 저장]으로 덮어 저장하면 다음부터는 바로 열립니다.`);
+          } else {
+            showError('작업 파일은 열었지만 이전 버전의 적용 결과를 새로 만들지 못했습니다 — 설정은 그대로이니 [✔ 적용]을 다시 눌러 주세요.' + directNote);
+          }
         } else if (resAt >= 0 && blobs[resAt]) {
           // 저장된 적용본을 그대로 — 재계산 없음. 화면·다운로드 모두 저장 시점 그대로다.
           processedPdfBytes = blobs[resAt];
@@ -9302,9 +9507,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     // 경로에서 열기 (더블클릭·드래그·최근 파일)
     async function openWorkFilePath(p) {
       try {
-        const buf = window.electronAPI.readFile(p);
+        const un = readWorkFileFromPath(p);    // 조각별로 읽는다 — 2GB 넘는 작업 파일도 열린다
         reportSaveDir(p);                      // 작업 파일이 있던 폴더를 저장 기본 위치로
-        const okOpen = await openWorkFileBytes(new Uint8Array(buf), p);
+        const okOpen = await openWorkFileBytes(un, p);
         if (okOpen) noteWorkSaved(p);   // 다음 '저장'은 이 파일에 덮어쓰고, 바로 닫으면 묻지 않는다
         return okOpen;
       } catch (e) {

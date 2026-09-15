@@ -46,7 +46,8 @@ app.whenReady().then(async () => {
       const waitFor = async (f, ms) => { const t = Date.now(); while (Date.now() - t < (ms || 120000)) { if (f()) return true; await new Promise(r => setTimeout(r, 40)); } return false; };
       window.__waitFor = waitFor;
       startLoad([file]);
-      await waitFor(() => pageResults.length > 0 && pageResults.every(r => r && r.thumbnail !== undefined));
+      // 썸네일만 보면 탭 status가 아직 'loading'일 수 있다 — 교체는 'ready'가 돼야 받는다(가끔 실패하던 원인)
+      await waitFor(() => pageResults.length > 0 && pageResults.every(r => r && r.thumbnail !== undefined) && isTabReady(tabs.get(activeTabId)));
       const ls = activeLayoutSettings();
       // 쪽과 무관한 설정 — 교체 후에도 남아야 한다
       ls.scaling.mode = 'standard'; ls.scaling.paper = 'A4';

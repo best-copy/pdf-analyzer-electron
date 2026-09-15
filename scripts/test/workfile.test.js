@@ -12,13 +12,13 @@ function loadCore() {
   const body = src.slice(s, e);
   const impure = ['document.', 'window.', 'electronAPI', 'originalPdfBytes', 'pageResults', 'showSuccess']
     .filter(t => body.includes(t));
-  return { impure, api: new Function(body + '\nreturn { packWorkFile, unpackWorkFile, describeWorkFile, WORK_MAGIC };')() };
+  return { impure, api: new Function(body + '\nreturn { packWorkFile, packWorkFileParts, readWorkFileRanges, unpackWorkFile, describeWorkFile, WORK_MAGIC };')() };
 }
 
 let pass = 0, fail = 0;
 const ck = (n, c, x) => { if (c) { pass++; console.log('  ✔', n); } else { fail++; console.log('  ✘', n, x !== undefined ? JSON.stringify(x) : ''); } };
 const { impure, api } = loadCore();
-const { packWorkFile, unpackWorkFile, describeWorkFile } = api;
+const { packWorkFile, packWorkFileParts, readWorkFileRanges, unpackWorkFile, describeWorkFile } = api;
 
 const bytes = (n, fill) => Uint8Array.from({ length: n }, (_, i) => (fill != null ? fill : i % 256));
 
@@ -87,6 +87,26 @@ ck('offset 뷰에서도 동일 결과', (() => {
   return Buffer.compare(Buffer.from(u.blobs[0]), Buffer.from(pdf)) === 0
       && JSON.stringify(u.manifest.state) === JSON.stringify(manifest.state);
 })());
+
+// ── 조각 저장·구간 읽기 (2GB 넘는 작업 파일) ──────────────────────────────
+// 저장은 조각을 이어 쓰고, 열기는 구간별로 읽는다 — 한 버퍼로 합치지 않아도 같은 파일이어야 한다
+{
+  const { parts, total } = packWorkFileParts(manifest, [pdf, edit1, edit2]);
+  const joined = Buffer.concat(parts.map(p => Buffer.from(p)));
+  ck('조각을 이어 붙이면 한 버퍼 저장과 바이트까지 같다(파일 형식 동일)', total === packed.length && Buffer.compare(joined, Buffer.from(packed)) === 0, [total, packed.length]);
+  let reads = 0;
+  const u = readWorkFileRanges(packed.length, (off, len) => { reads++; return packed.slice(off, off + len); });
+  ck('구간별로 읽어도 같은 내용', Buffer.compare(Buffer.from(u.blobs[0]), Buffer.from(pdf)) === 0
+      && Buffer.compare(Buffer.from(u.blobs[2]), Buffer.from(edit2)) === 0
+      && JSON.stringify(u.manifest.state) === JSON.stringify(manifest.state), reads);
+  ck('조각 수만큼만 읽는다(머리·정보·조각 3개)', reads === 5, reads);
+  let err = '';
+  try { readWorkFileRanges(packed.length - 10, (off, len) => packed.slice(off, off + len)); } catch (e) { err = e.message; }
+  ck('잘린 파일은 손상으로 거부', /잘렸습니다/.test(err), err);
+  err = '';
+  try { readWorkFileRanges(packed.length, (off, len) => new Uint8Array(len)); } catch (e) { err = e.message; }
+  ck('작업 파일이 아니면 거부', /\.pdfw\)이 아닙니다/.test(err), err);
+}
 
 console.log(`\n결과: ${pass} 통과 / ${fail} 실패`);
 process.exit(fail ? 1 : 0);

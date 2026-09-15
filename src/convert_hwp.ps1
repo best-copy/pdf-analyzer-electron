@@ -18,6 +18,18 @@ param(
 $ErrorActionPreference = "Stop"
 $hwp = $null
 $watcher = $null
+$launched = $false
+
+# 이 스크립트가 **새로 띄운** 한글 프로세스 번호를 'COMPID:n'으로 먼저 알린다 — 변환이 시간 초과로 끊기면
+# main.js가 그 번호만 정리한다(예전엔 PowerShell만 죽고 한글이 문서를 잡은 채 남았다).
+# 사용자가 원래 켜 둔 한글에 붙었으면 번호가 없고, 그 한글은 끄지 않는다.
+function Get-ProcIds([string[]]$names) { @(Get-Process -Name $names -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) }
+function Report-NewProcs([string[]]$names, $before) {
+  $new = @(Get-ProcIds $names | Where-Object { $before -notcontains $_ })
+  foreach ($id in $new) { [Console]::Out.WriteLine("COMPID:$id") }
+  [Console]::Out.Flush()
+  return ($new.Count -gt 0)
+}
 
 # ── 보안 대화상자 자동 승인 워처 (별도 잡: COM 호출이 블로킹돼도 독립 동작) ──
 #   한글은 WPF 기반이라 다이얼로그 버튼이 Win32 버튼 핸들이 아니다.
@@ -115,7 +127,9 @@ try {
   # 대화상자 자동 승인 워처 시작
   try { $watcher = Start-Job -ScriptBlock $watcherScript } catch { $watcher = $null }
 
+  $hwpBefore = Get-ProcIds @('Hwp')
   $hwp = New-Object -ComObject HWPFrame.HwpObject
+  $launched = Report-NewProcs @('Hwp') $hwpBefore
   # 보안 모듈 등록 — 자동화 시 '외부 접근' 보안 대화상자 1차 차단
   try { $hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule") | Out-Null } catch {}
   # 대화상자 자동 처리(무시) — 변환 중 모달이 떠서 멈추는 것 방지
@@ -133,7 +147,7 @@ try {
   $hwp.HAction.Execute("FileSaveAsPdf", $pset.HSet) | Out-Null
 
   $hwp.Clear(1)
-  $hwp.Quit()
+  if ($launched) { $hwp.Quit() }
   [System.Runtime.InteropServices.Marshal]::ReleaseComObject($hwp) | Out-Null
   $hwp = $null
 
@@ -141,7 +155,7 @@ try {
   exit 0
 }
 catch {
-  try { if ($hwp) { $hwp.Quit() } } catch {}
+  try { if ($hwp -and $launched) { $hwp.Quit() } } catch {}
   Write-Error $_.Exception.Message
   exit 1
 }

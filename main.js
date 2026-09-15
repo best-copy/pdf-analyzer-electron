@@ -8,6 +8,13 @@ const license      = require('./license');         // 체험판 1회용 키 (저
 const licenseServer = require('./license-server'); // 활성화 서버 (관리자 PC에서만 구동)
 const licenseTunnel = require('./license-tunnel'); // 외부 접속 터널 (cloudflared)
 
+// ── 검사 모드 (npm run smoke 등 — 환경변수 TEST_WINDOW=left, 옛 이름 PDFEDIT_TEST_WINDOW) ──────
+// 사용자가 앱을 켜 둔 채 검사하면, 같은 사용자 폴더 = 같은 단일 인스턴스 잠금이라 검사 앱이 곧바로
+// 꺼지고 사용자 창만 앞으로 튀어나왔다(검사는 로그가 비어 '통과'). 검사 모드는 사용자 폴더를
+// 따로 써서 잠금·localStorage·인증 상태를 사용자 앱과 섞지 않는다. ⚠ 잠금 요청보다 먼저 해야 한다.
+const IS_TEST_MODE = process.env.TEST_WINDOW === 'left' || process.env.PDFEDIT_TEST_WINDOW === 'left';
+if (IS_TEST_MODE) app.setPath('userData', path.join(os.tmpdir(), 'pdfedit-test-userdata'));
+
 // ── 성능: GPU 가속·래스터화 활성화 (캔버스·PDF 렌더링 가속) ──────────────────
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
@@ -521,7 +528,7 @@ ipcMain.handle('lic:open', () => { openLicenseWindow(); return true; });
 // ⚠ 옵션에서 width/height **뒤에** 펼쳐 넣을 것 — 앞에 두면 뒤의 크기가 줄인 값을 덮어쓴다.
 function testWindowPos(w, h) {
   // 공용 이름 TEST_WINDOW(모든 프로젝트 공통) · 옛 이름 PDFEDIT_TEST_WINDOW 둘 다 받는다
-  if (process.env.TEST_WINDOW !== 'left' && process.env.PDFEDIT_TEST_WINDOW !== 'left') return {};
+  if (!IS_TEST_MODE) return {};
   try {
     const all = require('electron').screen.getAllDisplays();
     const L = all.reduce((m, d) => (d.bounds.x < m.bounds.x ? d : m), all[0]);
@@ -554,8 +561,16 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   // win.webContents.openDevTools(); // 디버그 시 주석 해제
   // 검사 모드에서는 렌더러가 여는 창(견적서 인쇄 window.open 등)도 왼쪽 모니터에 — 평소에는 핸들러를 달지 않는다
-  if (process.env.TEST_WINDOW === 'left' || process.env.PDFEDIT_TEST_WINDOW === 'left') {
+  if (IS_TEST_MODE) {
     win.webContents.setWindowOpenHandler(() => ({ action: 'allow', overrideBrowserWindowOptions: testWindowPos(900, 900) }));
+    // 부팅 완료 신호 — smoke는 이 줄이 없으면 실패로 본다(오류 로그가 없다는 것만으로는 부팅을 증명하지 못한다).
+    // 세 app-*.js의 최상위 함수가 전역에 올라왔는지로 스크립트가 끝까지 실행됐음을 확인한다.
+    win.webContents.on('did-finish-load', () => {
+      win.webContents.executeJavaScript(
+        "['startLoad','applyChanges','activateChip','renderPageNoSeams'].filter(n => typeof window[n] !== 'function')"
+      ).then(missing => console.log(missing.length ? `[SMOKE] BOOT_MISSING ${missing.join(',')}` : '[SMOKE] BOOT_OK'))
+       .catch(e => console.log('[SMOKE] BOOT_MISSING ' + e.message));
+    });
   }
 
   // 실행 인자로 받은 문서를 렌더러 준비 후 전달 (목차 검증기 연동)
@@ -639,6 +654,8 @@ function createWindow() {
   // 렌더러가 메모리 부족 등으로 종료되면 창이 흰색으로 남아 아무 반응이 없다.
   // 그대로 두면 원인도 모른 채 기다리게 되므로, 무슨 일인지 알리고 바로 다시 띄운다.
   win.webContents.on('render-process-gone', (_e, details) => {
+    // 저장 중 화면이 죽으면 저장 결과 회신이 영영 오지 않는다 — 풀어 두지 않으면 이후 '저장하고 닫기'가 무반응
+    savingBeforeQuit = false;
     const reason = (details && details.reason) || 'unknown';
     if (reason === 'clean-exit' || reason === 'killed') return;
     const oom = reason === 'oom' || reason === 'out-of-memory';
@@ -731,18 +748,23 @@ app.whenReady().then(() => {
       try { fs.writeFileSync(path.join(app.getPath('userData'), 'license-server.json'), JSON.stringify(cfg, null, 2), 'utf8'); } catch (e) {}
     },
   });
-  sweepTempConversions(); // 시작 시 이전 세션 변환 임시파일 정리
-  initRemoteServer();     // 모바일 연동 서버 (켜짐 설정이면 자동 구동)
-  ensureSendToShortcut(); // 탐색기 '보내기' 메뉴 등록 (포터블 실행 시)
-  ingestPendingPrintOnBoot(); // 꺼진 동안 인쇄된 결과물이 있으면 열기 (createWindow 전에)
-  startPrintWatcher();    // 가상 프린터 'PDF Editor' 출력 감시
-  initPrintDocNameSources();  // 접수 문서의 '원래 이름' 회수 경로 준비 (로그 / 작업 큐)
-  setTimeout(repairPrintWatchdogIfNeeded, 6000);   // 상주 감시자 자동 복구 (프린터 설치 시)
+  // 검사 모드는 창과 화면만 띄운다 — 사용자가 켜 둔 앱과 같은 PC 자원을 건드리지 않는다:
+  // 임시파일 정리(사용자 앱이 쓰는 중인 pdfedit_* 를 지운다), 원격 서버 포트, 보내기 메뉴, 인쇄 접수·감시.
+  if (!IS_TEST_MODE) {
+    sweepTempConversions(); // 시작 시 이전 세션 변환 임시파일 정리
+    initRemoteServer();     // 모바일 연동 서버 (켜짐 설정이면 자동 구동)
+    ensureSendToShortcut(); // 탐색기 '보내기' 메뉴 등록 (포터블 실행 시)
+    ingestPendingPrintOnBoot(); // 꺼진 동안 인쇄된 결과물이 있으면 열기 (createWindow 전에)
+    startPrintWatcher();    // 가상 프린터 'PDF Editor' 출력 감시
+    initPrintDocNameSources();  // 접수 문서의 '원래 이름' 회수 경로 준비 (로그 / 작업 큐)
+    setTimeout(repairPrintWatchdogIfNeeded, 6000);   // 상주 감시자 자동 복구 (프린터 설치 시)
+  }
   createWindow();
   // 인증이 없거나 만료면 인증 창을 함께 띄운다. 앱 자체는 열어 둔다 —
   // 열기·분석·미리보기는 되고 저장·출력만 막히는 것이 이 체험판의 규칙이다.
+  // (검사 모드는 사용자 폴더가 비어 늘 미인증이라 인증 창을 띄우지 않는다)
   const st = license.status();
-  if (!st.canSave) setTimeout(() => openLicenseWindow(), 700);
+  if (!st.canSave && !IS_TEST_MODE) setTimeout(() => openLicenseWindow(), 700);
   // 7일 주기 서버 재확인 — 부팅 직후 한 번, 이후 6시간마다. 실패해도 유예 안에서는 조용히 넘어간다.
   setTimeout(() => license.recheckIfDue().then(pushLicenseStatus).catch(() => {}), 5000);
   setInterval(() => license.recheckIfDue().then(pushLicenseStatus).catch(() => {}), 6 * 3600 * 1000);
@@ -751,7 +773,7 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('will-quit', sweepTempConversions); // 종료 시에도 한 번 더 정리
+app.on('will-quit', () => { if (!IS_TEST_MODE) sweepTempConversions(); }); // 종료 시에도 한 번 더 정리 (검사 앱은 사용자 앱의 임시파일을 건드리지 않는다)
 app.on('will-quit', stopPrintJobPoller);   // 인쇄 작업 감시 프로세스 정리(상주했다면)
 app.on('will-quit', () => { try { licenseTunnel.stop(); } catch (e) {} }); // cloudflared 자식 프로세스 정리
 
@@ -772,6 +794,7 @@ ipcMain.handle('app:forceReload', (event) => {
   const w = BrowserWindow.fromWebContents(event.sender);
   if (!w) return false;
   unsavedWork = false;
+  savingBeforeQuit = false;            // 진행 중이던 저장 회신도 사라진다
   docOpen = false; docWorkName = '';   // 새로고침하면 열린 문서도 사라진다
   w.webContents.reloadIgnoringCache();
   return true;
@@ -1271,7 +1294,8 @@ ipcMain.handle('temp:cleanup', (_, p) => {
   try {
     if (!p) return false;
     const base = path.basename(p);
-    if (!/^(hwpconv|officeconv|adobeconv)_.*\.pdf$/i.test(base)) return false;
+    // pdfedit_shrink/split: 2GB 넘는 원고를 줄이거나 나눈 임시 PDF(수 GB) — 예전엔 목록에 없어 읽은 뒤에도 남았다
+    if (!/^(hwpconv|officeconv|adobeconv|pdfedit_shrink|pdfedit_split)_.*\.pdf$/i.test(base)) return false;
     if (path.dirname(p) !== os.tmpdir()) return false;
     fs.unlinkSync(p);
     return true;
@@ -1325,9 +1349,20 @@ function hfUniquePath(p) {
   for (let i = 1; i < 1000; i++) { const q = `${base} (${i})${ext}`; if (!fs.existsSync(q)) return q; }
   return `${base}.${Date.now()}${ext}`;
 }
+// 파일 옮기기 — 드라이브가 달라도(핫폴더가 D:·NAS, 결과 임시파일은 C:…Temp) 옮긴다.
+// fs.rename은 드라이브가 다르면 EXDEV로 실패해, 결과가 완료 폴더로 못 가고 같은 원고를 2.5초마다 다시 처리했다.
+function hfMove(src, dst) {
+  try { fs.renameSync(src, dst); }
+  catch (e) {
+    if (e.code !== 'EXDEV') throw e;
+    fs.copyFileSync(src, dst);
+    fs.unlinkSync(src);
+  }
+}
 function hfPoll() {
   if (!_hfDir) return;
-  const win = BrowserWindow.getAllWindows()[0];
+  // 잡은 메인 창으로 — 편집기·인증 창이 먼저 잡히면 잡이 사라지고 원고가 영영 '처리 중'에 남는다
+  const win = mainWin;
   if (!win || win.isDestroyed()) return;
   for (const [sub, kind] of Object.entries(HF_KINDS)) {
     let files = [];
@@ -1365,24 +1400,30 @@ ipcMain.handle('hotfolder:finish', (_, r) => {
   // 핫폴더 무인 저장도 결과물 반출 — 만료 시 결과를 '완료' 폴더로 내보내지 않는다
   if (r && r.ok && !license.refresh().canSave) {
     try { if (r.outTmp && fs.existsSync(r.outTmp)) fs.unlinkSync(r.outTmp); } catch (e) {}
-    _hfBusy.delete(r.srcPath);
+    // '처리 중'으로 남겨 둔다 — 풀어 주면 인증이 없는 동안 같은 원고를 2.5초마다 다시 만들었다
     licenseGate('핫폴더 결과');
-    return false;
+    return 'license';
   }
   try {
     const dir = _hfDir;
     if (!dir || !r || !r.srcPath) return false;
     const doneDir = path.join(dir, '완료'), failDir = path.join(dir, '실패');
     if (r.ok) {
-      if (r.outTmp && fs.existsSync(r.outTmp)) fs.renameSync(r.outTmp, hfUniquePath(path.join(doneDir, r.outName || 'cover.pdf')));
-      if (fs.existsSync(r.srcPath)) fs.renameSync(r.srcPath, hfUniquePath(path.join(doneDir, path.basename(r.srcPath))));
+      if (r.outTmp && fs.existsSync(r.outTmp)) hfMove(r.outTmp, hfUniquePath(path.join(doneDir, r.outName || 'cover.pdf')));
+      if (fs.existsSync(r.srcPath)) hfMove(r.srcPath, hfUniquePath(path.join(doneDir, path.basename(r.srcPath))));
     } else {
-      if (fs.existsSync(r.srcPath)) fs.renameSync(r.srcPath, hfUniquePath(path.join(failDir, path.basename(r.srcPath))));
+      if (fs.existsSync(r.srcPath)) hfMove(r.srcPath, hfUniquePath(path.join(failDir, path.basename(r.srcPath))));
       try { fs.writeFileSync(hfUniquePath(path.join(failDir, path.basename(r.srcPath) + '.실패사유.txt')), String(r.errMsg || '알 수 없는 오류'), 'utf8'); } catch (e) {}
     }
     _hfBusy.delete(r.srcPath);
     return true;
-  } catch (e) { _hfBusy.delete(r && r.srcPath); return false; }
+  } catch (e) {
+    // 옮기지 못했다(권한·공간·잠김) — 원고를 '처리 중'에 남겨 두어 같은 원고를 끝없이 다시 처리하지 않게 한다.
+    // (핫폴더를 다시 켜면 풀린다) 결과 임시파일은 치운다.
+    console.error('핫폴더 결과 이동 실패:', r && r.srcPath, e);
+    try { if (r && r.outTmp && fs.existsSync(r.outTmp)) fs.unlinkSync(r.outTmp); } catch (e2) {}
+    return false;
+  }
 });
 // 폴더 선택 다이얼로그 (핫폴더 지정용)
 ipcMain.handle('dialog:pickFolder', async () => {
@@ -1505,33 +1546,59 @@ ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind }) => {
 // Electron 26+ 에서 margins 단위가 인치로 변경됨 → marginType:'none' 사용 (HTML body padding으로 여백 처리)
 // loadURL 완료를 did-finish-load 이벤트로 명시적 대기
 // HTML → PDF 렌더 — IPC(견적서)와 원격 서버(모바일 견적서)가 공유
+// ⚠ 원격 서버(폰)에서도 HTML이 들어온다 — 그 HTML이 <iframe src="file:///C:/...">·<img>로 PC의 로컬 파일을
+//   끌어와 PDF로 빼 가거나, 응답 없는 외부 주소로 창을 붙잡아 둘 수 있었다. 인쇄 전용 세션에서
+//   **지금 렌더하는 임시 HTML과 data:/blob:만** 읽게 하고(스크립트도 끔), 로드는 30초에서 끊는다.
+const _printAllowedUrls = new Set();
+function printSession() {
+  const ses = require('electron').session.fromPartition('pdfedit-print');
+  if (!ses.__pdfeditGuard) {
+    ses.__pdfeditGuard = true;
+    ses.webRequest.onBeforeRequest((details, cb) => {
+      const u = details.url;
+      if (u.startsWith('data:') || u.startsWith('blob:')) return cb({ cancel: false });
+      // 크로미움이 주소를 정규화(퍼센트 인코딩 등)하므로 문자열이 아니라 파일 경로로 비교한다
+      let p = '';
+      try { if (u.startsWith('file:')) p = path.normalize(decodeURIComponent(new URL(u).pathname).replace(/^\/([A-Za-z]:)/, '$1')).toLowerCase(); } catch (e) {}
+      try { if (p) p = fs.realpathSync.native(p).toLowerCase(); } catch (e) {}   // 짧은 이름(ADMINI~1)과 긴 이름을 같게
+      cb({ cancel: !(p && _printAllowedUrls.has(p)) });
+    });
+  }
+  return ses;
+}
 async function renderHtmlToPdf(html) {
   const tmp = require('os').tmpdir();
-  const tmpFile = path.join(tmp, `quote_${Date.now()}.html`);
+  const tmpFile = path.join(tmp, `quote_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.html`);
   fs.writeFileSync(tmpFile, html, 'utf8');
+  const url = 'file:///' + tmpFile.replace(/\\/g, '/');
 
   const hiddenWin = new BrowserWindow({
     show: false,
     width: 1024, height: 768,
-    webPreferences: { contextIsolation: true, sandbox: true },
-  });
-
-  await new Promise((resolve, reject) => {
-    hiddenWin.webContents.once('did-finish-load', resolve);
-    hiddenWin.webContents.once('did-fail-load', (_, code, desc) =>
-      reject(new Error(`페이지 로드 실패: ${desc} (${code})`))
-    );
-    hiddenWin.loadURL('file:///' + tmpFile.replace(/\\/g, '/'));
+    webPreferences: { contextIsolation: true, sandbox: true, javascript: false, session: printSession() },
   });
 
   let pdfBuffer;
+  const allowKey = fs.realpathSync.native(tmpFile).toLowerCase();
+  _printAllowedUrls.add(allowKey);
   try {
+    await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error('견적서 페이지 로드 시간 초과(30초)')), 30000);
+      hiddenWin.webContents.once('did-finish-load', () => { clearTimeout(to); resolve(); });
+      hiddenWin.webContents.on('did-fail-load', (_, code, desc, _url, isMainFrame) => {
+        if (!isMainFrame) return;   // 막힌 iframe·그림 등 하위 프레임 실패는 무시 — 견적서 본문은 그대로 인쇄
+        clearTimeout(to);
+        reject(new Error(`페이지 로드 실패: ${desc} (${code})`));
+      });
+      hiddenWin.loadURL(url);
+    });
     pdfBuffer = await hiddenWin.webContents.printToPDF({
       pageSize: 'A4',
       margins: { marginType: 'none' },
       printBackground: true,
     });
   } finally {
+    _printAllowedUrls.delete(allowKey);
     hiddenWin.destroy();
     try { fs.unlinkSync(tmpFile); } catch(e) {}
   }
@@ -1586,6 +1653,18 @@ ipcMain.handle('quote:sendToBusiness', async (_, payload) => {
   }
 });
 
+// COM 변환(한글·Office·Adobe)이 시간 초과로 끊기면 execFile은 PowerShell만 죽이고, 스크립트가 띄운 앱은
+// 문서를 잡은 채 남았다(단일 인스턴스 앱은 다음 변환이 그 멈춘 세션에 붙어 매번 시간 초과).
+// 스크립트가 **자기가 새로 띄운** 프로세스 번호를 'COMPID:n'으로 먼저 알려 주므로 그것만 정리한다.
+// 사용자가 원래 켜 둔 앱은 번호가 나오지 않아 건드리지 않는다.
+function killComLeftovers(stdout) {
+  const ids = [...new Set([...String(stdout || '').matchAll(/COMPID:(\d+)/g)].map(m => m[1]))];
+  for (const id of ids) {
+    try { execFile('taskkill', ['/PID', id, '/T', '/F'], { windowsHide: true }, () => {}); } catch (e) {}
+  }
+  return ids.length;
+}
+
 // ── IPC: HWP/HWPX → PDF 변환 (한컴오피스 한글 COM 자동화) ────────────────────
 // 한글은 단일 인스턴스로만 동작하므로 동시 변환 시 충돌 → 큐로 순차 처리.
 // 변환된 임시 PDF 경로를 반환하고, 렌더러는 preload.readFile()로 직접 읽는다.
@@ -1605,7 +1684,8 @@ function convertHwpToPdf(srcPath) {
       { windowsHide: true, timeout: 180000 },
       (err, stdout, stderr) => {
         if (err) {
-          const msg = (stderr || err.message || '').toString().trim();
+          const killed = err.killed ? killComLeftovers(stdout) : 0;
+          const msg = err.killed ? `시간 초과로 중단했습니다${killed ? ` (멈춘 프로그램 ${killed}개 정리)` : ''}` : (stderr || err.message || '').toString().trim();
           return reject(new Error('한글 문서 변환 실패: ' + (msg || '알 수 없는 오류')));
         }
         if (!fs.existsSync(outPath)) {
@@ -1647,7 +1727,8 @@ function convertOfficeToPdf(srcPath) {
       { windowsHide: true, timeout: 180000 },
       (err, stdout, stderr) => {
         if (err) {
-          const msg = (stderr || err.message || '').toString().trim();
+          const killed = err.killed ? killComLeftovers(stdout) : 0;
+          const msg = err.killed ? `시간 초과로 중단했습니다${killed ? ` (멈춘 프로그램 ${killed}개 정리)` : ''}` : (stderr || err.message || '').toString().trim();
           return reject(new Error('Office 문서 변환 실패: ' + (msg || '알 수 없는 오류')));
         }
         if (!fs.existsSync(outPath)) {
@@ -1686,7 +1767,8 @@ function convertAdobeToPdf(srcPath) {
       { windowsHide: true, timeout: 300000 },   // Adobe 앱 실행이 느려 5분 여유
       (err, stdout, stderr) => {
         if (err) {
-          const msg = (stderr || err.message || '').toString().trim();
+          const killed = err.killed ? killComLeftovers(stdout) : 0;
+          const msg = err.killed ? `시간 초과로 중단했습니다${killed ? ` (멈춘 프로그램 ${killed}개 정리)` : ''}` : (stderr || err.message || '').toString().trim();
           return reject(new Error('Adobe 파일 변환 실패: ' + (msg || '알 수 없는 오류')));
         }
         if (!fs.existsSync(outPath)) {

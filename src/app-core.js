@@ -176,7 +176,8 @@
       return Object.assign({ useObjectStreams: false, updateFieldAppearances: false,
                              objectsPerTick: Math.max(1000, per) }, extra || {});
     }
-    function savePdfDoc(doc, extra) { return doc.save(pdfSaveOpts(doc, extra)); }
+    // 저장 직전: 투명도를 쓰는 무채색 쪽에 DeviceGray 페이지 그룹(libs/gray-blend.js) — 없으면 gs·프린터가 겹친 회색을 CMY로 섞는다
+    function savePdfDoc(doc, extra) { return addGrayBlendGroups(doc).then(() => doc.save(pdfSaveOpts(doc, extra))); }
 
     // ── pdf.js 문서 열기 (공용) ───────────────────────────────────────────────
     // 사전 정의 CMap(한국어 UniKS-UTF16-H 등)은 pdf.js가 **외부 파일**에서 읽어야 한다.
@@ -219,10 +220,16 @@
         const w = new Worker(this.workerUrl);
         w.onmessage = (e) => this._onResult(w, e.data);
         w.onerror   = (e) => {
+          // 워커 안에서 잡히지 않은 오류 — 그 워커는 버리고 필요하면 새로 띄운다.
+          // (예전엔 빈 풀에 다시 넣었는데, 일을 끝낸 뒤 오류가 오면 같은 워커가 두 번 들어가 한 워커에
+          //  일이 겹쳐 실리고 대기 중인 작업이 영영 끝나지 않을 수 있었다)
+          if (e && e.preventDefault) e.preventDefault();
           const job = w.__currentJob;
-          if (job) { this.pending.get(job.id)?.reject(new Error(e.message)); this.pending.delete(job.id); }
+          if (job) { this.pending.get(job.id)?.reject(new Error((e && e.message) || '워커 오류')); this.pending.delete(job.id); }
           w.__currentJob = null;
-          this.freeWorkers.push(w);
+          try { w.terminate(); } catch (err) {}
+          this.workers = this.workers.filter(x => x !== w);
+          this.freeWorkers = this.freeWorkers.filter(x => x !== w);
           this._flush();
         };
         this.workers.push(w);
@@ -911,7 +918,8 @@
                 });
                 continue;
               }
-              // 가장 낮은 단계까지 줄여도 한계를 못 넘겼다 — 이때만 나눠서 연다
+              // 가장 낮은 단계까지 줄여도 한계를 못 넘겼다 — 이때만 나눠서 연다 (못 쓰는 줄인 파일은 바로 지운다)
+              if (r.path && window.electronAPI.cleanupTempFile) { try { window.electronAPI.cleanupTempFile(r.path); } catch (e) {} }
               showLoading(`${it.name} — 더 줄일 수 없어 나눠서 여는 중…`);
               const res = await window.electronAPI.splitPdf(readPath, {});
               const base = it.name.replace(/\.[^.]+$/, '');
@@ -935,7 +943,8 @@
               continue;
             } catch (e) {
               hideLoading();
-              failed.push(`${it.name} — 용량 줄이기 실패: ${e && e.message ? e.message : e}`);
+              // 다른 실패와 같은 모양으로 — 문자열을 넣으면 안내에 'undefined'가 뜨고 [다시 시도]가 경로를 잃었다
+              failed.push({ name: it.name, path: it.path, reason: `용량 줄이기 실패: ${e && e.message ? e.message : e}` });
               continue;
             }
           }
@@ -2806,6 +2815,16 @@
     // 페이지 단위 흑백변환 캐시: originalIdx → 변환된 단일페이지 PDFDocument.
     // 선택이 바뀌어도 '새로 선택된 페이지'만 변환하므로 재적용이 매우 빠르다.
     let _bwCache = new Map();
+    // 캐시 세대 — clearProcessCaches(탭 전환·파일 교체·내부편집 반영)마다 올린다.
+    // 비동기 빌드는 시작할 때 세대를 기억하고, 캐시에 쓰기 전에 비교해 다르면 결과를 버린다.
+    // (예전에는 탭 id만 비교해서, 같은 탭에서 파일을 교체하거나 내부편집을 반영하는 동안 돌던
+    //  프리웜이 옛 원고의 변환 결과를 새로 비운 캐시에 넣었다 → 적용·다운로드에 옛 원고가 섞임)
+    let _cacheGen = 0;
+    function staleCacheError() {
+      const e = new Error('작업 중 문서가 바뀌어 이전 결과를 버렸습니다');
+      e.stale = true;
+      return e;
+    }
     // 페이지 내부편집 소스 캐시: originalIdx → 편집이 구워진 단일페이지 PDFDocument.
     // contentEdits[idx].bytes(편집된 단일페이지 PDF)를 1회 load해 재사용한다.
     let _editDocCache = new Map();
@@ -2836,6 +2855,7 @@
     // 매번 전 페이지를 다시 변환하고 있었다(64쪽 사진 원고에서 4.5초 CPU를 반복).
     let _optBaseCache = { sig: null, bytes: null, stats: null };
     function clearProcessCaches() {
+      _cacheGen++;
       _baseCache = { sig: null, bytes: null, stats: null };
       _bwCache = new Map();
       _editDocCache = new Map();
@@ -2853,13 +2873,17 @@
       const valid = pageResults.filter(Boolean);
       const order = valid.map(r => (r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx) + (r.isBlank ? '' : '@' + editRev(r.originalIdx))).join('|');
       const bw = bwSigPages(valid);
-      return order + '#' + bw + (processingOptions.inkNorm ? '#ink' : '');
+      // Dot Gain이 바뀌면 변환 밝기가 달라진다 — 조립본 재사용·base 캐시가 갈려야 한다
+      const dg = (typeof getDotGain === 'function') ? getDotGain() : 0;
+      return order + '#' + bw + (processingOptions.inkNorm ? '#ink' : '') + (dg ? '#dg' + dg : '');
     }
     function baseSignature() {
       const valid = pageResults.filter(Boolean);
       const order = valid.map(r => `${r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx + '@' + editRev(r.originalIdx)}:${r.rotation || 0}`).join('|');
       const bw = bwSigPages(valid);
-      return order + '#' + bw + (processingOptions.inkNorm ? '#ink' : '');
+      // Dot Gain이 바뀌면 변환 밝기가 달라진다 — 조립본 재사용·base 캐시가 갈려야 한다
+      const dg = (typeof getDotGain === 'function') ? getDotGain() : 0;
+      return order + '#' + bw + (processingOptions.inkNorm ? '#ink' : '') + (dg ? '#dg' + dg : '');
     }
     // 시그니처용 흑백 대상 페이지 목록 — 확정(appliedBw) + 현재 선택(bw 옵션 시) 합집합
     function bwSigPages(valid) {
@@ -2896,6 +2920,7 @@
 
     // 필요한 흑백 페이지들을 캐시에 채움(없는 것만 병렬 변환). srcDoc는 공유 캐시에서.
     async function ensureBwConverted(indices, stats, onProgress) {
+      const gen = _cacheGen;
       const todo = indices.filter(i => !_bwCache.has(i));
       if (!todo.length) { if (onProgress) onProgress(92); return; }
       // 회색 판정 페이지는 Dot Gain 보정을 걸지 않는다(0 강제) — 이미 회색인 페이지의
@@ -2931,22 +2956,22 @@
       const wait = () => sem > 0 ? (sem--, Promise.resolve()) : new Promise(r => q.push(r));
       const rel = () => { if (q.length) q.shift()(); else sem++; };
       let done = 0;
+      const errIdx = new Set();   // 일부가 원래 색으로 남은 페이지 — 캐시에 표시해 두어 프리웜으로 구운 뒤 '적용'해도 경고한다
       const runBatch = (list, dgOverride) => Promise.all(list.map(idx => (async () => {
         await wait();
         try {
           try { await convertPageToGrayscaleVector(batch, pageAt.get(idx), stats, dgOverride); }
-          catch (e) { if (stats) { stats.errors++; stats.errPages.push(idx + 1); } console.error(`페이지 ${idx + 1} 변환 오류:`, e); }
+          catch (e) { errIdx.add(idx); if (stats) { stats.errors++; stats.errPages.push(idx + 1); } console.error(`페이지 ${idx + 1} 변환 오류:`, e); }
         } finally { done++; if (onProgress) onProgress(10 + done / todo.length * 80); rel(); }
       })()));
       await runBatch(todo.filter(i => colorOf.get(i)), undefined);   // 컬러 → UI Dot Gain
       await runBatch(todo.filter(i => !colorOf.get(i)), 0);          // 회색 → Dot Gain 미적용
-      // 3) 캐시에는 '어느 문서의 몇 번째 페이지인지'를 담는다(문서는 여러 페이지가 공유)
-      for (const idx of todo) {
-        _bwCache.set(idx, { doc: batch, idx: pageAt.get(idx) });
-        // 캐시 상한(FIFO) — 변환된 페이지가 계속 상주하므로 초대형 문서에서 메모리가
-        // 무한히 늘지 않게 오래된 항목부터 해제(재요청 시 다시 변환됨)
-        if (_bwCache.size > 800) { const k = _bwCache.keys().next().value; _bwCache.delete(k); }
-      }
+      // 변환하는 동안 문서가 바뀌었으면(탭 전환·파일 교체·내부편집) 옛 원고의 결과다 — 캐시에 넣지 않는다
+      if (gen !== _cacheGen) throw staleCacheError();
+      // 3) 캐시에는 '어느 문서의 몇 번째 페이지인지'를 담는다(문서는 여러 페이지가 공유).
+      // ⚠ 상한을 두지 않는다 — 예전 800개 FIFO는 방금 넣은 페이지까지 지워, 흑백 대상이 800쪽을 넘으면
+      //   적용본 앞쪽이 빈 A4로 나왔다. 항목은 문서(batch)를 공유하므로 몇 개 지워도 메모리는 줄지 않았다.
+      for (const idx of todo) _bwCache.set(idx, { doc: batch, idx: pageAt.get(idx), err: errIdx.has(idx) });
     }
     // ── 흑백·잉크 정규화 프리웜 ─────────────────────────────────────────────
     // 분석이 끝나면(그리고 흑백 선택이 바뀌면) 유휴 시간에 변환 대상 페이지들을 미리
@@ -2965,7 +2990,7 @@
       const tabAtStart = activeTabId;
       _inkPrewarmPromise = (async () => {
         try { await ensureBwConverted(idxs, null, null); }
-        catch (e) { console.warn('흑백·잉크 정규화 프리웜 실패:', e); }
+        catch (e) { if (!e.stale) console.warn('흑백·잉크 정규화 프리웜 실패:', e); }
         finally {
           _inkPrewarmPromise = null;
           // 프리웜 도중 탭이 바뀌었으면 엉뚱한 문서의 캐시가 섞였을 수 있음 → 전체 폐기
@@ -2985,6 +3010,7 @@
     }
 
     async function buildBaseProcessed(onProgress) {
+      const gen = _cacheGen;   // 조립 도중 문서가 바뀌면(탭 전환 등) 결과를 캐시에 남기지 않고 버린다
       const sig = baseSignature();
       if (_baseCache.sig === sig && _baseCache.bytes) return _baseCache;
       // 잉크 정규화 프리웜이 돌고 있으면 완료를 기다렸다가 캐시를 재사용(중복 변환 방지)
@@ -3003,6 +3029,7 @@
         }
         if (onProgress) onProgress(80);
         const bytes = await savePdfDoc(asm.outDoc);
+        if (gen !== _cacheGen) throw staleCacheError();
         _baseCache = { sig, bytes, stats: asm.stats, validCount: valid.length };
         if (onProgress) onProgress(94);
         return _baseCache;
@@ -3014,6 +3041,15 @@
       const bwIdx = valid.filter(isBw).map(r => r.originalIdx);
       stats.converted = bwIdx.length;
       if (bwIdx.length) await ensureBwConverted(bwIdx, stats, onProgress);
+      if (gen !== _cacheGen) throw staleCacheError();
+      // 프리웜으로 미리 구운 페이지 중 일부가 원래 색으로 남은 것도 경고에 포함한다
+      for (const i of bwIdx) {
+        const c = _bwCache.get(i);
+        if (c && c.err && !stats.errPages.includes(i + 1)) { stats.errors++; stats.errPages.push(i + 1); }
+      }
+      // 변환 결과가 없는 흑백 대상이 하나라도 있으면 조립하지 않는다 — 조용히 빈 쪽이 들어가는 것보다 오류가 낫다
+      const noConv = bwIdx.filter(i => !_bwCache.has(i));
+      if (noConv.length) throw new Error(`흑백 변환 결과가 없는 페이지가 ${noConv.length}개 있습니다 — 다시 '✔ 적용'해 주세요.`);
 
       const srcDoc = await getSourceDoc();
       const outDoc = await PDFLib.PDFDocument.create();
@@ -3055,7 +3091,8 @@
         if (r.isBlank) page = outDoc.addPage(r.pageSize || [595.28, 841.89]);
         else if (isBw(r) && bwMap.get(r.originalIdx)) page = outDoc.addPage(bwMap.get(r.originalIdx));
         else if (isEdited(r) && editMap.has(r.originalIdx)) page = outDoc.addPage(editMap.get(r.originalIdx));
-        else page = outDoc.addPage(origMap.get(r.originalIdx));
+        else if (origMap.has(r.originalIdx)) page = outDoc.addPage(origMap.get(r.originalIdx));
+        else throw new Error(`${r.pageNum}쪽을 조립할 원본을 찾지 못했습니다 — 다시 '✔ 적용'해 주세요.`);   // addPage(undefined)는 빈 A4를 만든다
         const baseAngle = (page.getRotation && page.getRotation().angle) || 0;
         if (r.rotation) {
           page.setRotation(PDFLib.degrees((((baseAngle + r.rotation) % 360) + 360) % 360));
@@ -3064,6 +3101,7 @@
       }
       if (onProgress) onProgress(94);
       const bytes = await savePdfDoc(outDoc);
+      if (gen !== _cacheGen) throw staleCacheError();
       _baseAssembled = { key, outDoc, pages: asmPages, stats, validCount: valid.length };
       _baseCache = { sig, bytes, stats, validCount: valid.length };
       return _baseCache;
@@ -3160,6 +3198,7 @@
         progressBar.style.display = 'block'; updateProgress(0);
 
         const sigAtStart = (typeof optSignature === 'function') ? optSignature() : null;   // 조립 중 설정이 바뀌면 재사용 표식을 남기지 않는다
+        const genAtStart = _cacheGen;   // 적용 중 다른 탭으로 바꾸면 끝난 결과는 그 탭 것이 아니다 — 버린다
         const base = await buildBaseProcessed(p => updateProgress(typeof _impEnabled !== 'undefined' && _impEnabled ? Math.round(p * 0.85) : p));
         let pdfBytes = base.bytes;
         const groups = computeLayoutGroups();
@@ -3199,6 +3238,7 @@
               ? ' · 🔤 폰트 완전 임베드(다운로드 시 반영)'
               : ' · ✒ 폰트 곡선화(다운로드 시 반영)') : '');
 
+        if (genAtStart !== _cacheGen) throw staleCacheError();
         processedPdfBytes = pdfBytes;
         processedFileName = defaultProcessedName();
         _processedSig = (sigAtStart && optSignature() === sigAtStart) ? sigAtStart : null;
@@ -3230,9 +3270,14 @@
         // 적용 완료 → 유휴 시간에 다운로드용 최적화본을 미리 생성(다운로드 즉시 저장)
         setTimeout(prewarmOptimizedOutput, 400);
       } catch (err) {
-        console.error('편집 적용 오류:', err);
-        processedPdfBytes = null; processedFileName = '';
-        showError('처리 중 오류: ' + (err && err.message ? err.message : String(err)));
+        if (err && err.stale) {
+          // 적용 도중 탭·원고가 바뀌었다 — 지금 화면의 문서 결과를 건드리지 않고 조용히 버린다
+          showSuccess("⏹ 적용 중에 문서가 바뀌어 그 적용 결과는 버렸습니다 — 해당 문서로 돌아가 다시 '✔ 적용'을 눌러 주세요.");
+        } else {
+          console.error('편집 적용 오류:', err);
+          processedPdfBytes = null; processedFileName = '';
+          showError('처리 중 오류: ' + (err && err.message ? err.message : String(err)));
+        }
       } finally {
         applying = false;
         setApplyBusy(false);

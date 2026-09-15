@@ -134,13 +134,15 @@ app.whenReady().then(async () => {
     await new Promise(r => setTimeout(r, 600));
     setMode('booklet');
     const seen = [];
-    const watch = setInterval(() => {
-      const bar = $('genBar');
-      if (bar.style.display !== 'none') seen.push(parseFloat($('genBarFill').style.width) || 0);
-    }, 8);
+    // 타이머로 엿보면 생성이 빨라 한 번도 못 볼 수 있다(저장이 이벤트 루프에 거의 양보하지 않는다) —
+    // 진행 바 속성이 바뀔 때마다 기록한다(MutationObserver는 마이크로태스크라 양보 없이도 전달된다).
+    const mo = new MutationObserver(() => {
+      if ($('genBar').style.display !== 'none') seen.push(parseFloat($('genBarFill').style.width) || 0);
+    });
+    mo.observe($('genBar'), { attributes: true, subtree: true, attributeFilter: ['style', 'class'] });
     const gp = generate();
     await gp;
-    clearInterval(watch);
+    mo.disconnect();
     ck('생성 중 진행 바가 보임', seen.length > 0, seen.length);
     ck('진행률이 0에서 올라감', seen.some(v => v > 5) && Math.max(...seen) >= 90, [Math.min(...seen), Math.max(...seen)]);
     ck('완료 표시(100%)', parseFloat($('genBarFill').style.width) === 100, $('genBarFill').style.width);
