@@ -358,6 +358,47 @@
       }
     }
 
+    // ── 🎨 저장본 컬러 검수 ──────────────────────────────────────────────────
+    // 저장할 문서의 쪽마다 "그리는 색이 전부 무채색인가"(libs/gray-blend.js pageIsNeutral — 렌더 없이 내용만
+    // 읽어 쪽당 수 ms)를 보고 사용자의 의도와 대조한다. 출력물을 일일이 검수하지 않아도 되게 하려는 안전망.
+    //  · lost     : 흑백 대상이 아닌데, **원본 쪽에는 색이 있었고** 저장본은 무채색 → 컬러로 나와야 할 쪽이 흑백 출력
+    //              (실파일 칼7흑213: 흑백 쪽과 공유하던 사진이 같이 회색이 됨 — 함정 18)
+    //              원본과 대조한다 — 분석(isColor)만 믿으면 K 100% 검정(0 0 0 1 k)을 pdf.js가 살짝 따뜻한 RGB로 그려
+    //              '컬러'로 잡은 쪽까지 헛경보가 났다(실파일 그라운드골프 59쪽).
+    //  · leftover : 흑백 대상인데 저장본에 색이 남음 → 프린터가 컬러 장수로 셈
+    // valid[i] ↔ outDoc i쪽(임포징·레이아웃 전 단계라 1:1). pageIsNeutral은 모르는 색공간을 '색 있음'으로 치므로
+    // leftover는 보수적으로 나올 수 있다 — 그래서 저장을 막지 않고 확인만 받는다.
+    // srcDoc: 원본(내부편집이 없는 쪽만 원본 쪽과 대조한다 — 편집된 쪽은 원본이 기준이 아니다)
+    function checkColorIntent(doc, valid, srcDoc) {
+      if (typeof pageIsNeutral !== 'function') return null;
+      const lost = [], leftover = [];
+      let keepColor = 0, bw = 0;
+      const pages = doc.getPages();
+      const srcPages = srcDoc ? srcDoc.getPages() : [];
+      valid.forEach((r, i) => {
+        if (!r || r.isBlank || !pages[i]) return;
+        const target = isBwTarget(r);
+        if (target) { bw++; if (!pageIsNeutral(doc, pages[i].node)) leftover.push(i + 1); return; }
+        const edited = contentEdits && contentEdits.has(r.originalIdx);
+        const sp = !edited ? srcPages[r.originalIdx] : null;
+        const srcHasColor = sp ? !pageIsNeutral(srcDoc, sp.node) : !!r.isColor;
+        if (!srcHasColor) return;                          // 원래 무채색이고 손대지 않는 쪽 — 기대가 없다
+        keepColor++;
+        if (pageIsNeutral(doc, pages[i].node)) lost.push(i + 1);
+      });
+      return { lost, leftover, keepColor, bw };
+    }
+    // 저장 전 확인 문구 — 문제가 없으면 null
+    function colorCheckWarning(cc) {
+      if (!cc || (!cc.lost.length && !cc.leftover.length)) return null;
+      const list = a => a.slice(0, 20).join(', ') + (a.length > 20 ? ` 외 ${a.length - 20}쪽` : '');
+      let m = '⚠ 저장본 컬러 검수에서 의도와 다른 쪽을 찾았습니다.\n\n';
+      if (cc.lost.length) m += `• 컬러로 남겨야 할 ${cc.lost.length}쪽이 흑백으로 저장됩니다: ${list(cc.lost)}쪽\n`;
+      if (cc.leftover.length) m += `• 흑백으로 바꾼 ${cc.leftover.length}쪽에 색이 남아 프린터가 컬러로 셀 수 있습니다: ${list(cc.leftover)}쪽\n`;
+      m += '\n그래도 이대로 저장할까요?\n(취소를 누르고 해당 쪽을 🔍 크게 보기로 확인하세요)';
+      return m;
+    }
+
     // ── 용량 최적화 base 빌드 (다운로드 전용) ────────────────────────────────
     // 미리보기/적용은 페이지 캐시로 빠르게 처리하지만, 최종 파일은 여기서
     // 모든 페이지를 한 번에 copyPages(리소스 공유)하고 선택 페이지만 제자리 변환해
@@ -383,8 +424,16 @@
       // 비편집 원본 페이지는 일괄 복사(리소스 공유), 내부편집 페이지는 편집된 단일페이지에서 개별 복사
       const isEdited = r => !r.isBlank && contentEdits.has(r.originalIdx);
       const plain = valid.filter(r => !r.isBlank && !isEdited(r));
-      const allCopied = plain.length ? await outDoc.copyPages(srcDoc, plain.map(r => r.originalIdx)) : [];
-      const origIdxToPage = new Map(plain.map((r, i) => [r.originalIdx, allCopied[i]]));
+      // ⚠ 흑백으로 바꿀 쪽과 그대로 둘 쪽은 **따로** 복사한다. 한 번에 복사하면 두 쪽이 같은 이미지·폼 객체를
+      //   공유하고, 흑백 쪽을 제자리 변환할 때 컬러 쪽의 사진까지 회색이 된다(실파일: 화면 컬러 7쪽 → 저장본 3쪽).
+      //   각 묶음 안에서는 공유가 유지돼 공용 이미지는 여전히 한 번만 변환·저장된다. 적용 경로(ensureBwConverted)와 같은 방식.
+      const bwOrig = new Set(skipBw ? [] : plain.filter(r => isBwTarget(r)).map(r => r.originalIdx));
+      const origIdxToPage = new Map();
+      for (const group of [plain.filter(r => !bwOrig.has(r.originalIdx)), plain.filter(r => bwOrig.has(r.originalIdx))]) {
+        if (!group.length) continue;
+        const copied = await outDoc.copyPages(srcDoc, group.map(r => r.originalIdx));
+        group.forEach((r, i) => origIdxToPage.set(r.originalIdx, copied[i]));
+      }
       const editMap = new Map();
       for (const r of valid) {
         if (!isEdited(r)) continue;
@@ -423,6 +472,8 @@
         await runBatch(toConvert.filter(x => !x.r.isColor), 0);          // 회색 → Dot Gain 미적용
       }
       if (onProgress) onProgress(94);
+      // 🎨 저장본 컬러 검수 — 컬러로 둘 쪽이 회색이 되거나, 흑백으로 바꾼 쪽에 색이 남았는지 저장 전에 가린다
+      if (!skipBw) { try { stats.colorCheck = checkColorIntent(outDoc, valid, srcDoc); } catch (e) { console.warn('컬러 검수 실패:', e); } }
       const outBytes = await savePdfDoc(outDoc);
       // 저장 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않는다 — 낡은 base가 남는 사고 방지
       if (gen !== _cacheGen) throw staleCacheError();
@@ -4321,6 +4372,10 @@
         }
         applying = false; updateDownloadBtn();
         hideLoading(); progressBar.style.display = 'none';
+        // 🎨 저장본 컬러 검수 결과(buildBaseOptimized가 저장 직전에 남김) — 의도와 다르면 저장 전에 확인
+        const cc = (_optBaseCache.sig === baseSignature() && _optBaseCache.stats) ? _optBaseCache.stats.colorCheck : null;
+        const ccWarn = colorCheckWarning(cc);
+        if (ccWarn && !confirm(ccWarn)) return;
         const saved = await window.electronAPI.saveFile({
           defaultName: processedFileName,
           buffer: finalBytes,
@@ -4328,6 +4383,8 @@
         if (saved) {
           setDirty(false);
           let m = 'PDF를 다운로드했습니다. (용량 최적화 적용)';
+          if (cc && !ccWarn && (cc.keepColor || cc.bw)) m += `\n🎨 컬러 검수: 컬러 ${cc.keepColor}쪽 · 흑백 변환 ${cc.bw}쪽 — 의도와 일치`;
+          else if (ccWarn) m += `\n⚠ 컬러 검수 경고를 확인하고 저장했습니다 — 출력 전 ${[...cc.lost, ...cc.leftover].slice(0, 10).join(', ')}쪽을 확인하세요.`;
           if (_outlineEnabled) m += _outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영';
           if (_outlineEnabled) m += outlineResultNote();
           showSuccess(m);
@@ -4512,6 +4569,24 @@
         const r = pako.inflate(data);
         if (r && r.length) return r;
       } catch(e) {}
+      // zlib 체크섬(adler32)이 틀리거나 빠진 스트림 — pako.inflate는 undefined를 준다. zlib 머리 2바이트를 떼고
+      // raw deflate로 풀면 체크섬을 보지 않는다(worker-gray.js inflateRawTolerant와 같은 방식 — 실파일 10개 pdf-lib과 일치).
+      if (data && data.length > 2 && (data[0] & 0x0f) === 8 && ((data[0] << 8) | data[1]) % 31 === 0) {
+        try {
+          const chunks = [];
+          const inf = new pako.Inflate({ raw: true });
+          inf.onData = (c) => chunks.push(c);
+          try { inf.push(data.subarray(2), true); } catch (e) {}
+          const total = chunks.reduce((s, c) => s + c.length, 0);
+          if (total) {
+            const out = new Uint8Array(expectedLen != null ? Math.max(total, expectedLen) : total);
+            if (fillValue) out.fill(fillValue);
+            let off = 0;
+            for (const c of chunks) { out.set(c, off); off += c.length; }
+            return out;
+          }
+        } catch (e) {}
+      }
       try {
         const chunks = [];
         const inf = new pako.Inflate();

@@ -105,7 +105,8 @@
             if (!f) return st.contents;
             // Flate 단독·예측자 없음이면 pako(네이티브에 가까운 속도) — pdf-lib 내장 inflate는 몇 배 느리다
             if (root.pako && f.encodedName && (f.encodedName === '/FlateDecode' || f.encodedName === '/Fl') && !st.dict.get(Nm('DecodeParms'))) {
-              try { return root.pako.inflate(st.contents); } catch (e) {}
+              // 체크섬이 틀린 스트림에서 pako는 undefined를 준다 → 아래 pdf-lib 디코더로 넘어간다
+              try { const r = root.pako.inflate(st.contents); if (ArrayBuffer.isView(r)) return r; } catch (e) {}
             }
             return PDFLib.decodePDFRawStream(st).decode();
           }
@@ -156,7 +157,14 @@
           }
           return 'indexedN';
         }
-        return 'bad';   // Separation·DeviceN·Lab — 별색은 잉크이므로 무채색으로 치지 않는다
+        // 잉크가 먹(Black) 하나뿐인 별색·DeviceN — 프린터는 K만 쓴다(InDesign 흑백 사진이 흔히 [/DeviceN [/Black] …])
+        if (fam === '/Separation') return name(v.get(1)) === '/Black' ? 'gray' : 'bad';
+        if (fam === '/DeviceN') {
+          const names = look(v.get(1));
+          const list = names && typeof names.size === 'function' ? names.asArray().map(name) : [];
+          return list.length && list.every(n => n === '/Black') ? 'gray' : 'bad';
+        }
+        return 'bad';   // 그 밖의 별색·DeviceN·Lab — 별색은 잉크이므로 무채색으로 치지 않는다
       };
       const imageNeutral = img => {
         const d = img.dict;

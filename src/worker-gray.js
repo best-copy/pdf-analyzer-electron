@@ -275,11 +275,29 @@ function preprocessInlineImages(raw, dotGain) {
 }
 
 // ── 관대한 inflate: /Length 손상으로 잘린 스트림 부분 복구 ────────────────────
+// zlib 끝(adler32 체크섬)이 틀리거나 빠진 스트림 — pako.inflate는 예외 없이 undefined를 돌려준다.
+// Acrobat·pdf-lib은 그대로 열기 때문에 화면은 멀쩡한데, 흑백 워커만 그 쪽을 못 풀어 **컬러로 남겼다**
+// (실파일 2개, 28개 파일 5,393개 스트림 중 11개). 2바이트 zlib 머리를 떼고 raw deflate로 풀면 체크섬을 보지 않는다
+// — 복구한 10개 모두 pdf-lib 결과와 바이트 일치.
+function inflateRawTolerant(data) {
+  if (!data || data.length < 3 || (data[0] & 0x0f) !== 8 || ((data[0] << 8) | data[1]) % 31 !== 0) return null;
+  const chunks = [];
+  const inf = new pako.Inflate({ raw: true });
+  inf.onData = c => chunks.push(c);
+  try { inf.push(data.subarray(2), true); } catch (e) {}
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  if (!total) return null;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
 function inflateLenientW(data, expectedLen, fillValue) {
   try {
     const r = pako.inflate(data);
     if (r && r.length) return r;
   } catch(e) {}
+  { const r = inflateRawTolerant(data); if (r) return r; }
   try {
     const chunks = [];
     const inf = new pako.Inflate();
@@ -911,8 +929,13 @@ self.onmessage = async function(e) {
       const { bytes, wasCompressed, csGrayMap, dotGain } = payload;
       let raw = new Uint8Array(bytes);
       if (wasCompressed) {
-        try { raw = pako.inflate(raw); }
-        catch(e) { self.postMessage({ id, error: 'inflate_fail' }); return; }
+        // pako.inflate는 체크섬이 틀린 스트림에서 예외 없이 undefined를 준다 → 예전엔 아래에서 TypeError로 죽어
+        // 그 쪽 전체가 원래 색으로 남았다. 빈 스트림(0바이트)은 정상 결과다.
+        let inflated;
+        try { inflated = pako.inflate(raw); } catch (e) { inflated = undefined; }
+        if (!ArrayBuffer.isView(inflated)) inflated = inflateRawTolerant(raw);
+        if (!ArrayBuffer.isView(inflated)) { self.postMessage({ id, error: 'inflate_fail' }); return; }
+        raw = inflated;
       }
       // Phase A: 바이트 레벨에서 인라인 이미지(BI/EI) RGB→Gray 변환
       // grayifyStream보다 먼저 실행 — 바이너리 픽셀 데이터가 스트링 regex에 오염되지 않도록 격리
