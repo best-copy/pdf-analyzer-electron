@@ -32,7 +32,7 @@ function exConst(name, src = appSrc) {
 const BUILDERS = [
   // 빌더가 부르는 헬퍼까지 전부 — 하나라도 빠지면 브라우저에서 '함수 없음'으로 죽는다
   'uiYield', 'ensurePageContents', 'pageTrimInset',
-  'embedAllPages', 'placeInSlot', 'drawnTrimSize', 'drawPlaced', 'impMargins', 'impGaps', 'drawFrame',
+  'embedAllPages', 'rotate180Embeds', 'placeInSlot', 'drawnTrimSize', 'drawPlaced', 'impMargins', 'impGaps', 'drawFrame',
   'prepSlug', 'drawSlug', 'drawStackNum', 'trimSizeMm',
   'drawCropMarks', 'drawTrimMarks', 'drawCutDims',
   'bookletSheetOrder', 'cutStackOrder', 'dup2upOrder',

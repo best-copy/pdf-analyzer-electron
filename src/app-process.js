@@ -938,6 +938,30 @@
       }
       return embedded;
     }
+    // 이미 임베드한 쪽들을 180° 돌린 '겉 폼'으로 — 속은 같은 폼 XObject를 부르기만 한다(/P0 Do).
+    // embedPage를 한 번 더 부르면 pdf-lib이 그 쪽의 사진·폰트를 **통째로 새로 복사**해 결과가 원고의 약 2배가 된다.
+    // 실파일(도록 150쪽·적용본 952MB)의 복제 2-up이 1,956MB — 2GB 버퍼 한계 바로 아래라 미리보기·저장에서
+    // 한 번 더 복사하는 순간 "Array buffer allocation failed"가 났다. 겉 폼은 쪽당 수십 바이트다.
+    function rotate180Embeds(out, embedded) {
+      const ctx = out.context;
+      return embedded.map(it => {
+        const { w, h } = it;
+        const stream = ctx.formXObject([
+          PDFLib.pushGraphicsState(),
+          PDFLib.concatTransformationMatrix(-1, 0, 0, -1, w, h),
+          PDFLib.drawObject('P0'),
+          PDFLib.popGraphicsState(),
+        ], { BBox: [0, 0, w, h], Resources: { XObject: { P0: it.e.ref } } });
+        const ref = ctx.register(stream);
+        // drawPage는 PDFEmbeddedPage만 받는다 — 이미 문맥에 넣은 폼이므로 '임베드'는 할 일이 없다
+        const embedder = Object.create(PDFLib.PDFPageEmbedder.prototype);
+        embedder.width = w; embedder.height = h;
+        embedder.embedIntoContext = async () => ref;
+        const tr = it.trim;
+        return { e: PDFLib.PDFEmbeddedPage.of(ref, out, embedder), w, h,
+                 trim: tr ? { l: tr.r, r: tr.l, b: tr.t, t: tr.b } : tr };
+      });
+    }
     // ── ◲ 블리드 자동 생성 — 재단여백 없는 원고의 가장자리를 미러로 확장 ─────
     // 각 페이지를 (w+2b)×(h+2b) 새 페이지 중앙에 놓고, 상하좌우+모서리 8방향에
     // 미러(음수 스케일) 사본을 해당 스트립만 클립해 그린다. TrimBox=원본 영역.
@@ -3322,9 +3346,9 @@
       const n0 = src.getPageCount();
       if (!n0) throw new Error('페이지가 없습니다.');
       const out = await PDFLib.PDFDocument.create();
-      // 정방향 + 180° 두 벌 임베드 (회전은 변환행렬로 굽는다)
-      const emb0   = await embedAllPages(out, src, p => onProgress && onProgress(Math.round(p / 2)), 0);
-      const emb180 = await embedAllPages(out, src, p => onProgress && onProgress(20 + Math.round(p / 2)), 180);
+      // 정방향 한 벌만 임베드하고, 180° 벌은 그 폼을 돌려 부르는 겉 폼으로 (사진·폰트를 다시 복사하지 않는다)
+      const emb0   = await embedAllPages(out, src, p => onProgress && onProgress(p), 0);
+      const emb180 = rotate180Embeds(out, emb0);
 
       let sw, sh;
       if (opts.sheet)                { [sw, sh] = opts.sheet; }

@@ -7,9 +7,14 @@ const os   = require('os');
 // (2GB+ 원고를 열 수 있게 됐으니 저장 쪽도 같이 뚫어 둔다)
 // buffer가 배열이면 조각을 차례로 이어 쓴다 — 작업 파일(.pdfw)은 원본·적용본을 한 버퍼로 합치면
 // 2GB 버퍼 한계를 넘을 수 있어 조각 목록으로 넘어온다.
-const asBuffer = b => (Buffer.isBuffer(b) ? b
-  : ArrayBuffer.isView(b) ? Buffer.from(b.buffer, b.byteOffset, b.byteLength)
-  : Buffer.from(b));
+// 화면(렌더러) → preload로 넘어올 때 큰 버퍼는 한 벌 복사된다. 메모리가 바닥나면(렌더러 버퍼 합계 한도 ≈14GB)
+// 그 복사가 실패해 null이 온다 — 예전엔 Buffer.from(null)의 영문 오류("…Received null")가 그대로 떴다.
+const asBuffer = b => {
+  if (b == null) throw new Error('저장할 데이터를 넘겨받지 못했습니다 — 프로그램 메모리가 부족했을 수 있습니다. 다른 탭을 닫거나 프로그램을 다시 켠 뒤 저장해 주세요.');
+  return Buffer.isBuffer(b) ? b
+    : ArrayBuffer.isView(b) ? Buffer.from(b.buffer, b.byteOffset, b.byteLength)
+    : Buffer.from(b);
+};
 function writeBig(filePath, buffer) {
   const views = (Array.isArray(buffer) ? buffer : [buffer]).map(asBuffer);
   if (views.length === 1 && views[0].length <= (1 << 30)) { fs.writeFileSync(filePath, views[0]); return; }
