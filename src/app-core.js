@@ -2698,6 +2698,15 @@
         downloadBtn.disabled = applying || !originalPdfBytes;
         downloadBtn.classList.toggle('btn-dim', !processedPdfBytes);
       }
+      // ✂ 분리 저장: 문서가 열려 있으면 누를 수 있다(우클릭 = 원본 그대로 나누기).
+      // 적용본이 없으면 흐리게 — 좌클릭은 '✔ 적용부터' 안내를 낸다.
+      // ⚠ disabled 버튼은 우클릭(contextmenu)도 먹지 않는다 — 적용 전이라고 잠그면 안 된다.
+      ['splitSaveBtn', 'sb-splitSaveBtn', 'esSplitSaveBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (!b) return;
+        b.disabled = applying || !originalPdfBytes;
+        b.classList.toggle('btn-dim', !processedPdfBytes);
+      });
       syncOutlineBadges();
       const clearBtn = document.getElementById('clearOptsBtn');
       if (clearBtn) clearBtn.style.display = anyActive ? '' : 'none';

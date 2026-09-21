@@ -55,7 +55,7 @@ scripts/smoke.js   npm run smoke
 - 잉크 정규화(`processingOptions.inkNorm`, 기본 ON): 흑백 판정 페이지도 DeviceGray로 강제 — 프린터가 흑백으로 과금하게 함.
 - Dot Gain은 `_dotGainCtx`(WeakMap, pdfDoc별) — 회색 판정 페이지는 항상 0 강제.
 - 캐시: `_bwCache`(originalIdx→변환 문서의 쪽, **상한 없음** — 함정 9), 분석 후 `prewarmInkNorm`, 적용 후 `prewarmOptimizedOutput`이 유휴 시간에 미리 계산.
-- **Dot Gain**(◐ 없음·10·15·20%): 앱 전체 설정(localStorage `dotGainLevel`, 출력기 성질). 곡선은 `dotGainCurve` 하나 — **worker-gray.js와 app-process.js 두 벌이 같은 식**이어야 한다(`gray-colorspace.test.js`가 대조). 값은 `baseSignature`에 들어가 캐시가 갈린다.
+- **Dot Gain**(◐ 없음·10·15·20%): 앱 전체 설정, **기억하지 않음 — 켤 때마다 없음(0)**(사용자 지시 2026-09-17 · 옛 저장값 `dotGainLevel`은 켤 때 지움). 곡선은 `dotGainCurve` 하나 — **worker-gray.js와 app-process.js 두 벌이 같은 식**이어야 한다(`gray-colorspace.test.js`가 대조). 값은 `baseSignature`에 들어가 캐시가 갈린다.
 
 ### 3.3 임포징 (app-process.js, 모드 4종)
 - 공용: `embedAllPages(out, src, onProgress, extraRot)` — **pdf-lib `embedPage`는 `/Rotate`를 무시하므로 변환행렬로 굽는다** (90°: `[0,-1,1,0,0,w]`, 180°: `[-1,0,0,-1,w,h]`, 270°: `[0,1,-1,0,h,0]`).
@@ -64,7 +64,13 @@ scripts/smoke.js   npm run smoke
 - 생성 직후 `renderProcessedPreview(res.bytes)`로 결과를 화면에 표시하고 저장 다이얼로그를 띄운다.
 - 모드: 중철(북클릿), 정합(Cut&Stack 2/4분할·단면/양면·뒷면 열 미러), 반복(Step&Repeat), 복제 2부(`1 1* 2* 2` — Quite Imposing 방식, 오른쪽 벌 180°).
 
-### 3.4 견적서
+### 3.4 분리 저장 (✂)
+- 완성본을 **N쪽 단위**(10·20·대수 16 등) 또는 **쪽 범위**(`21-39`, `1-20, 41-60`)로 나눠 한 폴더에 저장한다.
+- 최종 바이트는 다운로드와 **같은 `buildFinalSaveBytes`**(최적화 → 목차 북마크 → 폰트 안전화 → 컬러 검수)를 쓴다 — 두 경로가 갈라지면 한쪽에만 단계가 빠진다.
+- 버튼 좌클릭 = 적용본, **우클릭 = 원본 그대로**(⇩ 다운로드와 같은 규칙). 적용 전이라고 버튼을 `disabled`로 두지 말 것 — disabled 버튼은 `contextmenu`도 먹지 않아 우클릭이 죽는다(흐리게만).
+- 구간 계산은 순수 함수 `splitRangesEveryN`·`parseSplitRanges`·`splitPartFileName`(`split-save.test.js`). 저장은 `dialog:pickSplitFolder`(폴더 1회 선택)+preload `saveFilesToFolder`(같은 이름이면 `-1`). 나눈 파일에는 목차 북마크가 없다. `split-save.e2e.js`.
+
+### 3.5 견적서
 컬러/흑백 장수 × 단가(localStorage 기본 단가) → 견적 테이블·인쇄·PDF 저장. 파일명에 금액 표기 옵션.
 
 ## 4. IPC·프로세스 경계

@@ -102,7 +102,7 @@
           <button class="opt-btn" id="opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
           <select class="opt-select" id="dotGainSelect" onchange="setDotGain(this.value)" title="Dot Gain 보정 — 인쇄기에서 망점이 번져 흑백 출력이 탁해지는 만큼, 컬러→흑백 변환 페이지의 중간 톤을 미리 밝게 합니다.&#10;원래 흑백인 페이지는 바뀌지 않습니다. 출력물이 탁하면 한 단계 올리세요.">
-            <option value="0">◐ Dot Gain 없음</option>
+            <option value="0">◐ Dot Gain 없음 (기본)</option>
             <option value="10">◐ Dot Gain 약 (10%)</option>
             <option value="15">◐ Dot Gain 보통 (15%)</option>
             <option value="20">◐ Dot Gain 강 (20%)</option>
@@ -114,6 +114,7 @@
           <span class="action-btn-group">
             <button class="apply-btn" id="applyBtn" onclick="applyChanges()" style="margin-left:0;" disabled>✔ 적용</button>
             <button class="download-btn" id="downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>⇩ 다운로드</button>
+            <button class="download-btn" id="splitSaveBtn" onclick="splitSaveProcessed()" oncontextmenu="splitSaveOriginal(event)" title="좌클릭: 적용본을 나눠 저장 · 우클릭: 원본 그대로 나눠 저장&#10;10쪽·20쪽 단위, 또는 21-39처럼 필요한 구간만 한 폴더에 저장합니다" disabled><span class="ic">✂</span> 분리 저장</button>
           </span>
         </div>
         </div>
@@ -234,7 +235,7 @@
           <button class="sbp-opt" id="sb-opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="sbp-opt active" id="sb-opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백 판정 페이지의 색공간을 DeviceGray로 통일 — 프린터 컬러 과금 방지">🖨 잉크 정규화</button>
           <select class="sbp-select" id="sb-dotGainSelect" onchange="setDotGain(this.value)" title="Dot Gain 보정 — 인쇄기에서 망점이 번져 흑백 출력이 탁해지는 만큼, 컬러→흑백 변환 페이지의 중간 톤을 미리 밝게 합니다. 원래 흑백인 페이지는 바뀌지 않습니다.">
-            <option value="0">◐ Dot Gain 없음</option>
+            <option value="0">◐ Dot Gain 없음 (기본)</option>
             <option value="10">◐ Dot Gain 약 (10%)</option>
             <option value="15">◐ Dot Gain 보통 (15%)</option>
             <option value="20">◐ Dot Gain 강 (20%)</option>
@@ -247,6 +248,7 @@
           <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✔ 적용</button>
           <button class="sbp-btn sbp-dl" id="sb-downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>⇩ 다운로드</button>
+          <button class="sbp-btn sbp-dl" id="sb-splitSaveBtn" onclick="splitSaveProcessed()" oncontextmenu="splitSaveOriginal(event)" title="좌클릭: 적용본을 나눠 저장 · 우클릭: 원본 그대로 나눠 저장 — 10쪽·20쪽 단위, 또는 21-39처럼 필요한 구간만" disabled><span class="ic">✂</span> 분리 저장</button>
         </div>
       </div>
       <!-- ✒ 폰트 출력 안전화 — 편집 작업공간에서 메인으로 옮김.
@@ -1314,7 +1316,10 @@
         <button class="es-apply-btn" id="esApplyBtn" onclick="applyChanges()">✔ 편집 적용</button>
         <button class="es-dl-btn" id="esDownloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 저장 · 우클릭: 원본 저장" disabled>⇩ 다운로드</button>
       </div>
-      <div class="es-hint" style="margin-top:2px;">옵션을 바꾸면 미리보기가 실시간 반영됩니다. <b>⇩ 다운로드</b>로 저장하세요.</div>
+      <div class="es-action-row">
+        <button class="es-dl-btn" id="esSplitSaveBtn" onclick="splitSaveProcessed()" oncontextmenu="splitSaveOriginal(event)" title="좌클릭: 적용본을 나눠 저장 · 우클릭: 원본 그대로 나눠 저장 — 10쪽·20쪽 단위, 또는 21-39처럼 필요한 구간만" disabled><span class="ic">✂</span> 분리 저장</button>
+      </div>
+      <div class="es-hint" style="margin-top:2px;">옵션을 바꾸면 미리보기가 실시간 반영됩니다. <b>⇩ 다운로드</b>로 저장하세요. 여러 파일로 나누려면 <b>✂ 분리 저장</b>(우클릭하면 원본 그대로).</div>
     </div>
   </div>
   <div id="editResizer" title="드래그하여 편집창 폭 조절"></div>

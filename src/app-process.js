@@ -4320,19 +4320,55 @@
       } finally { setBtnBusy('impGenBtn', false); }
     }
 
+    // ── 저장 직전 최종 바이트 — '⇩ 다운로드'와 '✂ 분리 저장'이 **이 함수 하나**를 쓴다 ──
+    // 두 경로가 각자 조립하면 예전 '다운로드본만 잉크 정규화 누락'처럼 한쪽에만 단계가 빠진다.
+    // 반환: { bytes, direct(외부 변환 결과 그대로인가), colorCheck(저장본 컬러 검수 결과) }
+    async function buildFinalSaveBytes() {
+      // 외부 변환 결과(블리드 등)는 재조립하면 변환이 사라짐 — 그대로 쓰되 폰트 안전화만 얹는다
+      if (directOutputBytes) {
+        let bytes = directOutputBytes;
+        if (_outlineEnabled) {
+          showLoading(_outlineMode === 'embed' ? '폰트 완전 임베드 중… (Ghostscript)' : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
+          bytes = await buildOutlinedBytes(bytes);
+          hideLoading();
+        }
+        return { bytes, direct: true, colorCheck: null };
+      }
+      showLoading('다운로드용 PDF 최적화 중…');
+      progressBar.style.display = 'block'; updateProgress(0);
+      // 최종 파일은 용량 최적화 방식으로 새로 생성 (미리보기와 내용 동일)
+      let finalBytes = await buildOptimizedOutput(p => updateProgress(p));
+      finalBytes = await applyTocBookmarks(finalBytes);   // 목차 북마크 태그가 있으면 최종본에 적용
+      if (_outlineEnabled) {   // 폰트 출력 안전화 ON — 저장 직전 최종 단계로 반영 (모양은 동일)
+        // 적용 직후 프리웜이 이미 구워 뒀으면 캐시 적중으로 즉시 통과한다.
+        showLoading(_outlineMode === 'embed'
+          ? '폰트 완전 임베드 중… (Ghostscript)'
+          : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
+        finalBytes = await buildOutlinedBytes(finalBytes, p => updateProgress(Math.round(p * 100)));
+      }
+      hideLoading(); progressBar.style.display = 'none';
+      // 🎨 저장본 컬러 검수 결과(buildBaseOptimized가 저장 직전에 남김)
+      const cc = (_optBaseCache.sig === baseSignature() && _optBaseCache.stats) ? _optBaseCache.stats.colorCheck : null;
+      return { bytes: finalBytes, direct: false, colorCheck: cc };
+    }
+
+    // 잉크 정규화를 끈 채 저장하려 할 때의 확인 — 다운로드·분리 저장 공용
+    function inkNormSaveConfirmed() {
+      const risk = (typeof inkNormRiskCount === 'function') ? inkNormRiskCount() : 0;
+      if (!risk) return true;
+      return confirm(
+        '⚠ 잉크 정규화가 꺼져 있습니다.\n\n'
+        + `흑백 ${risk}쪽이 RGB/CMYK 색으로 칠해진 채 저장됩니다 — 프린터는 이 쪽들도 컬러 장수로 셉니다.\n\n`
+        + '그래도 이대로 저장할까요?\n'
+        + "(취소를 누르고 ⛭ 잉크 정규화를 켠 뒤 '✔ 적용'을 다시 누르면 흑백으로 셈됩니다)");
+    }
+
     async function downloadProcessed() {
       if (!processedPdfBytes) { showError('먼저 \'✔ 적용\'을 눌러 수정사항을 적용하거나, 다운로드 버튼을 우클릭해 원본을 저장하세요.'); return; }
       // 외부 변환 결과(블리드 등)는 재조립하면 변환이 사라짐 — 그대로 저장
       if (directOutputBytes) {
         try {
-          let bytes = directOutputBytes;
-          // 폰트 출력 안전화는 저장 직전 단계 — 이 경로에도 동일하게 반영한다
-          // (예전엔 이 분기가 안전화를 통째로 건너뛰어, 블리드 생성 후 저장하면 옵션이 무시됐다)
-          if (_outlineEnabled) {
-            showLoading(_outlineMode === 'embed' ? '폰트 완전 임베드 중… (Ghostscript)' : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
-            bytes = await buildOutlinedBytes(bytes);
-            hideLoading();
-          }
+          const { bytes } = await buildFinalSaveBytes();
           const saved = await window.electronAPI.saveFile({ defaultName: processedFileName, buffer: bytes });
           if (saved) {
             setDirty(false);
@@ -4348,32 +4384,14 @@
         return;
       }
       // ⚠ 잉크 정규화를 끈 채 저장하려 하면 한 번 확인한다 — 이대로 나가면 흑백 쪽이 컬러로 과금된다
-      {
-        const risk = (typeof inkNormRiskCount === 'function') ? inkNormRiskCount() : 0;
-        if (risk && !confirm(
-          '⚠ 잉크 정규화가 꺼져 있습니다.\n\n'
-          + `흑백 ${risk}쪽이 RGB/CMYK 색으로 칠해진 채 저장됩니다 — 프린터는 이 쪽들도 컬러 장수로 셉니다.\n\n`
-          + '그래도 이대로 저장할까요?\n'
-          + "(취소를 누르고 ⛭ 잉크 정규화를 켠 뒤 '✔ 적용'을 다시 누르면 흑백으로 셈됩니다)")) return;
-      }
+      if (!inkNormSaveConfirmed()) return;
       try {
         applying = true; updateDownloadBtn();
-        showLoading('다운로드용 PDF 최적화 중…');
-        progressBar.style.display = 'block'; updateProgress(0);
-        // 최종 파일은 용량 최적화 방식으로 새로 생성 (미리보기와 내용 동일)
-        let finalBytes = await buildOptimizedOutput(p => updateProgress(p));
-        finalBytes = await applyTocBookmarks(finalBytes);   // 목차 북마크 태그가 있으면 최종본에 적용
-        if (_outlineEnabled) {   // 폰트 출력 안전화 ON — 저장 직전 최종 단계로 반영 (모양은 동일)
-          // 적용 직후 프리웜이 이미 구워 뒀으면 캐시 적중으로 즉시 통과한다.
-          showLoading(_outlineMode === 'embed'
-            ? '폰트 완전 임베드 중… (Ghostscript)'
-            : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
-          finalBytes = await buildOutlinedBytes(finalBytes, p => updateProgress(Math.round(p * 100)));
-        }
+        const built = await buildFinalSaveBytes();
+        const finalBytes = built.bytes;
         applying = false; updateDownloadBtn();
-        hideLoading(); progressBar.style.display = 'none';
         // 🎨 저장본 컬러 검수 결과(buildBaseOptimized가 저장 직전에 남김) — 의도와 다르면 저장 전에 확인
-        const cc = (_optBaseCache.sig === baseSignature() && _optBaseCache.stats) ? _optBaseCache.stats.colorCheck : null;
+        const cc = built.colorCheck;
         const ccWarn = colorCheckWarning(cc);
         if (ccWarn && !confirm(ccWarn)) return;
         const saved = await window.electronAPI.saveFile({
@@ -4392,6 +4410,178 @@
       } catch (err) {
         console.error('다운로드 오류:', err);
         showError('다운로드 중 오류: ' + (err && err.message ? err.message : String(err)));
+      } finally {
+        applying = false;
+        updateDownloadBtn();
+        hideLoading();
+        progressBar.style.display = 'none';
+      }
+    }
+
+    // ── ✂ 분리 저장 — 완성본을 여러 PDF로 나눠 한 폴더에 저장 ───────────────
+    // 예: 10쪽 단위 · 20쪽 단위 · '21-39'처럼 필요한 구간만. 제본 대수(시그니처)로 나눠
+    // 인쇄를 나눠 맡기거나, 일부 쪽만 따로 넘길 때 쓴다.
+    // 순수 함수 둘은 노드에서 단독 검증한다(scripts/test/split-save.test.js).
+
+    // N쪽 단위로 자르기 → [{from,to}] (쪽 번호는 1부터, 끝은 남는 만큼)
+    function splitRangesEveryN(total, n) {
+      total = Math.floor(total); n = Math.floor(n);
+      if (!(total > 0)) throw new Error('나눌 쪽이 없습니다.');
+      if (!(n >= 1)) throw new Error('몇 쪽씩 나눌지 1 이상으로 적어 주세요.');
+      const out = [];
+      for (let s = 1; s <= total; s += n) out.push({ from: s, to: Math.min(s + n - 1, total) });
+      return out;
+    }
+
+    // '21-39', '1-20, 41-60', '5' 같은 쪽 범위 적기 → [{from,to}]
+    // 쉼표·띄어쓰기로 나누고, 하이픈 종류(- – ~)는 모두 범위로 본다. 겹치거나 순서가 뒤여도
+    // 적은 그대로 파일이 된다(21-39와 30-50을 같이 뽑는 일이 실제로 있다).
+    function parseSplitRanges(spec, total) {
+      const parts = String(spec || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+      if (!parts.length) throw new Error('쪽 범위를 적어 주세요. 예: 21-39 또는 1-20, 41-60');
+      const out = [];
+      for (const p of parts) {
+        const m = p.replace(/\s+/g, '').match(/^(\d+)(?:[-–—~](\d+))?$/);
+        if (!m) throw new Error(`'${p}'는 쪽 범위로 읽을 수 없습니다. 예: 21-39 또는 7`);
+        const from = parseInt(m[1], 10);
+        const to = m[2] === undefined ? from : parseInt(m[2], 10);
+        if (from < 1 || to < 1) throw new Error(`'${p}' — 쪽 번호는 1부터입니다.`);
+        if (from > total || to > total) throw new Error(`'${p}' — 이 문서는 ${total}쪽까지입니다.`);
+        if (from > to) throw new Error(`'${p}' — 앞 번호가 뒤 번호보다 큽니다.`);
+        out.push({ from, to });
+      }
+      return out;
+    }
+
+    // 파일 이름: 원고_001-010.pdf (자릿수는 전체 쪽수에 맞춤 — 탐색기에서 순서대로 보이게)
+    function splitPartFileName(stem, from, to, pad) {
+      const z = v => String(v).padStart(Math.max(2, pad || 3), '0');
+      return `${stem}_${z(from)}-${z(to)}.pdf`;
+    }
+
+    // 분리 방법을 묻는 창 — 정한 구간 목록을 돌려준다(취소면 null)
+    function askSplitPlan(total, stem, isOriginal) {
+      return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'merge-overlay';
+        overlay.innerHTML =
+          '<div class="merge-modal">'
+          + '<h3 class="merge-title"><span class="ic">✂</span> 분리 저장</h3>'
+          + `<p class="merge-sub">${isOriginal ? '원본 그대로' : '완성본'} <b>${total}쪽</b>을 여러 PDF로 나눠 한 폴더에 저장합니다. 열어 둔 문서는 그대로입니다.`
+          + `${isOriginal ? ' <b>흑백 변환·조판은 반영되지 않습니다</b> — 반영하려면 ✔ 적용 후 좌클릭하세요.' : ''}</p>`
+          + '<div class="split-opts">'
+          + '<label class="split-row"><input type="radio" name="splitMode" value="every" checked>'
+          + '<span><b>쪽 수 단위로</b> 나누기 — <input type="number" id="splitEveryN" min="1" step="1" value="10" class="split-num">쪽씩</span></label>'
+          + '<label class="split-row"><input type="radio" name="splitMode" value="range">'
+          + '<span><b>쪽 범위</b>만 뽑기 — <input type="text" id="splitSpec" class="split-text" placeholder="예: 21-39  또는  1-20, 41-60"></span></label>'
+          + '</div>'
+          + '<div class="split-preview" id="splitPreview"></div>'
+          + '<div class="merge-actions"><button class="merge-cancel" id="splitCancel">취소</button>'
+          + '<button class="merge-confirm" id="splitConfirm"><span class="ic">✂</span> 나눠 저장</button></div>'
+          + '</div>';
+        document.body.appendChild(overlay);
+        const $ = id => overlay.querySelector('#' + id);
+        const modeOf = () => overlay.querySelector('input[name=splitMode]:checked').value;
+        let plan = null;
+
+        function refresh() {
+          const prev = $('splitPreview');
+          try {
+            plan = modeOf() === 'every'
+              ? splitRangesEveryN(total, parseInt($('splitEveryN').value, 10))
+              : parseSplitRanges($('splitSpec').value, total);
+            const pad = String(total).length;
+            const list = plan.slice(0, 8).map(r => `${splitPartFileName(stem, r.from, r.to, pad)} <span class="split-dim">(${r.to - r.from + 1}쪽)</span>`);
+            prev.className = 'split-preview';
+            prev.innerHTML = `<b>파일 ${plan.length}개</b>가 만들어집니다.<br>` + list.join('<br>')
+              + (plan.length > 8 ? `<br><span class="split-dim">… 그 밖 ${plan.length - 8}개</span>` : '');
+          } catch (e) {
+            plan = null;
+            prev.className = 'split-preview split-bad';
+            prev.textContent = '⚠ ' + ((e && e.message) || String(e));
+          }
+          $('splitConfirm').disabled = !plan;
+        }
+        overlay.querySelectorAll('input').forEach(el => { el.oninput = refresh; el.onchange = refresh; });
+        $('splitSpec').onfocus = () => { overlay.querySelector('input[value=range]').checked = true; refresh(); };
+        $('splitEveryN').onfocus = () => { overlay.querySelector('input[value=every]').checked = true; refresh(); };
+        const close = (v) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(v); };
+        const onKey = (e) => {
+          if (e.key === 'Escape') close(null);
+          else if (e.key === 'Enter' && plan) close(plan);
+        };
+        document.addEventListener('keydown', onKey);
+        $('splitCancel').onclick = () => close(null);
+        $('splitConfirm').onclick = () => { if (plan) close(plan); };
+        overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+        refresh();
+        setTimeout(() => $('splitEveryN').select(), 0);
+      });
+    }
+
+    // ✂ 분리 저장 — 다운로드와 **같은 최종본**(buildFinalSaveBytes)을 만든 뒤 구간별로 잘라 저장
+    async function splitSaveProcessed() {
+      if (!processedPdfBytes) {
+        showError("먼저 '✔ 적용'을 눌러 수정사항을 적용한 뒤 분리 저장하세요. (아무것도 고치지 않고 원본 그대로 나누려면 버튼을 마우스 오른쪽으로 클릭하세요)");
+        return;
+      }
+      if (!directOutputBytes && !inkNormSaveConfirmed()) return;
+      const built = await (async () => {
+        applying = true; updateDownloadBtn();
+        try { return await buildFinalSaveBytes(); }
+        finally { applying = false; updateDownloadBtn(); }
+      })().catch(err => { console.error('분리 저장 오류:', err); hideLoading(); showError('분리 저장 중 오류: ' + ((err && err.message) || String(err))); return null; });
+      if (!built) return;
+      const stem = (processedFileName || 'output.pdf').replace(/\.pdf$/i, '');
+      await runSplitSave(built.bytes, stem, built.colorCheck);
+    }
+
+    // ✂ 분리 저장(원본) — 우클릭. 아무것도 고치지 않았을 때 **원본 그대로** 나눈다
+    // (⇩ 다운로드 우클릭 = 원본 저장과 같은 규칙. 적용본이 없어도 쪽만 나누면 되는 일이 많다)
+    async function splitSaveOriginal(ev) {
+      if (ev) ev.preventDefault();
+      if (!originalPdfBytes) { showError('나눌 PDF가 없습니다 — 먼저 문서를 여세요.'); return; }
+      const stem = (originalFileName || 'document').replace(/\.pdf$/i, '');
+      await runSplitSave(originalPdfBytes, stem, null, { original: true });
+    }
+
+    // 나눠 저장 본체 — 적용본·원본 두 경로가 함께 쓴다
+    async function runSplitSave(bytes, stem, colorCheck, opts) {
+      try {
+        const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+        const total = doc.getPageCount();
+        const plan = await askSplitPlan(total, stem, opts && opts.original);
+        if (!plan) return;
+        const ccWarn = colorCheckWarning(colorCheck);
+        if (ccWarn && !confirm(ccWarn)) return;
+        const dir = await window.electronAPI.pickSplitFolder();
+        if (!dir) return;
+
+        showLoading('나눠 저장하는 중…');
+        progressBar.style.display = 'block'; updateProgress(0);
+        const pad = String(total).length;
+        const files = [];
+        for (let i = 0; i < plan.length; i++) {
+          const r = plan[i];
+          const idxs = [];
+          for (let p = r.from; p <= r.to; p++) idxs.push(p - 1);
+          const sub = await PDFLib.PDFDocument.create();
+          (await sub.copyPages(doc, idxs)).forEach(p => sub.addPage(p));
+          files.push({ name: splitPartFileName(stem, r.from, r.to, pad), buffer: new Uint8Array(await savePdfDoc(sub)) });
+          updateProgress(Math.round(((i + 1) / plan.length) * 100));
+          await uiYield();
+        }
+        const saved = await window.electronAPI.saveFilesToFolder({ dir, files });
+        hideLoading(); progressBar.style.display = 'none';
+        if (!saved || !saved.length) { showError('분리 저장에 실패했습니다 — 저장 폴더를 확인하세요.'); return; }
+        const pages = plan.reduce((s, r) => s + (r.to - r.from + 1), 0);
+        showSuccess(`✂ ${opts && opts.original ? '원본 PDF를' : 'PDF를'} ${saved.length}개로 나눠 저장했습니다 (${pages}쪽) — ${dir}\n`
+          + plan.slice(0, 6).map(r => `· ${splitPartFileName(stem, r.from, r.to, pad)} (${r.from}-${r.to}쪽)`).join('\n')
+          + (plan.length > 6 ? `\n· … 그 밖 ${plan.length - 6}개` : '')
+          + '\n같은 이름이 있으면 덮어쓰지 않고 뒤에 -1을 붙였습니다. 나눈 파일에는 목차 북마크가 들어가지 않습니다 — 전체 파일이 필요하면 ⇩ 다운로드로 따로 저장하세요.');
+      } catch (err) {
+        console.error('분리 저장 오류:', err);
+        showError('분리 저장 중 오류: ' + ((err && err.message) || String(err)));
       } finally {
         applying = false;
         updateDownloadBtn();
@@ -4920,9 +5110,9 @@
     //  사본에는 좌측경계 _LB와 인라인 이미지 보호가 없어, 되살리면 '/P-N g' 깨짐과 BI→I 깨짐이 함께 돌아온다)
 
     // ── Dot Gain 보정 (컬러 → 흑백 변환 페이지에만 적용, 회색 판정 페이지는 항상 0) ──
-    // 인쇄기 망점 번짐은 문서가 아니라 **출력기의 성질**이라 앱 전체 설정으로 기억한다(localStorage).
+    // 앱 전체 설정이지만 **기억하지 않는다** — 실행할 때마다 '없음'(드롭다운이 없던 시절과 같은 밝기)에서 시작(사용자 지시).
     const DOT_GAIN_LEVELS = [0, 10, 15, 20];
-    const DOT_GAIN_KEY = 'dotGainLevel';
+    const DOT_GAIN_KEY = 'dotGainLevel';   // 예전 버전의 저장값 — 켤 때 지우기만 한다
     // Dot Gain 보정 곡선 — v: 밝기(0=검정·1=흰색) → 인쇄에서 망점이 번져 어두워질 것을 미리 밝게 한 값.
     // 망점 번짐 모델: 인쇄 농도 = c + 4g·c·(1−c) (50% 망점에서 g만큼 더 진해짐) → 원하는 농도 t가 나오도록 c를 역산한다.
     // gain: 0(보정 없음) · 10 · 15 · 20 (%) — 25는 예전 프리셋 호환(√v).
@@ -4946,20 +5136,18 @@
       v = parseInt(v) || 0;
       if (!DOT_GAIN_LEVELS.includes(v)) v = 0;
       ['dotGainSelect', 'sb-dotGainSelect'].forEach(id => { const s = document.getElementById(id); if (s) s.value = String(v); });   // 상단·사이드바 두 곳 동기
-      try { localStorage.setItem(DOT_GAIN_KEY, String(v)); } catch (e) {}
       if (typeof clearProcessCaches === 'function') clearProcessCaches();
       if (typeof invalidateProcessed === 'function') invalidateProcessed();
       if (typeof previewVisible === 'function' && previewVisible() && typeof scheduleLivePreview === 'function') scheduleLivePreview();
       if (typeof scheduleBwPrewarm === 'function' && (processingOptions.bw || processingOptions.inkNorm)) scheduleBwPrewarm(300);
       showSuccess(v
         ? `◐ Dot Gain 보정 ${v}% — 컬러에서 흑백으로 바꾸는 페이지의 중간 톤을 인쇄 번짐만큼 밝게 합니다(원래 흑백인 페이지는 그대로).
-'✔ 적용'을 다시 누르면 반영됩니다. 출력물이 탁하면 한 단계 올리고, 너무 밝으면 내리세요.`
+'✔ 적용'을 다시 누르면 반영됩니다. 출력물이 탁하면 한 단계 올리고, 너무 밝으면 내리세요. (프로그램을 다시 켜면 '없음'으로 돌아갑니다)`
         : `◐ Dot Gain 보정을 껐습니다 — 흑백 변환 밝기를 원고 그대로 씁니다. '✔ 적용'을 다시 누르면 반영됩니다.`);
     }
     function restoreDotGain() {
-      let v = 0;
-      try { v = parseInt(localStorage.getItem(DOT_GAIN_KEY)) || 0; } catch (e) {}
-      ['dotGainSelect', 'sb-dotGainSelect'].forEach(id => { const s = document.getElementById(id); if (s) s.value = String(DOT_GAIN_LEVELS.includes(v) ? v : 0); });
+      try { localStorage.removeItem(DOT_GAIN_KEY); } catch (e) {}
+      ['dotGainSelect', 'sb-dotGainSelect'].forEach(id => { const s = document.getElementById(id); if (s) s.value = '0'; });
     }
     // 문서(pdfDoc) 단위 dotGain 오버라이드 — 이미 회색으로 판정된 페이지(잉크 정규화 대상)에
     // Dot Gain 보정을 걸면 밝기가 변하므로 그런 변환은 0으로 강제한다. 전역 변수가 아니라

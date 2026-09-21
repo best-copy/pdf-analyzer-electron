@@ -297,6 +297,32 @@
     .merge-confirm { background: #1d1d1f; color: #ffd60a; }
     .merge-confirm:hover { background: #ffd60a; color: #1d1d1f; }
 
+    /* ── ✂ 분리 저장 창 (merge-modal 위에 올린다) ── */
+    .split-opts { display: flex; flex-direction: column; gap: 10px; }
+    .split-row {
+      display: flex; align-items: center; gap: 9px;
+      padding: 11px 12px; background: #f5f5f7; border: 1px solid #e8e8ed;
+      border-radius: 10px; cursor: pointer; font-size: 0.9em; color: #1d1d1f;
+    }
+    .split-row:hover { border-color: #d2d2d7; }
+    .split-row input[type="radio"] { accent-color: #1d1d1f; }
+    .split-num  { width: 64px; margin: 0 4px; }
+    .split-text { width: 210px; margin-left: 4px; }
+    .split-num, .split-text {
+      padding: 5px 8px; border: 1px solid #d2d2d7; border-radius: 7px;
+      font-size: 0.95em; font-family: inherit; color: #1d1d1f; background: #fff;
+    }
+    .split-num:focus, .split-text:focus { outline: none; border-color: #1d1d1f; }
+    .split-preview {
+      margin-top: 14px; padding: 11px 12px; border-radius: 10px;
+      background: #fffdf2; border: 1px solid #ffe58f;
+      font-size: 0.82em; line-height: 1.7; color: #1d1d1f;
+      max-height: 190px; overflow-y: auto; word-break: break-all;
+    }
+    .split-preview.split-bad { background: #fff4f4; border-color: #ffc9c9; color: #86181d; }
+    .split-dim { color: #6e6e73; }
+    .merge-confirm:disabled { background: #e8e8ed; color: #8e8e93; cursor: not-allowed; }
+
     /* ── 합본 파일별 챕터 구분 ── */
     .chapter-divider {
       grid-column: 1 / -1;

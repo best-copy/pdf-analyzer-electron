@@ -3107,6 +3107,10 @@
       g('sb-applyBtn').disabled    = applying || !hasMod || upToDate;
       g('sb-downloadBtn').disabled = applying || !originalPdfBytes;
       g('sb-downloadBtn').classList.toggle('btn-dim', !processedPdfBytes);
+      if (g('sb-splitSaveBtn')) {   // ✂ 문서가 있으면 누를 수 있다(우클릭 = 원본 그대로) · 적용 전이면 흐리게
+        g('sb-splitSaveBtn').disabled = applying || !originalPdfBytes;
+        g('sb-splitSaveBtn').classList.toggle('btn-dim', !processedPdfBytes);
+      }
       g('sb-clearOptsBtn').style.display = anyActive ? '' : 'none';
       g('sb-refreshBtn').style.display = '';
     }

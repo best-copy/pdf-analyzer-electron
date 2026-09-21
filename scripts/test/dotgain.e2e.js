@@ -31,6 +31,8 @@ app.whenReady().then(async () => {
     await waitFor(() => pageResults.length === 2 && pageResults.every(r => r && r.thumbnail !== undefined) && isTabReady(tabs.get(activeTabId)));
     ck('1쪽 컬러·2쪽 흑백으로 분석', pageResults[0].isColor && !pageResults[1].isColor, pageResults.map(r => r.isColor));
     const sel = document.getElementById('dotGainSelect');
+    // 켜면 항상 '없음(0)' — 드롭다운이 없던 시절과 같은 밝기
+    ck('켜면 기본 = 없음(0)', sel.value === '0' && getDotGain() === 0, [sel.value, document.getElementById('sb-dotGainSelect').value, getDotGain()]);
     ck('드롭다운 4단계', sel && [...sel.options].map(o => o.value).join(',') === '0,10,15,20', sel && [...sel.options].map(o => o.value));
 
     // 결과 PDF에서 쪽별 채움 회색값
@@ -64,11 +66,12 @@ app.whenReady().then(async () => {
     setDotGain(15);
     return out;
   })()`);
-  // 앱을 다시 켠 것처럼 새 창 — 마지막 값(15)이 복원되는지
+  // 앱을 다시 켠 것처럼 새 창 — 15를 골랐어도, 옛 버전 저장값(20)이 남아 있어도 '없음'으로 시작하는지
+  await win.webContents.executeJavaScript(`localStorage.setItem('dotGainLevel', '20')`);   // 옛 버전이 남긴 저장값
   win.destroy();
   win = await mkWin();
   const restored = await win.webContents.executeJavaScript(`[document.getElementById('dotGainSelect').value, getDotGain()]`);
-  res.push([restored[0] === '15' && restored[1] === 15 ? '✔' : '✘', '다시 켜면 마지막 단계 복원', JSON.stringify(restored)]);
+  res.push([restored[0] === '0' && restored[1] === 0 ? '✔' : '✘', '다시 켜면 없음(고른 단계·옛 저장값 무시)', JSON.stringify(restored)]);
 
   let fail = 0;
   res.forEach(([m, n, x]) => { if (m === '✘') fail++; console.log(`  ${m} ${n} ${x}`); });

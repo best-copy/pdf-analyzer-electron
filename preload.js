@@ -116,6 +116,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return filePath;
   },
 
+  // ✂ 분리 저장 — 폴더 하나를 고르고(main의 다이얼로그·라이선스 확인) 나눈 PDF를 한꺼번에 쓴다.
+  // 파일마다 저장 위치를 묻지 않기 위한 경로. 같은 이름이 있으면 '-1'을 붙여 덮어쓰지 않는다.
+  pickSplitFolder: () => ipcRenderer.invoke('dialog:pickSplitFolder'),
+  saveFilesToFolder: ({ dir, files }) => {
+    if (!dir || !Array.isArray(files) || !files.length) return [];
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error('저장 폴더를 찾을 수 없습니다: ' + dir);
+    const saved = [];
+    for (const f of files) {
+      const base = path.basename(String(f.name || 'split.pdf'));   // 경로가 섞여 들어와도 고른 폴더 밖으로 나가지 않게
+      const ext = path.extname(base) || '.pdf';
+      const stem = path.basename(base, ext);
+      let p = path.join(dir, base);
+      for (let i = 1; fs.existsSync(p) && i < 1000; i++) p = path.join(dir, `${stem}-${i}${ext}`);
+      writeFileSafe(p, f.buffer);
+      saved.push(p);
+    }
+    return saved;
+  },
+
   // HWP/HWPX → PDF 변환 (main의 한글 COM 자동화) — 변환된 임시 PDF 경로 반환
   convertHwpToPdf: (filePath) => ipcRenderer.invoke('hwp:convertToPdf', filePath),
 

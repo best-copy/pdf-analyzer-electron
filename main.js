@@ -33,7 +33,8 @@ let docWorkName = '';
 // ── 외부 실행 인자로 받은 문서 열기 (목차 검증기 '이어서 작업' 연동) ─────────
 // 실행: "PDF 분석기.exe 문서.pdf" — 시작 시 인자의 문서를 바로 연다.
 // pdfw = 💼 작업 파일(원본 PDF + 작업 상태가 한 파일에) — 더블클릭하면 그 시점 그대로 열린다
-const OPEN_DOC_RE = /\.(pdfw|pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai)$/i;
+// 이미지도 받는다 — 빠지면 '보내기'로 보낸 이미지가 전부 걸러져 빈 창만 뜬다(열기 다이얼로그 확장자와 같게)
+const OPEN_DOC_RE = /\.(pdfw|pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai|png|jpe?g|gif|bmp|webp|tiff?|avif)$/i;
 
 function docPathsFrom(argv) {
   return argv
@@ -1429,6 +1430,22 @@ ipcMain.handle('hotfolder:finish', (_, r) => {
 ipcMain.handle('dialog:pickFolder', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({ title: '핫폴더 선택', properties: ['openDirectory', 'createDirectory'] });
   return (canceled || !filePaths.length) ? null : filePaths[0];
+});
+
+// ✂ 분리 저장 폴더 선택 — 나눈 PDF 여러 개를 한 폴더에 넣는다(파일마다 묻지 않게)
+ipcMain.handle('dialog:pickSplitFolder', async () => {
+  if (!licenseGate('PDF')) return null;
+  let dir = pickSaveDir('pdf', _docDir, _lastSaveDir, isTempPath);
+  try { if (!usableSaveDir(dir)) dir = desktopDir() || app.getPath('downloads'); } catch (e) { dir = null; }
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: '✂ 분리 저장 — 나눈 PDF를 넣을 폴더 선택',
+    defaultPath: dir || undefined,
+    buttonLabel: '이 폴더에 저장',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (canceled || !filePaths.length) return null;
+  _lastSaveDir = filePaths[0];
+  return filePaths[0];
 });
 
 // 표지 파일 선택 — PDF(1쪽째 사용) 또는 이미지
