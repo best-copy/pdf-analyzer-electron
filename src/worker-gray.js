@@ -576,7 +576,11 @@ function grayifyStream(bytes, csGrayMap, dotGain, info) {
     const v = nums ? nums.trim().split(/\s+/) : [];
     const lower = op.toLowerCase();
     if (lower === 'g' || lower === 'rg' || lower === 'k') {
-      if (isStroke) stroke = DEV_GRAY; else fill = DEV_GRAY;           // 장치 색 연산자 뒤에는 DeviceGray
+      // 장치 색 연산자는 **색공간까지 바꾼다**(규격) — 뒤따르는 sc/scn은 그 성분 수로 읽어야 한다
+      const dev = lower === 'g' ? DEV_GRAY
+                : lower === 'rg' ? { name: 'DeviceRGB', d: _DEVICE_CS.DeviceRGB }
+                : { name: 'DeviceCMYK', d: _DEVICE_CS.DeviceCMYK };
+      if (isStroke) stroke = dev; else fill = dev;
       if (lower === 'g') return m;                                      // 이미 회색
       if (v.length !== (lower === 'rg' ? 3 : 4)) return m;              // 피연산자 수가 틀린 원본 — 손대지 않음
       return (lower === 'rg' ? lum(v[0], v[1], v[2]) : lumCmyk(v[0], v[1], v[2], v[3])) + ' ' + G;
@@ -587,7 +591,10 @@ function grayifyStream(bytes, csGrayMap, dotGain, info) {
     if (cs.d.kind === 'Pattern') return m;                              // 무채색 패턴의 성분(뒤에 이름이 붙음) — 여기 오지 않지만 방어
     let g = csToGray(cs.d, v);
     if (g == null) { g = guessGray(v); bump('guessed'); }               // 정의를 모름 — 성분 수로 추정
-    if (isStroke) stroke = DEV_GRAY; else fill = DEV_GRAY;
+    // ⚠ 색공간은 그대로 둔다 — sc/scn은 '색'만 바꾸고 색공간은 cs가 정한 것이 계속 간다.
+    //   예전엔 여기서 DeviceGray로 바꿔, 같은 색공간에서 색만 다시 지정하는 흔한 모양
+    //   ('/CS20 cs 1 scn … 0 scn' — 별색 Black 틴트 0 = 잉크 없음 = 흰색)에서 뒤의 '0 scn'을
+    //   회색 0(검정)으로 읽어 **슬라이드 배경이 새까맣게** 변했다(실파일 test.pdfw).
     return f4(g) + ' ' + G;
   });
 

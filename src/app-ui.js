@@ -360,7 +360,8 @@
       document.body.classList.add('edit-fullscreen');
       // 줌 위젯(－/＋, Ctrl+[ ]) — 작업공간 미리보기 썸네일 확대·축소에도 사용
       if (typeof setThumbZoomWidgetVisible === 'function') setThumbZoomWidgetVisible(true);
-      // 오른쪽 미리보기 채우기: 편집이 있으면 강제로 1회 렌더(자동반영 토글과 무관), 없으면 원본 페이지 표시.
+      // 들어올 때는 늘 '결과 보기'에서 시작한다 — 흑백을 적용해 둔 문서가 컬러로 보이지 않게.
+      setWorkspaceView('result', true);
       if (shouldPreview()) runLivePreview();
       else showWorkspaceBasePreview();
     }
@@ -396,6 +397,7 @@
       }
       _wsSavedResult = null;
       _wsEnteredWithPreview = false;
+      _wsShow = 'result';   // 다음에 들어올 때도 결과부터
     }
     // '💾 저장하고 닫기' — 창을 먼저 닫고 적용을 진행한다.
     // (예전엔 applyChanges를 await한 뒤 닫아서, 폰트 출력 안전화·평탄화처럼 오래 걸리는
@@ -450,14 +452,49 @@
       setTimeout(prewarmOptimizedOutput, 400);
     }
     // 편집이 하나도 없을 때 작업공간 오른쪽에 원본 페이지를 그대로 보여준다(빈 화면 방지).
+    // ── 편집 모드에서 지금 보는 것: 'result'(지금 설정대로의 결과) | 'original'(원본 그대로) ──
+    // 예전엔 규칙이 셋으로 갈려(편집 있음 → 결과 / 흑백만 → 원본 / 옵션 켜짐 → 결과) 같은 문서인데
+    // 여백을 주면 흑백, 지우면 컬러로 **화면 색이 왔다 갔다** 했다. 이제 기본은 항상 결과이고,
+    // 원본은 사용자가 버튼으로 고를 때만 보여 준다(비교용). 화면 위 한 줄 표시로 어느 쪽인지 알린다.
+    let _wsShow = 'result';
+    function setWorkspaceView(v, silent) {
+      _wsShow = v === 'original' ? 'original' : 'result';
+      const rb = document.getElementById('pvViewResult'), ob = document.getElementById('pvViewOriginal');
+      if (rb) rb.classList.toggle('active', _wsShow === 'result');
+      if (ob) ob.classList.toggle('active', _wsShow === 'original');
+      syncWorkspaceViewNote();
+      if (silent) return;
+      if (_wsShow === 'original') renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+      else if (typeof shouldPreview === 'function' && shouldPreview()) runLivePreview();
+      else showWorkspaceBasePreview();
+    }
+    function wsViewIsOriginal() { return _wsShow === 'original'; }
+    function syncWorkspaceViewNote() {
+      const el = document.getElementById('pvViewNote');
+      if (!el) return;
+      const bw = !!(processingOptions && (processingOptions.bw || processingOptions.inkNorm));
+      el.classList.toggle('pv-view-warn', _wsShow === 'original');
+      el.textContent = _wsShow === 'original'
+        ? '원본 보는 중 — 편집·흑백 반영 안 됨'
+        : (bw ? '결과 미리보기 · 흑백 반영됨' : '결과 미리보기');
+    }
     function showWorkspaceBasePreview() {
       if (!originalPdfBytes) return;
+      if (_wsShow === 'original') { renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' }); return; }
       // 페이지를 손댄 적이 있으면(챕터·페이지 삭제, 순서 바꾸기, 회전, 빈 페이지 삽입…)
       // 원본 바이트를 띄우면 안 된다 — 지운 챕터가 편집 모드에서 되살아나 보인다.
       // 이때는 지금의 페이지 구성 그대로 조립한 결과(적용·다운로드와 같은 것)를 보여 준다.
       // (조립본은 pageResults와 1:1이라 source:'original' 표식을 붙이지 않는다)
+      // 흑백변환·잉크 정규화도 마찬가지다 — 원본 바이트를 띄우면 **편집 모드에서만 썸네일이
+      // 다시 컬러로** 보여(적용·저장까지 끝낸 뒤에도) "흑백이 풀렸다"로 읽힌다. 조립본
+      // (buildBaseProcessed)은 적용·다운로드와 같은 것이고 _baseCache로 캐시돼 있어, 적용을
+      // 마친 뒤라면 곧바로 나온다.
       let edited = false;
-      try { edited = !!pageEdited; } catch (e) {}
+      try {
+        edited = !!pageEdited
+              || !!(processingOptions && (processingOptions.bw || processingOptions.inkNorm))
+              || (typeof hasContentEdits === 'function' && hasContentEdits());
+      } catch (e) {}
       if (edited) {
         const token = ++_wsBaseToken;
         buildBaseProcessed()
@@ -2626,11 +2663,14 @@
         const layoutSig = JSON.stringify(editSettings) + impSignature();
         const pnMap = new Map(pageResults.filter(Boolean).map(r => [r.pageNum, r]));
         const pvPageCacheNext = new Map();
+        // 같은 쪽이라도 **어느 문서를 그렸는지**가 다르면 다시 그려야 한다 — 결과(흑백)와 원본(컬러)은
+        // 쪽 구성이 같아, 이 표식이 없으면 '🖨 결과 ↔ 📄 원본' 전환에서 먼저 그린 그림이 그대로 남았다.
+        const srcMark = opts.source === 'original' ? 'O' : 'R';
         const sigOf = (i) => {
           const src = canSelect ? srcMap[i - 1] : null;
           if (src && src.length === 1) {
             const r = pnMap.get(src[0]);
-            if (r) return [pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0,
+            if (r) return [srcMark, pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0,
                            (r.isRoman || r.isTocPage) ? 1 : 0,
                            (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
             return null;
@@ -3088,6 +3128,19 @@
       if (typeof updateEbNote === 'function') updateEbNote();   // 📖 시안 예상 용량
       const wsb = g('workSaveBtn');
       if (wsb) wsb.disabled = !originalPdfBytes;                // 💼 문서가 있어야 작업 저장
+      const wsa = g('workSaveAsBtn');
+      if (wsa) wsa.disabled = !originalPdfBytes;                // 📑 다른 이름으로 저장
+      // 지금 탭이 어느 작업 파일인지 — '💼 작업 저장'이 그 파일에 덮어쓴다는 걸 보이게
+      const wcn = g('workCurNote');
+      if (wcn) {
+        const wp = (typeof currentWorkPath === 'function' && originalPdfBytes) ? currentWorkPath() : '';
+        wcn.style.display = wp ? '' : 'none';
+        if (wp) {
+          const nm = wp.split(/[\\/]/).pop();
+          wcn.textContent = `지금 작업 파일: ${nm} — '작업 저장'은 여기에 덮어쓰고, '다른 이름으로 저장'은 새 파일을 만듭니다.`;
+          wcn.title = wp;
+        }
+      }
       const ebb = g('ebGenBtn');
       if (ebb) ebb.disabled = !originalPdfBytes;                // 📖 문서가 있어야 시안 생성
       g('sb-opt-bw').classList.toggle('active', !!processingOptions.bw);

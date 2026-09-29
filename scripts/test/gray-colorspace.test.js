@@ -111,6 +111,18 @@ const lumCMYK = (c, m, y, k) => lumRGB((1 - c) * (1 - k), (1 - m) * (1 - k), (1 
   r = run('/Spot2 cs\n0 0 10 10 re f\n');
   ck('cs 직후 초기색(별색 = 잉크 100%)을 회색으로', near(lastGray(r.out), lumCMYK(0, 1, 0, 0)), r.out);
 
+  // 실파일 test.pdfw: '/CS20 cs 1 scn … (q…Q) … 0 scn' — 같은 별색 공간에서 색만 다시 지정한다.
+  // 예전엔 scn 뒤에 색공간을 DeviceGray로 바꿔 버려 뒤의 '0 scn'을 회색 0(검정)으로 읽었고,
+  // 슬라이드 배경이 새까맣게 나왔다(별색 Black 틴트 0 = 잉크 없음 = 흰색).
+  r = run('/Spot2 cs 1 scn\nq\n/Spot2 CS 1 SCN\nQ\n0 scn\n0 0 10 10 re f\n');
+  ck('sc/scn 뒤에도 색공간 유지 — 별색 틴트 0 = 흰색', near(lastGray(r.out), 1) && noColorOps(r.out), r.out);
+  r = run('/Pal cs 1 scn 0 scn\n');
+  ck('번호표 색공간도 유지 — 0번 = 빨강', near(lastGray(r.out), lumRGB(1, 0, 0)), r.out);
+  r = run('1 0 0 rg 0 1 0 sc\n');
+  ck('rg 뒤 sc는 RGB 3성분으로', near(lastGray(r.out), lumRGB(0, 1, 0)) && noColorOps(r.out), r.out);
+  r = run('0 0 0 1 k 0 1 0 0 sc\n');
+  ck('k 뒤 sc는 CMYK 4성분으로', near(lastGray(r.out), lumCMYK(0, 1, 0, 0)) && noColorOps(r.out), r.out);
+
   console.log('\n[4] 정의를 모를 때도 회색으로 (프린터 컬러 과금 방지)');
   r = run('/Nowhere cs 0.3 0.8 scn\n', {});
   ck('리소스에 없는 이름 2성분 → 잉크 합으로 추정, 색 연산자 없음', near(lastGray(r.out), 0) && noColorOps(r.out) && r.stat.guessed === 1, r);

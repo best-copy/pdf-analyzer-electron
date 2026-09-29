@@ -70,6 +70,8 @@ scripts/smoke.js   npm run smoke
 - 버튼 좌클릭 = 적용본, **우클릭 = 원본 그대로**(⇩ 다운로드와 같은 규칙). 적용 전이라고 버튼을 `disabled`로 두지 말 것 — disabled 버튼은 `contextmenu`도 먹지 않아 우클릭이 죽는다(흐리게만).
 - 구간 계산은 순수 함수 `splitRangesEveryN`·`parseSplitRanges`·`splitPartFileName`(`split-save.test.js`). 저장은 `dialog:pickSplitFolder`(폴더 1회 선택)+preload `saveFilesToFolder`(같은 이름이면 `-1`). 나눈 파일에는 목차 북마크가 없다. `split-save.e2e.js`.
 
+- 💼 작업 파일: `saveWorkFile()`은 지금 파일에 덮어쓰고, `saveWorkFile({saveAs:true})`(📑 버튼 · 💼 우클릭)는 새 파일. 저장 뒤 그 파일이 '지금 작업 파일'이 된다(`setCurrentWorkPath` → 사이드바 표시). `workfile-saveas.e2e.js`.
+
 ### 3.5 견적서
 컬러/흑백 장수 × 단가(localStorage 기본 단가) → 견적 테이블·인쇄·PDF 저장. 파일명에 금액 표기 옵션.
 
@@ -105,6 +107,8 @@ scripts/smoke.js   npm run smoke
 19. **`pako.inflate`의 실패는 예외가 아니라 `undefined`일 수 있다** — zlib 체크섬(adler32)이 틀리거나 빠진 콘텐츠 스트림(실파일 28개·5,393개 스트림 중 11개)에서 워커 `stream-grayify`가 TypeError로 죽어 **그 쪽 전체가 컬러로 저장**됐다. Acrobat·pdf-lib은 그대로 열어 화면은 멀쩡하다. 결과는 `ArrayBuffer.isView`로 확인하고(vm 테스트에선 `instanceof Uint8Array`가 realm이 달라 거짓), 실패하면 zlib 머리 2바이트를 떼고 raw deflate(`inflateRawTolerant`·`inflateLenient`)로 푼다 — 복구 10개 모두 pdf-lib과 바이트 일치. `inflate-tolerant.test.js`.
 20. **저장본 컬러 검수(`checkColorIntent`)를 끄거나 분석값(isColor)만으로 바꾸지 말 것** — 다운로드 base(`buildBaseOptimized`)가 저장 직전 쪽마다 `pageIsNeutral`(렌더 없이 내용만)로 ① 흑백 대상인데 색이 남은 쪽 ② **원본에 색이 있었는데** 저장본이 무채색이 된 쪽을 찾아 저장 전 확인창을 띄운다. 분석값만 믿으면 K 100% 검정을 pdf.js가 따뜻한 RGB로 그려 헛경보가 난다(실파일 59쪽). 먹 한 가지(`/Separation /Black`, `/DeviceN [/Black]`)는 무채색. 실파일 28개 × 두 경우 헛경보 0, 진짜로 남은 색 5쪽을 찾아냄(→ 19번). pdf.js 렌더 비교는 224쪽에 76~213초라 기각.
 21. **같은 쪽을 `embedPage`로 두 번 임베드하지 말 것 — 겉 폼으로 재사용** — pdf-lib `embedPage`는 호출마다 그 쪽의 사진·폰트를 통째로 새로 복사한다. 복제 2-up(`buildDup2upBytes`)이 정방향·180° 두 벌을 임베드해 결과가 원고의 2배(도록 150쪽 적용본 952MB → 1,956MB)가 됐고, 렌더러 버퍼 한계(단일 ArrayBuffer <2GiB·렌더러 합계 ≈14GB, Electron 31 실측)에 걸려 "Array buffer allocation failed"로 적용이 실패했다. 180° 벌은 `rotate180Embeds`가 정방향 폼을 `/P0 Do`로 부르는 겉 폼으로 만든다(트림 인셋 l↔r·b↔t 교환, 결과 978MB·옛/새 gs 렌더 픽셀 동일). 임포징 독립 도구 BUILDERS에도 같이. `dup-2up-memory.e2e.js`·`dup-2up-flow.e2e.js`·`dup-2up-realapp.e2e.js`.
+22. **`sc`/`scn` 뒤에 색공간을 바꾸지 말 것 — 색만 바뀐다** — 규격상 색공간은 `cs`가 정한 것이 계속 가고, 실제로 색공간을 바꾸는 것은 `g`·`rg`·`k`뿐이다. 워커가 `sc/scn` 뒤에 DeviceGray로 되돌려, `/CS20 cs 1 scn … 0 scn`(별색 먹, 틴트 0 = 잉크 없음 = **흰색**)의 뒤쪽 `0 scn`을 회색 0(검정)으로 읽었다 → 실파일 `test.pdfw` 70쪽 중 **32쪽에서 흰 배경이 새까맣게**(gs 평균 밝기 최대 66.7 차이 → 고친 뒤 3.3). `g`·`rg`·`k` 뒤에는 각각 DeviceGray·DeviceRGB·DeviceCMYK로 두어야 뒤따르는 `sc`의 성분 수가 맞는다. `gray-colorspace.test.js` [3] 상태 추적.
+23. **편집 모드 미리보기는 항상 '결과'가 기본이고, 쪽별 캐시 열쇠에 어느 문서를 그렸는지 넣을 것** — 예전엔 규칙이 셋으로 갈려(편집 옵션 있음 → 결과 / 흑백만 적용 → **원본**) 여백을 주고 빼는 것만으로 화면 색이 흑백↔컬러로 왔다 갔다 했다. `shouldPreview`는 흑백·잉크 정규화를 세지 않으므로 `showWorkspaceBasePreview`가 그 둘도 결과로 친다. `📄 원본 보기`(`setWorkspaceView`)를 고른 동안은 설정을 바꿔도 결과로 갈아치우지 않는다(`wsViewIsOriginal`). 그리고 `renderProcessedPreview`의 `sigOf`에 `R`/`O` 표식이 없으면 결과↔원본은 쪽 구성이 같아 **먼저 그린 캔버스가 그대로 남아 전환이 보이지 않는다**. `ws-view-mode.e2e.js`(합성·실파일).
 13. **COM 변환(한글·Office·Adobe)은 사용자가 켜 둔 앱에 붙을 수 있다** — 스크립트가 새로 띄운 프로세스만 `COMPID:n`으로 알리고, 그때만 Quit·시간 초과 시 taskkill. 켜져 있던 앱이면 우리가 연 문서만 닫는다. Office는 `AutomationSecurity=3`(매크로 차단). **한글 보안창 워처**도 같은 이유로 좁힌다: '접근하려는 시도' 창만(확인·예·계속은 절대 안 누름), 켜져 있던 한글이면 창에 **변환 중 파일 이름**이 보일 때만 '접근 허용'(모두 허용 아님), 진짜 마우스 클릭은 그 좌표 맨 위가 그 버튼일 때만(가려지면 앞으로 올리기만). 예전 워처는 사용자 한글의 저장 확인 [확인]·다른 파일 보안 창까지 눌렀다(가짜 대화상자로 재현). `scripts/test/hwp-dialog-watch.test.ps1`(왼쪽 모니터에 가짜 창을 띄워 실제 클릭 — smoke에는 안 넣음).
 
 ## 6. UI 규약

@@ -25,6 +25,10 @@
       // 기하 옵션(여백·제본여백)은 재조립을 기다리지 않고 오버레이로 즉시 선반영 (편집 모드 전용)
       if (typeof updateGeometryOverlays === 'function') updateGeometryOverlays();
       if (typeof updateEsGroupBadges === 'function') updateEsGroupBadges();   // 그룹 활성 배지 동기
+      if (typeof syncWorkspaceViewNote === 'function') syncWorkspaceViewNote();   // 흑백 켜고 끔이 한 줄 표시에 바로
+      // '📄 원본 보기'를 고른 동안은 설정을 바꿔도 결과로 갈아치우지 않는다(사용자가 고른 화면이 이긴다)
+      if (document.body.classList.contains('edit-fullscreen')
+          && typeof wsViewIsOriginal === 'function' && wsViewIsOriginal()) { showWorkspaceBasePreview(); return; }
       if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }
       // 자동 반영 꺼짐: 렌더하지 않고 '적용 필요' 상태로만 둔다(편집 조작 자체는 항상 즉시 반응).
       // 단, 전체화면 편집 작업공간에서는 항상 자동 반영 — 편집 모드의 존재 이유가 실시간 확인이므로
@@ -67,6 +71,8 @@
       document.addEventListener(ev, endUiInteraction, true));
     async function runLivePreview() {
       if (applying || _liveRunning) { _liveQueued = true; return; }
+      if (document.body.classList.contains('edit-fullscreen')
+          && typeof wsViewIsOriginal === 'function' && wsViewIsOriginal()) { showWorkspaceBasePreview(); return; }
       if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }
       _liveRunning = true;
       // 캐시가 히트하는 짧은 갱신에선 깜빡이지 않도록, 200ms 넘게 걸릴 때만 '처리중' 상태창 표시
@@ -9601,6 +9607,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       const t = (activeTabId && tabs.has(activeTabId)) ? tabs.get(activeTabId) : null;
       if (t) t.workPath = p || '';
       if (typeof reportDocState === 'function') reportDocState();
+      if (typeof syncSidebarPanel === 'function') { try { syncSidebarPanel(); } catch (e) {} }   // '지금 작업 파일' 표시 갱신
     }
     // 저장 직후 / 작업 파일을 연 직후 — 지금 상태 = 그 파일이므로 닫을 때 다시 묻지 않는다
     function noteWorkSaved(p) {
@@ -9614,23 +9621,30 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       if (!originalPdfBytes) { showError('먼저 PDF를 열어주세요 — 저장할 작업이 없습니다.'); return false; }
       try {
         const { parts, total, manifest, edits } = await buildWorkFileBytes();
-        const reuse = (!opts || !opts.saveAs) ? currentWorkPath() : '';
+        const saveAs = !!(opts && opts.saveAs);
+        const prevPath = currentWorkPath();
+        const reuse = saveAs ? '' : prevPath;
+        // 다른 이름으로 저장: 기본 이름은 지금 작업 파일 이름(같은 폴더에 있으면 대화상자가 '-1'을 붙인다)
+        const defaultName = (saveAs && prevPath)
+          ? prevPath.split(/[\\/]/).pop()
+          : workFileBaseName() + '.pdfw';
         // 조각 목록을 그대로 넘긴다 — preload가 파일에 차례로 이어 쓴다(2GB 넘는 작업도 저장)
         const saved = reuse
           ? await window.electronAPI.saveFileTo({ filePath: reuse, buffer: parts, kind: 'pdfw' })
-          : await window.electronAPI.saveFile({
-              defaultName: workFileBaseName() + '.pdfw', buffer: parts, kind: 'pdfw',
-            });
+          : await window.electronAPI.saveFile({ defaultName, buffer: parts, kind: 'pdfw' });
         if (!saved) return false;                    // 저장 다이얼로그 취소
         // 저장 완료 → 지금 상태는 이 파일에 들어 있다. '저장 안 한 작업' 표시도 함께 해제해
         // 창을 닫을 때 저장을 다시 묻지 않게 한다.
         noteWorkSaved(typeof saved === 'string' ? saved : '');
         const others = [...tabs.values()].filter(t => t.id !== activeTabId && isTabReady(t)).length;
-        showSuccess(`💼 작업 저장 완료 — ${manifest.doc.pages}쪽 · ${(total / 1048576).toFixed(1)}MB`
+        const newPath = typeof saved === 'string' ? saved : '';
+        const asCopy = saveAs && prevPath && newPath && newPath !== prevPath;
+        showSuccess(`${asCopy ? '📑 다른 이름으로 저장 완료' : '💼 작업 저장 완료'} — ${manifest.doc.pages}쪽 · ${(total / 1048576).toFixed(1)}MB`
           + (edits ? ` · 내부편집 ${edits}쪽 포함` : '')
           + (manifest.state.applied ? ' · 적용본 포함' : '')
           + (manifest.state.analysis ? ' · 분석 포함' : '')
           + (reuse ? `\n덮어쓴 파일: ${reuse}` : '')
+          + (asCopy ? `\n새 파일: ${newPath}\n처음 연 파일(${prevPath.split(/[\\/]/).pop()})은 그대로 남아 있습니다. 이제부터 💼 작업 저장은 새 파일에 덮어씁니다.` : '')
           + `\n이 파일을 더블클릭하면 지금 이 상태 그대로, 분석 없이 바로 열립니다 (원본 PDF가 안에 들어 있어 다른 PC로 옮겨도 됩니다).`
           + (others ? `\n※ 다른 탭 ${others}개는 담기지 않습니다 — 탭마다 따로 저장하세요.` : ''));
         return true;
