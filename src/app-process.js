@@ -673,7 +673,12 @@
       // (세션 안에서 켜 두면 그대로 유지된다)
     }
     // 모양·수치를 바꾸면 즉시 기억하고 미리보기에 반영
-    function impCropStyleChanged() {
+    function impCropStyleChanged(ev) {
+      // 이중 코너(돔보)는 '간격' = 재단선과 블리드선 사이(보통 3mm). 기본 간격 1mm로는 두 ㄱ이
+      // 거의 붙어 보이므로, 이 모양을 처음 고를 때 간격이 2mm 미만이면 3mm로 맞춘다.
+      const g = id => document.getElementById(id);
+      const shapeEl = g('impCropShape'), gapEl = g('impCropGap');
+      if (shapeEl && gapEl && ev && ev.target === shapeEl && shapeEl.value === 'double' && (parseFloat(gapEl.value) || 0) < 2) gapEl.value = '3';
       saveImpCropStyle();
       if (typeof impSettingsChanged === 'function') impSettingsChanged();
       if (typeof _bleedEnabled !== 'undefined' && _bleedEnabled && typeof bleedSettingsChanged === 'function') bleedSettingsChanged();
@@ -728,6 +733,30 @@
     }
     // 임포징 옵션 변경 — UI를 만지면 불러온 프로파일 재현을 해제(이후 UI 기준).
     // 포함 모드일 때 적용 결과 무효화 + 미리보기 갱신.
+    // ↔ 양끝 맞춤 — 켜면 거터 입력을 잠그고(자동이므로) 결과로 나온 가운데 간격을 옆에 보여 준다
+    function impJustifyChanged() { syncImpJustifyUI(); impSettingsChanged(); }
+    // 끝 여백은 0~5mm — 범위를 넘게 적으면 칸에서 바로 고쳐 보여 준다(입력 중인 빈 칸·'-'는 건드리지 않음)
+    function impJustifyEdgeInput(el) {
+      const v = parseFloat(el.value);
+      if (!isNaN(v) && (v < 0 || v > 5)) el.value = String(Math.min(5, Math.max(0, v)));
+      impSettingsChanged();
+    }
+    function syncImpJustifyUI() {
+      const g = id => document.getElementById(id);
+      const on = !!g('impJustify')?.checked && ['nup', 'cutstack', 'dup'].includes(_impMode);
+      const gut = g('bkGutter');
+      if (gut) { gut.disabled = on; gut.style.opacity = on ? '0.45' : ''; }
+      const edgeWrap = g('impJustifyEdgeWrap');
+      if (edgeWrap) edgeWrap.style.display = on ? 'inline-flex' : 'none';
+      const note = g('impJustifyNote');
+      if (note) {
+        note.style.display = on ? '' : 'none';
+        note.textContent = on
+          ? (_impAutoGapMm != null ? `가운데 ${(+_impAutoGapMm).toFixed(1)}mm (자동)` : '가운데 간격 자동')
+          : '';
+      }
+    }
+    let _impAutoGapMm = null;   // 마지막 조립에서 양끝 맞춤이 정한 가운데 간격(mm)
     function impSettingsChanged() {
       impGenInvalidate();                     // 설정이 바뀌면 '생성 완료' 잠금 해제
       if (_loadingProfile) return;            // 프로파일 불러오는 중 UI 세팅은 무시
@@ -773,6 +802,8 @@
       if (g('impStackWrap'))  g('impStackWrap').style.display  = cs ? '' : 'none';   // 묶음번호는 정합 전용
       if (g('impRepRow'))     g('impRepRow').style.display     = rp ? '' : 'none';
       if (g('bkCreepWrap'))   g('bkCreepWrap').style.display   = bk ? 'flex' : 'none';   // 밀림보정은 중철 전용
+      if (g('impJustifyWrap')) g('impJustifyWrap').style.display = (cs || nu || mode === 'dup') ? '' : 'none';   // ↔ 양끝 맞춤
+      if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
       if (g('impHint')) g('impHint').innerHTML = bk
         ? '현재 편집·적용 상태 그대로 <b>중철 제본용 2-up 시트</b>(앞/뒤 교대)로 재배열합니다. 페이지 수는 4의 배수가 되도록 빈 면이 채워집니다.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 반 접어 중철. <b>📕 표지 분리</b>를 켜면 표지 시트(두꺼운 용지용)와 내지가 별도 PDF 2개로 저장됩니다.'
         : nu
@@ -2716,6 +2747,26 @@
       const ls = s.lenSide || null;
       const lenL = ls && ls.l != null ? ls.l * MM : len, lenR = ls && ls.r != null ? ls.r * MM : len;
       const lenB = ls && ls.b != null ? ls.b * MM : len, lenT = ls && ls.t != null ? ls.t * MM : len;
+      // ── 이중 코너(돔보) — 일본식 트림 마크 ──
+      // 모서리마다 ㄱ자 두 개: ① 재단선(세로)+블리드선(가로)이 (cx, cy+b)에서 만나는 것,
+      // ② 블리드선(세로)+재단선(가로)이 (cx+b, cy)에서 만나는 것. 두 ㄱ은 서로 엇갈려 겹친다.
+      // b = '간격'(보통 3mm = 재단 여유), 팔 길이 = '길이'. 바깥 끝은 두 ㄱ이 같은 선(b+len)에서 멈춘다.
+      if (shape === 'double') {
+        const b = gap;
+        corners.forEach(([cx, cy, dx, dy]) => {
+          // ① 꼭짓점 (cx, cy+dy·b): 세로 = 재단선(x=cx), 가로 = 블리드선(y=cy+dy·b)
+          L(cx, cy + dy * b, cx, cy + dy * (b + len));
+          L(cx, cy + dy * b, cx + dx * (b + len), cy + dy * b);
+          // ② 꼭짓점 (cx+dx·b, cy): 세로 = 블리드선(x=cx+dx·b), 가로 = 재단선(y=cy)
+          L(cx + dx * b, cy, cx + dx * b, cy + dy * (b + len));
+          L(cx + dx * b, cy, cx + dx * (b + len), cy);
+        });
+        if (s.center) {
+          L(x + w/2, y - b, x + w/2, y - b - len);  L(x + w/2, y + h + b, x + w/2, y + h + b + len);
+          L(x - b, y + h/2, x - b - len, y + h/2);  L(x + w + b, y + h/2, x + w + b + len, y + h/2);
+        }
+        return;
+      }
       // 어느 모양이든 '자르는 위치'는 트림 사각형으로 같다. 모서리 바깥에 갭을 두고 두 선을 긋되,
       // 두 선은 서로 만나지 않는다(교차점이 없어 재단선이 겹쳐 두꺼워 보이지 않는다).
       corners.forEach(([cx, cy, dx, dy]) => {
@@ -2977,6 +3028,44 @@
       } catch (e) {}
     }
 
+    // ── 임포징 공용: 칸 크기 = 원고가 실제로 그려지는 크기 (거터를 입력값 그대로 두기 위해) ──
+    // 시트를 균등 분할한 칸 '가운데'에 앉히면 칸 안 여백 때문에 거터 0인데도 사이가 떴다
+    // (가로 원고 1열 2행, 복제 2부 반쪽 배치). 칸을 실제 그려지는 크기(재단 기준)로 좁히고
+    // 배치 블록 전체를 정렬하면 원고 사이 = 거터 값 그대로다.
+    // · 칸 맞춤(fit): 원고가 칸에 맞춰 줄어든다 → 칸 = min(균등 칸, 그려질 크기). 칸이 0 이하면 오류.
+    // · 100% 원본·지정 배율: 원고 크기가 고정이다 → 칸 = 원고 크기 **그대로**. 예전엔 min(균등 칸, 원고)라
+    //   거터를 대지 여유보다 키우면 칸이 원고보다 작아져, 원고가 칸 가운데에 앉으며 양쪽으로 비어져
+    //   나왔다 → 간격은 입력의 절반만 늘고 원고끼리 겹쳤다(460mm 대지·A4 2장: 거터 50 → 실제 44.4).
+    //   이제 블록이 대지를 넘으면 바깥(대지 밖)으로 밀려난다 — 재단선이 대지 밖으로 나가도 된다(사용자 결정).
+    function impPackCell(embedded, opts, slotW, slotH) {
+      const fit = !opts.place || !opts.place.scale || opts.place.scale === 'fit';
+      if (fit && (slotW <= 0 || slotH <= 0)) throw new Error('여백·거터가 시트보다 큽니다.');
+      const probe = { x: 0, y: 0, w: Math.max(1, slotW), h: Math.max(1, slotH) };
+      let mw = 0, mh = 0;
+      for (const e of embedded) {
+        const d = drawnTrimSize(probe, e, opts);
+        if (d.w > mw) mw = d.w;
+        if (d.h > mh) mh = d.h;
+      }
+      if (!(mw > 0 && mh > 0)) {
+        if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
+        return { packW: slotW, packH: slotH };
+      }
+      return fit ? { packW: Math.min(slotW, mw), packH: Math.min(slotH, mh) } : { packW: mw, packH: mh };
+    }
+    // ↔ 양끝 맞춤(opts.justifyX) — 원고를 대지 좌우 끝에 붙이고 가로 칸 사이 간격을 자동으로 정한다.
+    // 대지 끝~원고(재단선) 거리 = opts.justifyEdge(mm, 0~5 — 사용자 지정 범위). 일반 '여백'과 따로 둔다:
+    // 여백은 위·아래에도 걸리므로, 좌우 끝만 조절하려면 전용 값이 필요했다(사용자 요청).
+    // 남는 폭을 칸 사이에 고르게 나눈다. 원고가 대지보다 넓어 남는 폭이 없으면 맞닿게 가운데.
+    // 반환: null(꺼짐) 또는 { gap(pt), x0(pt, 첫 칸 왼쪽) }
+    function impJustifyLayout(opts, sw, across, packW) {
+      if (!opts.justifyX || across < 2) return null;
+      const e = Math.min(5, Math.max(0, +opts.justifyEdge || 0)) * 72 / 25.4;
+      const gap = (sw - 2 * e - across * packW) / (across - 1);
+      if (gap < 0) return { gap: 0, x0: (sw - across * packW) / 2 };
+      return { gap, x0: e };
+    }
+
     // ── 일반 N-up(모아찍기) 빌더 — 임의 열×행 그리드 ────────────────────────────
     // opts: across, down, sides(1|2), order('sequential'|'cutstack'), sheet[w,h]pt|null(auto),
     //   margin{l,t,r,b}|숫자, hgap/vgap|gutter, bleed, crop, frame, place{scale,align,...}.
@@ -2998,35 +3087,21 @@
       const mg = impMargins(opts), gp = impGaps(opts);
       const slotW = (sw - mg.l - mg.r - (across - 1) * gp.h) / across;
       const slotH = (sh - mg.t - mg.b - (down - 1) * gp.v) / down;
-      if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
-
-      // ── 칸을 원고가 실제로 그려지는 크기로 좁힌다 ────────────────────────
-      // 시트를 균등 분할한 칸 '가운데'에 앉히면, 가로 원고를 1열 2행으로 배치했을 때
-      // 칸 안 위·아래 여백 때문에 거터가 0인데도 사이가 떠 보였다. 칸을 실제 그려지는
-      // 크기(재단 기준)로 좁히고 배치 블록 전체를 정렬하면 거터 값 그대로 나온다.
-      // (100%·지정배율이라 원고가 칸보다 크면 칸 크기를 그대로 둔다 — 기존 동작 유지)
-      let packW = slotW, packH = slotH;
-      {
-        const probe = { x: 0, y: 0, w: slotW, h: slotH };
-        let mw = 0, mh = 0;
-        for (const e of embedded) {
-          const d = drawnTrimSize(probe, e, opts);
-          if (d.w > mw) mw = d.w;
-          if (d.h > mh) mh = d.h;
-        }
-        if (mw > 0 && mh > 0) { packW = Math.min(slotW, mw); packH = Math.min(slotH, mh); }
-      }
-      const blockW = across * packW + (across - 1) * gp.h;
-      const blockH = down * packH + (down - 1) * gp.v;
+      const { packW, packH } = impPackCell(embedded, opts, slotW, slotH);
       const areaW = sw - mg.l - mg.r, areaH = sh - mg.t - mg.b;
+      // ↔ 양끝 맞춤: 가로 칸 사이 간격을 자동으로 — 첫 칸은 왼쪽 여백에, 마지막 칸은 오른쪽 여백에 붙는다
+      const J = impJustifyLayout(opts, sw, across, packW);
+      const gh = J ? J.gap : gp.h;
+      const blockW = across * packW + (across - 1) * gh;
+      const blockH = down * packH + (down - 1) * gp.v;
       const al = (opts.place && opts.place.align) || 'cc';
-      const blockX = mg.l + (al[1] === 'l' ? 0 : al[1] === 'r' ? areaW - blockW : (areaW - blockW) / 2);
+      const blockX = J ? J.x0 : mg.l + (al[1] === 'l' ? 0 : al[1] === 'r' ? areaW - blockW : (areaW - blockW) / 2);
       const blockY = mg.b + (al[0] === 'b' ? 0 : al[0] === 't' ? areaH - blockH : (areaH - blockH) / 2);
 
       // 슬롯 s(0=좌상, 좌→우·상→하)의 사각형
       const slotRect = s => {
         const col = s % across, row = (s / across) | 0;
-        return { x: blockX + col * (packW + gp.h), y: blockY + (down - 1 - row) * (packH + gp.v), w: packW, h: packH };
+        return { x: blockX + col * (packW + gh), y: blockY + (down - 1 - row) * (packH + gp.v), w: packW, h: packH };
       };
       const mirror = s => { const col = s % across, row = (s / across) | 0; return row * across + (across - 1 - col); };
 
@@ -3084,7 +3159,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, per, across, down, sides, sheets: sheetsMade, trimMm: trimSizeMm(firstTrim) };
+      return { bytes, n0, per, across, down, sides, sheets: sheetsMade, trimMm: trimSizeMm(firstTrim), gapMm: gh * 25.4 / 72 };
     }
 
     async function buildBookletBytes(srcBytes, opts, onProgress) {
@@ -3370,13 +3445,23 @@
       else                           { [sw, sh] = IMP_PAPERS[opts.paper] || IMP_PAPERS.A4; }
       const mg = impMargins(opts), gp = impGaps(opts);
       const slotW = (sw - mg.l - mg.r - gp.h) / 2, slotH = sh - mg.t - mg.b;
-      if (slotW <= 0 || slotH <= 0) throw new Error('여백·거터가 시트보다 큽니다.');
+      // 예전엔 원고를 대지 **반쪽의 가운데**에 앉혀, 거터 0이어도 사이가 뜨고 거터를 올려도 그만큼
+      // 벌어지지 않았다(사용자 제보 — 복제 2부). 모아찍기와 같은 규칙으로 두 원고를 거터만큼 띄운 한
+      // 블록으로 묶어 정렬한다 → 원고 사이 = 거터 그대로, 대지 좌우 = 남는 폭.
+      const { packW, packH } = impPackCell(emb0, opts, slotW, slotH);
+      const areaW = sw - mg.l - mg.r, areaH = sh - mg.t - mg.b;
+      const J = impJustifyLayout(opts, sw, 2, packW);   // ↔ 양끝 맞춤이면 가운데 간격 자동
+      const gh = J ? J.gap : gp.h;
+      const blockW = 2 * packW + gh;
+      const al = (opts.place && opts.place.align) || 'cc';
+      const blockX = J ? J.x0 : mg.l + (al[1] === 'l' ? 0 : al[1] === 'r' ? areaW - blockW : (areaW - blockW) / 2);
+      const blockY = mg.b + (al[0] === 'b' ? 0 : al[0] === 't' ? areaH - packH : (areaH - packH) / 2);
 
       const drawCell = (page, cell, side) => {
         if (cell.p > n0) return null;   // 홀수 패딩 빈 면
         const emb = (cell.r === 180 ? emb180 : emb0)[cell.p - 1];
-        const x0 = side === 'L' ? mg.l : mg.l + slotW + gp.h;
-        return drawPlaced(page, emb, { x: x0, y: mg.b, w: slotW, h: slotH }, opts);
+        const x0 = side === 'L' ? blockX : blockX + packW + gh;
+        return drawPlaced(page, emb, { x: x0, y: blockY, w: packW, h: packH }, opts);
       };
 
       const sides = opts.sides === 1 ? 1 : 2;
@@ -3401,7 +3486,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, n, sheets: sheets.length, sides };
+      return { bytes, n0, n, sheets: sheets.length, sides, gapMm: gh * 25.4 / 72 };
     }
 
     async function generateDup2up() {
@@ -3596,7 +3681,7 @@
         mode: p.m, sides: p.sd,
         across: p.ax || 1, down: p.dn || 1,
         sheet: (p.sw && p.sh) ? [p.sw * MM, p.sh * MM] : null,
-        margin, hgap: p.hg || 0, vgap: p.vg || 0, gutter: p.hg || 0,
+        margin, hgap: p.hg || 0, vgap: p.vg || 0, gutter: p.hg || 0, justifyX: !!p.jx, justifyEdge: p.je || 0,
         bleed: p.bl || 0, srcBleed: p.sb || 0, crop: !!p.cr, cropDims: !!p.cd, frame: !!p.fr,
         cropStyle: (typeof _impCropStyle === 'function' ? _impCropStyle() : null),
         creep: 0, binding: p.bd === 'right' ? 'right' : 'left',
@@ -3645,6 +3730,8 @@
         if (g('impFixed'))  g('impFixed').value  = p.fx != null ? (p.fx * 100).toFixed(1) : 100;
         if (g('impMargin')) g('impMargin').value = p.mg != null ? p.mg : (p.ml || 0);
         if (g('bkGutter'))  g('bkGutter').value  = p.hg || 0;
+        if (g('impJustify')) g('impJustify').checked = !!p.jx;
+        if (g('impJustifyEdge')) g('impJustifyEdge').value = p.je || 0;
         if (g('impBleed'))  g('impBleed').value  = p.bl || 0;
         if (g('impSrcBleed')) g('impSrcBleed').value = p.sb || 0;
         if (g('impCrop'))   g('impCrop').checked = !!p.cr;
@@ -3754,6 +3841,7 @@
       if (sheet) { s.sw = +(sheet[0] / MM).toFixed(1); s.sh = +(sheet[1] / MM).toFixed(1); }   // pt → mm
       const mg = parseFloat(g('impMargin')?.value) || 0; if (mg) s.mg = mg;
       const hg = parseFloat(g('bkGutter')?.value) || 0; if (hg) { s.hg = hg; s.vg = hg; }
+      if (g('impJustify')?.checked) { s.jx = 1; const je = parseFloat(g('impJustifyEdge')?.value) || 0; if (je) s.je = je; }   // ↔ 양끝 맞춤 + 끝 여백
       const bl = parseFloat(g('impBleed')?.value) || 0; if (bl) s.bl = bl;
       const sbl = parseFloat(g('impSrcBleed')?.value) || 0; if (sbl) s.sb = sbl;
       if (g('impCrop')?.checked) s.cr = 1;
@@ -3934,6 +4022,7 @@
     }
     // 시트 크기 읽기 표시 (프로파일/용지 선택 반영)
     function updateImpSheetReadout() {
+      if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();   // 프로파일·프리셋 복원 뒤에도 거터 잠금 상태 맞춤
       const el = document.getElementById('impSheetReadout');
       if (!el) return;
       let sheet = _impProfile && _impProfile.sheet ? _impProfile.sheet : resolveImpPaper(document.getElementById('bkPaper')?.value || 'auto', null);
@@ -3996,6 +4085,8 @@
         mode:   _impMode,
         paper:  paperVal,
         gutter: parseFloat(g('bkGutter')?.value) || 0,
+        justifyX: !!g('impJustify')?.checked && _impMode !== 'booklet' && _impMode !== 'repeat',   // ↔ 양끝 맞춤
+        justifyEdge: Math.min(5, Math.max(0, parseFloat(g('impJustifyEdge')?.value) || 0)),   // 대지 끝~원고 (0~5mm)
         margin: parseFloat(g('impMargin')?.value) || 0,
         bleed:  parseFloat(g('impBleed')?.value) || 0,
         srcBleed: parseFloat(g('impSrcBleed')?.value) || 0,   // 원고에 이미 포함된 재단여백(TrimBox 없을 때)
@@ -4249,7 +4340,12 @@
         const per = await buildImposedPerChapter(u8, opts, build, onProgress);
         if (per) { bytes = per.bytes; _impChapterRanges = per.ranges; }
       }
-      if (!bytes) { bytes = (await build(srcBytes, opts, onProgress)).bytes; _impChapterRanges = null; }
+      if (!bytes) {
+        const res = await build(srcBytes, opts, onProgress);
+        bytes = res.bytes; _impChapterRanges = null;
+        _impAutoGapMm = opts.justifyX && res.gapMm != null ? res.gapMm : null;
+        if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
+      }
       _impBytesCache = sig ? { sig, bytes, ranges: _impChapterRanges } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
       return bytes;
     }

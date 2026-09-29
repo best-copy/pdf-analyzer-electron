@@ -754,14 +754,15 @@
       if (!_failedImports.length) return;
       const names = _failedImports.map(f => f.name).join(', ');
       const reason = _failedImports[0].reason || '';
-      errorEl.innerHTML = '';
+      const body = (typeof toastText === 'function') ? toastText(errorEl) : errorEl;   // 닫기 버튼은 남긴다
+      body.textContent = '';
       const txt = document.createElement('span');
       txt.textContent = `${_failedImports.length}개 파일 변환/읽기 실패: ${names}` + (reason ? `\n${reason}` : '');
       const btn = document.createElement('button');
       btn.className = 'retry-import-btn';
       btn.textContent = '↻ 다시 시도';
       btn.onclick = retryFailedImports;
-      errorEl.append(txt, btn);
+      body.append(txt, btn);
       errorEl.style.display = 'block';
       successEl.style.display = 'none';
     }

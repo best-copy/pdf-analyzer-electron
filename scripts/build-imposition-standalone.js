@@ -32,7 +32,7 @@ function exConst(name, src = appSrc) {
 const BUILDERS = [
   // 빌더가 부르는 헬퍼까지 전부 — 하나라도 빠지면 브라우저에서 '함수 없음'으로 죽는다
   'uiYield', 'ensurePageContents', 'pageTrimInset',
-  'embedAllPages', 'rotate180Embeds', 'placeInSlot', 'drawnTrimSize', 'drawPlaced', 'impMargins', 'impGaps', 'drawFrame',
+  'embedAllPages', 'rotate180Embeds', 'placeInSlot', 'drawnTrimSize', 'impPackCell', 'impJustifyLayout', 'drawPlaced', 'impMargins', 'impGaps', 'drawFrame',
   'prepSlug', 'drawSlug', 'drawStackNum', 'trimSizeMm',
   'drawCropMarks', 'drawTrimMarks', 'drawCutDims',
   'bookletSheetOrder', 'cutStackOrder', 'dup2upOrder',
@@ -675,6 +675,7 @@ const html = `<!doctype html>
         <select id="cropShape" style="flex:1 1 140px;">
           <option value="corner">┐ 모서리(기본)</option>
           <option value="notouch">┐ 모서리(겹침 없음)</option>
+          <option value="double">╬ 이중 코너(돔보)</option>
         </select>
       </div>
       <div class="row">

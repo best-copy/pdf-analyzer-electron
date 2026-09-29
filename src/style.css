@@ -128,9 +128,34 @@
     .merge-title, .tab-name, .ws-title, #editToggle,
     .ic { filter: grayscale(1); }
 
-    .error, .success { padding: 14px 18px; border-radius: 12px; margin: 20px; display: none; font-size: 0.9em; }
-    .error { background: #fff2f2; color: #c0392b; border: 1px solid #fcd0d0; white-space: pre-line; }
-    .success { background: #fff8db; color: #1d1d1f; border: 1px solid #ffd60a; border-left: 4px solid #ffd60a; font-weight: 600; white-space: pre-line; }
+    /* ── 알림 토스트 (성공·오류) ──
+       예전엔 화면 맨 위에 붙박이로 놓여, 아래로 스크롤하면 '적용 완료' 같은 안내를 볼 수 없었다.
+       진행 토스트(.loading)와 같은 자리(하단 중앙)에 떠 있게 하고, 스크롤과 무관하게 항상 보인다.
+       닫기(✕)를 누르거나 다음 알림이 오기 전까지 남는다 — 안내 문구를 읽을 시간을 뺏지 않기 위함. */
+    .error, .success {
+      display: none; position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%);
+      z-index: 100040; box-sizing: border-box;
+      width: min(760px, calc(100vw - 32px));
+      padding: 15px 46px 15px 18px;
+      border-radius: 18px; font-size: 0.9em; line-height: 1.55;
+      max-height: 44vh; overflow: auto; overscroll-behavior: contain;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.20), 0 2px 8px rgba(0,0,0,0.10);
+      -webkit-backdrop-filter: blur(18px) saturate(180%); backdrop-filter: blur(18px) saturate(180%);
+      animation: toast-rise 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .error   { background: rgba(255,244,244,0.94); color: #c0392b; border: 1px solid rgba(252,208,208,0.95); white-space: pre-line; }
+    .success { background: rgba(255,251,231,0.94); color: #1d1d1f; border: 1px solid rgba(255,214,10,0.95); font-weight: 600; white-space: pre-line; }
+    /* 진행 토스트가 떠 있으면 그 위로 비켜 선다 (겹쳐 가리지 않게) */
+    body.toast-busy .error, body.toast-busy .success { bottom: 118px; }
+    .toast-close {
+      position: absolute; top: 9px; right: 10px; width: 26px; height: 26px; padding: 0;
+      border: none; border-radius: 50%; cursor: pointer; line-height: 1;
+      background: rgba(0,0,0,0.06); color: #48484a; font-size: 0.82em; font-weight: 700;
+    }
+    .toast-close:hover { background: rgba(0,0,0,0.13); color: #1d1d1f; }
+    @keyframes toast-rise { from { opacity: 0; transform: translateX(-50%) translateY(14px); }
+                              to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+    @media (prefers-reduced-motion: reduce) { .error, .success { animation: none; } }
     /* 가져오기 실패 '다시 시도' 버튼 (에러 배너 안) */
     .retry-import-btn {
       margin-left: 12px; padding: 5px 14px; border-radius: 8px; cursor: pointer;
@@ -1323,6 +1348,18 @@
     }
     .es-select:focus, .es-input:focus { outline: none; border-color: #48484a; }
     .es-input[type=number] { -moz-appearance: textfield; }
+    /* ── 임포징 ✂ 재단선 세부 옵션 — 세 줄(모양 / 간격·길이·굵기 / 체크) ── */
+    #impCropOptRow.imp-crop-opts { flex-direction: column; align-items: stretch; gap: 7px; margin-top: 6px; }
+    .icr-line { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+    .icr-line .icr-lbl { min-width: 0; flex: 0 0 auto; }
+    .icr-line > .icr-lbl { width: 30px; }                    /* '모양' — 아래 줄 첫 이름표와 세로선을 맞춘다 */
+    .icr-line .es-select { flex: 1 1 auto; min-width: 0; }
+    .icr-pair { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .icr-pair .icr-lbl { width: 30px; }
+    .icr-num { flex: 0 0 58px; width: 58px; min-width: 0; padding: 6px 7px; text-align: right; }
+    .icr-unit { font-size: 11px; color: #8e8e93; margin-left: -2px; }
+    .icr-chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #d1d1d6; }
+    .icr-chk input { accent-color: #ffd60a; width: 13px; height: 13px; margin: 0; }
 
     /* 라디오/토글 버튼 그룹 */
     .es-btngroup { display: flex; flex-wrap: wrap; gap: 6px; }

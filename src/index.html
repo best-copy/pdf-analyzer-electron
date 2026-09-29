@@ -567,6 +567,15 @@
       <div class="es-row" style="margin-top:6px;">
         <span class="es-label">거터(mm)</span>
         <input type="number" class="es-input" id="bkGutter" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="칸 사이 간격 (중철=책등 여백 / 정합=재단 여유). 블리드 사용 시 블리드×2 이상 권장" oninput="impSettingsChanged()">
+        <label id="impJustifyWrap" class="icr-chk" style="font-size:12px;" title="원고를 대지 좌우 끝(여백 위치)에 붙이고 가운데 간격을 자동으로 벌립니다 — 여백 0이면 대지 끝에 밀착, 3이면 3mm 띄움. 켜 두면 거터 입력은 쓰지 않습니다(모아찍기·반반·복제 2부)">
+          <input type="checkbox" id="impJustify" onchange="impJustifyChanged()">
+          ↔ 양끝 맞춤
+        </label>
+        <span id="impJustifyEdgeWrap" class="icr-pair" style="display:none;" title="대지 좌우 끝에서 원고(재단선)까지 거리 — 0이면 대지 끝에 밀착, 최대 5mm. 위·아래 여백과는 따로입니다">
+          <span class="es-label icr-lbl" style="width:auto;">끝 여백</span>
+          <input type="number" class="es-input icr-num" id="impJustifyEdge" min="0" max="5" step="0.5" value="0" oninput="impJustifyEdgeInput(this)"><span class="icr-unit">mm</span>
+        </span>
+        <span id="impJustifyNote" class="icr-unit" style="display:none; margin-left:0;"></span>
         <span id="bkCreepWrap" style="display:flex; align-items:center; gap:6px;">
           <span class="es-label" style="flex:0 0 auto;" title="두꺼운 책자에서 안쪽 낱장이 바깥으로 밀려나오는 현상 보정 — 안쪽 시트일수록 내용을 책등 쪽으로 이동 (장당 mm)">밀림보정</span>
           <input type="number" class="es-input" id="bkCreep" min="0" step="0.05" value="0" style="flex:0 0 64px;" title="장당 mm (보통 0.1~0.3, 두께에 따라)" oninput="impSettingsChanged()">
@@ -601,26 +610,41 @@
         </span>
       </div>
       <!-- 재단선 세부 옵션 (재단선 체크 시 표시) — 간격·길이·굵기·중앙마크 -->
-      <div class="es-row" id="impCropOptRow" style="display:none; margin-top:6px; gap:8px; flex-wrap:wrap; align-items:center;">
-        <span class="es-label" style="flex:0 0 auto;" title="재단 위치 표기 모양 — 어느 모양이든 자르는 위치는 같습니다">모양</span>
-        <select class="es-select" id="impCropShape" style="flex:0 0 132px;" onchange="impCropStyleChanged()" title="재단선(트림 마크) 모양">
-          <option value="corner">┐ 모서리(기본)</option>
-          <option value="notouch">┐ 모서리(겹침 없음)</option>
-        </select>
-        <span class="es-label" style="flex:0 0 auto;" title="트림 모서리에서 선까지 거리 (mm)">간격</span>
-        <input type="number" class="es-input" id="impCropGap" min="0" max="10" step="0.5" value="1" style="flex:0 0 52px;" oninput="impCropStyleChanged()">
-        <span class="es-label" style="flex:0 0 auto;" title="재단선 길이 (mm)">길이</span>
-        <input type="number" class="es-input" id="impCropLen" min="1" max="15" step="0.5" value="3" style="flex:0 0 52px;" oninput="impCropStyleChanged()">
-        <span class="es-label" style="flex:0 0 auto;" title="선 굵기 (pt)">굵기</span>
-        <input type="number" class="es-input" id="impCropTh" min="0.1" max="2" step="0.1" value="0.4" style="flex:0 0 52px;" oninput="impCropStyleChanged()">
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6;" title="각 변 중앙 바깥에도 마크 추가 — 접지·정합 위치 확인용">
-          <input type="checkbox" id="impCropCenter" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="impCropStyleChanged()">
-          중앙마크
-        </label>
-        <label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; color:#d1d1d6;" title="시험 기능 — 자를 때마다의 거리(재단기 입력값)를 재단선 옆에 인쇄합니다. 표기 위치·형식을 다듬는 중이라 기본은 꺼짐이며, 앱을 다시 켜면 다시 꺼집니다">
-          <input type="checkbox" id="impCropDims" style="accent-color:#ffd60a; width:13px; height:13px;" onchange="impCropStyleChanged()">
-          <span class="ic">📏</span> 재단 치수 <span style="color:#8e8e93; font-size:10.5px;">(시험)</span>
-        </label>
+      <!-- 세 줄로 묶는다: 모양 / 간격·길이·굵기 / 체크 — 예전엔 한 줄에 몰아 넣어 '길이' 이름표와 칸이
+           다른 줄로 떨어져 보였다(사용자 캡처). 이름표와 칸은 icr-pair로 묶어 줄바꿈돼도 붙어 다닌다. -->
+      <div class="es-row imp-crop-opts" id="impCropOptRow" style="display:none;">
+        <div class="icr-line">
+          <span class="es-label icr-lbl" title="재단 위치 표기 모양 — 어느 모양이든 자르는 위치는 같습니다">모양</span>
+          <select class="es-select" id="impCropShape" onchange="impCropStyleChanged(event)" title="재단선(트림 마크) 모양">
+            <option value="corner">┐ 모서리(기본)</option>
+            <option value="notouch">┐ 모서리(겹침 없음)</option>
+            <option value="double">╬ 이중 코너(돔보)</option>
+          </select>
+        </div>
+        <div class="icr-line">
+          <span class="icr-pair" title="트림 모서리에서 선까지 거리 (mm) · 이중 코너(돔보)에서는 재단선과 블리드선 사이(보통 3mm)">
+            <span class="es-label icr-lbl">간격</span>
+            <input type="number" class="es-input icr-num" id="impCropGap" min="0" max="10" step="0.5" value="1" oninput="impCropStyleChanged()"><span class="icr-unit">mm</span>
+          </span>
+          <span class="icr-pair" title="재단선 길이 (mm)">
+            <span class="es-label icr-lbl">길이</span>
+            <input type="number" class="es-input icr-num" id="impCropLen" min="1" max="15" step="0.5" value="3" oninput="impCropStyleChanged()"><span class="icr-unit">mm</span>
+          </span>
+          <span class="icr-pair" title="선 굵기 (pt)">
+            <span class="es-label icr-lbl">굵기</span>
+            <input type="number" class="es-input icr-num" id="impCropTh" min="0.1" max="2" step="0.1" value="0.4" oninput="impCropStyleChanged()"><span class="icr-unit">pt</span>
+          </span>
+        </div>
+        <div class="icr-line">
+          <label class="icr-chk" title="각 변 중앙 바깥에도 마크 추가 — 접지·정합 위치 확인용">
+            <input type="checkbox" id="impCropCenter" onchange="impCropStyleChanged()">
+            중앙마크
+          </label>
+          <label class="icr-chk" title="시험 기능 — 자를 때마다의 거리(재단기 입력값)를 재단선 옆에 인쇄합니다. 표기 위치·형식을 다듬는 중이라 기본은 꺼짐이며, 앱을 다시 켜면 다시 꺼집니다">
+            <input type="checkbox" id="impCropDims" onchange="impCropStyleChanged()">
+            <span class="ic">📏</span> 재단 치수 <span style="color:#8e8e93; font-size:10.5px;">(시험)</span>
+          </label>
+        </div>
       </div>
       <!-- 배치 크기/위치: 칸 맞춤(비율 유지) / 100% 원본 / 지정 배율, 위치 지정 -->
       <div class="es-row" style="margin-top:8px;">

@@ -572,7 +572,7 @@
     // (예전엔 목록이 일부라 사용자 지정 용지 W×H·그리드·배치·재단선 세부가 통째로 누락됐다).
     const IMP_PRESET_FIELDS = {
       bkPaper: 'v', impCustomW: 'v', impCustomH: 'v', impCustomName: 'v',
-      bkGutter: 'v', bkCreep: 'v', impMargin: 'v', impBleed: 'v',
+      bkGutter: 'v', bkCreep: 'v', impMargin: 'v', impBleed: 'v', impJustify: 'c', impJustifyEdge: 'v',
       impAcross: 'v', impDown: 'v', repCols: 'v', repRows: 'v',
       impFixed: 'v', impAlign: 'v', impOffX: 'v', impOffY: 'v',
       impCropGap: 'v', impCropLen: 'v', impCropTh: 'v',
@@ -3669,11 +3669,31 @@
       // 새 작업 시작 시 진행바는 숨김 — updateProgress가 호출되면 그때 노출된다.
       loading.classList.remove('has-progress');
       loading.style.display = 'flex';
+      document.body.classList.add('toast-busy');    // 알림 토스트가 진행 토스트 위로 비켜선다
     }
-    function hideLoading() { loading.style.display = 'none'; loading.classList.remove('has-progress'); }
-    function showError(msg)   { errorEl.textContent = msg; errorEl.style.display = 'block'; successEl.style.display = 'none'; }
+    function hideLoading() {
+      loading.style.display = 'none'; loading.classList.remove('has-progress');
+      document.body.classList.remove('toast-busy');
+    }
+    // 알림 토스트 — 글자는 .toast-text에만 넣는다(닫기 버튼이 지워지지 않게).
+    // 반환: 글자를 넣을 요소. 처음 한 번만 닫기 버튼을 만든다.
+    function toastText(el) {
+      let t = el.querySelector('.toast-text');
+      if (!t) {
+        el.textContent = '';
+        t = document.createElement('div');
+        t.className = 'toast-text';
+        const x = document.createElement('button');
+        x.type = 'button'; x.className = 'toast-close'; x.title = '닫기'; x.setAttribute('aria-label', '닫기');
+        x.textContent = '✕';
+        x.onclick = () => { el.style.display = 'none'; };
+        el.append(t, x);
+      }
+      return t;
+    }
+    function showError(msg)   { toastText(errorEl).textContent = msg; errorEl.style.display = 'block'; successEl.style.display = 'none'; }
     function hideError()      { errorEl.style.display = 'none'; }
-    function showSuccess(msg) { successEl.textContent = msg; successEl.style.display = 'block'; errorEl.style.display = 'none'; }
+    function showSuccess(msg) { toastText(successEl).textContent = msg; successEl.style.display = 'block'; errorEl.style.display = 'none'; }
     function hideSuccess()    { successEl.style.display = 'none'; }
 
     window.addEventListener('scroll', () => {
