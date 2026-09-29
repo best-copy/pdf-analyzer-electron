@@ -70,7 +70,15 @@
     ['pointerup', 'pointercancel', 'blur'].forEach(ev =>
       document.addEventListener(ev, endUiInteraction, true));
     async function runLivePreview() {
-      if (applying || _liveRunning) { _liveQueued = true; return; }
+      if (applying || _liveRunning) {
+        // 대기열에 넣고 물러난다. 단, 이 대기는 runLivePreview의 finally에서만 풀리므로
+        // '적용 중(applying)'에 들어온 요청은 아무도 다시 불러 주지 않아 **화면이 빈 채로 남았다**.
+        // 화면부터 채우고(있는 것으로), 잠시 뒤 스스로 다시 시도한다.
+        _liveQueued = true;
+        if (document.body.classList.contains('edit-fullscreen') && typeof wsSeedPreview === 'function') wsSeedPreview();
+        setTimeout(() => { if (!applying && !_liveRunning && _liveQueued) { _liveQueued = false; scheduleLivePreview(); } }, 400);
+        return;
+      }
       if (document.body.classList.contains('edit-fullscreen')
           && typeof wsViewIsOriginal === 'function' && wsViewIsOriginal()) { showWorkspaceBasePreview(); return; }
       if (!shouldPreview()) { if (document.body.classList.contains('edit-fullscreen')) showWorkspaceBasePreview(); else closePreview(); return; }

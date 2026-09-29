@@ -353,15 +353,19 @@
       _wsSavedResult = processedPdfBytes
         ? { bytes: processedPdfBytes, name: processedFileName, direct: directOutputBytes }
         : null;
+      // ⚠ 'edit-fullscreen'을 **먼저** 켠다 — syncEditUI가 도중에 scheduleLivePreview를 부르는데,
+      //   그때 이 표식이 없으면 편집 모드 밖으로 보고 closePreview()로 미리보기를 닫아 버린다
+      //   (오른쪽이 빈 화면으로 남는 경로 중 하나).
+      document.body.classList.add('edit-fullscreen');
       if (!document.body.classList.contains('edit-open')) {
         document.body.classList.add('edit-open');
         populateFontDropdown(); ensureFontList(); loadPresetList(); syncEditUI();
       }
-      document.body.classList.add('edit-fullscreen');
       // 줌 위젯(－/＋, Ctrl+[ ]) — 작업공간 미리보기 썸네일 확대·축소에도 사용
       if (typeof setThumbZoomWidgetVisible === 'function') setThumbZoomWidgetVisible(true);
       // 들어올 때는 늘 '결과 보기'에서 시작한다 — 흑백을 적용해 둔 문서가 컬러로 보이지 않게.
       setWorkspaceView('result', true);
+      wsSeedPreview();               // 먼저 보여 준다 — 그다음 것이 오래 걸려도 빈 화면이 없다
       if (shouldPreview()) runLivePreview();
       else showWorkspaceBasePreview();
     }
@@ -469,6 +473,27 @@
       else showWorkspaceBasePreview();
     }
     function wsViewIsOriginal() { return _wsShow === 'original'; }
+    // 편집 모드 오른쪽이 비어 있으면 **당장 보여 줄 수 있는 것**으로 채운다.
+    // (적용본 → 진입 직전 결과 → 원본 순. 조립을 새로 시작하지 않는다)
+    // 적용이 도는 중(applying)이거나 이전 렌더가 진행 중이면 미리보기 요청이 대기열로 밀리는데,
+    // 그 사이 화면이 통째로 비어 "썸네일이 안 보인다"가 됐다(사용자 캡처 2026-09-29).
+    function wsSeedPreview() {
+      if (!originalPdfBytes) return;
+      const grid = document.getElementById('previewGrid');
+      const sec = document.getElementById('previewSection');
+      if (grid && grid.children.length && sec && sec.style.display !== 'none') return;   // 이미 뭔가 보인다
+      const ready = _wsShow === 'original' ? null : (processedPdfBytes || (_wsSavedResult && _wsSavedResult.bytes));
+      if (ready) { renderProcessedPreview(ready, { live: true }); syncWorkspaceViewNote(); }
+      else { renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+             if (_wsShow !== 'original') setWorkspaceViewNote('결과 만드는 중… (원본 먼저 표시)'); }
+    }
+    // 한 줄 표시를 임시 문구로 (조립 대기·실패 안내)
+    function setWorkspaceViewNote(txt) {
+      const el = document.getElementById('pvViewNote');
+      if (!el) return;
+      el.classList.add('pv-view-warn');
+      el.textContent = txt;
+    }
     function syncWorkspaceViewNote() {
       const el = document.getElementById('pvViewNote');
       if (!el) return;
@@ -497,14 +522,34 @@
       } catch (e) {}
       if (edited) {
         const token = ++_wsBaseToken;
+        // ⚠ 조립(buildBaseProcessed)은 캐시가 식어 있으면 수십 초가 걸린다. 그동안 아무것도 그리지 않으면
+        //   편집 모드 오른쪽이 **통째로 빈 화면**이 된다(사용자 제보 2026-09-29, 캡처로 확인).
+        //   그래서 화면이 비어 있을 때는 원본을 먼저 띄워 쪽을 보여 주고, 조립이 끝나면 결과로 바꿔 끼운다.
+        const grid = document.getElementById('previewGrid');
+        const empty = !grid || !grid.children.length || document.getElementById('previewSection').style.display === 'none';
+        if (empty) {
+          // 이미 적용해 둔 결과가 있으면 그것부터 띄운다 — 내용도 색도 맞고 즉시 보인다.
+          // 없을 때만 원본으로 자리를 채운다(컬러로 잠깐 보이지만 빈 화면보다 낫다 — 표시로 알린다).
+          const ready = processedPdfBytes || (_wsSavedResult && _wsSavedResult.bytes);
+          if (ready) {
+            renderProcessedPreview(ready, { live: true });
+            setWorkspaceViewNote('결과 미리보기 · 최신 설정으로 다시 만드는 중…');
+          } else {
+            renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+            setWorkspaceViewNote('결과 만드는 중… (원본 먼저 표시)');
+          }
+        }
         buildBaseProcessed()
           .then(base => {
             if (token !== _wsBaseToken) return;         // 그 사이 더 새 요청이 왔다
             renderProcessedPreview(base.bytes, { live: true });
+            syncWorkspaceViewNote();
           })
           .catch(e => {                                  // 조립 실패 시에도 화면은 비우지 않는다
             console.warn('편집 모드 기본 미리보기 조립 실패 — 원본으로 대체:', e);
-            renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+            if (token !== _wsBaseToken) return;
+            if (!empty) renderProcessedPreview(originalPdfBytes, { live: true, source: 'original' });
+            setWorkspaceViewNote('⚠ 결과를 만들지 못해 원본을 보여 줍니다');
           });
         return;
       }
