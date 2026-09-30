@@ -837,7 +837,8 @@
     // 화면(Chromium)이 버퍼 하나로 잡을 수 있는 최대치는 실측 2,044MB. 그보다 여유를 둔
     // 이 값을 넘는 PDF는 통째로 열지 않고 gs로 나눠서 연다. (2026-09-10 실측)
     const BIG_PDF_LIMIT = 1900 * 1024 * 1024;
-    async function prepareFiles(items) {
+    // opts.noRecent: 최근 파일 목록·저장 기본 폴더를 건드리지 않는다(📂 새 원본 페이지 추가처럼 끼워 넣기만 할 때)
+    async function prepareFiles(items, opts) {
       const out = [];
       const failed = [];
       for (let _i = 0; _i < items.length; _i++) {
@@ -963,7 +964,7 @@
                 return buf;
               }),
           });
-          if (it.path) { addRecentFile(it); reportSaveDir(it.path); }   // 최근 목록 + 저장 기본 폴더
+          if (it.path && !(opts && opts.noRecent)) { addRecentFile(it); reportSaveDir(it.path); }   // 최근 목록 + 저장 기본 폴더
         } catch (e) {
           console.error('파일 준비 실패:', it.name, e);
           failed.push({ name: it.name, path: it.path, reason: (e && e.message) || String(e) });
@@ -1556,21 +1557,26 @@
       return Math.round(Math.max(120, css) * dpr);
     }
     // 지금 줌에서 흐리게 보이는(=더 크게 구워야 하는) 페이지가 하나라도 있는가
+    // 📖 펼침 보기(분석 그리드)에서는 썸네일이 480px × 펼침%로 커진다 — 그 크기(한 단계 높인 해상도)가 기준.
+    // thumbDisplayPx는 분석 때 굽는 폭이라 건드리지 않는다(분석 속도·색 판정과 얽혀 있다).
+    function thumbSpreadOn() { const ag = document.getElementById('pagesGrid'); return !!(ag && ag.classList.contains('pv-spread')); }
+    function thumbNeedPx() { return (thumbSpreadOn() && typeof spreadRenderPx === 'function') ? spreadRenderPx(480) : thumbDisplayPx(); }
     function anyThumbTooSmall() {
-      const px = thumbDisplayPx();
-      return (pageResults || []).some(r => r && r.thumbLow && (!r.thumbW || r.thumbW < px * 0.95));
+      const px = thumbNeedPx(), sp = thumbSpreadOn();
+      return (pageResults || []).some(r => r && (r.thumbLow || sp) && (!r.thumbW || r.thumbW < px * 0.95));
     }
 
     // 크게 볼 때만 그 페이지를 원해상도로 다시 렌더해 썸네일을 교체한다(저해상 캐시 보정).
     // 같은 페이지를 두 번 굽지 않도록 진행 중 플래그를 둔다.
     const _thumbUpgrading = new Set();
-    async function upgradeThumb(originalIdx) {
-      const r = (pageResults || []).find(x => x && x.originalIdx === originalIdx && x.thumbLow);
+    // px: 펼침 보기에서 그 폭으로(이미 원해상도인 썸네일도 더 크게). 없으면 예전처럼 흐린 썸네일만 원해상도로.
+    async function upgradeThumb(originalIdx, px) {
+      const r = (pageResults || []).find(x => x && x.originalIdx === originalIdx && (x.thumbLow || px));
       if (!r || _thumbUpgrading.has(originalIdx) || !globalPdfDoc) return false;
       _thumbUpgrading.add(originalIdx);
       try {
         const page = await globalPdfDoc.getPage(originalIdx + 1);
-        const res = await analyzePageColor(page, { full: true });
+        const res = await analyzePageColor(page, px ? { full: true, px } : { full: true });
         const t = await res.thumbPromise;
         if (t) {
           if (r.thumbnail && r.thumbnail.startsWith('blob:')) { try { URL.revokeObjectURL(r.thumbnail); } catch (e) { } }
@@ -1596,15 +1602,15 @@
         const wait = _jumpScrollUntil - Date.now();
         if (wait > 0) { setTimeout(scheduleThumbUpgrade, wait + 60); return; }   // 멎은 뒤에 다시
         if (!anyThumbTooSmall()) return;
-        const needPx = thumbDisplayPx();
+        const needPx = thumbNeedPx(), sp = thumbSpreadOn();
         const els = [...document.querySelectorAll('#pagesGrid [data-page], #previewGrid [data-page]')];
         const vis = els.filter(el => {
           const b = el.getBoundingClientRect();
           return b.bottom > -200 && b.top < window.innerHeight + 200;
         }).map(el => +el.dataset.page);
         for (const pn of vis) {
-          const r = (pageResults || []).find(x => x && x.pageNum === pn && x.thumbLow);
-          if (r && (!r.thumbW || r.thumbW < needPx * 0.95)) await upgradeThumb(r.originalIdx);
+          const r = (pageResults || []).find(x => x && x.pageNum === pn && (x.thumbLow || sp));
+          if (r && (!r.thumbW || r.thumbW < needPx * 0.95)) await upgradeThumb(r.originalIdx, sp ? needPx : undefined);
         }
       }, 250);
     }
@@ -1923,6 +1929,8 @@
         // — 큰 그림을 많이 축소할 때 브라우저가 더 비싼 리샘플링 경로를 탄다
         // (실측 436쪽·98MB 법령: 240px 97초 vs 358px 84초 = 원해상도와 동일).
         if (!full) rScale = Math.max(fullScale * 0.75, Math.min(thumbDisplayPx() / vp1.width, fullScale));
+        // opts.px = 이 폭으로 다시 굽기(📖 펼침 보기에서 크게 보이는 썸네일 — upgradeThumb 전용, 색 판정은 쓰지 않는다)
+        if (opts && opts.px) rScale = Math.max(fullScale, Math.min(opts.px / vp1.width, 3));
         const vp = page.getViewport({ scale: rScale });
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -2335,13 +2343,36 @@
 
     function showCtxMenu(e, idx) {
       ctxTargetIdx = idx;
-      const menuW = 220, menuH = 340;
+      syncCtxMenuState(idx);
+      // 크기는 실제로 펼친 뒤 잰다 — 항목 수가 바뀌어도 화면 밖으로 나가지 않게
+      ctxMenu.style.visibility = 'hidden';
+      ctxMenu.style.display = 'block';
+      const menuW = ctxMenu.offsetWidth, menuH = ctxMenu.offsetHeight;
       let x = e.clientX, y = e.clientY;
       if (x + menuW > window.innerWidth)  x = window.innerWidth  - menuW - 6;
       if (y + menuH > window.innerHeight) y = window.innerHeight - menuH - 6;
+      x = Math.max(4, x); y = Math.max(4, y);
       ctxMenu.style.left    = x + 'px';
       ctxMenu.style.top     = y + 'px';
-      ctxMenu.style.display = 'block';
+      // 하위 메뉴가 오른쪽으로 펼칠 자리가 없으면 왼쪽으로
+      ctxMenu.classList.toggle('flip-sub', x + menuW + 220 > window.innerWidth);
+      ctxMenu.style.visibility = '';
+    }
+    // 켬/끔 항목의 ✓ — 우클릭한 쪽(선택 묶음이면 묶음 전체가 켜져 있을 때) 기준
+    function syncCtxMenuState(idx) {
+      const r = pageResults[idx];
+      const targets = r && typeof pageTargetsFor === 'function' ? pageTargetsFor(idx) : (r ? [r] : []);
+      const all = k => targets.length > 0 && targets.every(t => !!t[k]);
+      ['noScale', 'noHf', 'noWm'].forEach(k => {
+        const el = document.getElementById('ctxChk_' + k);
+        if (el) el.classList.toggle('on', all(k));
+      });
+      const sel = !!(r && selectedPages.has(r.pageNum));
+      const cc = document.getElementById('ctxChk_color'), cb = document.getElementById('ctxChk_bw');
+      if (cc) cc.classList.toggle('on', !!r && !sel);
+      if (cb) cb.classList.toggle('on', sel);
+      const pi = document.getElementById('ctxPasteItem');
+      if (pi) pi.classList.toggle('ctx-disabled', !(typeof pageClipboard !== 'undefined' && pageClipboard.length));
     }
     function hideCtxMenu() { ctxMenu.style.display = 'none'; }
 
@@ -2398,6 +2429,20 @@
       hideCtxMenu();
       if (idx < 0) return;
       splitChapterAt(idx);
+    }
+    // 원본 배율 조정 안 함 · 머리글·바닥글 삽입 안 함 · 워터마크 삽입 안 함 (app-ui togglePageFlag)
+    function ctxToggleFlag(key) {
+      const idx = ctxTargetIdx;
+      hideCtxMenu();
+      if (idx < 0) return;
+      togglePageFlag(idx, key);
+    }
+    // 📂 새 원본 페이지 추가 — 파일의 쪽을 이 쪽 바로 뒤에 (app-process insertFilePagesAfter)
+    function ctxInsertFile() {
+      const idx = ctxTargetIdx;
+      hideCtxMenu();
+      if (idx < 0) return;
+      insertFilePagesAfter(idx);
     }
     function ctxCopyPages()  { hideCtxMenu(); copyPagesToClipboard(); }
     function ctxCutPages()   { hideCtxMenu(); cutPagesToClipboard(); }
@@ -2747,8 +2792,11 @@
       ['downloadBtn', 'esDownloadBtn', 'sb-downloadBtn'].forEach(id => {
         const b = document.getElementById(id);
         if (!b) return;
-        if (b.dataset.baseLabel === undefined) b.dataset.baseLabel = b.textContent;
-        if (b.dataset.baseTitle === undefined) b.dataset.baseTitle = b.title || '';
+        // 왼쪽 패널 버튼은 설명이 '?' 표식(.sbp-help, data-help-text)으로 옮겨져 있다 — 글자에서 ?를 빼고,
+        // 설명은 옮겨 둔 원문을 기준으로 삼는다(title을 다시 쓰면 감시기가 ?로 옮긴다)
+        if (b.dataset.baseLabel === undefined)
+          b.dataset.baseLabel = [...b.childNodes].filter(n => !(n.classList && n.classList.contains('sbp-help'))).map(n => n.textContent).join('');
+        if (b.dataset.baseTitle === undefined) b.dataset.baseTitle = b.title || b.dataset.helpText || '';
         b.textContent = b.dataset.baseLabel + mark;
         b.title = b.dataset.baseTitle + (tip ? '\n' + tip : '');
       });
@@ -3119,7 +3167,7 @@
 
     function describeLayoutParts(es) {
       const parts = [];
-      if (es.scaling.mode === 'standard') parts.push(`${es.scaling.paper} 규격화`);
+      if (es.scaling.mode === 'standard') parts.push(`${es.scaling.paper} 규격화${es.scaling.keep100 ? '(원본 배율 유지)' : ''}`);
       else if (es.scaling.mode === 'custom') parts.push(`${es.scaling.customW}×${es.scaling.customH}mm`);
       else if (es.scaling.mode === 'percent') parts.push(`배율 ${es.scaling.percent || 100}%`);
       if ((es.nUp | 0) > 1) parts.push(`${es.nUp}-up 조판${es.gutter ? `(거터 ${es.gutter}mm)` : ''}`);

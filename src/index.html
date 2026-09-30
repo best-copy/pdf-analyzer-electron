@@ -10,6 +10,9 @@
   <script src="./libs/pako.min.js"></script>
   <script src="./libs/gray-blend.js"></script><!-- 저장 직전 투명도 흑백 합성 그룹 — savePdfDoc (워커·편집기·임포징 도구 공용) -->
   <link rel="stylesheet" href="./style.css">
+  <!-- 테마 층(색 변수 + 사이드바·기본 설정 패널) — style.css 뒤에 와야 덮어쓴다 -->
+  <link rel="stylesheet" href="./theme.css">
+  <script>/* 라이트/다크 — 첫 그림 전에 정해야 켤 때 번쩍이지 않는다 (app-ui toggleUiTheme) */try{if(localStorage.getItem('uiTheme')==='light')document.documentElement.classList.add('theme-light')}catch(e){}</script>
 </head>
 <body>
   <div class="container">
@@ -54,21 +57,21 @@
       <h2 style="text-align:center; margin-bottom:30px; color:#333;">📊 분석 결과</h2>
 
       <div class="stats-grid">
-        <div class="stat-card">
+        <div class="stat-card st-total">
+          <div class="stat-label">전체 페이지</div><span class="st-ico">📄</span>
           <div class="stat-number" id="totalPages">0</div>
-          <div class="stat-label">전체 페이지</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card st-color">
+          <div class="stat-label">컬러 페이지</div><span class="st-ico">🎨</span>
           <div class="stat-number" id="colorPages">0</div>
-          <div class="stat-label">컬러 페이지</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card st-gray">
+          <div class="stat-label">흑백 페이지</div><span class="st-ico">◐</span>
           <div class="stat-number" id="grayscalePages">0</div>
-          <div class="stat-label">흑백 페이지</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card st-pct">
+          <div class="stat-label">컬러 비율</div><span class="st-ico">📊</span>
           <div class="stat-number" id="colorPercentage">0%</div>
-          <div class="stat-label">컬러 비율</div>
         </div>
       </div>
 
@@ -77,10 +80,10 @@
 
       <div class="sticky-panel">
         <div class="sticky-stats" id="stickyStats">
-          <span class="ss-pill">전체 <b id="stkTotal">0</b></span>
-          <span class="ss-pill ss-color">컬러 <b id="stkColor">0</b></span>
-          <span class="ss-pill">흑백 <b id="stkGray">0</b></span>
-          <span class="ss-pill">컬러비율 <b id="stkPct">0%</b></span>
+          <span class="ss-pill st-total">전체 <b id="stkTotal">0</b></span>
+          <span class="ss-pill ss-color st-color">컬러 <b id="stkColor">0</b></span>
+          <span class="ss-pill st-gray">흑백 <b id="stkGray">0</b></span>
+          <span class="ss-pill st-pct">컬러비율 <b id="stkPct">0%</b></span>
         </div>
         <div class="toolbar-group">
         <div class="selection-controls">
@@ -88,8 +91,8 @@
           <button class="sel-btn" onclick="selectAll()">모두 선택</button>
           <button class="sel-btn" onclick="deselectAll()">선택 해제</button>
           <span class="sel-count" id="selectedCount">0개 선택됨</span>
-          <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
-          <button class="sel-btn" id="forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다. 열려 있던 문서·편집 내용은 사라집니다.">⟳ 앱 새로고침 (Force Reload)</button>
+          <button class="sel-btn" id="refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침<span class="sb-long"> (F5)</span></button>
+          <button class="sel-btn" id="forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다. 열려 있던 문서·편집 내용은 사라집니다.">⟳ 앱 새로고침<span class="sb-long"> (Force Reload)</span></button>
           <button class="sel-btn" id="inkBtn" onclick="analyzeInkCoverage()" title="Ghostscript inkcov로 페이지별 CMY 잉크 사용을 검사해 '프린터가 셀 컬러 장수'를 예측합니다. 적용본이 있으면 적용본을, 없으면 원본을 검사합니다.">🧾 프린터 판정</button>
           <button class="sel-btn" id="undoBtn" onclick="undoEdit()" title="실행취소 (Ctrl+Z)" style="display:none;">↩ 실행취소</button>
           <button class="sel-btn" id="redoBtn" onclick="redoEdit()" title="다시실행 (Ctrl+Y)" style="display:none;">↪ 다시실행</button>
@@ -211,6 +214,7 @@
     <div id="sbPanel">
       <div class="sbp-head">
         <span class="sbp-head-title">📊 분석·처리옵션</span>
+        <button type="button" id="themeToggleBtn" class="sbp-theme-btn" onclick="toggleUiTheme()" title="밝은 화면(라이트)으로 바꾸기">☀</button>
         <label class="sbp-switch" title="패널 열기/닫기">
           <input type="checkbox" id="sbPanelToggle" checked onchange="toggleSbPanel(this.checked)">
           <span class="sbp-slider"></span>
@@ -228,10 +232,10 @@
       <div class="sbp-section" data-sbsec="stats">
         <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span>📊 분석결과</div>
         <div class="sbp-stats">
-          <div class="sbp-stat"><span class="sbp-num" id="sbTotal">0</span><span class="sbp-lbl">전체</span></div>
-          <div class="sbp-stat"><span class="sbp-num sbp-c" id="sbColor">0</span><span class="sbp-lbl">컬러</span></div>
-          <div class="sbp-stat"><span class="sbp-num" id="sbGray">0</span><span class="sbp-lbl">흑백</span></div>
-          <div class="sbp-stat"><span class="sbp-num" id="sbPct">0%</span><span class="sbp-lbl">컬러비율</span></div>
+          <div class="sbp-stat st-total"><span class="sbp-lbl">전체</span><span class="st-ico">📄</span><span class="sbp-num" id="sbTotal">0</span></div>
+          <div class="sbp-stat st-color"><span class="sbp-lbl">컬러</span><span class="st-ico">🎨</span><span class="sbp-num sbp-c" id="sbColor">0</span></div>
+          <div class="sbp-stat st-gray"><span class="sbp-lbl">흑백</span><span class="st-ico">◐</span><span class="sbp-num" id="sbGray">0</span></div>
+          <div class="sbp-stat st-pct"><span class="sbp-lbl"><span class="sb-long">컬러</span>비율</span><span class="st-ico">📊</span><span class="sbp-num" id="sbPct">0%</span></div>
         </div>
         <div class="sbp-sel" id="sbSel">0개 선택됨</div>
       </div>
@@ -246,10 +250,10 @@
             <option value="15">◐ Dot Gain 보통 (15%)</option>
             <option value="20">◐ Dot Gain 강 (20%)</option>
           </select>
-          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침 (F5)</button>
-          <button class="sbp-clear" id="sb-forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다">⟳ 앱 새로고침 (Force Reload)</button>
-          <button class="sbp-clear" id="sbPfBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·색공간·페이지 크기 혼재를 점검합니다"><span class="ic">🧪</span> 프리플라이트 검사</button>
-          <button class="sbp-clear" id="tocBtn" onclick="openTocDialog()" title="선택한 페이지들을 목차 항목(장 시작)으로 지정 — 제목 글자를 자동 인식해 목차 페이지·PDF 북마크를 만듭니다"><span class="ic">📑</span> 목차 생성 (선택 페이지)</button>
+          <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침<span class="sb-long"> (F5)</span></button>
+          <button class="sbp-clear" id="sb-forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다">⟳ 앱 새로고침<span class="sb-long"> (Force Reload)</span></button>
+          <button class="sbp-clear" id="sbPfBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·색공간·페이지 크기 혼재를 점검합니다"><span class="ic">🧪</span> 프리플라이트<span class="sb-long"> 검사</span></button>
+          <button class="sbp-clear" id="tocBtn" onclick="openTocDialog()" title="선택한 페이지들을 목차 항목(장 시작)으로 지정 — 제목 글자를 자동 인식해 목차 페이지·PDF 북마크를 만듭니다"><span class="ic">📑</span> 목차 생성<span class="sb-long"> (선택 페이지)</span></button>
           <button class="sbp-clear" id="printerSetupBtn" style="display:none;" onclick="setupVirtualPrinter()" title="가상 프린터 'PDF Editor' 설치 — 아크로뱃 등 어떤 프로그램에서든 인쇄 → PDF Editor 선택으로 문서(페이지 범위 지정 가능)를 이 앱에 보냅니다"><span class="ic">🖨</span> '인쇄로 받기' 프린터 설치</button>
           <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
           <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✔ 적용</button>
@@ -272,7 +276,7 @@
             <button class="sbp-opt" data-olmode="outline" onclick="setOutlineMode('outline')" title="모든 글자를 곡선으로 변환 — 폰트 사고 원천 차단이지만 용량이 크게 늘고 텍스트 수정·검색 불가">곡선화</button>
             <button class="sbp-opt active dim" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
           </div>
-          <div class="sbp-note"><b>완전 임베드(권장)</b> = 빠지거나 대체될 폰트만 손봄 — 이미 모든 폰트가 들어 있는 문서는 그냥 건너뜁니다(대기 0초) · 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(용량 수십~수백 배↑·수정 불가)</div>
+          <div class="sbp-note" data-help-move><b>완전 임베드(권장)</b> = 빠지거나 대체될 폰트만 손봄 — 이미 모든 폰트가 들어 있는 문서는 그냥 건너뜁니다(대기 0초) · 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(용량 수십~수백 배↑·수정 불가)</div>
         </div>
       </div>
       <!-- 📖 E-book 시안 — 고객에게 보낼 확인용 단일 HTML (이미지 인라인, 자체 완결) -->
@@ -361,12 +365,12 @@
           </div>
           <button class="sbp-clear" id="workSaveAsBtn" onclick="saveWorkFile({ saveAs: true })" title="지금 작업을 새 .pdfw 파일로 저장합니다 — 열어 둔 작업 파일은 그대로 두고 사본을 만듭니다. 이후 💼 작업 저장은 새 파일에 덮어씁니다."><span class="ic">📑</span> 다른 이름으로 저장</button>
           <div class="sbp-note" id="workCurNote" style="display:none;"></div>
-          <div class="sbp-note" id="workNote">작업 파일 안에 원본 PDF가 들어 있어 다른 PC로 옮겨도 그대로 열립니다. 탐색기에서 바로 열려면 .pdfw를 우클릭 → 연결 프로그램에서 이 앱을 한 번 지정하세요.</div>
+          <div class="sbp-note" id="workNote" data-help-move>작업 파일 안에 원본 PDF가 들어 있어 다른 PC로 옮겨도 그대로 열립니다. 탐색기에서 바로 열려면 .pdfw를 우클릭 → 연결 프로그램에서 이 앱을 한 번 지정하세요.</div>
         </div>
       </div>
       </div><!-- /.sbp-body -->
       <!-- 패널 세로 크기 조절 손잡이 — 아래로 끌면 옵션이 더 보이고, 위로 끌면 썸네일이 더 보인다 -->
-      <div id="sbPanelGrip" title="위아래로 끌어 패널 높이 조절 (더블클릭: 자동 높이)"></div>
+      <div id="sbPanelGrip" title="눌러서 접기 · 위아래로 끌어 높이 조절"></div>
     </div>
 
     <!-- 다중작업 파일 탭 + 파일 합치기 (처리옵션 패널 아래, 썸네일과 함께 스크롤) -->
@@ -377,6 +381,94 @@
 
   <!-- ═══ 오른쪽 편집 사이드바: 크기·회전·조판(N-up)·테두리 ═══ -->
   <button id="editToggle" title="편집 모드 열기/닫기 (E) — 크기·임포징·기울기·여백·표지 등 모든 편집은 전용 편집 모드에서" onclick="toggleEditSidebar()">✏ 편집 모드</button>
+
+  <!-- ═══ 오른쪽 기본 설정 패널 — 편집 모드에 들어가기 전, 인쇄 드라이버처럼 자주 쓰는 설정만 ═══
+       서식 파일(= 편집 모드의 설정 프로파일) · 인쇄 설정(용지·방향·1면 N쪽·배율·제본) · 페이지 설정(머리글·번호·워터마크).
+       여기서 바꾼 값은 편집 모드와 같은 설정(editSettings·임포징)을 바꾼다 — 두 곳이 늘 같은 값을 보여 준다. -->
+  <button id="qpToggle" onclick="toggleQuickPanel()" title="기본 설정 패널 펼치기/접기 — 서식 파일 · 인쇄 설정 · 페이지 설정"><span class="ic">⚙</span><span class="qp-toggle-txt">기본 설정</span></button>
+  <aside id="quickPanel">
+    <div class="qp-tabs">
+      <button class="qp-tab active" data-qptab="forms" onclick="setQpTab('forms')">서식 파일</button>
+      <button class="qp-tab" data-qptab="print" onclick="setQpTab('print')">인쇄 설정</button>
+      <button class="qp-tab" data-qptab="page" onclick="setQpTab('page')">페이지 설정</button>
+      <button class="qp-fold" onclick="toggleQuickPanel(false)" title="패널 접기">▶</button>
+    </div>
+
+    <!-- 서식 파일 — 편집 모드에서 저장한 프로파일을 그림 목록으로 -->
+    <div class="qp-pane" data-qppane="forms">
+      <div id="qpFormList"></div>
+      <button class="qp-add" onclick="qpAddForm()" title="지금 설정(편집·처리 옵션·임포징)을 새 서식으로 저장합니다">＋ 서식 추가</button>
+      <div class="qp-note">누르면 그 서식을 바로 적용합니다 · 우클릭: 덮어쓰기·삭제</div>
+    </div>
+
+    <!-- 인쇄 설정 -->
+    <div class="qp-pane" data-qppane="print" hidden>
+      <div class="qp-h">레이아웃 설정</div>
+      <label class="qp-field" title="출력 용지 크기 — '원본과 같음'이면 원고 크기 그대로">
+        <span class="qp-ico"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z" fill="#fff" stroke="#8e8e93"/><path d="M3 3v18M1.5 3h3M1.5 21h3" stroke="#0a84ff" stroke-width="1.4"/></svg></span>
+        <select id="qpPaper" onchange="qpSetPaper(this.value)">
+          <option value="none">원본과 같음</option>
+          <option value="A3">A3 (297×420)</option>
+          <option value="A4">A4 (210×297)</option>
+          <option value="A5">A5 (148×210)</option>
+          <option value="B4">B4 (257×364)</option>
+          <option value="B5">B5 (182×257)</option>
+          <option value="Letter">Letter (216×279)</option>
+          <option value="__more__" disabled>그 밖의 크기 → 배율 및 위치 설정</option>
+        </select>
+      </label>
+      <label class="qp-field" id="qpOrientField" title="용지 방향 — 자동이면 원고 방향을 따릅니다">
+        <span class="qp-ico qp-ico-a">A</span>
+        <select id="qpOrient" onchange="qpSetOrient(this.value)">
+          <option value="auto">방향 자동</option>
+          <option value="portrait">세로</option>
+          <option value="landscape">가로</option>
+        </select>
+      </label>
+      <label class="qp-field" title="한 면에 몇 쪽을 모아 찍을지 — 편집 모드의 📖 임포징 '모아찍기'와 같은 설정">
+        <span class="qp-ico qp-ico-n" id="qpNupIco">1</span>
+        <select id="qpNup" onchange="qpSetNup(this.value)">
+          <option value="1">1면 1쪽</option>
+          <option value="2">1면 2쪽</option>
+          <option value="4">1면 4쪽</option>
+          <option value="6">1면 6쪽</option>
+          <option value="8">1면 8쪽</option>
+          <option value="9">1면 9쪽</option>
+          <option value="16">1면 16쪽</option>
+          <option value="other" disabled>다른 임포징 사용 중</option>
+        </select>
+      </label>
+      <label class="qp-chk" id="qpFitRow" title="끄면 원고를 100% 원래 크기로 용지 가운데에 놓습니다(넘치는 부분은 잘림)">
+        <input type="checkbox" id="qpFit" onchange="qpSetFit(this.checked)"> 용지에 맞게 원본 배율 조정
+      </label>
+      <a class="qp-link" onclick="qpOpenEdit('secScale', 'page')">배율 및 위치 설정</a>
+      <label class="qp-field" title="제본할 쪽 — 그쪽 가장자리에 제본여백을 줍니다">
+        <span class="qp-ico"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="13" height="18" fill="#fff" stroke="#8e8e93"/><rect x="4" y="3" width="3" height="18" fill="#ff9f0a"/><path d="M10 8h7M10 11h7M10 14h7M10 17h5" stroke="#aeaeb2"/></svg></span>
+        <select id="qpBind" onchange="qpSetBind(this.value)">
+          <option value="">제본여백 없음</option>
+          <option value="left">왼쪽 제본 (좌철)</option>
+          <option value="right">오른쪽 제본 (우철)</option>
+          <option value="top">위쪽 제본 (상철)</option>
+        </select>
+      </label>
+      <a class="qp-link" onclick="qpOpenEdit('secBind', 'page')">제본용 여백 설정</a>
+      <div class="qp-state" id="qpPrintState"></div>
+    </div>
+
+    <!-- 페이지 설정 -->
+    <div class="qp-pane" data-qppane="page" hidden>
+      <div class="qp-h">머리글/바닥글 설정</div>
+      <label class="qp-chk"><input type="checkbox" id="qpHf" onchange="qpSetHf(this.checked)"> 머리글·바닥글 넣기</label>
+      <label class="qp-chk"><input type="checkbox" id="qpPn" onchange="qpSetPn(this.checked)"> 쪽 번호 넣기</label>
+      <a class="qp-link" onclick="qpOpenEdit('secHf', 'mark')">머리글·바닥글 설정</a>
+      <div class="qp-h" style="margin-top:14px;">워터마크 설정</div>
+      <select class="qp-select" id="qpWm" onchange="qpSetWm(this.value)"></select>
+      <a class="qp-link" onclick="qpOpenEdit('secWm', 'mark')">워터마크 설정</a>
+      <div class="qp-state" id="qpPageState"></div>
+    </div>
+
+    <div class="qp-foot" id="qpFoot">바꾼 설정은 <b>✔ 적용</b>을 누르면 결과에 반영됩니다. 세부 조정은 <b>✏ 편집 모드</b>에서.</div>
+  </aside>
 
   <!-- 전체화면 편집 작업공간: 배경 가림막 + 상단 바 -->
   <div id="editBackdrop" onclick="exitEditWorkspace(false)"></div>
@@ -760,6 +852,10 @@
       <label class="es-row" style="margin-top:10px; cursor:pointer;" id="esFitRow">
         <input type="checkbox" id="esFitMargins" checked style="accent-color:#48484a; width:15px; height:15px;">
         <span style="color:#d1d1d6;">여백 안에 맞추기 (fit to printable area)</span>
+      </label>
+      <label class="es-row" style="margin-top:4px; cursor:pointer;" id="esKeep100Row" title="용지 크기만 바꾸고 원고는 100% 원래 크기로 가운데에 놓습니다(용지보다 크면 넘치는 부분은 잘림). 쪽마다 따로 하려면 썸네일 우클릭 → '원본 배율 조정 안 함'">
+        <input type="checkbox" id="esKeep100" style="accent-color:#ffd60a; width:15px; height:15px;">
+        <span style="color:#d1d1d6;">원본 배율 유지 (100% — 맞추지 않음)</span>
       </label>
       <div class="es-hint" id="esScaleHint">원본 크기를 유지합니다. 규격 용지/사용자 정의를 선택하면 콘텐츠를 그 크기에 맞춰 확대·축소합니다.</div>
     </div>
@@ -1388,53 +1484,70 @@
     </div>
   </div>
 
+  <!-- 썸네일 우클릭 메뉴 — 인쇄 드라이버(페이지 편집) 메뉴 구성을 따른다.
+       '선택한 페이지' = 썸네일에서 고른 쪽(우클릭한 쪽이 그 안에 있을 때). 아니면 우클릭한 쪽만. -->
   <div id="pageCtxMenu">
-    <div class="ctx-item" onclick="ctxPageView()">
-      <span>🔍 크게 보기 (컬러/흑백 판별)</span><span class="ctx-key">V</span>
+    <div class="ctx-item" onclick="ctxCutPages()">
+      <span>✂ 잘라내기</span><span class="ctx-key">Ctrl+X</span>
+    </div>
+    <div class="ctx-item" onclick="ctxCopyPages()">
+      <span>📋 복사</span><span class="ctx-key">Ctrl+C</span>
+    </div>
+    <div class="ctx-item" id="ctxPasteItem" onclick="ctxPastePages()">
+      <span>📥 뒤에 붙여넣기</span><span class="ctx-key">Ctrl+V</span>
     </div>
     <div class="ctx-sep"></div>
-    <div class="ctx-item" onclick="ctxEditContent()">
-      <span>🖊 내부 내용 편집</span><span class="ctx-key">T</span>
+    <div class="ctx-item ctx-danger" onclick="ctxDeletePage()">
+      <span>🗑 삭제</span><span class="ctx-key">Del</span>
+    </div>
+    <div class="ctx-item ctx-sub" onclick="event.stopPropagation()">
+      <span>↻ 원본 페이지 회전</span><span class="ctx-arrow">▸</span>
+      <div class="ctx-submenu">
+        <div class="ctx-item" onclick="ctxRotate(90)"><span>↻ 오른쪽 90°</span><span class="ctx-key">R</span></div>
+        <div class="ctx-item" onclick="ctxRotate(-90)"><span>↺ 왼쪽 90°</span><span class="ctx-key">L</span></div>
+        <div class="ctx-item" onclick="ctxRotate(180)"><span>⟲ 180°</span></div>
+      </div>
+    </div>
+    <div class="ctx-item" onclick="ctxInsertFile()" title="PDF·이미지·한글·오피스 파일의 페이지를 이 쪽 바로 뒤에 끼워 넣습니다">
+      <span>📂 새 원본 페이지 추가…</span>
     </div>
     <div class="ctx-sep"></div>
     <div class="ctx-item" onclick="ctxInsertBlank()">
-      <span>📄 빈 페이지 추가</span><span class="ctx-key">W</span>
+      <span>📄 새 장 추가 (빈 페이지)</span><span class="ctx-key">W</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxToggleFlag('noScale')" title="크기 규격화(용지 맞춤·배율)를 켜 두어도 이 쪽은 100% 원래 크기로 용지 가운데에 놓습니다 (1쪽씩 배치할 때)">
+      <span><span class="ctx-check" id="ctxChk_noScale"></span>선택한 페이지의 원본 배율 조정 안 함</span>
+    </div>
+    <div class="ctx-item ctx-sub" onclick="event.stopPropagation()">
+      <span>🎨 원본 페이지 컬러 모드</span><span class="ctx-arrow">▸</span>
+      <div class="ctx-submenu">
+        <div class="ctx-item" onclick="ctxClearBW()"><span><span class="ctx-check" id="ctxChk_color"></span>컬러 (흑백 선택 해제)</span><span class="ctx-key">C</span></div>
+        <div class="ctx-item" onclick="ctxApplyBW()"><span><span class="ctx-check" id="ctxChk_bw"></span>흑백</span><span class="ctx-key">B</span></div>
+      </div>
+    </div>
+    <div class="ctx-item" onclick="ctxToggleFlag('noHf')" title="이 쪽에는 머리글·바닥글과 페이지 번호를 찍지 않습니다 (번호는 이 쪽도 세어 이어집니다)">
+      <span><span class="ctx-check" id="ctxChk_noHf"></span>선택한 페이지에 머리글·바닥글 삽입 안 함</span>
+    </div>
+    <div class="ctx-item" onclick="ctxToggleFlag('noWm')" title="이 쪽에는 워터마크를 찍지 않습니다">
+      <span><span class="ctx-check" id="ctxChk_noWm"></span>선택한 페이지에 워터마크 삽입 안 함</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxPageAdjust()">
+      <span>🎛 원본 페이지 설정 (개별 보정)…</span>
+    </div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxPageView()">
+      <span>🔍 크게 보기 (컬러/흑백 판별)</span><span class="ctx-key">V</span>
+    </div>
+    <div class="ctx-item" onclick="ctxEditContent()">
+      <span>🖊 내부 내용 편집</span><span class="ctx-key">T</span>
     </div>
     <div class="ctx-item" onclick="ctxDuplicatePage()">
       <span>⧉ 페이지 복제</span><span class="ctx-key">D</span>
     </div>
     <div class="ctx-item" onclick="ctxSplitChapter()">
       <span>✂ 여기서부터 챕터 나누기</span>
-    </div>
-    <div class="ctx-item" onclick="ctxCopyPages()">
-      <span>📋 복사</span><span class="ctx-key">Ctrl+C</span>
-    </div>
-    <div class="ctx-item" onclick="ctxCutPages()">
-      <span>✂ 잘라내기</span><span class="ctx-key">Ctrl+X</span>
-    </div>
-    <div class="ctx-item" onclick="ctxPastePages()">
-      <span>📥 뒤에 붙여넣기</span><span class="ctx-key">Ctrl+V</span>
-    </div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item" onclick="ctxRotate(90)">
-      <span>↻ 오른쪽 회전</span><span class="ctx-key">R</span>
-    </div>
-    <div class="ctx-item" onclick="ctxRotate(-90)">
-      <span>↺ 왼쪽 회전</span><span class="ctx-key">L</span>
-    </div>
-    <div class="ctx-item" onclick="ctxPageAdjust()">
-      <span>🎛 페이지별 개별 보정…</span>
-    </div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item" onclick="ctxApplyBW()">
-      <span>⬛ 흑백변환 선택</span><span class="ctx-key">B</span>
-    </div>
-    <div class="ctx-item ctx-danger" onclick="ctxClearBW()">
-      <span>✕ 선택 해제</span><span class="ctx-key">C</span>
-    </div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item ctx-danger" onclick="ctxDeletePage()">
-      <span>🗑 페이지 삭제</span><span class="ctx-key">Del</span>
     </div>
   </div>
 

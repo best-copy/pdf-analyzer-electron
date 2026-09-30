@@ -101,7 +101,10 @@ async function handleLayoutTransform(payload) {
   // roman: base 페이지 순서 기준 [로마자 문자열 | null] — 목차·지정 페이지의 {n}/{page} 치환용
   // pageOffset/totalPages: 표본 미리보기(문서 일부만 조립)에서 홀짝·번호시작·{total}을 문서 전체
   // 기준(절대 페이지 번호)으로 계산하기 위한 값 — 전체 조립이면 0/미지정.
-  const { srcBytes, groups, fontBytesMap, fileName, baseSig, adjust, roman, pageOffset, totalPages } = payload;
+  // pageFlags: base 페이지 순서 기준 비트 [1=원본 배율 조정 안 함 · 2=머리글·바닥글·번호 안 함 · 4=워터마크 안 함] | null
+  //   — 썸네일 우클릭 메뉴의 쪽별 예외. 모아찍기(N-up) 시트에는 적용하지 않는다(한 시트에 여러 쪽).
+  const { srcBytes, groups, fontBytesMap, fileName, baseSig, adjust, roman, pageFlags, pageOffset, totalPages } = payload;
+  const pfOf = i => (pageFlags && i >= 0 && pageFlags[i]) | 0;
   const pageOff = pageOffset | 0;
   // base(순서·회전·흑백)가 그대로면 파싱한 문서를 재사용 — 레이아웃 옵션(규격·N-up·테두리·
   // 머리글바닥글·워터마크)만 바꾸는 실시간 편집에서 매번 전체 PDF를 다시 파싱하지 않는다.
@@ -172,11 +175,12 @@ async function handleLayoutTransform(payload) {
   // 시계방향으로 그려야 한다 — pdf-lib rotate는 반시계(+)라서 90↔270을 바꿔 쓴다.
   // 임의 각도(기울기 보정) 지원을 위해 앵커를 일반식으로 계산한다: drawPage의 rotate는
   // (x,y)를 중심으로 돌므로, 콘텐츠 중심이 rect 중앙(+보정 이동)에 오도록 앵커를 역산.
-  function drawFit(outPage, e, ang, rect, adj, exDx, exDy) {
+  // keep100: 배율을 1로 고정(원본 배율 조정 안 함) — 같은 가운데 앵커로 100% 크기를 놓는다(넘치면 잘린다).
+  function drawFit(outPage, e, ang, rect, adj, exDx, exDy, keep100) {
     const ew = e.width, eh = e.height;
     const swap = (ang === 90 || ang === 270);
     const cw = swap ? eh : ew, ch = swap ? ew : eh;
-    const scale = Math.min(rect.w / cw, rect.h / ch);
+    const scale = keep100 ? 1 : Math.min(rect.w / cw, rect.h / ch);
     const baseRot = ang === 90 ? -90 : ang === 180 ? 180 : ang === 270 ? 90 : 0;
     const rot = baseRot + ((adj && adj.rot) || 0);
     // dx/dy는 원본(뷰어 방향) pt 기준 → 배치 배율만큼 함께 축소·확대
@@ -291,10 +295,12 @@ async function handleLayoutTransform(payload) {
               contentRect = shrinkRectForBind(contentRect, side, bPt);
             }
           }
-          drawFit(p, await emb(idx), angOf(idx), contentRect, adjOf(idx), exDx, exDy);
+          // 100% 유지: 쪽별 예외(우클릭) 또는 문서 전체(scaling.keep100 — 기본 설정 '원본 배율 조정' 끔)
+          drawFit(p, await emb(idx), angOf(idx), contentRect, adjOf(idx), exDx, exDy,
+                  !noScale && ((pfOf(idx) & 1) || !!(es.scaling && es.scaling.keep100)));
           if (es.border !== 'none') drawBorder(es.border, p, mRect.x, mRect.y, mRect.w, mRect.h);
         }
-        flags.push(true); flagEs.push(es);
+        flags.push(true); flagEs.push(es); outBase.push(idx);
       }
       return;
     }
@@ -317,7 +323,7 @@ async function handleLayoutTransform(payload) {
         drawFit(p, await emb(idx), angOf(idx), rect, adjOf(idx));
         if (es.border !== 'none') drawBorder(es.border, p, rect.x, rect.y, rect.w, rect.h);
       }
-      flags.push(true); flagEs.push(es);
+      flags.push(true); flagEs.push(es); outBase.push(-1);   // 여러 쪽이 한 시트 — 쪽별 예외 없음
     }
   }
 
@@ -331,6 +337,7 @@ async function handleLayoutTransform(payload) {
 
   const flags = [];   // 출력 페이지가 in-scope(오버레이 대상)인지
   const flagEs = [];  // 그 출력 페이지를 만든 그룹의 es (오버레이용, pass-through면 null)
+  const outBase = []; // 출력 페이지 → base 쪽 번호(모아찍기 시트는 -1) — 쪽별 예외(pageFlags) 조회용
   let bucket = [];
   let bucketGid = -1;
   for (let i = 0; i < N; i++) {
@@ -340,7 +347,7 @@ async function handleLayoutTransform(payload) {
     } else {
       if (bucket.length) await flushBucket(groups[bucketGid].es, bucket, flags, flagEs);
       bucket = [];
-      if (gid === -1) { out.addPage(copied.get(i)); flags.push(false); flagEs.push(null); }
+      if (gid === -1) { out.addPage(copied.get(i)); flags.push(false); flagEs.push(null); outBase.push(i); }
       else bucket.push(i);
       bucketGid = gid;
     }
@@ -384,7 +391,7 @@ async function handleLayoutTransform(payload) {
     if (!es) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const hf = es.hf, wm = es.wm, pn = es.pn;
     const someHf = a => a.some(s => s && s.trim());
-    const pnOn = !!(pn && pn.enabled);
+    const pnOn = !!(pn && pn.enabled) && !(pfOf(outBase[i]) & 2);
     // 확정(누적) 문구 레이어 + 현재 입력 — 순서대로 전부 겹쳐 인쇄한다.
     // 각 레이어는 자기 스타일(크기·색·글꼴·위치·교대·번호시작)을 그대로 보존.
     const hfHasContent = H => H && (
@@ -393,9 +400,12 @@ async function handleLayoutTransform(payload) {
       || someHf([H.hL, H.hC, H.hR, H.fL, H.fC, H.fR])
       || someHf([H.oHL, H.oHC, H.oHR, H.oFL, H.oFC, H.oFR])
       || someHf([H.eHL, H.eHC, H.eHR, H.eFL, H.eFC, H.eFR]));
-    const hfCfgs = (hf && hf.enabled) ? [...(hf.layers || []), hf].filter(hfHasContent) : [];
+    // 쪽별 예외(우클릭 메뉴): 2 = 머리글·바닥글·페이지 번호 안 함, 4 = 워터마크 안 함.
+    // 번호는 이 쪽도 세어 다음 쪽으로 이어진다(찍지만 않는다 — 페이지 번호 '제외'와 같은 규약).
+    const pf = pfOf(outBase[i]);
+    const hfCfgs = (hf && hf.enabled && !(pf & 2)) ? [...(hf.layers || []), hf].filter(hfHasContent) : [];
     const hfOn = hfCfgs.length > 0;
-    const wmOn = wm && wm.enabled && wm.text.trim();
+    const wmOn = !(pf & 4) && wm && wm.enabled && wm.text.trim();
     if (!hfOn && !wmOn && !pnOn) { self.postMessage({ id: self.__currentId, progress: 0.6 + (i + 1) / total * 0.4 }); continue; }
     const p = outPages[i];
     const ps = p.getSize(), pw = ps.width, ph = ps.height;

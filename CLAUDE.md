@@ -9,7 +9,7 @@
 2. **배포는 포터블 앱 동기화만.** 변경 파일을 `dist/win-unpacked/resources/app/` 아래 같은 경로로 복사한다. exe 재빌드·zip 재생성은 사용자가 요청할 때만.
 3. **스크립트 로드 순서 변경 금지.** `index.html`의 `<script>`는 `app-core.js → app-process.js → app-ui.js` 순서. 클래식 스크립트라 최상위 선언이 파일 간 전역 공유되며, 뒤 파일이 앞 파일을 참조한다.
 4. **UI 문자열은 한국어 + 인쇄 실무 용어.** (중철, 정합, 거터, 블리드, 재단선, 밀림보정, 짧은 쪽 넘김…) 성공 메시지에는 항상 "다음 행동" 안내를 포함한다.
-5. **테마는 Black & Yellow.** 검정 `#1d1d1f` / 노랑 `#ffd60a` / 회색 보조 `#48484a`. 새 UI 요소도 이 팔레트. 컬러 이모지는 `filter: grayscale(1)` 또는 `.ic` 클래스로 무채색화.
+5. **테마 = business-mgmt 다크(부드러운 다크 + 골드)로 전환 중** (사용자 결정 2026-09-30, 단계별 적용). 색은 `src/theme.css`의 변수(`--c-bg #2f2f36`·`--c-surface #3c3c44`·`--c-accent #d8bd6e` …)로만 쓴다 — 새 UI에 색을 직접 적지 말 것. 1~3단계 완료. **라이트 테마**는 `html.theme-light`에서 같은 변수만 바꾼다(왼쪽 패널 머리 🌙/☀ · `localStorage uiTheme` · index.html 머리의 한 줄이 첫 그림 전에 적용). 라이트의 강조색은 **기존 노랑 #ffd60a**(사용자 결정) — 노랑은 채움·테두리에만, 강조 글자는 `--c-accent-text`(라이트=검정)로 쓴다(`color: var(--c-accent)` 금지). 옛 style.css·인라인의 흰 글자는 theme.css 끝의 인라인 색 대응표로 변수화 — 새 인라인 색을 쓰지 말 것. **모서리는 전부 사각**(사용자 결정 2026-09-30 — 버튼·카드·패널·썸네일까지, theme.css 끝의 전역 `border-radius: 0 !important`). 동그라미는 켜기 스위치·? 표식·선택 ✓·스피너만. 버튼: 주=골드 채움(올리면 테두리만) · 보조=투명+회색 테두리(올리면 골드 채움) · 켜짐=골드 테두리+옅은 골드. 쪽 썸네일·미리보기 캔버스·견적서는 **흰 종이 그대로**. 컬러 이모지는 `.ic`로만 무채색화(app-ui `decolorEmojiIn`·`THEMED_EMOJI_SEL`) — **버튼 전체에 `grayscale`을 걸지 말 것**(강조색까지 회색이 된다). 새 대화상자는 인라인 색 대신 클래스로(`promptText`의 `.pt-*` 참고).
 6. **대용량 데이터를 IPC로 직렬화 금지.** 50MB+ PDF 바이트는 임시파일(`writeTempFile`, tmpdir의 `pdfedit_*` 접두사)로 경로만 주고받는다. 임시파일 정리 규칙은 main.js `sweepTempConversions` 참조.
 
 ## 1. 프로젝트 개요
@@ -118,6 +118,7 @@ scripts/smoke.js   npm run smoke
 
 ## 6. UI 규약
 
+- **버튼 설명은 `title`로만 적는다** — 왼쪽 패널·편집 모드 패널의 button·select·label title은 app-ui `initSbHelp`이 떼어 버튼 **오른쪽 ? 표식**(편집 모드 칩은 오른쪽 위 모서리)으로 옮기고, ?에 커서를 올릴 때만 패널 옆에 설명을 띄운다(나중에 바뀐 title·새로 그린 목록도 감시). 숫자 입력칸 title은 그대로 둔다. `sb-help-spread.e2e.js`.
 - 버튼/섹션 제목: `이모지 + 한글` (예: `📖 임포징 PDF 생성`). 이모지가 컬러면 무채색 필터 적용.
 - 진행 표시: 하단 중앙 고정 토스트(`showLoading` + `updateProgress`) — 완료 시 사라짐. 상단 인라인 진행바는 사용 안 함.
 - 성공 메시지(`showSuccess`): 여러 줄 허용(`white-space:pre-line`). **결과 요약 + 인쇄/후속 지침**(예: "가로 용지 · 양면 · 짧은 쪽 넘김 → 재단 → …")을 포함.
@@ -145,7 +146,7 @@ scripts/smoke.js   npm run smoke
 □ 파이프라인 변경 시: 노드 추출 테스트 + gs 렌더 시각 확인
 □ 변경 파일 dist/win-unpacked/resources/app/ 동기화
 □ 성공 메시지에 후속 행동 안내 포함 (신규 기능 시)
-□ 테마(black&yellow)·한국어·이모지 무채색 준수
+□ 테마(theme.css 변수 · 다크/라이트 둘 다 확인)·한국어·이모지 무채색 준수
 □ 메모리/작업내역에 비자명한 발견 기록 (함정·공식·검증법)
 ```
 

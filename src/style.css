@@ -828,9 +828,11 @@
       transition: all 0.2s; z-index: 9999;
     }
     #scrollTopBtn:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
+    /* 대화상자는 떠 있는 위젯(페이지 이동·줌 9998·맨 위로 9999)보다 위 — 아래면 오른쪽 위 ✕ 닫기를 페이지 이동 위젯이 가렸다 */
+    #tocModal, #preflightModal, #orderModal, #coverFrameModal { z-index: 10001 !important; }
 
     /* ---- 썸네일 우클릭 컨텍스트 메뉴 ---- */
-    #pageCtxMenu {
+    #pageCtxMenu, #qpFormMenu {
       position: fixed; z-index: 99999; display: none;
       background: rgba(29,29,31,0.96);
       backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
@@ -854,6 +856,29 @@
       padding: 1px 6px; flex-shrink: 0; letter-spacing: 0.3px;
     }
     .ctx-sep { height: 1px; background: rgba(255,255,255,0.10); margin: 4px 2px; }
+    #pageCtxMenu > .ctx-item { padding: 6px 12px; }
+    /* 하위 메뉴(▸) — 마우스를 올리면 옆으로 펼친다. 화면 오른쪽 끝이면 왼쪽으로(.flip-sub) */
+    .ctx-sub { position: relative; }
+    .ctx-arrow { color: #8e8e93; font-size: 0.9em; }
+    .ctx-submenu {
+      display: none; position: absolute; top: -5px; left: calc(100% - 2px);
+      background: rgba(29,29,31,0.98); border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      padding: 5px; min-width: 200px; font-size: 1.15em;
+    }
+    .ctx-sub:hover > .ctx-submenu { display: block; }
+    .ctx-sub:hover { background: rgba(255,255,255,0.13); }
+    #pageCtxMenu.flip-sub .ctx-submenu { left: auto; right: calc(100% - 2px); }
+    .ctx-item.ctx-disabled { opacity: 0.38; pointer-events: none; }
+    /* 켬/끔 항목 앞 체크 칸 — 켜져 있으면 노랑 ✓ */
+    .ctx-check { display: inline-block; width: 1.2em; color: #ffd60a; font-weight: 700; }
+    .ctx-check.on::before { content: '✓'; }
+    /* 썸네일 아래 쪽별 예외 표시(원본 배율·머리글·워터마크 안 함) */
+    .page-flag-tags { display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: middle; }
+    .page-flag-tag {
+      font-size: 0.72em; line-height: 1; padding: 2px 4px; border-radius: 4px;
+      background: #ffd60a; color: #1d1d1f; font-weight: 700;
+    }
 
     /* ---- 썸네일 hover 반투명 오버레이 ---- */
     .page-thumb-wrap::after {
@@ -1043,6 +1068,43 @@
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
     }
     .sbp-head-title { font-size: 0.74em; font-weight: 700; color: #f5f5f7; letter-spacing: 0.3px; }
+    /* ── 버튼 설명 '?' 표식 — 커서를 올리면 사이드바 옆에 설명(#sbHelpTip) ── */
+    #sbPanel .has-help { position: relative; padding-right: 20px !important; }
+    /* 편집 모드 칩은 좁아서(한 줄에 3~5개) ?를 오른쪽 위 모서리 작은 표식으로 — 글자 폭을 뺏지 않는다 */
+    #editSidebar button.has-help { position: relative; }
+    #editSidebar button.has-help > .sbp-help { top: -5px; right: -5px; transform: none; width: 12px; height: 12px; font-size: 8px; z-index: 1; box-shadow: 0 0 0 2px var(--c-bg, #2f2f36); }
+    #editSidebar .es-btngroup.one-line .es-chip.has-help { overflow: visible; }
+    /* 한 줄에 이름표·칸 여러 쌍(여백·블리드·원고 블리드 등) — 칸이 조금씩 줄어 한 줄에 들어가게 */
+    #editSidebar .es-row > input.es-input[type=number] { flex-shrink: 1 !important; min-width: 36px; padding-left: 6px; padding-right: 6px; }
+    .sbp-help {
+      position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+      width: 13px; height: 13px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+      font-size: 9px; font-weight: 800; line-height: 1; font-style: normal; letter-spacing: 0;
+      color: #1d1d1f; background: #8e8e93; cursor: help; user-select: none;
+    }
+    .sbp-help:hover { background: #ffd60a; }
+    .sbp-apply .sbp-help { background: rgba(29,29,31,0.45); color: #ffd60a; }
+    .sbp-apply .sbp-help:hover { background: #1d1d1f; }
+    /* select 뒤(왼쪽 패널은 한 줄로 묶음, 편집 모드는 옆 형제) · 체크 이름표 끝 · 섹션 제목 옆은 흐름 안에 둔다 */
+    .sbp-hwrap { display: flex; align-items: center; gap: 5px; grid-column: 1 / -1; min-width: 0; }
+    .sbp-hwrap > select { flex: 1 1 auto; min-width: 0; }
+    .sbp-hwrap > .sbp-help, .sbp-title > .sbp-help, #editSidebar label > .sbp-help, .sbp-help-side { position: static; transform: none; flex: 0 0 auto; }
+    #editSidebar label > .sbp-help { display: inline-flex; margin-left: 5px; vertical-align: middle; }
+    .sbp-help-side { margin-left: -3px; }
+    .sbp-title > .sbp-help { margin-left: 2px; }
+    #sbHelpTip {
+      position: fixed; z-index: 100050; display: none; max-width: 300px; pointer-events: none;
+      background: #1d1d1f; color: #f5f5f7; border: 1px solid #ffd60a; border-radius: 9px;
+      padding: 8px 11px; font-size: 12px; line-height: 1.55; white-space: pre-line; word-break: keep-all;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    }
+    /* ── 좁은 사이드바 정돈 ─────────────────────────────────────────────────
+       한글은 낱말 단위로만 줄을 바꾼다(예전엔 '흑백/변환', '새로고/침'처럼 글자 중간에서 끊겼다).
+       칸보다 긴 낱말만 어쩔 수 없을 때 끊는다. 패널 폭은 컨테이너 쿼리로 재서 좁으면 더 줄인다. */
+    #sbPanel { container: sbp / inline-size; word-break: keep-all; overflow-wrap: anywhere; }
+    .sbp-head-title, .sbp-compact-lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .sbp-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
     .sbp-compact-row {
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
       margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08);
@@ -1157,6 +1219,26 @@
     .sbp-dl:disabled, .sbp-dl.btn-dim { color: #8e8e93; border-color: rgba(255,255,255,0.14); }
     /* 적용 전이라 적용본은 없지만, 우클릭으로 원본 저장이 가능한 상태 표시 */
     .btn-dim:not(:disabled) { opacity: 0.55; cursor: pointer; }
+    /* 좁은 사이드바 — 위 .sbp-* 규칙보다 뒤에 있어야 덮어쓴다(같은 우선순위는 뒤가 이긴다) */
+    /* 폭은 패널 안쪽(글자가 놓이는) 너비 기준 — 사이드바 180px이면 약 123px, 기본 280px이면 약 223px */
+    @container sbp (max-width: 240px) {
+      .sb-long { display: none; }                         /* (F5) · (Force Reload) · (선택 페이지) 같은 덧말 */
+    }
+    @container sbp (max-width: 150px) {
+      /* 가장 좁을 때: 두 칸에 나눠 담으면 '흑백변/환'처럼 낱말이 끊긴다 → 한 줄에 버튼 하나, 글자는 한 줄로 */
+      .sbp-grid2 { grid-template-columns: minmax(0, 1fr); }
+      .sbp-row2 { flex-direction: column; }
+      .sbp-grid2 > *, .sbp-row2 > * { min-width: 0; max-width: 100%; }
+      .sbp-row2 > button { flex: 0 0 auto; }   /* 세로로 쌓을 때 flex 기준 0은 '높이 0'이 된다 */
+      .sbp-head-title, .sbp-compact-lbl { font-size: 0.66em; letter-spacing: 0; }
+      .sbp-opt, .sbp-clear, .sbp-btn { font-size: 0.68em; padding: 5px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sbp-select { font-size: 0.68em; }
+      .sbp-grid2, .sbp-row2 { gap: 4px; }
+      .sbp-stats { grid-template-columns: 1fr 1fr; }      /* 4칸 → 2×2, 숫자와 이름을 한 줄에 */
+      .sbp-stat { flex-direction: row; justify-content: center; align-items: baseline; gap: 4px; padding: 3px 4px; }
+      .sbp-num { font-size: 1.05em; }
+      .sbp-note { font-size: 0.62em; }
+    }
     /* '적용 필요' 강조 — 자동 반영이 꺼져 있어 설정만 바뀌고 화면은 그대로인 상태.
        버튼 둘레를 이중 링으로 감싼다: 안쪽 검정 테두리(밝은 메인 바에서 보임) +
        바깥으로 퍼지는 노랑 파동(어두운 편집 사이드바에서 보임) → 두 배경 모두에서 눈에 띈다. */
@@ -1227,6 +1309,101 @@
       writing-mode: vertical-rl; letter-spacing: 1px;
     }
     #editToggle:hover { opacity: 1; background: #48484a; }
+
+    /* ═══ 오른쪽 기본 설정 패널(편집 모드 전) — 서식 파일 · 인쇄 설정 · 페이지 설정 ═══
+       문서가 열려 있고(body.qp-doc) 접지 않았으면(qp-closed 아님) 오른쪽에 늘 떠 있다.
+       편집 모드(edit-fullscreen)에서는 숨는다 — 거기에 같은 설정의 전체판이 있다. */
+    :root { --qp-w: 252px; }
+    #quickPanel {
+      position: fixed; right: 0; top: 0; bottom: 0; width: var(--qp-w); z-index: 300;
+      display: none; flex-direction: column;
+      background: #1c1c1e; border-left: 1px solid rgba(255,255,255,0.08);
+      color: #f5f5f7; word-break: keep-all; overflow-wrap: anywhere;
+    }
+    body.qp-doc:not(.qp-closed):not(.edit-fullscreen) #quickPanel { display: flex; }
+    body.qp-doc:not(.qp-closed):not(.edit-fullscreen) { padding-right: calc(var(--qp-w) + 12px); }
+    body.qp-doc:not(.qp-closed):not(.edit-fullscreen) #editToggle { right: var(--qp-w); }
+    body.qp-doc:not(.qp-closed):not(.edit-fullscreen) .jump-bar,
+    body.qp-doc:not(.qp-closed):not(.edit-fullscreen) #thumbZoomWidget,
+    body.qp-doc:not(.qp-closed):not(.edit-fullscreen) #scrollTopBtn { right: calc(var(--qp-w) + 40px); }
+    /* 접었을 때 다시 펴는 탭 — 편집 모드 탭 위에 같은 모양으로 */
+    #qpToggle {
+      position: fixed; right: 0; top: calc(50% - 150px);
+      width: 24px; height: 104px; display: none;
+      flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+      background: #2c2c2e; color: #f5f5f7; cursor: pointer; z-index: 301;
+      border: 1px solid rgba(255,255,255,0.14); border-right: none; border-radius: 8px 0 0 8px;
+      font-size: 11px; font-weight: 700; opacity: 0.85; padding: 0;
+    }
+    #qpToggle:hover { opacity: 1; background: #48484a; }
+    .qp-toggle-txt { writing-mode: vertical-rl; letter-spacing: 2px; }
+    body.qp-doc.qp-closed:not(.edit-fullscreen) #qpToggle { display: flex; }
+    /* 탭 */
+    .qp-tabs { display: flex; align-items: stretch; gap: 2px; padding: 8px 6px 0; border-bottom: 1px solid rgba(255,255,255,0.12); flex: 0 0 auto; }
+    .qp-tab {
+      flex: 1 1 auto; min-width: 0; padding: 7px 4px; font-size: 12px; font-weight: 700; cursor: pointer;
+      background: transparent; color: #8e8e93; border: 1px solid transparent; border-bottom: none;
+      border-radius: 8px 8px 0 0; white-space: nowrap; font-family: inherit;
+    }
+    .qp-tab:hover { color: #f5f5f7; }
+    .qp-tab.active { background: #2c2c2e; color: #ffd60a; border-color: rgba(255,255,255,0.12); margin-bottom: -1px; }
+    .qp-fold { flex: 0 0 auto; background: none; border: none; color: #8e8e93; cursor: pointer; padding: 0 4px; font-size: 11px; }
+    .qp-fold:hover { color: #ffd60a; }
+    .qp-pane { flex: 1 1 auto; overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+    .qp-pane[hidden] { display: none; }
+    .qp-h { font-size: 12px; font-weight: 700; color: #aeaeb2; margin-bottom: 2px; }
+    /* 서식 목록 — 그림 + 설명 */
+    #qpFormList { display: flex; flex-direction: column; gap: 6px; }
+    .qp-form {
+      display: flex; align-items: center; gap: 10px; padding: 8px; cursor: pointer; text-align: left;
+      background: #2c2c2e; border: 1px solid rgba(255,255,255,0.10); border-radius: 9px;
+      color: #f5f5f7; font-family: inherit; width: 100%;
+    }
+    .qp-form:hover { background: #3a3a3c; }
+    .qp-form.active { box-shadow: inset 0 0 0 2px #ffd60a; }
+    .qp-form svg { flex: 0 0 46px; width: 46px; height: 52px; }
+    .qp-form-txt { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .qp-form-name { font-size: 12.5px; font-weight: 700; }
+    .qp-form.active .qp-form-name { color: #ffd60a; }
+    .qp-form-desc { font-size: 11px; color: #aeaeb2; line-height: 1.45; }
+    .qp-empty { font-size: 11.5px; color: #8e8e93; line-height: 1.6; padding: 6px 2px; }
+    .qp-add {
+      padding: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit;
+      background: #ffd60a; color: #1d1d1f; border: none; border-radius: 9px;
+    }
+    .qp-add:hover { background: #ffdf3a; }
+    /* 드롭다운 줄 — 왼쪽 그림 칸 + 선택 */
+    .qp-field {
+      display: flex; align-items: center; gap: 0; background: #2c2c2e;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; overflow: hidden;
+    }
+    .qp-field:focus-within { border-color: #ffd60a; }
+    .qp-field.qp-off { opacity: 0.45; }
+    .qp-ico {
+      flex: 0 0 36px; height: 38px; display: flex; align-items: center; justify-content: center;
+      border-right: 1px solid rgba(255,255,255,0.10); background: #3a3a3c;
+      font-weight: 800; font-size: 17px; color: #f5f5f7;
+    }
+    .qp-ico svg { width: 24px; height: 24px; }
+    .qp-ico-a { font-family: Georgia, serif; color: #64d2ff; }
+    .qp-ico-n { background: #ffd60a; color: #1d1d1f; font-size: 15px; }
+    .qp-field select, .qp-select {
+      flex: 1 1 auto; min-width: 0; height: 38px; padding: 0 8px; font-size: 12.5px; font-weight: 600;
+      background: #2c2c2e; color: #f5f5f7; border: none; outline: none; cursor: pointer; font-family: inherit;
+    }
+    .qp-select { flex: 0 0 auto; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; }   /* 세로 칸에서는 늘어나지 않게 */
+    .qp-select:focus { border-color: #ffd60a; }
+    .qp-chk { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; padding: 2px 1px; }
+    .qp-chk input { accent-color: #ffd60a; width: 15px; height: 15px; flex: 0 0 auto; }
+    .qp-chk.qp-off { opacity: 0.45; }
+    .qp-link { align-self: flex-end; font-size: 11.5px; color: #ffd60a; text-decoration: underline; cursor: pointer; margin: -4px 0 4px; }
+    .qp-link:hover { color: #ffdf3a; }
+    .qp-state { font-size: 11px; color: #aeaeb2; line-height: 1.55; white-space: pre-line; }
+    .qp-state:empty { display: none; }
+    .qp-note { font-size: 11px; color: #8e8e93; line-height: 1.5; }
+    /* 패널 링크로 편집 모드에 들어오면 그 칸을 잠깐 노랗게 */
+    .qp-flash { box-shadow: inset 0 0 0 2px #ffd60a; border-radius: 8px; transition: box-shadow 0.3s; }
+    .qp-foot { flex: 0 0 auto; padding: 8px 10px 10px; font-size: 11px; color: #8e8e93; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.08); }
     body.edit-open #editToggle { right: var(--edit-width); }
 
     /* 편집 사이드바 폭 조절 핸들 (왼쪽 가장자리) */
@@ -1276,7 +1453,9 @@
     #editWsResizer:hover, #editWsResizer.es-resizing { background: rgba(255,214,10,0.5); }
     /* 작업공간에선 사이드바 헤더의 닫기·전체화면 아이콘, 미리보기의 '원본 보기' 버튼 숨김(상단 바가 대체) */
     body.edit-fullscreen .es-head .es-close { display: none; }
-    body.edit-fullscreen #previewSection .preview-close { display: none; }
+    /* 편집 모드에서는 '원본 페이지 보기'만 숨긴다 — 📖 펼침은 편집 모드에서도 켜고 끌 수 있어야 한다
+       (메인에서 켠 펼침이 편집 모드까지 따라오는데 끌 버튼이 없었다) */
+    body.edit-fullscreen #previewSection .preview-close:not(#spreadViewBtn) { display: none; }
     /* 작업공간 왼쪽(페이지 편집) 패널: 적용/다운로드 버튼 생략(상단 바의 '저장하고 닫기'가 대체).
        편집 설정 초기화는 헤더 우측(es-head-reset)에 남아 항상 보인다. */
     body.edit-fullscreen .es-actions { display: none; }
@@ -1342,7 +1521,7 @@
     .es-row:last-child { margin-bottom: 0; }
     .es-label { color: #aeaeb2; min-width: 56px; font-size: 12px; }
     .es-select, .es-input {
-      flex: 1; background: #2c2c2e; color: #f5f5f7;
+      flex: 1; min-width: 0; background: #2c2c2e; color: #f5f5f7;
       border: 1px solid rgba(255,255,255,0.14); border-radius: 7px;
       padding: 7px 9px; font-size: 12.5px; font-family: inherit;
     }
@@ -1364,7 +1543,7 @@
     /* 라디오/토글 버튼 그룹 */
     .es-btngroup { display: flex; flex-wrap: wrap; gap: 6px; }
     /* 그룹 내 칩은 동일 비율 폭 — 버튼 크기·가로 간격 일률화 */
-    .es-btngroup .es-chip { flex: 1 1 0; min-width: 0; }
+    .es-btngroup .es-chip { flex: 1 1 0; min-width: 0; padding-left: 3px; padding-right: 3px; }
     .es-btngroup .es-chip[style*="flex: 0"], .es-btngroup .es-chip[style*="flex:0"] { flex: 0 0 auto; }
     /* 한 줄 고정 그룹(임포징 모드 등) — 줄바꿈 없이 균등 분할 */
     .es-btngroup.one-line { flex-wrap: nowrap; }

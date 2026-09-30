@@ -298,10 +298,9 @@
         // 렌더 해상도: 썸네일 줌(--thumb-size)에 맞춰 키운다 — 확대해도 선명하게.
         // 펼침 모드는 표시 폭(560px × 펼침%)에 맞춘 고해상도로 렌더(화질).
         const spreadOn = grid.classList.contains('pv-spread');
-        const spreadK = (typeof _spreadZoomPct !== 'undefined' ? _spreadZoomPct : 100) / 100;
         const zoomPx = (typeof THUMB_STEPS !== 'undefined' && typeof thumbStepIdx !== 'undefined') ? THUMB_STEPS[thumbStepIdx] : 160;
         const pxW = spreadOn
-          ? Math.max(400, Math.round(560 * spreadK * 1.15))
+          ? spreadRenderPx(560)   // app-ui — 전체 미리보기와 같은 펼침 해상도
           : Math.max(240, Math.round(zoomPx * 1.5));
         for (let i = from; i <= to; i++) {
           if (myToken !== previewRenderToken) return;
@@ -504,7 +503,12 @@
       try { return '|imp:' + _impMode + JSON.stringify(currentImpOptions()); }
       catch (e) { return '|imp:' + _impMode; }
     }
-    function optSignature() { return baseSignature() + '|' + JSON.stringify(editSettings) + impSignature() + bleedSig(); }
+    // 쪽별 예외(원본 배율·머리글·워터마크 안 함)도 결과를 바꾸므로 지문에 넣는다 — 빠지면 표식만 바꾼 뒤
+    // 다운로드·저장하고 닫기가 옛 결과를 그대로 재사용한다.
+    function optSignature() {
+      const pf = (typeof computePageFlags === 'function') ? computePageFlags() : null;
+      return baseSignature() + '|' + JSON.stringify(editSettings) + impSignature() + bleedSig() + (pf ? '|pf' + pf.join('') : '');
+    }
     // 같은 시그니처의 빌드가 이미 진행 중이면(예: 프리웜 도중 다운로드 클릭) 그 결과를
     // 공유한다. 늦게 합류한 쪽(다운로드)의 onProgress를 진행 중 빌드의 리스너에 등록해
     // 실제 진행률을 그대로 이어받는다 — '90%에서 멈춘 듯한' 구간이 사라진다.
@@ -7551,10 +7555,14 @@
 
     // ── 실행취소 / 다시실행 히스토리 (페이지 순서·회전·삽입·삭제 모두 지원) ──
     // 스냅샷 = 현재 페이지 객체 배열(참조)의 순서 + 각 페이지 회전값
+    // 쪽마다 붙는 예외 표식(우클릭 메뉴) — 원본 배율 조정 안 함 · 머리글·바닥글 안 함 · 워터마크 안 함.
+    // 페이지 객체에 붙어 있어 이동·복사·삭제를 그대로 따라간다. 되돌리기에도 함께 담는다.
+    const PAGE_FLAG_KEYS = ['noScale', 'noHf', 'noWm'];
     function snapshotPages() {
       return {
         order: pageResults.slice(),
         rot:   pageResults.map(r => (r ? (r.rotation || 0) : 0)),
+        flags: pageResults.map(r => (r ? PAGE_FLAG_KEYS.map(k => !!r[k]) : null)),
       };
     }
 
@@ -7579,6 +7587,10 @@
       pageResults.length = 0;
       snap.order.forEach(o => pageResults.push(o));
       snap.order.forEach((o, i) => { if (o) o.rotation = snap.rot[i]; });
+      if (snap.flags) snap.order.forEach((o, i) => {
+        const f = snap.flags[i];
+        if (o && f) PAGE_FLAG_KEYS.forEach((k, j) => { if (f[j]) o[k] = true; else delete o[k]; });
+      });
       rebuildPageNums();
       syncTabPageResults();
       rerenderPages();
@@ -7680,19 +7692,24 @@
         const ov = document.createElement('div');
         ov.style.cssText = 'position:fixed;inset:0;z-index:100060;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
         const box = document.createElement('div');
-        box.style.cssText = 'background:#fff;color:#1d1d1f;min-width:320px;max-width:90vw;padding:20px 22px;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,0.4);';
+        // 색·모서리는 theme.css(.pt-*)가 정한다 — 여기에는 배치만
+        box.className = 'pt-box';
+        box.style.cssText = 'min-width:320px;max-width:90vw;padding:20px 22px;';
         const msg = document.createElement('div');
         msg.style.cssText = 'font-size:0.9em;white-space:pre-line;margin-bottom:12px;line-height:1.5;';
         msg.textContent = message;
         const inp = document.createElement('input');
         inp.type = 'text'; inp.value = defaultValue || '';
-        inp.style.cssText = 'width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #d2d2d7;border-radius:8px;font-size:0.9em;';
+        inp.className = 'pt-input';
+        inp.style.cssText = 'width:100%;box-sizing:border-box;padding:9px 11px;font-size:0.9em;';
         const btns = document.createElement('div');
         btns.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;';
         const cancel = document.createElement('button'); cancel.textContent = '취소';
-        cancel.style.cssText = 'padding:8px 16px;border:1px solid #d2d2d7;background:#fff;border-radius:8px;cursor:pointer;font-size:0.85em;';
+        cancel.className = 'pt-btn';
+        cancel.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.85em;';
         const ok = document.createElement('button'); ok.textContent = '확인';
-        ok.style.cssText = 'padding:8px 16px;border:none;background:#48484a;color:#fff;border-radius:8px;cursor:pointer;font-size:0.85em;font-weight:600;';
+        ok.className = 'pt-btn pt-ok';
+        ok.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.85em;font-weight:600;';
         btns.append(cancel, ok);
         box.append(msg, inp, btns); ov.append(box); document.body.appendChild(ov);
         const done = (v) => { ov.remove(); resolve(v); };
@@ -7832,6 +7849,105 @@
       rerenderPages();
       setPageEdited();
       updateUndoBtn();
+    }
+
+    // 우클릭 메뉴의 '선택한 페이지' — 우클릭한 쪽이 고른 쪽 묶음(2쪽 이상) 안에 있으면 묶음 전체,
+    // 아니면 그 쪽 하나. (복제·회전과 같은 규칙)
+    function pageTargetsFor(idx) {
+      const r = pageResults[idx];
+      if (!r) return [];
+      return (selectedPages.size > 1 && selectedPages.has(r.pageNum))
+        ? pageResults.filter(x => x && selectedPages.has(x.pageNum))
+        : [r];
+    }
+
+    // ── 📂 새 원본 페이지 추가 — 파일(PDF·이미지·한글·오피스…)의 쪽을 이 쪽 바로 뒤에 ──
+    // 목차 생성과 같은 방식: 새 쪽은 **원본 문서 끝**에 붙이고(기존 originalIdx를 전부 보존 →
+    // 회전·흑백 선택·개별 보정·내부편집이 그대로 남는다) 페이지 목록에서만 원하는 자리에 끼운다.
+    // 다시 분석하지 않고 새 쪽만 분석한다.
+    let _insertFileBusy = false;
+    async function insertFilePagesAfter(afterIdx) {
+      if (_insertFileBusy) return;
+      if (!originalPdfBytes || !pageResults.filter(Boolean).length) { showError('먼저 문서를 연 뒤에 사용하세요.'); return; }
+      const anchor = pageResults[afterIdx];
+      if (!anchor) return;
+      let picked;
+      try { picked = await window.electronAPI.openFile(); } catch (e) { picked = null; }
+      if (!picked || !picked.length) return;
+      _insertFileBusy = true;
+      const gen = _cacheGen;
+      try {
+        hideError(); hideSuccess();
+        // 변환(이미지·한글·오피스)은 여는 경로와 같은 prepareFiles — 최근 목록·저장 폴더는 건드리지 않는다
+        const files = await prepareFiles(picked, { noRecent: true });
+        if (!files.length) return;
+        showLoading(`${files.length}개 파일의 페이지를 ${anchor.pageNum}쪽 뒤에 넣는 중…`);
+        const srcDoc = await PDFLib.PDFDocument.load(originalPdfBytes.slice(0), { ignoreEncryption: true });
+        const baseCount = srcDoc.getPageCount();
+        let added = 0;
+        for (const f of files) {
+          const ab = await f.arrayBuffer();
+          const doc = await PDFLib.PDFDocument.load(ab, { ignoreEncryption: true });
+          const copied = await srcDoc.copyPages(doc, doc.getPageIndices());
+          copied.forEach(p => srcDoc.addPage(p));
+          added += copied.length;
+          await uiYield();
+        }
+        if (!added) { hideLoading(); showError('넣을 페이지가 없습니다.'); return; }
+        const mergedBytes = await savePdfDoc(srcDoc);
+        if (gen !== _cacheGen || pageResults[afterIdx] !== anchor) {
+          hideLoading(); showError('그 사이 문서가 바뀌어 페이지 추가를 취소했습니다 — 다시 시도해 주세요.'); return;
+        }
+        const newPdf = await openPdfDoc({ data: mergedBytes.slice(0) }).promise;
+        // 새 쪽만 분석(컬러 판정 + 썸네일)
+        const entries = [];
+        for (let k = 0; k < added; k++) {
+          const page = await newPdf.getPage(baseCount + k + 1);
+          const res = await analyzePageColor(page);
+          entries.push({
+            pageNum: 0, originalIdx: baseCount + k, isColor: !!(res && res.isColor), rotation: 0,
+            thumbnail: res && res.thumbPromise ? await res.thumbPromise : null,
+            thumbW: res && res.thumbW, thumbH: res && res.thumbH, thumbLow: !!(res && res.low),
+            pageWpt: res && res.pageWpt, pageHpt: res && res.pageHpt,
+            chapter: anchor.chapter || '',
+          });
+          updateProgress(Math.round((k + 1) / added * 100));
+        }
+        if (gen !== _cacheGen || pageResults[afterIdx] !== anchor) {
+          try { newPdf.destroy(); } catch (e) {}
+          hideLoading(); showError('그 사이 문서가 바뀌어 페이지 추가를 취소했습니다 — 다시 시도해 주세요.'); return;
+        }
+        // 원본 교체 — 새 쪽은 끝에 붙었을 뿐이라 기존 쪽의 번호(originalIdx)는 그대로다
+        originalPdfBytes = mergedBytes;
+        const tab = tabs.get(activeTabId);
+        if (tab) { tab.originalPdfBytes = mergedBytes; tab.fileSize = mergedBytes.byteLength; }
+        try { if (globalPdfDoc) globalPdfDoc.destroy(); } catch (e) {}
+        globalPdfDoc = newPdf;
+        if (tab) tab.pdfDoc = newPdf;
+        pushHistory();
+        pageResults.splice(afterIdx + 1, 0, ...entries);
+        rebuildPageNums();
+        syncTabPageResults();
+        clearProcessCaches();     // 원본 바이트 교체 — 흑백·베이스 캐시 전부 무효
+        invalidateProcessed();
+        try { closePreview(); } catch (e) {}
+        renderAllPages(pageResults);
+        totalPagesEl.textContent = pageResults.filter(Boolean).length;
+        refreshResults();
+        setPageEdited();
+        updateUndoBtn();
+        hideLoading();
+        const names = files.map(f => f.name).join(', ');
+        const colorN = entries.filter(e => e.isColor).length;
+        showSuccess(`📂 ${added}쪽을 ${anchor.pageNum}쪽 뒤에 넣었습니다 (${names} · 컬러 ${colorN}쪽).
+새 쪽도 일반 페이지처럼 흑백 선택·회전·이동할 수 있습니다. 되돌리려면 Ctrl+Z.`);
+      } catch (e) {
+        hideLoading();
+        console.error('insertFilePagesAfter 오류:', e);
+        showError('페이지 추가 실패: ' + (e && e.message ? e.message : String(e)));
+      } finally {
+        _insertFileBusy = false;
+      }
     }
 
     function renderAllPages(results) {

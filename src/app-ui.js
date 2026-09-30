@@ -63,6 +63,7 @@
       body.classList.add('sbp-limited');
       try { localStorage.setItem('sbPanelH', String(h)); } catch (e) { }
     }
+    const SBP_GRIP_TITLE = ['눌러서 접기 · 위아래로 끌어 높이 조절', '눌러서 펼치기'];
     (function initSbPanelResize() {
       const grip = document.getElementById('sbPanelGrip');
       const body = document.getElementById('sbPanelBody');
@@ -78,15 +79,52 @@
         document.removeEventListener('pointermove', move);
         document.removeEventListener('pointerup', up);
       };
+      // 누르기 = 접기/펼치기(사용자 요청 2026-09-30) · 끌기 = 높이 조절(4px 넘게 움직였을 때만)
+      let moved = false;
+      const move2 = e => { if (on && Math.abs(e.clientY - sy) > 4) { moved = true; move(e); } };
       grip.addEventListener('pointerdown', e => {
         e.preventDefault();
-        on = true; sy = e.clientY; sh = body.getBoundingClientRect().height;
+        if (panel.classList.contains('sbp-folded')) { sy = e.clientY; moved = false; on = false; return; }
+        on = true; moved = false; sy = e.clientY; sh = body.getBoundingClientRect().height;
         panel.classList.add('sbp-resizing');
-        document.addEventListener('pointermove', move);
-        document.addEventListener('pointerup', up);
+        document.addEventListener('pointermove', move2);
+        document.addEventListener('pointerup', () => { document.removeEventListener('pointermove', move2); up(); }, { once: true });
       });
-      grip.addEventListener('dblclick', () => applySbPanelHeight(null));   // 자동 높이로 복귀
+      grip.addEventListener('click', () => { if (!moved) toggleSbFold(); moved = false; });
+      if (localStorage.getItem('sbPanelFolded') === '1') { panel.classList.add('sbp-folded'); grip.title = SBP_GRIP_TITLE[1]; }
     })();
+    // 패널 몸통을 부드럽게 접고 편다 — max-height는 auto로 전환이 안 되므로 지금 높이(px)를 거쳐 움직인다
+    function toggleSbFold(force) {
+      const panel = document.getElementById('sbPanel'), body = document.getElementById('sbPanelBody');
+      const grip = document.getElementById('sbPanelGrip');
+      if (!panel || !body) return;
+      const fold = force !== undefined ? !!force : !panel.classList.contains('sbp-folded');
+      if (fold === panel.classList.contains('sbp-folded')) return;
+      const saved = parseInt(localStorage.getItem('sbPanelH') || '', 10);
+      const finish = () => {
+        body.classList.remove('sbp-anim');
+        if (!fold) applySbPanelHeight(saved > 0 ? saved : null);   // 사용자가 정해 둔 높이(또는 자동)로
+      };
+      body.classList.add('sbp-anim');
+      if (fold) {
+        body.style.maxHeight = body.getBoundingClientRect().height + 'px';
+        void body.offsetHeight;
+        panel.classList.add('sbp-folded');
+      } else {
+        const target = saved > 0 ? Math.min(saved, body.scrollHeight) : body.scrollHeight;
+        body.style.maxHeight = '0px';
+        panel.classList.remove('sbp-folded');
+        void body.offsetHeight;
+        body.style.maxHeight = target + 'px';
+      }
+      let done = false;
+      const end = () => { if (done) return; done = true; body.removeEventListener('transitionend', onEnd); finish(); };
+      const onEnd = e => { if (e.target === body && e.propertyName === 'max-height') end(); };
+      body.addEventListener('transitionend', onEnd);
+      setTimeout(end, 450);   // 전환이 안 일어나는 경우(숨긴 창 등)에도 마무리
+      if (grip) grip.title = SBP_GRIP_TITLE[fold ? 1 : 0];
+      try { localStorage.setItem('sbPanelFolded', fold ? '1' : '0'); } catch (e) {}
+    }
 
     function initSbSections() {
       const st = sbSecState();
@@ -97,6 +135,164 @@
       });
     }
     initSbSections();
+
+    // ── 컬러 이모지만 무채색(.ic) ─────────────────────────────────────────────
+    // 예전엔 버튼·제목 **전체**에 grayscale을 걸어 이모지를 흑백으로 만들었다 → 강조색(노랑·골드)까지
+    // 회색이 되어, 켜진 버튼·올린 버튼이 회색으로 보였다. 이모지 글자만 <span class="ic">로 감싼다.
+    // 대상(THEMED_EMOJI_SEL)의 필터는 theme.css가 푼다. 코드가 나중에 글자를 바꾸면 감시기가 다시 감싼다.
+    const EMOJI_RE = /(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*)/u;
+    function decolorEmojiIn(el) {
+      if (!el || !el.childNodes) return;
+      [...el.childNodes].forEach(n => {
+        if (n.nodeType !== 3 || !EMOJI_RE.test(n.nodeValue)) return;
+        const frag = document.createDocumentFragment();
+        n.nodeValue.split(EMOJI_RE).forEach((part, i) => {
+          if (!part) return;
+          if (i % 2) { const s = document.createElement('span'); s.className = 'ic'; s.textContent = part; frag.appendChild(s); }
+          else frag.appendChild(document.createTextNode(part));
+        });
+        n.replaceWith(frag);
+      });
+    }
+    const THEMED_EMOJI_SEL = '.opt-btn, .sel-btn, .clear-opts-btn, .apply-btn, .download-btn, .preview-close, .pv-view-btn, '
+      + '.es-chip, .es-apply-btn, .es-dl-btn, .es-reset-btn, #editWsBar button, .q-print-btn, .q-pdf-btn, #editToggle, '
+      + '#pageCtxMenu .ctx-item > span:first-child, .tab-merge-btn, .file-input-label, .preview-head h3, .st-ico';
+    (function initThemedEmoji() {
+      document.querySelectorAll(THEMED_EMOJI_SEL).forEach(decolorEmojiIn);
+      new MutationObserver(ms => {
+        for (const m of ms) {
+          const t = m.target;
+          if (t && t.nodeType === 1 && t.matches(THEMED_EMOJI_SEL)) decolorEmojiIn(t);
+          m.addedNodes.forEach(n => {
+            if (n.nodeType !== 1) return;
+            if (n.matches(THEMED_EMOJI_SEL)) decolorEmojiIn(n);
+            if (n.firstElementChild) n.querySelectorAll(THEMED_EMOJI_SEL).forEach(decolorEmojiIn);
+          });
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    })();
+
+    // ── 라이트/다크 전환 — 색은 theme.css 변수만 바뀐다(html.theme-light). 켤 때 적용은 index.html 머리의 한 줄 ──
+    function syncThemeBtn() {
+      const b = document.getElementById('themeToggleBtn');
+      if (!b) return;
+      const light = document.documentElement.classList.contains('theme-light');
+      b.textContent = light ? '🌙' : '☀';
+      b.title = light ? '어두운 화면(다크)으로 바꾸기' : '밝은 화면(라이트)으로 바꾸기';
+      decolorEmojiIn(b);
+    }
+    function toggleUiTheme() {
+      const light = document.documentElement.classList.toggle('theme-light');
+      try { localStorage.setItem('uiTheme', light ? 'light' : 'dark'); } catch (e) {}
+      syncThemeBtn();
+    }
+    syncThemeBtn();
+
+    // ── 버튼 설명 = 버튼 오른쪽 '?' 표식 (왼쪽 패널 · 편집 모드 패널) ──────────────
+    // 예전엔 버튼 전체에 title 툴팁이 걸려, 누르려고 올릴 때마다 긴 설명이 튀어나왔다.
+    // 설명은 ?에 커서를 올렸을 때만 패널 옆에 띄운다. ?를 눌러도 버튼은 눌리지 않는다.
+    // 코드가 나중에 title을 바꿔도(상태에 따라 설명이 바뀌는 버튼) 감시해서 ?로 옮긴다.
+    // 편집 모드는 버튼·체크 이름표·선택 상자만 — 숫자 입력칸은 짧은 단위 설명이라 title 그대로 둔다.
+    (function initSbHelp() {
+      const panel = document.getElementById('sbPanel');
+      if (!panel) return;
+      const edit = document.getElementById('editSidebar');
+      const HELP_SEL = '#sbPanelBody button, #sbPanelBody select, #editSidebar button, #editSidebar select, #editSidebar label';
+      let tip = null;
+      const showTip = (el) => {
+        const text = el.dataset.help || '';
+        if (!text) return;
+        if (!tip) { tip = document.createElement('div'); tip.id = 'sbHelpTip'; document.body.appendChild(tip); }
+        tip.textContent = text;
+        tip.style.display = 'block';
+        // ? 바로 옆에 — 예전엔 패널 오른쪽 끝에 고정이라 버튼과 멀었다(사용자 지적). 오른쪽 → 왼쪽 → 아래 순으로 자리가 있는 곳
+        const r = el.getBoundingClientRect();
+        const w = tip.offsetWidth, h = tip.offsetHeight, GAP = 8;
+        let x = r.right + GAP, y = r.top + r.height / 2 - h / 2;
+        if (x + w > innerWidth - 6) x = r.left - w - GAP;
+        if (x < 6) {   // 양옆 다 모자라면 ? 아래(없으면 위)에
+          x = Math.max(6, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 6));
+          y = (r.bottom + GAP + h <= innerHeight - 6) ? r.bottom + GAP : r.top - h - GAP;
+        }
+        y = Math.max(6, Math.min(y, innerHeight - h - 6));
+        tip.style.left = x + 'px'; tip.style.top = y + 'px';
+      };
+      const hideTip = () => { if (tip) tip.style.display = 'none'; };
+      const mkHelp = (text) => {
+        const q = document.createElement('span');
+        q.className = 'sbp-help'; q.textContent = '?'; q.dataset.help = text;
+        q.setAttribute('aria-label', '설명: ' + text);
+        q.addEventListener('mouseenter', () => showTip(q));
+        q.addEventListener('mouseleave', hideTip);
+        // ?는 설명만 — 버튼 동작으로 번지지 않게
+        q.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); showTip(q); });
+        q.addEventListener('mousedown', e => e.stopPropagation());
+        return q;
+      };
+      const attach = (el) => {
+        const t = el.getAttribute('title');
+        if (t == null) return;
+        el.removeAttribute('title');
+        if (!t.trim()) return;
+        if (el.tagName === 'SELECT') {
+          // select 안에는 표식을 넣을 수 없다 → 뒤에 둔다. 왼쪽 패널(격자)은 한 줄로 묶고,
+          // 편집 모드(flex 줄)는 바로 옆 형제로 — 묶으면 줄의 폭 배분이 바뀐다.
+          if (edit && edit.contains(el)) {
+            const nx = el.nextElementSibling;
+            if (nx && nx.classList.contains('sbp-help')) nx.dataset.help = t;
+            else { const q = mkHelp(t); q.classList.add('sbp-help-side'); el.after(q); }
+            return;
+          }
+          let wrap = el.parentElement.classList.contains('sbp-hwrap') ? el.parentElement : null;
+          if (!wrap) { wrap = document.createElement('div'); wrap.className = 'sbp-hwrap'; el.before(wrap); wrap.appendChild(el); }
+          const old = wrap.querySelector(':scope > .sbp-help');
+          if (old) old.dataset.help = t; else wrap.appendChild(mkHelp(t));
+          return;
+        }
+        el.dataset.helpText = t;
+        ensureHelp(el);
+      };
+      const decolorEmoji = decolorEmojiIn;   // 앱 공용(아래 정의 — 함수 선언이라 먼저 써도 된다)
+      // 버튼 글자를 코드가 통째로 바꾸면(작업 중 표시·켜기/끄기 글자) ?도 지워진다 → 다시 붙인다
+      const ensureHelp = (el) => {
+        decolorEmoji(el);
+        const t = el.dataset.helpText;
+        if (!t) return;
+        const old = el.querySelector(':scope > .sbp-help');
+        if (old) { old.dataset.help = t; return; }
+        el.classList.add('has-help');
+        el.appendChild(mkHelp(t));
+      };
+      document.querySelectorAll(HELP_SEL).forEach(attach);
+      panel.querySelectorAll('#sbPanelBody button, .sbp-title, .sbp-head-title, .sbp-compact-lbl').forEach(decolorEmoji);
+      // 고정 설명문(.sbp-note[data-help-move]) → 섹션 제목 옆 ?로
+      panel.querySelectorAll('.sbp-note[data-help-move]').forEach(n => {
+        const title = n.closest('.sbp-section') && n.closest('.sbp-section').querySelector('.sbp-title');
+        if (!title) return;
+        const q = mkHelp(n.textContent.replace(/\s+/g, ' ').trim());
+        q.classList.add('sbp-help-title');
+        // ▾ 바로 뒤에 — 제목 끝에 두면 좁은 폭에서 말줄임(…)에 잘린다
+        const caret = title.querySelector('.sbp-caret');
+        title.insertBefore(q, caret ? caret.nextSibling : title.firstChild);
+        n.remove();
+      });
+      const mo = new MutationObserver(ms => ms.forEach(m => {
+        const t = m.target;
+        if (!t || !t.matches) return;
+        if (m.type === 'attributes') { if (t.matches(HELP_SEL)) attach(t); return; }
+        // 버튼 글자가 통째로 바뀜 → ? 다시 붙이기 / 새로 그려진 목록(프리셋 등) → 안의 title을 ?로
+        if (t.matches('#sbPanelBody button, #editSidebar button, #editSidebar label')) ensureHelp(t);
+        m.addedNodes.forEach(n => {
+          if (n.nodeType !== 1 || n.classList.contains('sbp-help')) return;
+          if (n.matches(HELP_SEL)) attach(n);
+          n.querySelectorAll && n.querySelectorAll('[title]').forEach(c => { if (c.matches(HELP_SEL)) attach(c); });
+        });
+      }));
+      const moOpt = { attributes: true, attributeFilter: ['title'], childList: true, subtree: true };
+      mo.observe(panel, moOpt);
+      if (edit) mo.observe(edit, moOpt);
+      document.addEventListener('scroll', hideTip, true);
+    })();
 
     // 사이드바 '번호만 보기'(컴팩트) 토글 — 썸네일 숨기고 챕터·페이지 번호만 표시 (localStorage 저장)
     function toggleSbThumbs(compact) {
@@ -135,6 +331,7 @@
       sbResizer.style.display = visible ? 'block' : 'none';
       sbToggle.style.display = (visible || pageResults.length) ? 'flex' : 'none';
       sbToggle.textContent = visible ? '◀' : '▶';
+      if (typeof qpDocChanged === 'function') qpDocChanged();   // 오른쪽 기본 설정 패널은 문서가 있을 때만
       // 편집 패널 토글 버튼: 분석 결과가 있을 때만 노출, 동시에 UI 동기화
       const et = document.getElementById('editToggle');
       if (et) et.style.display = pageResults.length ? 'flex' : 'none';
@@ -275,6 +472,7 @@
         const el = document.getElementById('esgBadge-' + k);
         if (el) el.textContent = arr.length ? '● ' + arr.join(' · ') : '';
       });
+      qpSync();   // 오른쪽 기본 설정 패널도 같은 값으로
     }
     (function buildEsGroups() {
       const sidebar = document.getElementById('editSidebar');
@@ -373,6 +571,7 @@
       if (!document.body.classList.contains('edit-fullscreen')) return;
       document.body.classList.remove('edit-fullscreen');
       document.body.classList.remove('edit-open');   // 사이드바 단독 모드 없음 — 함께 닫는다
+      qpSync();   // 편집 모드에서 바꾼 값을 오른쪽 기본 설정 패널에
       if (typeof wsResetSampleGrid === 'function') wsResetSampleGrid();
       if (typeof updateGeometryOverlays === 'function') updateGeometryOverlays();
       // 적용하지 않고 닫으면 메인은 원본 페이지 그리드(썸네일)로 복귀한다.
@@ -702,6 +901,7 @@
         names.map(n => `<option value="${n.replace(/"/g, '&quot;')}">${n}</option>`).join('');
       if (names.includes(cur)) sel.value = cur;
       updatePresetSaveBtn();
+      if (typeof qpRenderForms === 'function') qpRenderForms();   // 오른쪽 서식 파일 목록도 같은 프로파일
     }
     // 프리셋 이름 입력·선택 변경 → 저장 버튼 라벨(신규/덮어쓰기) 동기 (1회 바인딩)
     (function bindPresetSaveBtn() {
@@ -829,6 +1029,8 @@
           // 목차 페이지가 평범한 본문으로 돌아가 로마자 번호·PDF 북마크가 사라진다.
           toc: r.isTocPage ? 1 : undefined,
           tt: r.tocTitle || undefined,
+          // 쪽별 예외(우클릭 메뉴) — 1=원본 배율 조정 안 함 · 2=머리글·바닥글 안 함 · 4=워터마크 안 함
+          pf: pageFlagBits(r) || undefined,
         })),
         selected: [...selectedPages],
         pageAdjust: (editSettings && editSettings.pageAdjust) ? JSON.parse(JSON.stringify(editSettings.pageAdjust)) : {},
@@ -906,16 +1108,19 @@
         pageResults.forEach(r => { if (r && !r.isBlank && r.originalIdx != null && !byOi.has(r.originalIdx)) byOi.set(r.originalIdx, r); });
         const next = [];
         for (const o of ds.order) {
+          let item;
           if (o.blank) {
-            next.push({ pageNum: 0, originalIdx: null, isColor: false, isBlank: true, rotation: 0,
+            item = { pageNum: 0, originalIdx: null, isColor: false, isBlank: true, rotation: 0,
               thumbnail: (typeof blankThumbnail === 'function') ? blankThumbnail() : null,
-              pageSize: o.ps || [595.28, 841.89], chapter: o.chapter || '' });
+              pageSize: o.ps || [595.28, 841.89], chapter: o.chapter || '' };
           } else {
             const r = byOi.get(o.oi);
             if (!r) return false;
-            next.push(Object.assign({}, r, { rotation: o.rot || 0, chapter: o.chapter || '', appliedBw: !!o.bw, isRoman: !!o.roman,
-              isTocPage: !!o.toc, tocTitle: o.tt || undefined }));
+            item = Object.assign({}, r, { rotation: o.rot || 0, chapter: o.chapter || '', appliedBw: !!o.bw, isRoman: !!o.roman,
+              isTocPage: !!o.toc, tocTitle: o.tt || undefined });
           }
+          Object.keys(PAGE_FLAG_BITS).forEach(k => { if ((o.pf | 0) & PAGE_FLAG_BITS[k]) item[k] = true; else delete item[k]; });
+          next.push(item);
         }
         if (typeof pushHistory === 'function') pushHistory();   // Ctrl+Z 복귀 지점
         pageResults.length = 0;
@@ -971,6 +1176,378 @@
         showSuccess(`프로파일 '${name}' 을(를) 삭제했습니다.`);
       }
     }
+
+    // ══ 오른쪽 기본 설정 패널 (편집 모드 전) ═══════════════════════════════════
+    // 인쇄 드라이버의 '서식 파일 · 인쇄 설정 · 페이지 설정'처럼 자주 쓰는 설정만 모았다.
+    // 따로 저장하는 값은 없다 — 모두 편집 모드와 같은 설정(activeLayoutSettings·임포징·프로파일)을 읽고 쓴다.
+    //   · 서식 파일 = 편집 모드의 '설정 프로파일'(editPresets) 그림 목록
+    //   · 1면 N쪽 = 📖 임포징 '모아찍기'(레이아웃 N-up은 임포징으로 통합돼 숨겨져 있다)
+    //   · 원본 배율 조정 = scaling.keep100의 반대(모아찍기 중에는 임포징 배치 크기 fit/orig)
+    const QP_NUP_GRID = { 2: [2, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2], 9: [3, 3], 16: [4, 4] };
+    const QP_IMP_PAPERS = ['A4', 'A3', 'B4', 'B5'];   // 임포징 용지 목록에 있는 것(populatePaperSelect)
+    const QP_WM_PRESETS = ['대외비', '시안', '견본', '사본', 'CONFIDENTIAL', 'SAMPLE', 'DRAFT'];
+    let _qpActiveForm = '';
+    function qpIsNup() { return typeof _impEnabled !== 'undefined' && _impEnabled && _impMode === 'nup'; }
+    function qpOtherImp() { return typeof _impEnabled !== 'undefined' && _impEnabled && _impMode && _impMode !== 'nup'; }
+    function toggleQuickPanel(open) {
+      const closed = open === undefined ? !document.body.classList.contains('qp-closed') : !open;
+      document.body.classList.toggle('qp-closed', closed);
+      try { localStorage.setItem('qpClosed', closed ? '1' : '0'); } catch (e) {}
+      if (!closed) qpSync();
+    }
+    (function initQuickPanel() {
+      let closed = false, tab = 'forms';
+      try { closed = localStorage.getItem('qpClosed') === '1'; tab = localStorage.getItem('qpTab') || 'forms'; } catch (e) {}
+      document.body.classList.toggle('qp-closed', closed);
+      setQpTab(tab, true);
+    })();
+    function setQpTab(tab, silent) {
+      if (!['forms', 'print', 'page'].includes(tab)) tab = 'forms';
+      document.querySelectorAll('#quickPanel .qp-tab').forEach(b => b.classList.toggle('active', b.dataset.qptab === tab));
+      document.querySelectorAll('#quickPanel .qp-pane').forEach(p => { p.hidden = p.dataset.qppane !== tab; });
+      if (!silent) { try { localStorage.setItem('qpTab', tab); } catch (e) {} }
+      qpSync();
+    }
+    // 문서가 열리고 닫힐 때 패널 표시 (showSidebar가 부른다)
+    function qpDocChanged() {
+      document.body.classList.toggle('qp-doc', !!pageResults.filter(Boolean).length);
+      qpSync();
+    }
+    // 편집 모드의 해당 칸으로 바로 — 편집 모드를 열고 그 그룹을 펼쳐 칸이 보이게 스크롤
+    function qpOpenEdit(sectionId, groupKey) {
+      if (!document.body.classList.contains('edit-fullscreen')) enterEditWorkspace();
+      if (!document.body.classList.contains('edit-fullscreen')) return;
+      if (groupKey) toggleEsGroup(groupKey, true);
+      setTimeout(() => {
+        const el = document.getElementById(sectionId);
+        if (!el) return;
+        el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        el.classList.add('qp-flash');
+        setTimeout(() => el.classList.remove('qp-flash'), 1400);
+      }, 120);
+    }
+    // 설정 → 패널 칸 (설정이 바뀔 때마다 — updateEsGroupBadges가 부른다)
+    // ⚠ 부팅 중(이 절의 const가 선언되기 전)에도 updateEsGroupBadges가 부른다 — var 표식으로 막는다(let/const는 TDZ에서 던진다)
+    var _qpReady;
+    function qpSync() {
+      if (!_qpReady) return;
+      const panel = document.getElementById('quickPanel');
+      if (!panel || !editSettings) return;
+      const g = id => document.getElementById(id);
+      const ls = ensureAdjustFields(activeLayoutSettings());
+      const nup = qpIsNup(), other = qpOtherImp();
+      // 인쇄 설정
+      const paperSel = g('qpPaper');
+      if (paperSel) {
+        let v;
+        if (nup) { const bp = g('bkPaper') ? g('bkPaper').value : 'auto'; v = QP_IMP_PAPERS.includes(bp) ? bp : 'none'; }
+        else v = ls.scaling.mode === 'standard' ? ls.scaling.paper : 'none';
+        // 목록에 없는 용지(A2·사용자 정의 등)는 임시 항목으로 보여 준다 — 모르는 척 '원본과 같음'으로 보이면 안 된다
+        [...paperSel.querySelectorAll('option[data-tmp]')].forEach(o => o.remove());
+        const known = [...paperSel.options].some(o => o.value === v);
+        let label = null;
+        if (!nup && ls.scaling.mode === 'custom') label = `${ls.scaling.customW}×${ls.scaling.customH}mm (사용자 정의)`;
+        else if (!nup && ls.scaling.mode === 'percent') label = `배율 ${ls.scaling.percent || 100}%`;
+        else if (!known) label = `${v} (편집 모드에서 지정)`;
+        else if (nup && g('bkPaper') && !QP_IMP_PAPERS.includes(g('bkPaper').value) && g('bkPaper').value !== 'auto') label = g('bkPaper').selectedOptions[0]?.textContent || '사용자 지정';
+        if (label) {
+          const o = document.createElement('option'); o.value = '__cur__'; o.textContent = label; o.dataset.tmp = '1'; o.disabled = true;
+          paperSel.insertBefore(o, paperSel.firstChild); v = '__cur__';
+        }
+        // 모아찍기 용지는 임포징 용지 목록에 있는 것만
+        [...paperSel.options].forEach(o => { if (!o.dataset.tmp && o.value !== '__more__') o.disabled = nup && o.value !== 'none' && !QP_IMP_PAPERS.includes(o.value); });
+        paperSel.value = v;
+      }
+      const orientSel = g('qpOrient');
+      if (orientSel) {
+        orientSel.value = ls.scaling.orient || 'auto';
+        const off = nup || ls.scaling.mode !== 'standard';
+        orientSel.disabled = off;
+        g('qpOrientField').classList.toggle('qp-off', off);
+      }
+      const nupSel = g('qpNup');
+      if (nupSel) {
+        let n = '1';
+        if (nup) {
+          const a = parseInt(g('impAcross')?.value, 10) || 1, d = parseInt(g('impDown')?.value, 10) || 1;
+          n = String(a * d);
+          if (!nupSel.querySelector(`option[value="${n}"]`)) n = 'other';
+        } else if (other) n = 'other';
+        nupSel.querySelector('option[value="other"]').textContent = other
+          ? `📖 ${({ booklet: '중철', cutstack: '정합', repeat: '반복', dup: '복제 2부' })[_impMode] || '임포징'} 사용 중` : '다른 배치 사용 중';
+        nupSel.value = n;
+        const ico = g('qpNupIco'); if (ico) ico.textContent = n === 'other' ? '▦' : n;
+      }
+      const fit = g('qpFit');
+      if (fit) {
+        fit.checked = nup ? (typeof _impScale === 'undefined' || _impScale === 'fit') : !ls.scaling.keep100;
+        const off = !nup && ls.scaling.mode === 'none';
+        fit.disabled = off;
+        g('qpFitRow').classList.toggle('qp-off', off);
+        g('qpFitRow').title = off ? '용지를 고르면 켤 수 있습니다(원본과 같음이면 배율을 바꿀 일이 없습니다)'
+          : '끄면 원고를 100% 원래 크기로 용지 가운데에 놓습니다(넘치는 부분은 잘림)';
+      }
+      const bind = g('qpBind');
+      if (bind) bind.value = ls.bind.enabled ? (ls.bind.side || 'left') : '';
+      const st = [];
+      if (other) st.push(`📖 편집 모드의 ${nupSel ? nupSel.querySelector('option[value="other"]').textContent.replace('📖 ', '') : '임포징'} — '1면 N쪽'을 고르면 모아찍기로 바뀝니다`);
+      if (nup) st.push('모아찍기 중: 용지 = 대지 크기, 원고는 칸에 맞춰 배치');
+      if (ls.bind.enabled) st.push(`제본여백 ${ls.bind.size}mm${ls.bind.alt !== false ? ' · 홀짝 교대' : ''}`);
+      if (editSettings.scope.mode === 'chapter' && editSettings.scope.chapter) st.push(`⚠ 지금은 '${editSettings.scope.chapter}' 챕터 설정을 보고 있습니다`);
+      const ps = g('qpPrintState'); if (ps) ps.textContent = st.join('\n');
+      // 페이지 설정
+      if (g('qpHf')) g('qpHf').checked = !!(ls.hf && ls.hf.enabled);
+      if (g('qpPn')) g('qpPn').checked = !!(ls.pn && ls.pn.enabled);
+      const wm = g('qpWm');
+      if (wm) {
+        const cur = (ls.wm && ls.wm.enabled && (ls.wm.text || '').trim()) ? ls.wm.text.trim() : '';
+        const list = QP_WM_PRESETS.slice();
+        if (cur && !list.includes(cur)) list.unshift(cur);
+        const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+        wm.innerHTML = '<option value="">워터마크 없음</option>' + list.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+        wm.value = cur;
+      }
+      const pst = [];
+      if (ls.hf && ls.hf.enabled && typeof hfAnyContent === 'function' && !hfAnyContent(ls.hf))
+        pst.push("머리글·바닥글 문구가 비어 있어 아직 찍히는 것이 없습니다 — '머리글·바닥글 설정'에서 문구를 넣으세요.");
+      const ps2 = g('qpPageState'); if (ps2) ps2.textContent = pst.join('\n');
+      qpRenderForms();
+    }
+    // 패널에서 바꾼 뒤 공통 처리 — 편집 모드 칸과 배지를 맞추고 결과 무효화(✔ 적용 필요)
+    function qpAfterChange() {
+      _qpActiveForm = '';   // 서식을 불러온 뒤 손댔으면 더는 그 서식 그대로가 아니다
+      syncEditUI();
+      scheduleLivePreview();
+      qpSync();
+    }
+    function qpSetPaper(v) {
+      if (!editSettings || v === '__more__' || v === '__cur__') return;
+      if (qpIsNup()) {
+        populatePaperSelect(v === 'none' ? 'auto' : v);
+        onImpPaperChange();
+        qpAfterChange();
+        return;
+      }
+      const ls = activeLayoutSettings();
+      if (v === 'none') ls.scaling.mode = 'none';
+      else { ls.scaling.mode = 'standard'; ls.scaling.paper = v; }
+      qpAfterChange();
+    }
+    function qpSetOrient(v) { if (!editSettings) return; activeLayoutSettings().scaling.orient = v; qpAfterChange(); }
+    function qpSetNup(v) {
+      if (!editSettings || v === 'other') return;
+      const n = parseInt(v, 10) || 1;
+      const g = id => document.getElementById(id);
+      const ls = activeLayoutSettings();
+      if (n === 1) {
+        // 모아찍기를 끈다 — 대지 용지는 다시 쪽 용지로(A4 2쪽이던 것을 1쪽으로 바꾸면 A4 1쪽이 되게)
+        if (qpIsNup()) {
+          const bp = g('bkPaper') ? g('bkPaper').value : 'auto';
+          toggleImpEnabled(false);
+          if (QP_IMP_PAPERS.includes(bp)) { ls.scaling.mode = 'standard'; ls.scaling.paper = bp; }
+        }
+        qpAfterChange();
+        return;
+      }
+      const [a, d] = QP_NUP_GRID[n] || [2, 1];
+      // 쪽 용지 → 대지 용지로 옮긴다. 쪽을 먼저 용지에 맞춘 뒤 다시 모아찍으면 두 번 줄어든다.
+      const paper = ls.scaling.mode === 'standard' ? ls.scaling.paper
+        : (qpIsNup() && g('bkPaper') ? g('bkPaper').value : 'auto');
+      if (ls.scaling.mode === 'standard') ls.scaling.mode = 'none';
+      const hadGuard = typeof _loadingProfile !== 'undefined';
+      if (hadGuard) _loadingProfile = true;   // 값을 넣는 동안 매번 재조립 예약하지 않게(프로파일 적용과 같은 규약)
+      try {
+        setImpMode('nup');
+        if (g('impAcross')) g('impAcross').value = a;
+        if (g('impDown')) g('impDown').value = d;
+        populatePaperSelect(QP_IMP_PAPERS.includes(paper) ? paper : 'auto');
+        if (typeof onImpPaperChange === 'function') onImpPaperChange();
+      } finally { if (hadGuard) _loadingProfile = false; }
+      _impProfile = null;
+      if (typeof updateImpSheetReadout === 'function') updateImpSheetReadout();
+      if (!_impEnabled) toggleImpEnabled(true);
+      else impSettingsChanged();
+      qpAfterChange();
+    }
+    function qpSetFit(on) {
+      if (!editSettings) return;
+      if (qpIsNup()) { setImpScale(on ? 'fit' : 'orig'); qpAfterChange(); return; }
+      activeLayoutSettings().scaling.keep100 = !on;
+      qpAfterChange();
+    }
+    function qpSetBind(side) {
+      if (!editSettings) return;
+      const b = ensureAdjustFields(activeLayoutSettings()).bind;
+      b.enabled = !!side;
+      if (side) b.side = side;
+      qpAfterChange();
+    }
+    function qpSetHf(on) { if (!editSettings) return; activeLayoutSettings().hf.enabled = !!on; qpAfterChange(); }
+    function qpSetPn(on) { if (!editSettings) return; activeLayoutSettings().pn.enabled = !!on; qpAfterChange(); }
+    function qpSetWm(text) {
+      if (!editSettings) return;
+      const wm = activeLayoutSettings().wm;
+      if (!text) wm.enabled = false;
+      else { wm.enabled = true; wm.text = text; }
+      qpAfterChange();
+    }
+
+    // ── 서식 파일 — 프로파일 그림 목록 ──
+    // 그림은 프로파일 내용으로 그린다: 용지 방향 · 한 면에 몇 쪽 · 중철(펼친 책) · 흑백(회색)/컬러
+    function qpFormInfo(p) {
+      const imp = (p && p.imp) || {}, f = imp.fields || {}, sc = (p && p.scaling) || {};
+      let paper = sc.mode === 'standard' ? sc.paper
+        : sc.mode === 'custom' ? `${sc.customW}×${sc.customH}mm`
+        : sc.mode === 'percent' ? `배율 ${sc.percent || 100}%` : '원본 크기';
+      let n = 1, kind = 'single';
+      if (imp.enabled && imp.mode) {
+        const bp = f.bkPaper || imp.paper;
+        if (bp && bp !== 'auto') paper = bp === '__custom__' ? `${f.impCustomW}×${f.impCustomH}mm` : String(bp).replace(/^custom:/, '');
+        if (imp.mode === 'nup' || imp.mode === 'cutstack') { n = (parseInt(f.impAcross, 10) || 2) * (parseInt(f.impDown, 10) || 1); kind = imp.mode; }
+        else if (imp.mode === 'booklet') { n = 2; kind = 'booklet'; }
+        else if (imp.mode === 'dup') { n = 2; kind = 'dup'; }
+        else if (imp.mode === 'repeat') { n = (parseInt(f.repCols, 10) || 2) * (parseInt(f.repRows, 10) || 2); kind = 'repeat'; }
+      } else if ((p && p.nUp | 0) > 1) n = p.nUp | 0;
+      const parts = [paper];
+      parts.push(kind === 'booklet' ? '중철 책자' : kind === 'cutstack' ? `정합 ${n}분할` : kind === 'dup' ? '복제 2부'
+        : kind === 'repeat' ? '반복 배치' : `1면 ${n}쪽`);
+      const bw = !!(p && p.proc && p.proc.bw);
+      parts.push(bw ? '흑백변환' : '컬러 유지');
+      if (p && p.bind && p.bind.enabled) parts.push('제본여백');
+      if (p && p.hf && p.hf.enabled) parts.push('머리글·바닥글');
+      if (p && p.pn && p.pn.enabled) parts.push('쪽 번호');
+      if (p && p.wm && p.wm.enabled && String(p.wm.text || '').trim()) parts.push('워터마크');
+      return { desc: parts.join(', '), n, kind, bw, land: sc.orient === 'landscape' || kind === 'booklet' || kind === 'dup' || n === 2 || n === 8 };
+    }
+    function qpFormSvg(info) {
+      if (!info) {   // 원본과 같음 — 글줄만 있는 한 장
+        return `<svg viewBox="0 0 46 52"><rect x="9" y="4" width="28" height="40" rx="1.5" fill="#f5f5f7" stroke="#8e8e93"/>${
+          [11, 15, 19, 23, 27, 31, 35].map(y => `<path d="M13 ${y}h20" stroke="#aeaeb2" stroke-width="1.4"/>`).join('')}</svg>`;
+      }
+      const hue = ['#ffd60a', '#30d158', '#0a84ff', '#ff9f0a'];
+      const cell = (x, y, w, h, k) => {
+        const head = info.bw ? '#8e8e93' : hue[k % hue.length];
+        const lines = [];
+        for (let yy = y + h * 0.42; yy < y + h - 1.5; yy += Math.max(2.2, h / 6)) lines.push(`<path d="M${x + w * 0.15} ${yy.toFixed(1)}h${(w * 0.7).toFixed(1)}" stroke="#c7c7cc" stroke-width="0.9"/>`);
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#fff" stroke="#d1d1d6" stroke-width="0.6"/><rect x="${x + w * 0.12}" y="${y + h * 0.1}" width="${w * 0.76}" height="${h * 0.22}" fill="${head}"/>${lines.join('')}`;
+      };
+      if (info.kind === 'booklet' || info.kind === 'dup') {   // 펼친 책(두 면)
+        return `<svg viewBox="0 0 46 52"><path d="M3 12l20 3v30L3 42z" fill="#e5e5ea" stroke="#8e8e93" stroke-width="0.8"/><path d="M43 12l-20 3v30l20-3z" fill="#e5e5ea" stroke="#8e8e93" stroke-width="0.8"/>${cell(6, 16, 14, 22, 0)}${cell(26, 16, 14, 22, 1)}</svg>`;
+      }
+      const W = info.land ? 40 : 30, H = info.land ? 30 : 40, x0 = (46 - W) / 2, y0 = (52 - H) / 2;
+      const grid = QP_NUP_GRID[info.n] || [Math.ceil(Math.sqrt(info.n)), Math.ceil(info.n / Math.ceil(Math.sqrt(info.n)))];
+      let [c, r] = grid;
+      if (!info.land && c > r) [c, r] = [r, c];   // 세로 용지면 세로로 쌓는다
+      const pad = 2.5, gw = (W - pad * 2) / c, gh = (H - pad * 2) / r;
+      let cells = '';
+      for (let i = 0; i < c * r; i++) cells += cell(x0 + pad + (i % c) * gw + 0.6, y0 + pad + Math.floor(i / c) * gh + 0.6, gw - 1.2, gh - 1.2, i);
+      return `<svg viewBox="0 0 46 52"><rect x="${x0}" y="${y0}" width="${W}" height="${H}" rx="1.5" fill="#f5f5f7" stroke="#8e8e93"/>${cells}</svg>`;
+    }
+    function qpRenderForms() {
+      const box = document.getElementById('qpFormList');
+      if (!box) return;
+      const presets = getPresets();
+      const names = Object.keys(presets).sort((a, b) => a.localeCompare(b, 'ko'));
+      const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+      let html = `<button class="qp-form${_qpActiveForm === '\u0000orig' ? ' active' : ''}" data-qpform="" title="편집 설정·임포징을 모두 끄고 원고 그대로 출력합니다(흑백 선택은 그대로)">${qpFormSvg(null)}<span class="qp-form-txt"><span class="qp-form-name">원본과 같음</span><span class="qp-form-desc">크기·배치·머리글 없이 원고 그대로</span></span></button>`;
+      html += names.map(n => {
+        const info = qpFormInfo(presets[n]);
+        return `<button class="qp-form${_qpActiveForm === n ? ' active' : ''}" data-qpform="${esc(n)}" title="${esc(n)} — 누르면 적용 · 우클릭: 덮어쓰기·이름 바꾸기·삭제">${qpFormSvg(info)}<span class="qp-form-txt"><span class="qp-form-name">${esc(n)}</span><span class="qp-form-desc">${esc(info.desc)}</span></span></button>`;
+      }).join('');
+      if (!names.length) html += `<div class="qp-empty">저장한 서식이 아직 없습니다. 설정을 맞춘 뒤 <b>＋ 서식 추가</b>를 누르면 여기에 그림과 함께 나타납니다.</div>`;
+      box.innerHTML = html;
+      box.querySelectorAll('.qp-form').forEach(b => {
+        const name = b.dataset.qpform;
+        b.onclick = () => qpApplyForm(name);
+        if (name) b.oncontextmenu = e => { e.preventDefault(); qpFormMenu(e, name); };
+      });
+    }
+    function qpApplyForm(name) {
+      if (!editSettings) { showError('먼저 PDF를 열어 주세요.'); return; }
+      if (!name) {
+        // 원본과 같음 — 편집 설정 초기화 + 임포징 끄기
+        resetEditSettings();
+        if (typeof _impEnabled !== 'undefined' && _impEnabled) toggleImpEnabled(false);
+        _qpActiveForm = '\u0000orig';
+        scheduleLivePreview();
+        qpSync();
+        showSuccess('📄 원본과 같음 — 크기·배치·머리글·임포징을 모두 껐습니다.\n흑백 선택·회전은 그대로입니다. \'✔ 적용\'으로 결과를 확인하세요.');
+        return;
+      }
+      const sel = document.getElementById('esPresetSel');
+      if (sel) sel.value = name;
+      loadPreset(name);
+      _qpActiveForm = name;
+      qpSync();
+    }
+    async function qpAddForm() {
+      if (!editSettings) { showError('먼저 PDF를 열어 주세요.'); return; }
+      const data = JSON.parse(JSON.stringify(Object.assign(presetFromSettings(activeLayoutSettings()), captureExtraPreset())));
+      const suggest = qpFormInfo(data).desc;
+      const input = await promptText('지금 설정(크기·배치·머리글·워터마크 + 흑백·잉크정규화·임포징)을 새 서식으로 저장합니다.\n서식 이름:', suggest);
+      if (input == null) return;
+      const name = input.trim();
+      if (!name) { showError('서식 이름을 적어 주세요.'); return; }
+      const presets = getPresets();
+      if (presets[name] && !confirm(`'${name}' 서식이 이미 있습니다. 지금 설정으로 덮어쓸까요?`)) return;
+      presets[name] = data;
+      savePresetsObj(presets);
+      loadPresetList();
+      const sel = document.getElementById('esPresetSel'); if (sel) sel.value = name;
+      updatePresetSaveBtn();
+      _qpActiveForm = name;
+      qpRenderForms();
+      showSuccess(`서식 '${name}'을(를) 저장했습니다 — 오른쪽 서식 파일 목록과 편집 모드 프로파일에 함께 있습니다.\n다음 문서에서는 목록에서 누르기만 하면 같은 설정이 적용됩니다.`);
+    }
+    // 서식 우클릭 — 덮어쓰기 · 이름 바꾸기 · 삭제
+    function qpFormMenu(e, name) {
+      let m = document.getElementById('qpFormMenu');
+      if (!m) {
+        m = document.createElement('div'); m.id = 'qpFormMenu';
+        document.body.appendChild(m);
+        document.addEventListener('click', () => { m.style.display = 'none'; });
+        document.addEventListener('keydown', ev => { if (ev.key === 'Escape') m.style.display = 'none'; });
+      }
+      m.innerHTML = '';
+      const item = (label, fn, danger) => {
+        const d = document.createElement('div');
+        d.className = 'ctx-item' + (danger ? ' ctx-danger' : '');
+        d.innerHTML = `<span>${label}</span>`;
+        d.onclick = ev => { ev.stopPropagation(); m.style.display = 'none'; fn(); };
+        m.appendChild(d);
+      };
+      item('💾 지금 설정으로 덮어쓰기', () => {
+        if (!confirm(`'${name}' 서식을 지금 설정으로 덮어쓸까요?`)) return;
+        const presets = getPresets();
+        presets[name] = JSON.parse(JSON.stringify(Object.assign(presetFromSettings(activeLayoutSettings()), captureExtraPreset())));
+        savePresetsObj(presets); loadPresetList(); _qpActiveForm = name; qpRenderForms();
+        showSuccess(`서식 '${name}'을(를) 지금 설정으로 덮어썼습니다.`);
+      });
+      item('✏ 이름 바꾸기', async () => {
+        const nv = await promptText('새 서식 이름:', name);
+        if (nv == null || !nv.trim() || nv.trim() === name) return;
+        const presets = getPresets();
+        if (presets[nv.trim()] && !confirm(`'${nv.trim()}' 서식이 이미 있습니다. 덮어쓸까요?`)) return;
+        presets[nv.trim()] = presets[name]; delete presets[name];
+        savePresetsObj(presets); loadPresetList();
+        if (_qpActiveForm === name) _qpActiveForm = nv.trim();
+        qpRenderForms();
+      });
+      item('🗑 삭제', () => {
+        if (!confirm(`서식 '${name}'을(를) 삭제할까요? (편집 모드 프로파일에서도 지워집니다)`)) return;
+        const presets = getPresets(); delete presets[name]; savePresetsObj(presets);
+        const sel = document.getElementById('esPresetSel'); if (sel && sel.value === name) sel.value = '';
+        loadPresetList();
+        if (_qpActiveForm === name) _qpActiveForm = '';
+        qpRenderForms();
+        showSuccess(`서식 '${name}'을(를) 삭제했습니다.`);
+      }, true);
+      m.style.display = 'block';
+      const w = m.offsetWidth, h = m.offsetHeight;
+      m.style.left = Math.max(4, Math.min(e.clientX, innerWidth - w - 6)) + 'px';
+      m.style.top = Math.max(4, Math.min(e.clientY, innerHeight - h - 6)) + 'px';
+    }
+    _qpReady = true;
 
     // 편집 사이드바 폭 조절 (오른쪽 패널이라 왼쪽 핸들 드래그 → 폭 = 화면폭 - clientX)
     const EDIT_MIN = 300, EDIT_MAX = 820;
@@ -1194,6 +1771,7 @@
       if (pctSub) pctSub.classList.toggle('show', mode === 'percent');
       // 배율 모드는 페이지 자체가 커지는 것이라 '여백 안에 맞추기'가 의미 없음 — 숨김
       document.getElementById('esFitRow').style.display = (mode === 'none' || mode === 'percent') ? 'none' : 'flex';
+      { const k1 = document.getElementById('esKeep100Row'); if (k1) k1.style.display = (mode === 'none' || mode === 'percent') ? 'none' : 'flex'; }
       const hint = document.getElementById('esScaleHint');
       if (hint) hint.textContent = mode === 'none'
         ? '원본 크기를 유지합니다. 규격 용지·사용자 정의·배율을 선택하면 콘텐츠를 그 크기에 맞춰 확대·축소합니다.'
@@ -1376,11 +1954,21 @@
         if (b) b.classList.toggle('active', on);
       });
       _syncSpreadZoomWidget(on);
+      // 분석 썸네일은 펼침 크기로 보이는 쪽만 다시 굽는다(흐림 방지)
+      if (on && typeof scheduleThumbUpgrade === 'function') scheduleThumbUpgrade();
       // 결과 미리보기가 떠 있으면 펼침 해상도로 재렌더 (표본 모드는 라이브 경로가 재렌더)
       if (typeof previewVisible === 'function' && previewVisible()) {
         if (pg && pg.dataset.wsSample === '1') { if (typeof scheduleLivePreview === 'function') scheduleLivePreview(); }
         else if (typeof processedPdfBytes !== 'undefined' && processedPdfBytes) renderProcessedPreview(processedPdfBytes);
       }
+    }
+    // 📖 펼침 렌더 폭(px) — 결과 미리보기(전체·편집 모드 표본) 공용.
+    // 예전 1.15배(표시 폭 560px × 펼침%의 1.15배)는 배율 125~200% 화면에서 흐렸다 → 한 단계 올려
+    // 최소 1.6배, 화면 배율이 높으면 그만큼(최대 2배 기준) 더 크게 그린다.
+    function spreadRenderPx(basePx) {
+      const k = (typeof _spreadZoomPct !== 'undefined' ? _spreadZoomPct : 100) / 100;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      return Math.max(400, Math.round((basePx || 560) * k * Math.max(1.6, 1.15 * dpr)));
     }
     // 📖 펼침 크기 조절 — 줌 위젯(−/%/+ · Ctrl+[ ])이 펼침 모드에서는 이 값을 조절한다.
     // 50~200%, 10% 단계. 확대 시 흐려지지 않게 결과 미리보기를 새 해상도로 재렌더(디바운스).
@@ -1403,6 +1991,7 @@
       if (zi) zi.disabled = _spreadZoomPct >= 200;
       clearTimeout(_spreadRerenderTimer);
       _spreadRerenderTimer = setTimeout(() => {
+        if (typeof scheduleThumbUpgrade === 'function') scheduleThumbUpgrade();   // 키운 만큼 썸네일도
         if (typeof previewVisible === 'function' && previewVisible()) {
           if (pg && pg.dataset.wsSample === '1') { if (typeof scheduleLivePreview === 'function') scheduleLivePreview(); }
           else if (typeof processedPdfBytes !== 'undefined' && processedPdfBytes) renderProcessedPreview(processedPdfBytes);
@@ -1555,6 +2144,7 @@
       document.getElementById('esCustomH').value = ls.scaling.customH;
       const pctEl = document.getElementById('esScalePercent'); if (pctEl) pctEl.value = ls.scaling.percent || 100;
       document.getElementById('esFitMargins').checked = ls.scaling.fitMargins;
+      { const k1 = document.getElementById('esKeep100'); if (k1) k1.checked = !!ls.scaling.keep100; }
       const mgOn = !!ls.margins.enabled;
       document.getElementById('esMgEnabled').checked = mgOn;
       document.getElementById('esMgTop').value    = ls.margins.top;
@@ -1666,6 +2256,9 @@
       if (pp) pp.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.paper = pp.value; scheduleLivePreview(); });
       const fm = document.getElementById('esFitMargins');
       if (fm) fm.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.fitMargins = fm.checked; scheduleLivePreview(); });
+      // 원본 배율 유지(100%) — 용지만 바꾸고 원고는 줄이거나 키우지 않는다(오른쪽 기본 설정 '원본 배율 조정' 체크와 같은 값)
+      const k1 = document.getElementById('esKeep100');
+      if (k1) k1.addEventListener('change', () => { if (editSettings) activeLayoutSettings().scaling.keep100 = k1.checked; scheduleLivePreview(); });
       onIn('esGutter', el => { if (editSettings) activeLayoutSettings().gutter = Math.max(0, parseFloat(el.value) || 0); });
 
       // 기울기 보정 / 가운데 정렬 / 제본여백
@@ -2205,7 +2798,7 @@
       const chs = new Set(hf.applyChapters || []);
       if (chs.size) valid.forEach(x => { if (x.chapter && chs.has(x.chapter)) set.add(x.pageNum); });
       const scoped = Object.assign({}, hf, { applyPages: [...set] });
-      const apply = hfInScope(scoped, pageNum);
+      const apply = hfInScope(scoped, pageNum) && !r.noHf;   // 우클릭 '머리글·바닥글 삽입 안 함'
       const nctx = hfNumberCtx(hf, pageNum, valid.length);
       const roman = (typeof computeRomanNums === 'function' ? (computeRomanNums() || [])[valid.indexOf(r)] : null) || null;
       const ctx = { page: nctx.page, total: nctx.total, roman,
@@ -2432,6 +3025,44 @@
       scheduleLivePreview();
     }
 
+    // ── 쪽별 예외(우클릭 메뉴) — 원본 배율 조정 안 함 · 머리글·바닥글 삽입 안 함 · 워터마크 삽입 안 함 ──
+    // 우클릭한 쪽(고른 묶음 안이면 묶음 전체)에 켜고 끈다. 묶음이 전부 켜져 있으면 끈다.
+    // 워커(layout-transform)에는 base 쪽 순서의 비트 배열로 간다: 1=배율 안 함, 2=머리글·바닥글·번호 안 함, 4=워터마크 안 함.
+    const PAGE_FLAG_BITS = { noScale: 1, noHf: 2, noWm: 4 };
+    const PAGE_FLAG_LABEL = { noScale: '원본 배율 조정 안 함', noHf: '머리글·바닥글 삽입 안 함', noWm: '워터마크 삽입 안 함' };
+    function pageFlagBits(r) {
+      return r ? ((r.noScale ? 1 : 0) | (r.noHf ? 2 : 0) | (r.noWm ? 4 : 0)) : 0;
+    }
+    function computePageFlags() {
+      const arr = pageResults.filter(Boolean).map(pageFlagBits);
+      return arr.some(Boolean) ? arr : null;
+    }
+    function togglePageFlag(idx, key) {
+      if (!PAGE_FLAG_BITS[key]) return;
+      const targets = pageTargetsFor(idx);
+      if (!targets.length) return;
+      const allOn = targets.every(r => !!r[key]);
+      pushHistory();
+      targets.forEach(r => { if (allOn) delete r[key]; else r[key] = true; });
+      syncTabPageResults();
+      rerenderPages();
+      setPageEdited();
+      updateUndoBtn();
+      invalidateProcessed();
+      const ls = editSettings ? activeLayoutSettings() : null;
+      let note = '';
+      if (!allOn && ls) {
+        // 켜 두어도 효과가 없는 경우를 알려 준다 — 설정이 꺼져 있으면 지금은 달라지는 것이 없다
+        if (key === 'noScale' && (!ls.scaling || ls.scaling.mode === 'none')) note = '\n지금은 크기 규격화가 꺼져 있어 달라지는 것이 없습니다 — 용지 맞춤·배율을 켜면 이 쪽만 100%로 남습니다.';
+        else if (key === 'noScale' && (ls.nUp | 0) > 1) note = '\n모아찍기(N-up) 중에는 칸에 맞춰 줄어듭니다 — 1쪽씩 배치할 때 적용됩니다.';
+        else if (key === 'noHf' && !(ls.hf && ls.hf.enabled) && !(ls.pn && ls.pn.enabled)) note = '\n지금은 머리글·바닥글·페이지 번호가 꺼져 있습니다 — 켜면 이 쪽만 빠집니다.';
+        else if (key === 'noWm' && !(ls.wm && ls.wm.enabled)) note = '\n지금은 워터마크가 꺼져 있습니다 — 켜면 이 쪽만 빠집니다.';
+      }
+      showSuccess(`${targets.length}쪽: ${PAGE_FLAG_LABEL[key]} ${allOn ? '해제' : '지정'}${note}
+'✔ 적용' 또는 '⇩ 다운로드' 때 반영됩니다. 되돌리려면 Ctrl+Z.`);
+      scheduleLivePreview();
+    }
+
     // ── 레이아웃 변환 패스: 크기 규격화 + N-up + 테두리 (worker-assemble.js에서 실행) ──
     // srcBytes: 순서·회전·흑백이 이미 반영된 base PDF. groups: [{mask, es}] — 마스크는 base 페이지
     // 순서 기준이며 그룹끼리 겹치지 않는다(챕터별 개별 설정 + 전역 설정 나머지).
@@ -2445,6 +3076,11 @@
       if (roman && pick) roman = pick.map(i => roman[i]);
       else if (roman && win) roman = roman.slice(win.from, win.to + 1);
       if (roman && !roman.some(Boolean)) roman = null;
+      // 쪽별 예외(원본 배율·머리글·워터마크 안 함) — 로마자와 같은 base 쪽 순서·같은 창 자르기
+      let pageFlags = computePageFlags();
+      if (pageFlags && pick) pageFlags = pick.map(i => pageFlags[i] | 0);
+      else if (pageFlags && win) pageFlags = pageFlags.slice(win.from, win.to + 1);
+      if (pageFlags && !pageFlags.some(Boolean)) pageFlags = null;
       // 적용 범위의 '챕터 체크'를 페이지 번호로 펼쳐 둔다 — 워커는 페이지 번호만 판단한다
       const resolveScope = c => {
         if (!c || c.applyMode !== 'pick') return c;
@@ -2462,7 +3098,8 @@
       // 개별 보정(pageAdjust)은 전역 저장이라 그룹 JSON에 안 잡힐 수 있어(챕터 그룹만 있을 때) 명시 포함
       const sig = (baseSig || '') + '::' + JSON.stringify(groups)
         + '::A' + JSON.stringify((editSettings && editSettings.pageAdjust) || {})
-        + '::R' + (roman ? roman.join(',') : '');
+        + '::R' + (roman ? roman.join(',') : '')
+        + '::F' + (pageFlags ? pageFlags.join('') : '');
       if (_layoutCache.sig === sig) return _layoutCache.bytes;
       const fileName = (typeof originalFileName === 'string' ? originalFileName : '') || '';
       // 머리글/바닥글이 ASCII(숫자·영문)만이면 워커가 내장 표준폰트로 그리므로 13MB 시스템 폰트를 읽지도 넘기지도 않는다.
@@ -2538,7 +3175,7 @@
       Object.values(fontBytesMap).forEach(b => { if (b) transfer.push(b.buffer); });
       const resultBytes = await assembleWorkerPool.run(
         'layout-transform', {
-          srcBytes: srcCopy, groups: workerGroups, fontBytesMap, fileName, baseSig: baseSig || null, adjust, roman,
+          srcBytes: srcCopy, groups: workerGroups, fontBytesMap, fileName, baseSig: baseSig || null, adjust, roman, pageFlags,
           // 표본 창(문서 일부 조립)이면 절대 페이지 번호 계산용 오프셋·전체 쪽수 전달
           pageOffset: win ? win.from : 0,
           totalPages: win ? pageResults.filter(Boolean).length : null,
@@ -2664,9 +3301,8 @@
       const myToken = ++previewRenderToken;
       stopLazyPreviewRender();   // 이전 렌더가 배경에서 채우는 중이면 먼저 멈춘다
       // 캔버스 폭(작을수록 빠름). 펼침 모드는 표시 폭(560px × 펼침%)에 맞춘 고해상도로.
-      const spreadK = (typeof _spreadZoomPct !== 'undefined' ? _spreadZoomPct : 100) / 100;
       const pxW = grid.classList.contains('pv-spread')
-        ? Math.max(400, Math.round(560 * spreadK * 1.15))
+        ? spreadRenderPx(560)
         : (opts.live ? 170 : 240);
       // 진입 시 원본 통계 스냅샷(최초 1회)
       if (!_origStats) _origStats = {
@@ -2716,7 +3352,7 @@
           if (src && src.length === 1) {
             const r = pnMap.get(src[0]);
             if (r) return [srcMark, pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0,
-                           (r.isRoman || r.isTocPage) ? 1 : 0,
+                           (r.isRoman || r.isTocPage) ? 1 : 0, pageFlagBits(r),
                            (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
             return null;
           }
@@ -3436,6 +4072,15 @@
       pvvSyncTitle();
     }
 
+    // 쪽별 예외 표식 — 썸네일 번호 옆 작은 꼬리표 (우클릭 메뉴로 켠 것)
+    function pageFlagTagsHtml(r) {
+      const t = [];
+      if (r.noScale) t.push(['100%', '원본 배율 조정 안 함']);
+      if (r.noHf)    t.push(['머리✕', '머리글·바닥글 삽입 안 함']);
+      if (r.noWm)    t.push(['워터✕', '워터마크 삽입 안 함']);
+      if (!t.length) return '';
+      return '<span class="page-flag-tags">' + t.map(([s, tip]) => `<span class="page-flag-tag" title="${tip} (우클릭으로 해제)">${s}</span>`).join('') + '</span>';
+    }
     function renderPageItem(r, idx) {
       const { pageNum, isColor, isBlank, thumbnail, rotation = 0 } = r;
       const el = document.createElement('div');
@@ -3453,7 +4098,7 @@
             <button class="page-btn-cw"  title="시계 90° 회전">↻</button>
           </div>
         </div>
-        <div class="page-info">${pageNum} <span class="page-type-inline">${typeLabel}</span></div>
+        <div class="page-info">${pageNum} <span class="page-type-inline">${typeLabel}</span>${pageFlagTagsHtml(r)}</div>
         <button class="page-insert-btn">＋ 빈 페이지 삽입</button>
       `;
       if (rotation) {
@@ -3617,7 +4262,7 @@
       setPageEdited();
       updateUndoBtn();
       if (targets.length > 1)
-        showSuccess(`선택한 ${targets.length}쪽을 ${deg > 0 ? '시계 ↻' : '반시계 ↺'} 90° 회전했습니다. (되돌리기 Ctrl+Z)`);
+        showSuccess(`선택한 ${targets.length}쪽을 ${Math.abs(deg) === 180 ? '180°' : (deg > 0 ? '시계 ↻ 90°' : '반시계 ↺ 90°')} 회전했습니다. (되돌리기 Ctrl+Z)`);
     }
 
     // ── 드래그&드롭 ──────────────────────────────────────────────────────────
