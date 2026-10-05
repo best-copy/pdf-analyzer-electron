@@ -180,12 +180,19 @@
       b.textContent = light ? '🌙' : '☀';
       b.title = light ? '어두운 화면(다크)으로 바꾸기' : '밝은 화면(라이트)으로 바꾸기';
       decolorEmojiIn(b);
+      // 첫 화면 머리의 주간/야간 선택 — 지금 쪽에 켜짐 표시
+      document.querySelectorAll('[data-theme-pick]').forEach(x => {
+        const on = (x.dataset.themePick === 'light') === light;
+        x.classList.toggle('active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false'); decolorEmojiIn(x);
+      });
     }
-    function toggleUiTheme() {
-      const light = document.documentElement.classList.toggle('theme-light');
+    function setUiTheme(mode) {
+      const light = mode === 'light';
+      document.documentElement.classList.toggle('theme-light', light);
       try { localStorage.setItem('uiTheme', light ? 'light' : 'dark'); } catch (e) {}
       syncThemeBtn();
     }
+    function toggleUiTheme() { setUiTheme(document.documentElement.classList.contains('theme-light') ? 'dark' : 'light'); }
     syncThemeBtn();
 
     // ── 버튼 설명 = 버튼 오른쪽 '?' 표식 (왼쪽 패널 · 편집 모드 패널) ──────────────
@@ -295,6 +302,50 @@
     })();
 
     // 사이드바 '번호만 보기'(컴팩트) 토글 — 썸네일 숨기고 챕터·페이지 번호만 표시 (localStorage 저장)
+    // ── 크기 조절 % 알림 — 썸네일을 키우고 줄일 때 화면 가운데에 잠깐 '썸네일 120%' (사용자 요청) ──
+    let _zoomFlashTimer = 0;
+    function flashZoomPct(label, pct) {
+      let el = document.getElementById('zoomFlash');
+      if (!el) { el = document.createElement('div'); el.id = 'zoomFlash'; el.setAttribute('aria-live', 'polite'); document.body.appendChild(el); }
+      el.innerHTML = '<span class="zf-lbl"></span><b class="zf-pct"></b>';
+      el.firstChild.textContent = label; el.lastChild.textContent = pct + '%';
+      el.classList.add('show');
+      clearTimeout(_zoomFlashTimer);
+      _zoomFlashTimer = setTimeout(() => el.classList.remove('show'), 900);
+    }
+
+    // ── 사이드바 썸네일 크기 — 칸 최소 폭(--sb-thumb, 기준 110px)을 50~250%로. 기억함 ──
+    const SB_THUMB_BASE = 110;
+    var _sbThumbPct = 100;   // var — 부팅 때 아래 IIFE가 먼저 읽는다
+    function applySbThumbZoom(flash) {
+      const sb = document.getElementById('thumbSidebar');
+      if (sb) sb.style.setProperty('--sb-thumb', Math.round(SB_THUMB_BASE * _sbThumbPct / 100) + 'px');
+      const pe = document.getElementById('sbZoomPct'); if (pe) pe.textContent = _sbThumbPct + '%';
+      const zo = document.getElementById('sbZoomOut'), zi = document.getElementById('sbZoomIn');
+      if (zo) zo.disabled = _sbThumbPct <= 50;
+      if (zi) zi.disabled = _sbThumbPct >= 250;
+      try { localStorage.setItem('sbThumbPct', String(_sbThumbPct)); } catch (e) {}
+      if (flash) flashZoomPct('사이드바 썸네일', _sbThumbPct);
+    }
+    function changeSbThumbZoom(dir) {
+      const next = Math.max(50, Math.min(250, _sbThumbPct + dir * 10));
+      if (next === _sbThumbPct) return;
+      _sbThumbPct = next;
+      applySbThumbZoom(true);
+    }
+    (function initSbThumbZoom() {
+      const v = parseInt(localStorage.getItem('sbThumbPct') || '', 10);
+      if (v >= 50 && v <= 250) _sbThumbPct = Math.round(v / 10) * 10;
+      applySbThumbZoom(false);
+      // Ctrl+휠 = 사이드바 썸네일 크기 (패널 위에서는 그냥 스크롤)
+      const sb = document.getElementById('thumbSidebar');
+      if (sb) sb.addEventListener('wheel', e => {
+        if (!e.ctrlKey || e.target.closest('#sbPanel')) return;
+        e.preventDefault();
+        changeSbThumbZoom(e.deltaY < 0 ? 1 : -1);
+      }, { passive: false });
+    })();
+
     function toggleSbThumbs(compact) {
       sidebar.classList.toggle('sb-compact', !!compact);
       try { localStorage.setItem('sbCompact', compact ? '1' : '0'); } catch (e) {}
@@ -1977,6 +2028,7 @@
     function changeSpreadZoom(dir) {
       _spreadZoomPct = Math.max(50, Math.min(200, _spreadZoomPct + dir * 10));
       applySpreadZoom();
+      flashZoomPct('펼침 크기', _spreadZoomPct);
     }
     function applySpreadZoom() {
       const k = _spreadZoomPct / 100;

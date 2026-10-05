@@ -216,6 +216,31 @@ function inlineIndexedToGray(dict) {
   return dict.replace(re, `${m[1]}[/I /G ${hival} <${out}>]`);
 }
 
+// Flate로 압축된 인라인 RGB/CMYK 그림을 풀어 픽셀(w·h·ch 바이트)로 — 순수 함수. 확신이 없으면 null.
+//  · 필터가 Flate **하나**뿐이고(배열·A85 등은 null), Decode 배열·ImageMask가 없고, 8비트
+//  · 예측자는 없음(1) 또는 PNG(10~15)만 — Colors·Columns·BitsPerComponent가 그림과 같아야 한다
+//  · 푼 길이가 정확히 w·h·ch — 경계(EI)를 잘못 잡았으면 여기서 걸러진다
+const INLINE_FLATE_RE = /\/(?:F|Filter)\s*\/(?:Fl|FlateDecode)(?![\w])/;
+const INLINE_DP_RE = /\/(?:DP|DecodeParms)\s*<<[^<>]*>>/;
+function inflateInlineImage(img, raw, ch) {
+  const { dict, w, h } = img;
+  if (!(img.isRGB || img.isCMYK) || img.hasDecode || img.imageMask || img.bpc !== 8 || !(w > 0 && h > 0)) return null;
+  if (!INLINE_FLATE_RE.test(dict) || /\/(?:F|Filter)\s*\[/.test(dict)) return null;
+  let pred = 1;
+  const dp = (dict.match(INLINE_DP_RE) || [])[0];
+  if (dp) {
+    const g = k => { const m = dp.match(new RegExp('\\/' + k + '\\s+(\\d+)')); return m ? +m[1] : null; };
+    pred = g('Predictor') || 1;
+    if ((g('Colors') || 1) !== ch || (g('Columns') || 1) !== w || (g('BitsPerComponent') || 8) !== 8) return null;
+    if (!(pred === 1 || (pred >= 10 && pred <= 15))) return null;
+  } else if (/\/(?:DP|DecodeParms)/.test(dict)) return null;
+  let out;
+  try { out = pako.inflate(raw.subarray(img.dataStart, img.dataEnd)); } catch (e) { return null; }
+  if (!ArrayBuffer.isView(out)) return null;
+  if (pred >= 10) out = removePNGPredictor(out, w, ch);
+  return out && out.length === w * h * ch ? out : null;
+}
+
 // 인라인 이미지를 바이트 단계에서 처리 — grayifyStream 이전에 실행한다.
 //  · 비압축 8비트 RGB/CMYK이고 경계가 길이로 **확정**된 그림만 DeviceGray로 변환
 //    (Decode 배열·ImageMask·경계가 애매한 그림은 성분 수나 위치가 틀어질 수 있어 그대로 둔다)
@@ -243,11 +268,15 @@ function preprocessInlineImages(raw, dotGain) {
     }
     const { w, h } = img;
     const ch = img.isRGB ? 3 : 4;
-    if (!(img.exact && !img.ambiguous && !img.hasFilter && !img.hasDecode && !img.imageMask
+    // Flate 하나(+PNG 예측자)로 압축된 그림 — 풀어서 크기가 정확히 맞을 때만 바꾼다(비압축 회색으로 다시 쓴다).
+    // 예전엔 압축 그림을 통째로 건너뛰어, 무늬 칠하기(타일 패턴) 안의 8×8 RGB 그림이 흑백 쪽에 C=M=Y로 남았다
+    // (실파일 K-BIC 실행계획서 19쪽 — 흑백 체크해도 프린터가 컬러로 셈).
+    const flat = img.hasFilter ? inflateInlineImage(img, raw, ch) : null;
+    if (!flat && !(img.exact && !img.ambiguous && !img.hasFilter && !img.hasDecode && !img.imageMask
           && (img.isRGB || img.isCMYK) && img.bpc === 8 && w > 0 && h > 0
           && img.dataEnd - img.dataStart === w * h * ch)) continue;   // 변환 대상 아님 — 원본 그대로(아래 pos 복사)
     chunks.push(raw.slice(pos, bi));
-    const pix = raw.subarray(img.dataStart, img.dataEnd);
+    const pix = flat || raw.subarray(img.dataStart, img.dataEnd);
     const gray = new Uint8Array(w * h);
     if (img.isRGB) {
       for (let pi = 0; pi < w * h; pi++)
@@ -259,7 +288,8 @@ function preprocessInlineImages(raw, dotGain) {
       }
     }
     if (lut) for (let pi = 0; pi < gray.length; pi++) gray[pi] = lut[gray[pi]];
-    const newDict = img.dict.replace(/\/(CS|ColorSpace)\s*\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G');
+    let newDict = img.dict.replace(/\/(CS|ColorSpace)\s*\/(RGB|DeviceRGB|CalRGB|CMYK|DeviceCMYK)/g, '/CS /G');
+    if (flat) newDict = newDict.replace(INLINE_FLATE_RE, ' ').replace(INLINE_DP_RE, ' ').replace(/\/(?:L|Length)\s+\d+/g, ' ');
     chunks.push(encodeLatin1('BI\n' + newDict + '\nID\n'));
     chunks.push(gray);
     chunks.push(encodeLatin1('\nEI'));
@@ -952,6 +982,24 @@ self.onmessage = async function(e) {
       let out = processed;
       if (wasCompressed) out = pako.deflate(processed, { level: 1 });
       self.postMessage({ id, result: { bytes: out.buffer, length: out.length, stat: info.stat } }, [out.buffer]);
+
+    // ── 이미 푼 회색 픽셀 → 1성분 JPEG(DeviceGray) ─────────────────────────
+    // JPEG 2000 사진: Chromium이 JPX를 못 열어 메인에서 Ghostscript로 회색을 풀어 넘긴다(app-process decodeJpxGray).
+    // 결과 형식은 jpeg2gray와 같다(jpeg 또는 Flate 폴백).
+    } else if (type === 'gray2jpeg') {
+      const { gray: gbuf, w: gw, h: gh, dotGain } = payload;
+      const gray = new Uint8Array(gbuf);
+      if (dotGain) { const dl = buildDotGainLUT(dotGain); for (let i = 0; i < gray.length; i++) gray[i] = dl[gray[i]]; }
+      try {
+        const jb = encodeGrayJpeg(gray, gw, gh, 82);
+        const jpegBuf = jb.buffer.slice(jb.byteOffset, jb.byteOffset + jb.length);
+        self.postMessage({ id, result: { jpeg: jpegBuf, w: gw, h: gh } }, [jpegBuf]);
+        return;
+      } catch (encErr) { /* Flate 폴백 */ }
+      const predicted = applyPNGPredictorGray(gray, gw, gh);
+      const deflated  = pako.deflate(predicted, { level: 1 });
+      const deflatedBuf = deflated.buffer.slice(deflated.byteOffset, deflated.byteOffset + deflated.length);
+      self.postMessage({ id, result: { deflated: deflatedBuf, w: gw, h: gh } }, [deflatedBuf]);
 
     } else {
       self.postMessage({ id, error: 'unknown_type' });

@@ -19,6 +19,10 @@
     <div class="header">
       <h1><svg viewBox="0 0 24 24" style="height:1.15em; vertical-align:-0.2em; margin-right:10px;" aria-hidden="true"><g fill="#ffd60a"><path d="M8 2h9l4 4v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" opacity="0.55"/><path d="M4 5h9l4 4v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></g><rect x="4" y="13.5" width="9" height="6" rx="1.4" fill="#1d1d1f"/><text x="8.5" y="18.15" text-anchor="middle" font-size="4" font-weight="800" font-family="Arial, sans-serif" fill="#ffd60a">PDF</text></svg> PDF Editor</h1>
       <p>PDF · 한글 · MS Office · Adobe · Image &nbsp;인쇄용 조판하기</p>
+      <!-- 주간/야간 선택 — 켜자마자(문서 열기 전) 고를 수 있게 머리 왼쪽 위에. 왼쪽 패널 ☀/🌙과 같은 상태(toggleUiTheme) -->
+      <div class="theme-seg" role="group" aria-label="화면 밝기">
+        <button type="button" data-theme-pick="light" onclick="setUiTheme('light')">☀ 주간</button><button type="button" data-theme-pick="dark" onclick="setUiTheme('dark')">🌙 야간</button>
+      </div>
       <!-- 체험판 배지 — 정품(관리자) PC에서는 표시되지 않는다. 클릭 시 인증 창 -->
       <div id="licBadge" class="lic-badge" style="display:none" title="클릭하면 체험판 인증 창이 열립니다 (Ctrl+Shift+Alt+L)"
            onclick="window.electronAPI.openLicenseWindow()"></div>
@@ -228,6 +232,11 @@
           <span class="sbp-slider"></span>
         </label>
       </div>
+      <!-- 사이드바 썸네일 크기 — 50~250% (Ctrl+휠도 됨). 번호만 보기일 땐 숨김 -->
+      <div class="sbp-compact-row sbp-zoom-row">
+        <span class="sbp-compact-lbl">🖼 썸네일 크기</span>
+        <span class="sbz-ctrl"><button type="button" class="sbz-btn" id="sbZoomOut" onclick="changeSbThumbZoom(-1)" aria-label="사이드바 썸네일 축소">−</button><span class="sbz-pct" id="sbZoomPct">100%</span><button type="button" class="sbz-btn" id="sbZoomIn" onclick="changeSbThumbZoom(1)" aria-label="사이드바 썸네일 확대">+</button></span>
+      </div>
       <div class="sbp-body" id="sbPanelBody">
       <div class="sbp-section" data-sbsec="stats">
         <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span>📊 분석결과</div>
@@ -331,7 +340,7 @@
             <button class="sbp-opt" data-ebbind="right" onclick="setEbBind('right')" title="세로쓰기·일본식 — 오른쪽에서 왼쪽으로 넘김">우철(세로쓰기)</button>
           </div>
           <div class="sbp-row2">
-            <button class="sbp-opt" id="ebWmBtn" onclick="toggleEbOpt('wm')" title="'시안' 글자를 연하게 겹쳐 인쇄 원본으로 쓰이는 것을 막습니다">💧 워터마크 '시안'</button>
+            <button class="sbp-opt" id="ebWmBtn" onclick="openEbWmMenu(this)" title="누르면 고릅니다 — 시안: '시안' 글자를 대각선으로 연하게 겹쳐 인쇄 원본으로 쓰이는 것을 막음 · 안내: 쪽마다 바깥쪽 아래 모서리(왼쪽 쪽은 왼쪽 아래)에 '이 책자는 일청기획에서 편집 및 디자인 하였습니다. -인쇄 확인용-' 문구">💧 워터마크</button>
             <button class="sbp-opt" id="ebTrimBtn" onclick="toggleEbOpt('trim')" title="블리드가 있을 때 '여기까지 잘립니다' 안내선을 표시합니다">✂ 재단선 안내</button>
           </div>
           <button class="sbp-btn sbp-apply" id="ebGenBtn" onclick="generateEbookProof()" title="현재 작업 결과를 고객이 브라우저에서 책처럼 넘겨볼 수 있는 HTML 파일 하나로 만듭니다">📖 E-book 시안 생성</button>

@@ -114,5 +114,28 @@ console.log('\n[4] 조작된 스트림 — 후보가 많아도 선형 시간');
   ck('그 스트림도 바이트를 잃지 않음', a === evil && b.endsWith('0.2990 g\n') && (b.match(/BI \/a /g) || []).length === 40000);
 }
 
+console.log('\n[압축] Flate(+PNG 예측자) 인라인 RGB 그림 — 타일 패턴 안 8×8 그림(실파일 K-BIC 실행계획서 19쪽)');
+{
+  const pako = require(path.join(ROOT, 'src/libs/pako.min.js'));
+  const W = 4, H = 2;
+  const px = []; for (let i = 0; i < W * H; i++) px.push(200, 220, 255);     // 옅은 하늘색 → 회색 ≈ 0.299·200+0.587·220+0.114·255 = 218
+  const pngRows = []; for (let y = 0; y < H; y++) { pngRows.push(0); pngRows.push(...px.slice(y * W * 3, (y + 1) * W * 3)); }   // 예측자 None 행
+  const flate = S(pako.deflate(Uint8Array.from(pngRows)));
+  const mk = dp => `q 40 0 0 40 0 0 cm\nBI\n/CS/DeviceRGB\n/W ${W}\n/H ${H}\n/BPC 8\n/F/Fl\n${dp}\nID ${flate}\nEI Q\n0 g\n`;
+  const out = S(preprocessInlineImages(B(mk(`/DP<</Predictor 15\n/Columns ${W}\n/Colors 3>>`)), 0));
+  const g = out.match(/BI\n([\s\S]*?)\nID\n([\s\S]*?)\nEI/);
+  ck('예측자 15: 회색 비압축으로 바뀜(/CS /G · 필터·DP 제거 · 픽셀 8개 = 218)', g && /\/CS \/G/.test(g[1]) && !/\/F\s*\/Fl|\/DP/.test(g[1]) && codes(g[2]).length === W * H && codes(g[2]).every(v => v === 218), g && { dict: g[1], px: codes(g[2]) });
+  ck('그림 뒤 명령은 그대로', out.endsWith('EI Q\n0 g\n'));
+  const flate0 = S(pako.deflate(Uint8Array.from(px)));
+  const out0 = S(preprocessInlineImages(B(`BI /CS /RGB /W ${W} /H ${H} /BPC 8 /F /FlateDecode ID ${flate0}\nEI\n`), 0));
+  ck('예측자 없는 Flate도 바뀜', /\/CS \/G/.test(out0) && !/FlateDecode/.test(out0));
+  // 확신 없는 경우는 바이트 그대로: 크기 불일치 · 필터 배열 · Columns 불일치
+  for (const [name, src] of [
+    ['W가 실제보다 크면(풀린 길이 불일치) 그대로', mk('/DP<</Predictor 15 /Columns 4 /Colors 3>>').replace(`/W ${W}`, '/W 5')],
+    ['필터 배열 [/Fl]은 그대로', mk('/DP<</Predictor 15 /Columns 4 /Colors 3>>').replace('/F/Fl', '/F[/Fl]')],
+    ['DP Columns가 W와 다르면 그대로', mk('/DP<</Predictor 15 /Columns 3 /Colors 3>>')],
+  ]) ck(name, S(preprocessInlineImages(B(src), 0)) === src);
+}
+
 console.log(`\n결과: ${pass} 통과 / ${fail} 실패`);
 process.exit(fail ? 1 : 0);

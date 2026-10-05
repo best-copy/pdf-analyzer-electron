@@ -5462,7 +5462,8 @@
       const inlineCSNames = new Set();     // 변환 못 한 인라인 이미지가 부르는 명명 색공간 — 지우면 안 된다
 
       // 콘텐츠 스트림 색상 연산자 변환 (Worker 오프로드)
-      const processContentStream = async (streamObj) => {
+      // ownRes: 스트림 사전에 /Resources가 없을 때 대신 쓸 리소스(Type3 글리프 = 글꼴의 /Resources)
+      const processContentStream = async (streamObj, ownRes) => {
         if (!streamObj || !streamObj.contents) return;
         const filter = streamObj.dict.get(Nm('Filter'));
         let wasCompressed = false;
@@ -5474,7 +5475,7 @@
         let map = csGrayMap;
         try {
           const ownRef = streamObj.dict.get(Nm('Resources'));
-          const own = ownRef && pdfDoc.context.lookup(ownRef);
+          const own = (ownRef && pdfDoc.context.lookup(ownRef)) || ownRes;
           if (own && own.get && own.get(Nm('ColorSpace'))) map = Object.assign({}, csGrayMap, buildCsGrayMap(pdfDoc, own));
         } catch (e) {}
         try {
@@ -5567,6 +5568,7 @@
                 await processExtGState(formRes, depth + 1);
                 processShading(formRes);
                 await processPatterns(formRes, depth + 1);
+                await processFonts(formRes, depth + 1);
               }
             })());
           }
@@ -6044,6 +6046,7 @@
                     await processExtGState(r, depth + 1);
                     processShading(r);
                     await processPatterns(r, depth + 1);
+                    await processFonts(r, depth + 1);
                   }
                 } catch(e) {}
               })());
@@ -6051,6 +6054,50 @@
           } catch(e) {}
         }
         if (patTasks.length > 0) await Promise.all(patTasks);
+      };
+
+      // ── Type3 글꼴 처리 ──────────────────────────────────────────────────────
+      // 컬러 이모지(NotoColorEmoji 등)를 PDF로 내보내면 **Type3 글꼴**이 되고, 글리프(d0)가 글꼴의
+      // 자기 /Resources에 든 폼·이미지를 그린다. 페이지·폼 리소스만 훑으면 여기를 못 봐 이모지가
+      // 컬러로 남았다(실파일 '스포츠대학 발전 포럼' 48~50쪽 🏟🤝 — 2026-10-02). 글리프 스트림의 색
+      // 연산자와 글꼴 리소스(폼·이미지·ExtGState·음영·패턴, 그 안의 Type3까지)를 모두 바꾼다.
+      const processFonts = async (resDict, depth = 0) => {
+        if (!resDict || depth > 6) return;
+        const fRef = resDict.get(Nm('Font'));
+        if (!fRef) return;
+        const fDict = pdfDoc.context.lookup(fRef);
+        if (!fDict || typeof fDict.entries !== 'function') return;
+        const tasks = [];
+        for (const [, ref] of fDict.entries()) {
+          try {
+            const key = ref && ref.objectNumber != null ? `${ref.objectNumber}_${ref.generationNumber ?? 0}` : null;
+            if (key) { if (processedObjs.has(key)) continue; processedObjs.add(key); }
+            const font = pdfDoc.context.lookup(ref);
+            if (!font || !font.get) continue;
+            const st = font.get(Nm('Subtype'));
+            if (!st || st.encodedName !== '/Type3') continue;
+            const rRef = font.get(Nm('Resources'));
+            const fRes = rRef ? pdfDoc.context.lookup(rRef) : null;
+            const cp = font.get(Nm('CharProcs')) ? pdfDoc.context.lookup(font.get(Nm('CharProcs'))) : null;
+            tasks.push((async () => {
+              try {
+                if (cp && typeof cp.entries === 'function') {
+                  const procs = [];
+                  for (const [, pr] of cp.entries()) { try { const ps = pdfDoc.context.lookup(pr); if (ps && ps.contents) procs.push(processContentStream(ps, fRes)); } catch (e) {} }
+                  await Promise.all(procs);
+                }
+                if (fRes) {
+                  await processXObjects(fRes, depth + 1);
+                  await processExtGState(fRes, depth + 1);
+                  processShading(fRes);
+                  await processPatterns(fRes, depth + 1);
+                  await processFonts(fRes, depth + 1);
+                }
+              } catch (e) {}
+            })());
+          } catch (e) {}
+        }
+        if (tasks.length) await Promise.all(tasks);
       };
 
       // ── 주석(/Annots) 처리 ──────────────────────────────────────────────────
@@ -6109,7 +6156,7 @@
                       const rRef = form.dict.get(Nm('Resources'));
                       if (rRef) {
                         const r = pdfDoc.context.lookup(rRef);
-                        await processXObjects(r, 1); await processExtGState(r, 1); processShading(r); await processPatterns(r, 1);
+                        await processXObjects(r, 1); await processExtGState(r, 1); processShading(r); await processPatterns(r, 1); await processFonts(r, 1);
                       }
                     } catch(e) {}
                   })());
@@ -6150,6 +6197,9 @@
 
       // ② Pattern 처리 (Shading Pattern 그라데이션 채우기 + Tiling Pattern)
       await processPatterns(resDict);
+
+      // ② Type3 글꼴(컬러 이모지 등) — 글리프 스트림 + 글꼴 자체 리소스
+      await processFonts(resDict);
 
       // ② 페이지 자체의 투명도 그룹 색공간 → DeviceGray
       //    (그룹이 없는데 투명도를 쓰는 쪽은 저장 직전 savePdfDoc → addGrayBlendGroups가 단다 — 임포징 판까지)
@@ -6377,64 +6427,107 @@
       } catch(e) { console.warn('JPEG 그레이스케일 변환 실패:', e); }
     }
 
-    async function convertJpxXObjectToGrayscale(pdfDoc, img) {
-      // JPEG 2000 (JPXDecode): canvas 방식으로 디코딩 시도
-      // Chromium/Electron은 JPEG 2000을 기본 지원하지 않아 실패할 수 있음 → 그 경우 건너뜀
-      try {
-        const Nm = n => PDFLib.PDFName.of(n);
-        const wO = img.dict.get(Nm('Width')), hO = img.dict.get(Nm('Height'));
-        const w = wO ? (wO.numberValue ?? wO.asNumber?.() ?? 0) : 0;
-        const h = hO ? (hO.numberValue ?? hO.asNumber?.() ?? 0) : 0;
-
-        const blob = new Blob([img.contents], { type: 'image/jp2' });
-        const url  = URL.createObjectURL(blob);
-        const { grayBytes, iw, ih } = await new Promise((res, rej) => {
-          const timeout = setTimeout(() => { URL.revokeObjectURL(url); rej(new Error('timeout')); }, 4000);
-          const el = new Image();
-          el.onload = () => {
-            clearTimeout(timeout); URL.revokeObjectURL(url);
-            const cw = el.naturalWidth || w, ch = el.naturalHeight || h;
-            if (!cw || !ch) { rej(new Error('invalid size')); return; }
-            const c = document.createElement('canvas');
-            c.width = cw; c.height = ch;
-            const ctx = c.getContext('2d'); ctx.drawImage(el, 0, 0);
-            const d = ctx.getImageData(0, 0, cw, ch).data;
-            const gb = new Uint8Array(cw * ch);
-            for (let i = 0; i < gb.length; i++)
-              gb[i] = Math.round(0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2]);
-            res({ grayBytes: gb, iw: cw, ih: ch });
-          };
-          el.onerror = () => { clearTimeout(timeout); URL.revokeObjectURL(url); rej(new Error('JPX decode failed')); };
-          el.src = url;
-        });
-
-        // Dot Gain 보정 적용 (main thread — worker 미사용)
-        const _dg = ctxDotGain(pdfDoc);
-        if (_dg) for (let i = 0; i < grayBytes.length; i++) grayBytes[i] = Math.round(dotGainCurve(grayBytes[i] / 255, _dg) * 255);
-
-        const predicted  = applyPNGPredictorGray(grayBytes, iw, ih);
-        const compressed = pako.deflate(predicted, { level: 1 });
-        img.contents = compressed;
-        img.dict.set(Nm('Filter'),           Nm('FlateDecode'));
-        img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
-        img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
-        img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(iw));
-        img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(ih));
-        img.dict.set(Nm('Length'),           PDFLib.PDFNumber.of(compressed.length));
-        img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({
-          Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: iw,
-        }));
-        img.dict.delete(Nm('Mask'));
-        img.dict.delete(Nm('ImageMask'));
-        img.dict.delete(Nm('Intent'));
-        img.dict.delete(Nm('Alternates'));
-        img.dict.delete(Nm('Decode'));
-        img.dict.delete(Nm('Matte'));
-        img.dict.delete(Nm('SMaskInData'));
-        fixSMaskMatte(pdfDoc, img);
-      } catch(e) {
-        console.warn('JPX 흑백변환 실패 (Chromium 미지원):', e);
+    // ── JPEG 2000(JPXDecode) 사진 → 흑백 ───────────────────────────────────────
+    // Chromium은 JPX를 열지 못한다(예전 코드는 <img>로 시도하다 늘 실패해 **사진을 컬러로 남겼다** —
+    // 도록 146쪽: 흑백 체크한 131쪽 중 126쪽에 CMY 잉크가 남아 프린터가 컬러로 셌다).
+    // 그래서 Ghostscript가 그림만 담은 임시 PDF(쪽 = 그림 1장, 72dpi = 원본 픽셀 1:1)를 회색 PGM으로 풀고,
+    // 워커가 다른 흑백 사진과 같은 1성분 JPEG(DeviceGray, gray-jpeg.js q82)로 다시 굽는다.
+    // 쪽마다 병렬로 들어오는 요청을 잠깐 모아 gs 한 번에 푼다(_jpxQueue).
+    const _jpxQueue = [];
+    let _jpxTimer = null;
+    function decodeJpxGray(img, w, h) {
+      return new Promise(resolve => {
+        _jpxQueue.push({ img, w, h, resolve });
+        if (!_jpxTimer) _jpxTimer = setTimeout(flushJpxQueue, 40);
+      });
+    }
+    function parsePgm(u8) {
+      // P5 헤더(주석 # 줄 건너뜀 — 함정 7) → { w, h, data }
+      let i = 0; const f = [];
+      while (f.length < 4 && i < u8.length) {
+        while (i < u8.length && (u8[i] === 32 || u8[i] === 9 || u8[i] === 10 || u8[i] === 13)) i++;
+        if (u8[i] === 35) { while (i < u8.length && u8[i] !== 10 && u8[i] !== 13) i++; continue; }
+        let t = ''; while (i < u8.length && !(u8[i] === 32 || u8[i] === 9 || u8[i] === 10 || u8[i] === 13)) t += String.fromCharCode(u8[i++]);
+        f.push(t);
       }
+      i++;   // 헤더 끝 공백 1바이트
+      const w = +f[1], h = +f[2];
+      if (f[0] !== 'P5' || !(w > 0) || !(h > 0) || +f[3] !== 255 || u8.length - i < w * h) return null;
+      return { w, h, data: u8.slice(i, i + w * h) };
+    }
+    async function flushJpxQueue() {
+      _jpxTimer = null;
+      const jobs = _jpxQueue.splice(0);
+      if (!jobs.length) return;
+      const api = window.electronAPI;
+      let tmp = null, res = null;
+      try {
+        if (!api || !api.renderThumbs || !api.writeTempFile) throw new Error('Ghostscript를 쓸 수 없습니다');
+        const d = await PDFLib.PDFDocument.create();
+        const ctx = d.context, Nm = n => PDFLib.PDFName.of(n);
+        for (const j of jobs) {
+          const dict = { Type: 'XObject', Subtype: 'Image', Width: j.w, Height: j.h, Filter: 'JPXDecode' };
+          // 이름 색공간만 옮긴다(ICC 등 배열은 원본 문서 객체라 못 옮김 → JPX 안의 색 정보를 쓴다 — 규격상 허용)
+          const cs = j.img.dict.get(Nm('ColorSpace'));
+          if (cs && cs.encodedName && ['/DeviceGray', '/DeviceRGB', '/DeviceCMYK'].includes(cs.encodedName)) dict.ColorSpace = cs.encodedName.slice(1);
+          const ref = ctx.register(ctx.stream(j.img.contents, dict));
+          const p = d.addPage([j.w, j.h]);
+          p.node.setXObject(Nm('I0'), ref);
+          p.node.set(Nm('Contents'), ctx.register(ctx.stream(`q ${j.w} 0 0 ${j.h} 0 0 cm /I0 Do Q`)));
+        }
+        tmp = api.writeTempFile(await d.save({ useObjectStreams: false }), 'pdf');
+        res = await api.renderThumbs(tmp, { pages: jobs.length, dpi: 72, gray: true, quiet: true,
+                                            procs: Math.max(1, Math.min(8, Math.ceil(jobs.length / 2))) });
+        jobs.forEach((j, k) => {
+          let out = null;
+          try { const g = parsePgm(new Uint8Array(api.readFile(res.files[k + 1]))); if (g && g.w === j.w && g.h === j.h) out = g; } catch (e) {}
+          j.resolve(out);
+        });
+      } catch (e) {
+        console.warn('JPEG 2000 해독 실패(Ghostscript):', e);
+      } finally {
+        jobs.forEach(j => j.resolve(null));          // 이미 답한 것은 무시된다
+        if (tmp) { try { api.removeTempFile(tmp); } catch (e) {} }
+        if (res && res.dir) { try { await api.removeThumbs(res.dir); } catch (e) {} }
+      }
+    }
+
+    async function convertJpxXObjectToGrayscale(pdfDoc, img) {
+      const Nm = n => PDFLib.PDFName.of(n);
+      const num = o => { o = pdfDoc.context.lookup(o) ?? o; return o ? +(o.numberValue ?? o.asNumber?.() ?? 0) : 0; };
+      const w = num(img.dict.get(Nm('Width'))), h = num(img.dict.get(Nm('Height')));
+      // JPX 안의 알파(SMaskInData)는 회색으로 풀면 사라진다 — 투명도가 깨지느니 그대로 둔다(저장 전 컬러 검수가 알린다)
+      if (num(img.dict.get(Nm('SMaskInData')))) { console.warn('JPEG 2000 알파(SMaskInData) 사진은 흑백변환을 건너뜁니다'); return; }
+      if (!(w > 0 && h > 0)) return;
+      const dec = await decodeJpxGray(img, w, h);
+      if (!dec) { console.warn('JPEG 2000 흑백변환 실패 — 사진이 원래 색으로 남습니다'); return; }
+      const gbuf = dec.data.buffer.slice(dec.data.byteOffset, dec.data.byteOffset + dec.data.byteLength);
+      const res = await grayWorkerPool.run('gray2jpeg', { gray: gbuf, w: dec.w, h: dec.h, dotGain: ctxDotGain(pdfDoc) }, [gbuf]);
+      if (res.jpeg) {
+        const jbytes = new Uint8Array(res.jpeg);
+        img.contents = jbytes;
+        img.dict.set(Nm('Length'), PDFLib.PDFNumber.of(jbytes.length));
+        img.dict.set(Nm('Filter'), Nm('DCTDecode'));
+        img.dict.delete(Nm('DecodeParms'));
+      } else {
+        const compressed = new Uint8Array(res.deflated);
+        img.contents = compressed;
+        img.dict.set(Nm('Length'), PDFLib.PDFNumber.of(compressed.length));
+        img.dict.set(Nm('Filter'), Nm('FlateDecode'));
+        img.dict.set(Nm('DecodeParms'), pdfDoc.context.obj({ Predictor: 15, Colors: 1, BitsPerComponent: 8, Columns: res.w }));
+      }
+      img.dict.set(Nm('ColorSpace'),       Nm('DeviceGray'));
+      img.dict.set(Nm('BitsPerComponent'), PDFLib.PDFNumber.of(8));
+      img.dict.set(Nm('Width'),            PDFLib.PDFNumber.of(res.w));
+      img.dict.set(Nm('Height'),           PDFLib.PDFNumber.of(res.h));
+      img.dict.delete(Nm('Mask'));
+      img.dict.delete(Nm('ImageMask'));
+      img.dict.delete(Nm('Intent'));
+      img.dict.delete(Nm('Alternates'));
+      img.dict.delete(Nm('Decode'));
+      img.dict.delete(Nm('Matte'));
+      img.dict.delete(Nm('SMaskInData'));
+      fixSMaskMatte(pdfDoc, img);
     }
 
     async function convertFlateXObjectToGrayscale(pdfDoc, img, resDict, isRaw = false) {
@@ -7905,7 +7998,7 @@
           const page = await newPdf.getPage(baseCount + k + 1);
           const res = await analyzePageColor(page);
           entries.push({
-            pageNum: 0, originalIdx: baseCount + k, isColor: !!(res && res.isColor), rotation: 0,
+            pageNum: 0, originalIdx: baseCount + k, isColor: !!(res && res.isColor), spread: res && res.spread, rotation: 0,
             thumbnail: res && res.thumbPromise ? await res.thumbPromise : null,
             thumbW: res && res.thumbW, thumbH: res && res.thumbH, thumbLow: !!(res && res.low),
             pageWpt: res && res.pageWpt, pageHpt: res && res.pageHpt,
@@ -7913,6 +8006,8 @@
           });
           updateProgress(Math.round((k + 1) / added * 100));
         }
+        // 🎯 컬러 판정 보정 — 처음 분석과 같은 기준(app-core refineNeutralPages)
+        try { await refineNeutralPages(entries, srcDoc, mergedBytes, r => r.originalIdx); } catch (e) {}
         if (gen !== _cacheGen || pageResults[afterIdx] !== anchor) {
           try { newPdf.destroy(); } catch (e) {}
           hideLoading(); showError('그 사이 문서가 바뀌어 페이지 추가를 취소했습니다 — 다시 시도해 주세요.'); return;
@@ -8169,6 +8264,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .pg .no{position:absolute;bottom:-22px;left:0;right:0;text-align:center;font-size:0.72em;color:#8e8e93}
 .trim{position:absolute;border:1px dashed rgba(255,70,70,.9);pointer-events:none}
 .wm{position:absolute;inset:0;pointer-events:none;background-repeat:repeat;opacity:.15}
+/* 안내 워터마크 — 오른쪽 아래 여백에 한 줄(사용자 지시 2026-10-01). 쪽 폭에 맞춰 늘고 줄어든다 */
+.wmn{position:absolute;inset:0;pointer-events:none;background-repeat:no-repeat;background-size:100% auto;background-position:center bottom;opacity:.8}
 /* ── 책 느낌(body.paper) ── 색을 정확히 봐야 할 때는 툴바에서 끌 수 있다 ── */
 .paper .spread{filter:drop-shadow(0 22px 28px rgba(0,0,0,.55))}
 .paper .pg{box-shadow:none}
@@ -8244,6 +8341,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
    낱장 **안**에 두면 3D 층과 함께 픽셀 스냅돼 1px 들썩이므로 펼침면의 평범한 2D 형제로 둔다. */
 .lflat{position:absolute;pointer-events:none;z-index:10}
 .stwm{position:absolute;inset:0;background-repeat:repeat;opacity:.15;pointer-events:none}
+.stwmn{position:absolute;inset:0;background-repeat:no-repeat;opacity:.8;pointer-events:none}
 /* 넘김 표시 — 예전에는 띠 전체를 흐렸다 나타냈지만, 그 안에 늘 보여야 하는 버튼이 생겨
    **화살표(i)만** 흐리게 한다. 세로 배치라 버튼이 화살표 위에 온다(눕히면 옆으로). */
 .nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff;touch-action:none}
@@ -8550,10 +8648,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    box.style.width=W+"px"; box.style.height=H+"px"; pw=W;',
       '    if(im){ var g=take(p); box.appendChild(g); }',
       '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
+      '    if(im&&D.opts.note){ var wn=document.createElement("div"); wn.className="wmn"; wn.style.backgroundImage=noteBg(!single&&!k); box.appendChild(wn); }',
       '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
       '      t.style.left=(W*q)+"px"; t.style.top=(H*q)+"px"; t.style.width=(W*(1-2*q))+"px"; t.style.height=(H*(1-2*q))+"px";',
       '      box.appendChild(t); }',
-      '    if(book&&!single){ var gu=document.createElement("div"); gu.className="gut"; gu.style.width="7%";',
+      '    if(book&&!single){ var gu=document.createElement("div"); gu.className="gut"; gu.style.width="4.9%";',
       '      if(k){ gu.style.left="0"; gu.style.background="linear-gradient(to left,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
       '      else { gu.style.right="0"; gu.style.background="linear-gradient(to right,rgba(0,0,0,0),rgba(0,0,0,.30))"; }',
       '      box.appendChild(gu); }',
@@ -8721,6 +8820,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="stwm";',
       '    wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")";',
       '    wm.style.backgroundPosition=(-slice*w)+"px 0"; d.appendChild(wm); }',
+      '  // 안내 문구는 쪽 전체 기준 오른쪽 아래 — 조각은 그 쪽 그림과 같은 만큼 밀어 이어지게',
+      '  if(im&&D.opts.note){ var wn=document.createElement("div"); wn.className="stwmn"; wn.style.backgroundImage=noteBg(rev);',   // rev = 이 면이 왼쪽 쪽
+      '    wn.style.backgroundSize=W+"px auto"; wn.style.backgroundPosition=(-slice*w)+"px bottom"; d.appendChild(wn); }',
       '  // 그늘 모양(조각을 가로지르는 농도 변화)은 여기서 한 번만 굽는다 —',
       '  // 프레임마다는 투명도만 바꿔 CSS 재파싱 없이 부드럽게 흐른다.',
       '  var sh=document.createElement("div"); sh.className="stsh";',
@@ -8768,7 +8870,10 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '// 앞면의 그늘은 옅어지고(1-p), 반대편에 내려앉는 뒷면의 그늘은 짙어진다(p) — 그래서',
       '// 시작·끝 순간의 농도가 아래 페이지와 정확히 같아 이어짐이 끊기지 않는다.',
       'var GUTS=0.30;',
-      'function gutAt(u){ return Math.max(0,1-u/0.09); }   // 책등에서 페이지 폭의 9%까지',
+      '// 안내 문구 — 쪽마다 **바깥쪽** 아래 모서리(오른쪽 쪽=오른쪽 아래, 왼쪽 쪽=왼쪽 아래 · 사용자 지시 2026-10-02).',
+      '// 정렬은 그림 안에서 한다(noteL = 왼쪽 정렬판) — 배경은 쪽 폭 그대로라 넘김 조각에서도 같은 자리에 이어진다.',
+      'function noteBg(left){ return "url(\\""+((left&&D.opts.noteL)||D.opts.note)+"\\")"; }',
+      'function gutAt(u){ return Math.max(0,1-u/0.063); }   // 책등에서 페이지 폭의 6.3%까지 (예전 9% — 펼침면 골 7%→4.9%와 함께 30% 좁힘, 사용자 요청 2026-10-01)',
       '// 휨은 **책 안쪽(책등 쪽)에 몰아준다** — 실제로 책장을 넘기면 바깥은 거의 평평한 채로',
       '// 제본 근처가 크게 휜다. 바깥쪽에 몰면 종이가 스스로 말려 붙어 사라진 것처럼 보였다.',
       '// 가중치는 제곱으로 감소(∝(n-k)^2) — 선형보다 책등 쪽에 훨씬 더 몰린다.',
@@ -8934,7 +9039,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    if(e.classList&&e.classList.contains("pg"))bx.push(e); }',
       '  if(bx.length<2)return false;',
       '  for(var k=0;k<bx.length;k++){',
-      '    var b=bx[k], gw=b.offsetWidth*0.07;',
+      '    var b=bx[k], gw=b.offsetWidth*0.049;',
       '    var og=b.querySelector(".gut"); if(og)og.style.display="none";   // 덮개와 겹치지 않게',
       '    var o=document.createElement("div"); o.className="gtop";',
       '    o.style.top=b.offsetTop+"px"; o.style.height=b.offsetHeight+"px"; o.style.width=gw+"px";',
@@ -9001,6 +9106,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  el.style.borderRadius=paper?(single?"3px":radius):"";',
       '  if(D.opts.wm){ var wm=document.createElement("div"); wm.className="wm";',
       '    wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; el.appendChild(wm); }',
+      '  if(D.opts.note){ var wn=document.createElement("div"); wn.className="wmn"; wn.style.backgroundImage=noteBg(radius==="3px 0 0 3px"); el.appendChild(wn); }',   // 그 모서리 값 = 왼쪽 쪽
       '}',
       '// 착지 — 최종 펼침면을 먼저 깔고, 넘어간 낱장만 그 위에서 짧게 녹여 없앤다.',
       '// 곧바로 지우면 새로 그린 그림이 아직 안 올라온 프레임에 흰 자리가 보일 수 있다.',
@@ -9305,6 +9411,18 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
     }
 
+    // 안내 워터마크 — 쪽 바깥쪽 아래 여백에 놓을 한 줄 문구(가로로 긴 SVG, 쪽 폭에 맞춰 늘어난다).
+    // left = 왼쪽 쪽용(왼쪽 정렬), 아니면 오른쪽 정렬.
+    // 폭 1000 기준 글자 20 → A4를 화면에 500px로 보면 약 10px. 줄 높이 44 = 쪽 폭의 4.4%(보통 여백 안).
+    const EBOOK_NOTE_TEXT = '이 책자는 일청기획에서 편집 및 디자인 하였습니다.   -인쇄 확인용-';
+    function ebookNoteUri(text, left) {
+      const t = String(text || EBOOK_NOTE_TEXT).replace(/[<>&"']/g, '');
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="44" viewBox="0 0 1000 44">'
+        + '<text x="' + (left ? 35 : 965) + '" y="24" font-size="18" font-family="Malgun Gothic, Apple SD Gothic Neo, sans-serif" fill="#55555c"'
+        + ' text-anchor="' + (left ? 'start' : 'end') + '" xml:space="preserve">' + t + '</text></svg>';
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    }
+
     // 시안 HTML 조립 — 이미지까지 전부 인라인된 단일 파일을 문자열로 돌려준다.
     //   data = { title, meta:{ mm:[w,h], spec, date, by, bind }, book:[{u,w,h}],
     //            sheets:[{u,w,h}], opts:{ watermark, wmText, trimPct, coverSingle } }
@@ -9334,7 +9452,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
                 bindStyle: ['twinring', 'hardcover', 'leaflet'].indexOf(meta.bindStyle) >= 0
                            ? meta.bindStyle : 'book',
                 fold: meta.fold || 'roll3' },
-        opts: { wm: opts.watermark ? ebookWatermarkUri(opts.wmText) : '', trimPct: +opts.trimPct || 0 },
+        // watermark: true/'draft' = 대각선 '시안' 반복 · 'notice' = 위·아래 여백 안내 문구
+        opts: { wm: (opts.watermark && opts.watermark !== 'notice') ? ebookWatermarkUri(opts.wmText) : '',
+                note: opts.watermark === 'notice' ? ebookNoteUri(opts.noteText) : '',
+                noteL: opts.watermark === 'notice' ? ebookNoteUri(opts.noteText, true) : '',
+                trimPct: +opts.trimPct || 0 },
       };
       const hasSheets = sheets.length > 0;
       // 닫는 스크립트 태그가 문자열 안에 있으면 브라우저가 거기서 스크립트를 끊는다 → 반드시 이스케이프
@@ -9486,7 +9608,36 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         b.classList.toggle('active', b.dataset.ebbind === v));
     }
     // 워터마크·재단선 — 체크박스 대신 토글 버튼(한 줄 2개)
+    // 💧 워터마크 — 누르면 없음 / 시안(대각선 반복) / 안내(위·아래 여백 문구) 중 고른다(사용자 요청 2026-10-01)
+    const EB_WM_LABEL = { '': '💧 워터마크', draft: "💧 워터마크: 시안", notice: '💧 워터마크: 안내' };
+    function setEbWm(mode) {
+      _ebOpts.wm = mode === 'draft' || mode === 'notice' ? mode : false;
+      const b = document.getElementById('ebWmBtn');
+      if (b) { b.classList.toggle('active', !!_ebOpts.wm); b.textContent = EB_WM_LABEL[_ebOpts.wm || '']; }
+    }
+    function openEbWmMenu(btn) {
+      document.querySelectorAll('.ch-menu').forEach(m => m.remove());
+      const m = document.createElement('div');
+      m.className = 'ch-menu';
+      const cur = _ebOpts.wm || '';
+      [['', '없음', '워터마크 없이'], ['draft', "시안", "'시안' 글자를 대각선으로 연하게 반복"],
+       ['notice', '안내', '쪽마다 바깥쪽 아래 모서리에 “' + EBOOK_NOTE_TEXT.replace(/\s+/g, ' ') + '”']].forEach(([v, label, sub]) => {
+        const it = document.createElement('button');
+        it.className = 'ch-menu-item' + (v === cur ? ' on' : '');
+        it.innerHTML = '<span>' + (v === cur ? '✓ ' : '') + label + '</span><span class="ch-menu-sub"></span>';
+        it.lastChild.textContent = sub;
+        it.onclick = () => { m.remove(); setEbWm(v); };
+        m.appendChild(it);
+      });
+      document.body.appendChild(m);
+      const r = btn.getBoundingClientRect(), mr = m.getBoundingClientRect();
+      m.style.left = Math.max(6, Math.min(r.left, innerWidth - mr.width - 8)) + 'px';
+      m.style.top = (r.bottom + mr.height + 6 <= innerHeight ? r.bottom + 4 : Math.max(6, r.top - mr.height - 4)) + 'px';
+      const close = ev => { if (!m.contains(ev.target) && ev.target !== btn) { m.remove(); document.removeEventListener('mousedown', close); } };
+      setTimeout(() => document.addEventListener('mousedown', close), 0);
+    }
     function toggleEbOpt(key) {
+      if (key === 'wm') { setEbWm(_ebOpts.wm ? '' : 'draft'); return; }
       _ebOpts[key] = !_ebOpts[key];
       const b = document.getElementById(key === 'wm' ? 'ebWmBtn' : 'ebTrimBtn');
       if (b) b.classList.toggle('active', !!_ebOpts[key]);
@@ -9581,7 +9732,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           },
           book: book.pages,
           sheets: sheets.pages,
-          opts: { watermark: _ebOpts.wm, wmText: '시안', trimPct, coverSingle: true },
+          opts: { watermark: _ebOpts.wm, wmText: '시안', noteText: EBOOK_NOTE_TEXT, trimPct, coverSingle: true },
         });
 
         updateProgress(100);

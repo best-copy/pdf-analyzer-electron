@@ -48,6 +48,26 @@ function writeFileSafe(filePath, buffer) {
   }
 }
 
+// 분석 캐시 폴더 — 사용자 폴더 아래(검사 모드는 따로 쓰는 사용자 폴더라 실제 캐시와 섞이지 않는다)
+let _analysisCacheDir;
+async function analysisCacheDir() {
+  if (_analysisCacheDir === undefined) {
+    try { _analysisCacheDir = (await ipcRenderer.invoke('app:analysisCacheDir')) || null; } catch (e) { _analysisCacheDir = null; }
+  }
+  return _analysisCacheDir;
+}
+// 합계 1.5GB를 넘으면 오래 안 쓴(mtime) 것부터 지운다 — 수천 쪽 문서도 썸네일 300px라 수십 MB 수준
+const ANALYSIS_CACHE_MAX = 1536 * 1024 * 1024;
+function pruneAnalysisCache(dir) {
+  try {
+    const items = fs.readdirSync(dir).filter(f => /\.pac$/.test(f)).map(f => {
+      const p = path.join(dir, f); const st = fs.statSync(p); return { p, size: st.size, t: st.mtimeMs };
+    }).sort((a, b) => b.t - a.t);
+    let sum = 0;
+    for (const it of items) { sum += it.size; if (sum > ANALYSIS_CACHE_MAX) { try { fs.unlinkSync(it.p); } catch (e) {} } }
+  } catch (e) {}
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // 파일 열기 다이얼로그 — 경로만 반환 (파일 내용은 readFile로 별도 요청)
   openFile: (opts) => ipcRenderer.invoke('dialog:openFile', opts || {}),
@@ -202,6 +222,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
   outlineFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:outlineFonts', pdfPath, opts || {}),
   // 폰트 대체 사전 감지 (gs nullpage) — opts.first/last = 훑을 페이지(1-based). 로그 문자열 반환
   probeFonts: (pdfPath, opts) => ipcRenderer.invoke('gs:probeFonts', pdfPath, opts || {}),
+
+  // 분석용 병렬 썸네일 렌더(대용량·JPEG 2000) — { dir, files: { 쪽번호: png경로 } }
+  renderThumbs: (pdfPath, opts) => ipcRenderer.invoke('gs:renderThumbs', pdfPath, opts || {}),
+  removeThumbs: (dir) => ipcRenderer.invoke('gs:removeThumbs', dir),
+  onRenderThumbsProgress: (cb) => {
+    ipcRenderer.removeAllListeners('gs:renderThumbsProgress');
+    if (typeof cb !== 'function') return;
+    ipcRenderer.on('gs:renderThumbsProgress', (_e, info) => { try { cb(info || {}); } catch (err) {} });
+  },
+  // 분석 결과 캐시 — 사용자 폴더/analysis-cache/<sha256>.pac. 같은 PDF를 다시 열면 분석을 건너뛴다.
+  // 이름은 64자 16진만 받는다(경로 조작 차단). 합계 ANALYSIS_CACHE_MAX를 넘으면 오래 안 쓴 것부터 지운다.
+  analysisCacheRead: async (key) => {
+    try {
+      if (!/^[0-9a-f]{64}$/.test(key || '')) return null;
+      const dir = await analysisCacheDir(); if (!dir) return null;
+      const p = path.join(dir, key + '.pac');
+      if (!fs.existsSync(p)) return null;
+      const buf = fs.readFileSync(p);
+      try { const t = new Date(); fs.utimesSync(p, t, t); } catch (e) {}   // 최근 사용 표시(정리 순서)
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    } catch (e) { return null; }
+  },
+  analysisCacheWrite: async (key, bytes) => {
+    try {
+      if (!/^[0-9a-f]{64}$/.test(key || '')) return false;
+      const dir = await analysisCacheDir(); if (!dir) return false;
+      fs.mkdirSync(dir, { recursive: true });
+      writeFileSafe(path.join(dir, key + '.pac'), bytes);
+      pruneAnalysisCache(dir);
+      return true;
+    } catch (e) { return false; }
+  },
 
   // 2GB 넘는 PDF 쪼개기 — 화면은 버퍼 하나를 2GB까지만 잡으므로 gs로 나눠 연다
   pdfPageCount: (p) => ipcRenderer.invoke('gs:pageCount', p),

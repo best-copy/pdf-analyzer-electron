@@ -101,7 +101,13 @@ const UI = `
         <option value="right">우철 (세로쓰기)</option>
       </select>
     </label>
-    <label class="chk"><input type="checkbox" id="wm"> 워터마크 '시안' 넣기</label>
+    <label>워터마크
+      <select id="wm">
+        <option value="" selected>없음</option>
+        <option value="draft">시안 — '시안' 대각선 반복</option>
+        <option value="notice">안내 — 쪽 바깥쪽 아래 모서리 문구</option>
+      </select>
+    </label>
     <label class="chk"><input type="checkbox" id="cover" checked> 표지를 단독 페이지로</label>
     <label>재단선 안내 <input type="number" id="bleed" value="0" min="0" max="20" step="0.5" title="블리드(도련) mm — 0이면 표시하지 않습니다"> mm</label>
   </div>
@@ -166,7 +172,7 @@ $('go').onclick = async function () {
       },
       book: book.pages, sheets: [],
       opts: {
-        watermark: $('wm').checked, wmText: '시안',
+        watermark: $('wm').value || false, wmText: '시안', noteText: EBOOK_NOTE_TEXT,
         trimPct: (bleed > 0 && book.mm[0]) ? (bleed / book.mm[0]) : 0,
         coverSingle: $('cover').checked,
       },

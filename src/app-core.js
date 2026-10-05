@@ -1456,6 +1456,7 @@
     //
     // ⚠ ANALYSIS_CACHE_V는 **판정 규칙이나 썸네일 산출 규칙이 바뀌면 반드시 올린다**.
     //   안 올리면 옛 판정이 되살아나 컬러 장수(=프린터 과금)가 틀린다.
+    //   (컬러 판정 보정은 올리지 않고 meta.nv로 갈랐다 — 옛 캐시는 열 때 내용 확인만 다시 한다. 판정을 되돌리는 쪽이 아니라 흑백으로만 바꾸므로)
     const ANALYSIS_CACHE_V = 1;
     const THUMB_CACHE_W = 300;          // 저장용 썸네일 폭(px)
     const THUMB_CACHE_Q = 0.72;
@@ -1490,10 +1491,62 @@
       const blob = new Uint8Array(total);
       let p = 0; parts.forEach(b => { blob.set(b, p); p += b.length; });
       return {
-        meta: { v: ANALYSIS_CACHE_V, tv: THUMB_RENDER_V, pdfLen: tabState.originalPdfBytes.byteLength,
+        // nv = 컬러 판정 보정(refineNeutralPages)을 거친 결과 — 없으면 열 때 내용 확인을 한 번 더 한다
+        meta: { v: ANALYSIS_CACHE_V, tv: THUMB_RENDER_V, nv: 1, pdfLen: tabState.originalPdfBytes.byteLength,
                 thumbW: THUMB_CACHE_W, defaultPageSize: tabState.defaultPageSize || null, pages },
         blob,
       };
+    }
+
+    // ── 💾 디스크 분석 캐시 — 같은 PDF를 다시 열면 분석을 건너뛴다 ───────────────
+    // 작업 파일(.pdfw) 캐시와 **같은 형식·같은 검증**(captureAnalysisCache / analysisCacheUsable)이다.
+    // 열쇠 = 원본 바이트 전체의 SHA-256 — 한 바이트만 달라도 다른 파일로 본다.
+    // 저장은 분석이 ANALYSIS_DISK_MIN_MS 넘게 걸린 문서만(작은 문서는 다시 분석해도 빠르다).
+    // 위치: 사용자 폴더/analysis-cache (합계 1.5GB 넘으면 오래 안 쓴 것부터 지움 — preload).
+    const ANALYSIS_DISK_MIN_MS = 4000;
+    const ANALYSIS_DISK_MAGIC = 'PDFANA1\n';
+    async function pdfFingerprint(bytes) {
+      if (!bytes || !bytes.byteLength || !(window.crypto && crypto.subtle)) return null;
+      const h = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      let s = ''; for (const b of h) s += b.toString(16).padStart(2, '0');
+      return s;
+    }
+    async function readAnalysisDiskCache(key) {
+      const api = window.electronAPI;
+      if (!key || !api || !api.analysisCacheRead) return null;
+      const ab = await api.analysisCacheRead(key);
+      if (!ab) return null;
+      const u8 = new Uint8Array(ab);
+      const mlen = ANALYSIS_DISK_MAGIC.length;
+      if (u8.length < mlen + 4 || new TextDecoder().decode(u8.subarray(0, mlen)) !== ANALYSIS_DISK_MAGIC) return null;
+      const jl = new DataView(ab).getUint32(mlen, true);
+      if (mlen + 4 + jl > u8.length) return null;
+      try { return { meta: JSON.parse(new TextDecoder().decode(u8.subarray(mlen + 4, mlen + 4 + jl))), blob: u8.subarray(mlen + 4 + jl) }; }
+      catch (e) { return null; }
+    }
+    function saveAnalysisDiskCacheLater(tabState, key) {
+      const api = window.electronAPI;
+      if (!api || !api.analysisCacheWrite || !tabState.originalPdfBytes) return;
+      const bytes = tabState.originalPdfBytes;
+      // 화면이 먼저 뜨도록 조금 뒤에 — 썸네일을 300px로 줄여 담는 데 시간이 든다
+      setTimeout(async () => {
+        try {
+          if (tabState.originalPdfBytes !== bytes) return;    // 그새 쪽을 붙였으면(새 원본 쪽 추가 등) 이 열쇠와 안 맞다
+          const k = key || await pdfFingerprint(bytes);
+          if (!tabs.has(tabState.id)) return;
+          const c = await captureAnalysisCache(tabState);
+          if (!k || !c || tabState.originalPdfBytes !== bytes) return;
+          // 담는 도중 탭을 닫으면 썸네일(blob URL)이 풀려 일부가 빈 채로 담긴다 — 그런 캐시는 남기지 않는다
+          // (다시 열 때 썸네일 없는 쪽이 생기고, JPEG 2000 원고는 그 쪽을 pdf.js로 다시 굽느라 느리다)
+          if (!tabs.has(tabState.id) || c.meta.pages.some(pg => !pg.tlen)) return;
+          const js = new TextEncoder().encode(JSON.stringify(c.meta));
+          const head = new TextEncoder().encode(ANALYSIS_DISK_MAGIC);
+          const out = new Uint8Array(head.length + 4 + js.length + c.blob.length);
+          out.set(head, 0); new DataView(out.buffer).setUint32(head.length, js.length, true);
+          out.set(js, head.length + 4); out.set(c.blob, head.length + 4 + js.length);
+          await api.analysisCacheWrite(k, out);
+        } catch (e) { console.warn('분석 캐시 저장 실패:', e); }
+      }, 1500);
     }
 
     // blob URL 썸네일 → 축소 JPEG 바이트
@@ -1561,9 +1614,16 @@
     // thumbDisplayPx는 분석 때 굽는 폭이라 건드리지 않는다(분석 속도·색 판정과 얽혀 있다).
     function thumbSpreadOn() { const ag = document.getElementById('pagesGrid'); return !!(ag && ag.classList.contains('pv-spread')); }
     function thumbNeedPx() { return (thumbSpreadOn() && typeof spreadRenderPx === 'function') ? spreadRenderPx(480) : thumbDisplayPx(); }
+    // 원본에서 다시 구울 수 있는 쪽인가 — 빈 쪽(originalIdx null)·내부 편집한 쪽은 원본 쪽 그림이 아니다.
+    // ⚠ 빈 쪽을 원본에서 구우면 getPage(null + 1) = 1쪽이 그려져, 펼침 보기에서 마지막 빈 쪽에
+    //    1쪽 내용이 보였다(실파일 울진군 보고서 .pdfw, 2026-10-01). 편집한 쪽은 편집 전 모습으로 되돌아간다.
+    function thumbUpgradable(r) {
+      return !!r && !r.isBlank && Number.isInteger(r.originalIdx) && r.originalIdx >= 0
+        && !(typeof contentEdits !== 'undefined' && contentEdits && contentEdits.has && contentEdits.has(r.originalIdx));
+    }
     function anyThumbTooSmall() {
       const px = thumbNeedPx(), sp = thumbSpreadOn();
-      return (pageResults || []).some(r => r && (r.thumbLow || sp) && (!r.thumbW || r.thumbW < px * 0.95));
+      return (pageResults || []).some(r => thumbUpgradable(r) && (r.thumbLow || sp) && (!r.thumbW || r.thumbW < px * 0.95));
     }
 
     // 크게 볼 때만 그 페이지를 원해상도로 다시 렌더해 썸네일을 교체한다(저해상 캐시 보정).
@@ -1571,7 +1631,8 @@
     const _thumbUpgrading = new Set();
     // px: 펼침 보기에서 그 폭으로(이미 원해상도인 썸네일도 더 크게). 없으면 예전처럼 흐린 썸네일만 원해상도로.
     async function upgradeThumb(originalIdx, px) {
-      const r = (pageResults || []).find(x => x && x.originalIdx === originalIdx && (x.thumbLow || px));
+      if (!Number.isInteger(originalIdx) || originalIdx < 0) return false;
+      const r = (pageResults || []).find(x => thumbUpgradable(x) && x.originalIdx === originalIdx && (x.thumbLow || px));
       if (!r || _thumbUpgrading.has(originalIdx) || !globalPdfDoc) return false;
       _thumbUpgrading.add(originalIdx);
       try {
@@ -1609,7 +1670,7 @@
           return b.bottom > -200 && b.top < window.innerHeight + 200;
         }).map(el => +el.dataset.page);
         for (const pn of vis) {
-          const r = (pageResults || []).find(x => x && x.pageNum === pn && (x.thumbLow || sp));
+          const r = (pageResults || []).find(x => x && x.pageNum === pn && thumbUpgradable(x) && (x.thumbLow || sp));
           if (r && (!r.thumbW || r.thumbW < needPx * 0.95)) await upgradeThumb(r.originalIdx, sp ? needPx : undefined);
         }
       }, 250);
@@ -1746,7 +1807,17 @@
 
         // 💾 작업 파일에 실린 분석 캐시가 이 PDF와 정확히 맞으면 페이지 렌더를 통째로 건너뛴다.
         // (버전·바이트길이·쪽수가 하나라도 다르면 아래 정상 분석으로 내려간다)
-        const cache = opts && opts.cache;
+        let cache = opts && opts.cache;
+        // 💾 같은 PDF를 예전에 분석해 둔 디스크 캐시가 있으면 그걸 쓴다(작업 파일 캐시와 같은 검증을 거친다)
+        let diskKey = null, fromDisk = false;
+        const t0Analyze = Date.now();
+        if (!cache) {
+          try {
+            diskKey = await pdfFingerprint(tabState.originalPdfBytes);
+            const hit = await readAnalysisDiskCache(diskKey);
+            if (hit) { cache = hit; fromDisk = true; }
+          } catch (e) {}
+        }
         if (cache && analysisCacheUsable(cache.meta, tabState.originalPdfBytes.byteLength, totalPages)) {
           const rs = pageResultsFromCache(cache.meta, cache.blob, totalPages);
           // 캐시에 없는 쪽(저장 당시 지웠던 페이지 등)만 지금 분석해 메운다
@@ -1764,7 +1835,7 @@
                   const page = await pdf.getPage(i + 1);
                   const res = await analyzePageColor(page);
                   const t = await res.thumbPromise;
-                  rs[i] = { pageNum: i + 1, originalIdx: i, isColor: res.isColor, thumbnail: t,
+                  rs[i] = { pageNum: i + 1, originalIdx: i, isColor: res.isColor, spread: res.spread, thumbnail: t,
                             thumbW: res.thumbW, thumbH: res.thumbH, thumbLow: !!res.low,
                             pageWpt: res.pageWpt, pageHpt: res.pageHpt };
                 } catch (e) {
@@ -1776,16 +1847,21 @@
           }
           tabState.pageResults = rs;
           tabState.analysisCacheMissing = missing.length;
+          // 🎯 컬러 판정 보정 — 보정 전에 저장된 옛 캐시(nv 없음)와 새로 메운 쪽만. 옛 캐시는 spread가 없어 ①(내용 확인)만 한다
+          if (!cache.meta.nv) await refineTabNeutralPages(tabState, isActive);
+          else if (missing.length) await refineTabNeutralPages(tabState, isActive, missing.map(i => rs[i]));
           tagChapters(tabState);
           rs.forEach(r => { if (r.isColor) colorCount++; else bwCount++; });
           tabState.colorCount = colorCount;
           tabState.bwCount = bwCount;
           tabState.status = 'ready';
           tabState.progress = 100;
-          tabState.analysisFromCache = true;   // 안내 문구·구버전 재저장 제안 판단용
+          tabState.analysisFromCache = !fromDisk;   // 안내 문구·구버전 재저장 제안 판단용(작업 파일 캐시일 때만)
+          tabState.analysisFromDisk = fromDisk;
           if (isActive()) {
             pageResults = tabState.pageResults;
             displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
+            if (fromDisk) showSuccess(`⚡ 예전에 분석한 같은 파일이라 결과를 바로 불러왔습니다 (${totalPages}쪽 · 컬러 ${colorCount} · 흑백 ${bwCount}).\n다음: 썸네일을 확인하고 처리 옵션을 고른 뒤 ✔ 적용을 누르세요.`);
           } else {
             tabState.quoteItems.push(...buildQuoteItems(colorCount, bwCount));
           }
@@ -1813,6 +1889,14 @@
         //   8문서 1,911MB(+58%). 이 PC는 62GB라 여유롭지만 포터블로 다른 PC에서도 쓰므로
         //   **실제 물리 메모리로 상한을 건다.** (navigator.deviceMemory는 8GB에서 잘려
         //   62GB PC와 8GB PC를 구분하지 못한다 → preload의 totalMemoryGB를 쓴다)
+        // ⚡ 대용량·JPEG 2000 원고는 Ghostscript 병렬 렌더로(실패하면 아래 pdf.js 경로)
+        let gsOk = false;
+        if (shouldUseGsAnalysis(tabState.originalPdfBytes, totalPages)) {
+          try { gsOk = await analyzeWithGs(pdf, tabState, totalPages, isActive); }
+          catch (e) { console.warn('Ghostscript 분석 실패 — pdf.js로 분석합니다:', e); gsOk = false; }
+          if (gsOk) tabState.pageResults.forEach(r => { if (r && r.isColor) colorCount++; else bwCount++; });
+          else { tabState.pageResults.fill(null); colorCount = bwCount = 0; if (isActive()) updateProgress(0); }
+        }
         const isMobile = !!window.__MOBILE__;
         const srcLen = Math.max(1, tabState.originalPdfBytes.byteLength);
         const budget = (isMobile ? 64 : 512) * 1024 * 1024;
@@ -1821,7 +1905,7 @@
         const ramCap = ramGB >= 24 ? 8 : ramGB >= 12 ? 6 : ramGB >= 8 ? 4 : 2;   // 알 수 없으면(0) 2
         const maxDocs = isMobile ? 3 : Math.min(ramCap, Math.max(1, navigator.hardwareConcurrency || 4));
         // 짧은 문서는 보조 문서를 열 이유가 없다(페이지보다 문서가 많아진다)
-        const wantDocs = totalPages >= 8
+        const wantDocs = (!gsOk && totalPages >= 8)
           ? Math.max(1, Math.min(maxDocs, Math.floor(budget / srcLen)))
           : 1;
         // 레인은 문서당 2개까지, **다만 8개 밑으로 줄이지 않는다.**
@@ -1840,11 +1924,11 @@
         const docs = [pdf, ...extraDocs];
         let qi = 0;
         const thumbJobs = [];   // 썸네일 JPEG 인코딩은 렌더와 병행 — 마지막에 일괄 대기
-        const tasks = Array.from({ length: totalPages }, (_, i) => async (doc) => {
+        const tasks = Array.from({ length: gsOk ? 0 : totalPages }, (_, i) => async (doc) => {
           const pn   = i + 1;
           const page = await doc.getPage(pn);
           const res  = await analyzePageColor(page);
-          const entry = { pageNum: pn, originalIdx: pn - 1, isColor: res.isColor, thumbnail: null,
+          const entry = { pageNum: pn, originalIdx: pn - 1, isColor: res.isColor, spread: res.spread, thumbnail: null,
                           thumbW: res.thumbW, thumbH: res.thumbH, thumbLow: !!res.low,
                           pageWpt: res.pageWpt, pageHpt: res.pageHpt };
           tabState.pageResults[i] = entry;
@@ -1863,11 +1947,18 @@
         // 보조 문서 즉시 해제 (메인 pdf만 상주)
         for (const d of extraDocs) { try { await d.destroy(); } catch (e) {} }
 
+        // 🎯 컬러 판정 보정(먹만·C=M=Y 회색을 컬러로 센 쪽) — 두 경로(pdf.js·gs) 공통
+        await refineTabNeutralPages(tabState, isActive);
+        colorCount = bwCount = 0;
+        tabState.pageResults.forEach(r => { if (r && r.isColor) colorCount++; else bwCount++; });
+
         tabState.colorCount = colorCount;
         tabState.bwCount    = bwCount;
         tabState.status     = 'ready';
 
         tagChapters(tabState);
+        // 💾 오래 걸린 분석은 디스크에 남긴다 — 같은 PDF를 다시 열면 곧바로 뜬다
+        if (Date.now() - t0Analyze >= (window.__analysisDiskMinMs ?? ANALYSIS_DISK_MIN_MS)) saveAnalysisDiskCacheLater(tabState, diskKey);   // __analysisDiskMinMs = 검사용
 
         if (isActive()) {
           pageResults = tabState.pageResults;
@@ -1905,6 +1996,176 @@
       const next = _thumbWait.shift();
       if (next) next();      // 자리를 기다리던 쪽에 그대로 넘긴다 (_thumbBusy 유지)
       else _thumbBusy--;
+    }
+
+    // 컬러 판정 규칙 — 중성(r≈g≈b, 차이 1 이하)이 아닌 픽셀이 백만 개 중 1개를 넘으면 컬러.
+    // pdf.js 경로(analyzePageColor)와 Ghostscript 경로(analyzeWithGs)가 **이 함수 하나**를 쓴다
+    // (판정이 갈라지면 같은 문서의 컬러 장수 = 프린터 과금이 경로에 따라 달라진다).
+    function pixelsLookColor(data, sampleStep) {
+      return pixelsColorInfo(data, sampleStep).isColor;
+    }
+    // spread = 가장 색이 진한 픽셀의 max(r,g,b)-min(r,g,b) — 컬러 판정 보정(refineNeutralPages)이
+    // '거의 회색으로 그려진 컬러 쪽'만 골라 다시 보는 데 쓴다
+    function pixelsColorInfo(data, sampleStep) {
+      const step = Math.max(1, sampleStep | 0);
+      let gray = 0, spread = 0;
+      for (let i = 0; i < data.length; i += step * 4) {
+        const r = data[i], g = data[i+1], b = data[i+2];
+        const mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        if (mx - mn <= 1) gray++;
+        else if (mx - mn > spread) spread = mx - mn;
+      }
+      const sampled = Math.ceil((data.length >> 2) / step);
+      return { isColor: gray / sampled < 0.999999, spread };
+    }
+
+    // ── 🎯 컬러 판정 보정 — 무채색인데 컬러로 그려진 쪽을 흑백으로 ───────────────
+    // 렌더(pdf.js·gs 기본)는 CMYK 먹(K만)·C=M=Y 회색을 살짝 따뜻한 RGB로 그려 컬러로 센다.
+    // 실파일 도록 146쪽에서 14쪽(먹만 10·C=M=Y 회색 4 — gs inkcov로 확인)이 이렇게 컬러로 잡혔다.
+    //  ① 내용 확인(libs/gray-blend.js pageIsNeutral — 렌더 없이 색 연산자·색공간만, 도록 22ms):
+    //     그리는 색이 전부 무채색이면 흑백. 저장 전 컬러 검수(checkColorIntent)와 같은 판단이다.
+    //  ② ①이 모르는 것(RGB·CMYK 사진, 색공간 없는 JPEG 2000, 별색 음영…) 때문에 남은 쪽 중
+    //     렌더가 '거의 회색'(spread ≤ NEAR_GRAY_SPREAD)인 쪽만 gs -dUseFastColor로 다시 그린다.
+    //     이 모드는 CMYK→RGB가 단순식이라 C=M=Y가 정확히 R=G=B가 된다 → 같은 규칙(pixelsLookColor)으로 판정.
+    //     (색이 진한 쪽은 진짜 컬러라 다시 그릴 필요가 없다 — 사진 원고 전체를 두 번 그리지 않게)
+    // 컬러 → 흑백으로만 바꾼다. gs가 없거나 실패하면 ①만 반영한다.
+    const NEAR_GRAY_SPREAD = 40;
+    // rs: 컬러로 판정된 결과들 · src: pdf-lib 문서 · bytes: 같은 PDF 바이트(gs용) · pageOf(r) = 그 안 쪽 번호(0부터)
+    async function refineNeutralPages(rs, src, bytes, pageOf, opts) {
+      opts = opts || {};
+      const out = { content: 0, render: 0 };
+      if (!src || typeof pageIsNeutral !== 'function') return out;
+      const left = [];
+      let pages = null;
+      try { pages = src.getPages(); } catch (e) { return out; }
+      for (const r of rs) {
+        if (!r || !r.isColor) continue;
+        const pi = pageOf(r);
+        if (!Number.isInteger(pi) || !pages[pi]) continue;
+        let neutral = false;
+        try { neutral = pageIsNeutral(src, pages[pi].node); } catch (e) {}
+        if (neutral) { r.isColor = false; out.content++; }
+        else if (r.spread != null && r.spread <= NEAR_GRAY_SPREAD) left.push([r, pi]);
+      }
+      const api = window.electronAPI;
+      if (!left.length || !bytes || window.__MOBILE__ || !api || !api.renderThumbs || !api.writeTempFile) return out;
+      if (opts.onRender) opts.onRender(left.length);
+      let tmp = null, res = null;
+      try {
+        // 해상도 = 그 쪽들 분석 렌더 중 가장 큰 것(작게 그리면 작은 색 요소가 사라진다)
+        let dpi = 40;
+        left.forEach(([r]) => { if (r.thumbW && r.pageWpt) dpi = Math.max(dpi, r.thumbW * 72 / r.pageWpt); });
+        tmp = api.writeTempFile(bytes, 'pdf');
+        res = await api.renderThumbs(tmp, { pageList: left.map(([, pi]) => pi + 1), dpi: +Math.min(150, dpi).toFixed(3),
+                                            procs: Math.max(1, Math.min(8, Math.ceil(left.length / 4))), fastColor: true, quiet: true });
+        for (const [r, pi] of left) {
+          const f = res.files[pi + 1];
+          if (!f) continue;
+          const bmp = await createImageBitmap(new Blob([api.readFile(f)], { type: 'image/png' }));
+          const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+          const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(bmp, 0, 0);
+          try { bmp.close(); } catch (e) {}
+          if (!pixelsLookColor(g.getImageData(0, 0, c.width, c.height).data, 1)) { r.isColor = false; out.render++; }
+        }
+      } catch (e) { console.warn('컬러 판정 보정(gs) 건너뜀:', e); }
+      finally {
+        if (tmp) { try { api.removeTempFile(tmp); } catch (e) {} }
+        if (res && res.dir) { try { await api.removeThumbs(res.dir); } catch (e) {} }
+      }
+      return out;
+    }
+    // 분석을 마친 탭 전체에 적용 — 활성 탭이면 공유 pdf-lib 문서(getSourceDoc)를 쓴다(적용 때 다시 읽지 않게)
+    // only = 이 결과들만(작업 파일 캐시에 없던 쪽을 새로 분석했을 때)
+    async function refineTabNeutralPages(tabState, isActive, only) {
+      const rs = (only || tabState.pageResults || []).filter(r => r && r.isColor && !r.isBlank && Number.isInteger(r.originalIdx));
+      if (!rs.length) return { content: 0, render: 0 };
+      let src = null;
+      try {
+        src = (isActive() && originalPdfBytes === tabState.originalPdfBytes) ? await getSourceDoc()
+          : await PDFLib.PDFDocument.load(tabState.originalPdfBytes.slice(0), { ignoreEncryption: true });
+      } catch (e) { return { content: 0, render: 0 }; }
+      return refineNeutralPages(rs, src, tabState.originalPdfBytes, r => r.originalIdx, {
+        onRender: n => { if (isActive()) showLoading(`회색 쪽 다시 확인 중… (${n}쪽)`); },
+      });
+    }
+
+    // ── ⚡ 대용량·JPEG 2000 원고 분석 = Ghostscript 병렬 렌더 ─────────────────────
+    // pdf.js는 JPEG 2000(JPXDecode)을 JS/wasm으로 풀어 아주 느리고, 큰 파일(>256MB)은 보조 문서를
+    // 열 메모리 예산이 없어 워커 하나로 직렬 처리된다. 실측(374MB 도록 146쪽, 그림 401장이 JPX):
+    // pdf.js 446초 · 화면이 최대 60초 멈춤. gs는 같은 쪽을 쪽당 0.2초(프로세스 1개)에 그린다.
+    // 판정은 위 pixelsLookColor 그대로, 해상도도 analyzePageColor와 같은 식이다. 실파일 8개(1,029쪽)에서
+    // 쪽별 컬러/흑백이 pdf.js와 한 쪽도 다르지 않았다(gs 옵션: CropBox·안티앨리어싱 4 — main.js gs:renderThumbs).
+    // gs가 없거나 실패하면 예외 → 호출부가 pdf.js 경로로 분석한다.
+    const GS_ANALYZE_MIN_BYTES = 256 * 1024 * 1024;   // 이보다 크면 pdf.js 보조 문서가 0개가 되는 경계(예산 512MB)
+    function countAscii(bytes, word, stopAt) {
+      const w = [...word].map(c => c.charCodeAt(0)), f = w[0];
+      let n = 0, i = bytes.indexOf(f);
+      while (i >= 0 && i < bytes.length - w.length) {
+        let k = 1; while (k < w.length && bytes[i + k] === w[k]) k++;
+        if (k === w.length && ++n >= stopAt) return n;
+        i = bytes.indexOf(f, i + 1);
+      }
+      return n;
+    }
+    function shouldUseGsAnalysis(bytes, totalPages) {
+      const api = window.electronAPI;
+      if (window.__MOBILE__ || !api || !api.renderThumbs || !api.writeTempFile) return false;
+      if (window.__forceGsAnalyze) return true;            // 검사용(analyze-gs-cache.e2e.js)
+      if (totalPages < 8) return false;
+      if (bytes.byteLength >= GS_ANALYZE_MIN_BYTES) return true;
+      return countAscii(bytes, '/JPXDecode', 3) >= 3;     // JPEG 2000 그림이 여러 장
+    }
+    async function analyzeWithGs(pdf, tabState, totalPages, isActive) {
+      const api = window.electronAPI;
+      // 쪽 크기(pt) — 쪽 사전만 읽는다(그림은 풀지 않으므로 JPX 원고도 빠르다)
+      const dims = new Array(totalPages);
+      for (let i = 0; i < totalPages; i += 64) {
+        await Promise.all(Array.from({ length: Math.min(64, totalPages - i) }, (_, k) => pdf.getPage(i + k + 1).then(pg => {
+          const v = pg.getViewport({ scale: 1 }); dims[i + k] = [v.width, v.height];
+        })));
+      }
+      // 해상도 = analyzePageColor와 같은 식(1쪽 폭 기준 — gs는 한 번에 하나의 dpi)
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const w1 = dims[0][0];
+      const fullScale = Math.max(0.5, Math.min((480 * dpr) / w1, 0.8));
+      const rScale = Math.max(fullScale * 0.75, Math.min(thumbDisplayPx() / w1, fullScale));
+      const dpi = +(rScale * 72).toFixed(3);
+      const procs = Math.max(2, Math.min(8, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+      if (isActive()) showLoading(`대용량 원고 — Ghostscript ${procs}개로 나눠 분석 중… (${totalPages}쪽)`);
+      const tmp = api.writeTempFile(tabState.originalPdfBytes, 'pdf');
+      let res;
+      api.onRenderThumbsProgress(info => {
+        tabState.progress = Math.round((info.done || 0) / (info.total || 1) * 85);
+        if (isActive()) updateProgress(tabState.progress);
+      });
+      try { res = await api.renderThumbs(tmp, { pages: totalPages, dpi, procs }); }
+      finally { try { api.removeTempFile(tmp); } catch (e) {} api.onRenderThumbsProgress(null); }
+      try {
+        let qi = 0, done = 0;
+        const low = rScale < fullScale - 0.001;
+        const lane = async () => {
+          while (qi < totalPages) {
+            const i = qi++;
+            const raw = api.readFile(res.files[i + 1]);
+            const bmp = await createImageBitmap(new Blob([raw], { type: 'image/png' }));
+            const canvas = document.createElement('canvas');
+            canvas.width = bmp.width; canvas.height = bmp.height;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(bmp, 0, 0);
+            try { bmp.close(); } catch (e) {}
+            const { isColor, spread } = pixelsColorInfo(ctx.getImageData(0, 0, canvas.width, canvas.height).data, 1);
+            await thumbSlot();
+            const thumb = await new Promise(r => canvas.toBlob(b => { thumbRelease(); r(b ? URL.createObjectURL(b) : null); }, 'image/jpeg', 0.85));
+            tabState.pageResults[i] = { pageNum: i + 1, originalIdx: i, isColor, spread, thumbnail: thumb,
+                                        thumbW: canvas.width, thumbH: canvas.height, thumbLow: low,
+                                        pageWpt: dims[i][0], pageHpt: dims[i][1] };
+            tabState.progress = 85 + Math.round(++done / totalPages * 15);
+            if (isActive()) updateProgress(tabState.progress);
+          }
+        };
+        await Promise.all(Array.from({ length: 4 }, lane));
+      } finally { try { await api.removeThumbs(res.dir); } catch (e) {} }
+      return true;
     }
 
     async function analyzePageColor(page, opts) {
@@ -1951,13 +2212,7 @@
         // 놓칠 수 있다(실측: 2403쪽에서 컬러 1929 → 1927쪽으로 2쪽 어긋남 = 과금 오차).
         // → 저해상 렌더에서는 **모든 픽셀을 훑는다**. 픽셀이 적어 비용이 오히려 작다.
         const sampleStep  = full ? Math.max(1, totalPixels / 15000 | 0) : 1;
-        let gray = 0;
-        for (let i = 0; i < data.length; i += sampleStep * 4) {
-          const r = data[i], g = data[i+1], b = data[i+2];
-          if (Math.abs(r-g) <= 1 && Math.abs(g-b) <= 1 && Math.abs(r-b) <= 1) gray++;
-        }
-        const sampled = Math.ceil(totalPixels / sampleStep);
-        const isColor = gray / sampled < 0.999999;
+        const { isColor, spread } = pixelsColorInfo(data, sampleStep);
 
         // 썸네일: 같은 캔버스에서 비동기 인코딩(toBlob)→objectURL.
         // 완료를 여기서 기다리지 않고 promise로 반환 — 인코딩이 도는 동안 같은 워커
@@ -1967,7 +2222,7 @@
           canvas.toBlob(b => { thumbRelease(); res(b ? URL.createObjectURL(b) : null); }, 'image/jpeg', 0.85);
         });
         // vp1(실제 페이지 크기 pt)은 위에서 산출함. thumbW/H는 캔버스 실제 픽셀.
-        return { isColor, thumbPromise, thumbW: canvas.width, thumbH: canvas.height,
+        return { isColor, spread, thumbPromise, thumbW: canvas.width, thumbH: canvas.height,
                  // low = 더 크게 볼 때 다시 구울 여지가 있다(원해상도보다 작게 구웠다)
                  low: rScale < fullScale - 0.001,
                  pageWpt: vp1.width, pageHpt: vp1.height };
@@ -2238,6 +2493,7 @@
       document.getElementById('zoomOutBtn').disabled = thumbStepIdx === 0;
       document.getElementById('zoomInBtn').disabled  = thumbStepIdx === THUMB_STEPS.length - 1;
       applyThumbFontStep(thumbStepIdx);
+      if (typeof flashZoomPct === 'function') flashZoomPct('썸네일', pct);
       // 지금 줌에서 흐리게 보이는 쪽(분석 때 작게 구운 쪽·작업 파일의 저해상 썸네일)을
       // 화면에 보이는 것부터 원해상도로 교체한다.
       if (dir > 0) scheduleThumbUpgrade();
@@ -2550,6 +2806,15 @@
           const page = await pdf.getPage(ed ? 1 : idx + 1);
           const res = await analyzePageColor(page);
           const thumb = res && res.thumbPromise ? await res.thumbPromise : null;
+          // 🎯 컬러 판정 보정 — 처음 분석과 같은 기준(편집본이면 편집본 1쪽, 아니면 원본 그 쪽)
+          if (thumb && res.isColor) {
+            try {
+              const src = ed ? await PDFLib.PDFDocument.load(ed.bytes.slice(0), { ignoreEncryption: true }) : await getSourceDoc();
+              const one = { isColor: true, spread: res.spread, thumbW: res.thumbW, pageWpt: res.pageWpt };
+              await refineNeutralPages([one], src, ed ? ed.bytes : originalPdfBytes, () => (ed ? 0 : idx));
+              res.isColor = one.isColor;
+            } catch (e) {}
+          }
           if (thumb) {
             if (r.thumbnail && typeof r.thumbnail === 'string' && r.thumbnail.startsWith('blob:'))
               { try { URL.revokeObjectURL(r.thumbnail); } catch (x) {} }

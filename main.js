@@ -399,6 +399,8 @@ function sweepTempConversions() {
     const re = /^(hwpconv|officeconv|adobeconv)_.*\.pdf$|^quote_.*\.html$|^pdfedit_.*\.(pdf|bin|png)$|^remoteup_.*$/i;
     for (const f of fs.readdirSync(dir)) {
       if (re.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} }
+      // 분석용 gs 썸네일 폴더(gs:renderThumbs) — 분석 중 앱이 꺼지면 남는다
+      else if (/^pdfedit_thumbs_/.test(f)) { try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); } catch (e) {} }
     }
   } catch (e) {}
 }
@@ -1084,6 +1086,91 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
       });
   });
 });
+
+// ── IPC: 분석용 병렬 썸네일 렌더 (대용량·JPEG 2000 원고) ─────────────────────
+// pdf.js는 JPEG 2000(JPXDecode)을 JS/wasm으로 풀어 아주 느리다 — 374MB 도록 146쪽(그림 401장이 JPX)이
+// 446초(쪽당 3초)였다. 게다가 큰 파일은 pdf.js 보조 문서를 열 메모리 예산이 없어 한 워커로 직렬 처리됐다.
+// Ghostscript(네이티브 OpenJPEG)를 여러 프로세스로 나눠 돌려 쪽마다 PNG를 굽고, 컬러 판정·썸네일은
+// 렌더러가 **같은 규칙**(analyzePageColor와 같은 픽셀 중성 판정)으로 한다.
+//  · 쪽은 프로세스마다 번갈아 나눈다(-sPageList) — 앞뒤로 무거운 구간이 몰려도 고르게 끝난다.
+//  · 출력 이름 w{k}_{순번}.png의 순번은 '그 프로세스의 몇 번째 쪽'이다(쪽 번호 아님) → 여기서 쪽 번호로 매핑.
+//  · 진행률은 폴더의 파일 수를 세어 보낸다(gs -q는 아무것도 출력하지 않는다).
+// 안티앨리어싱(Text/GraphicsAlphaBits=4)·CropBox는 pdf.js 렌더와 맞춘 값 — 실파일 8개(1,029쪽)에서
+// 쪽별 컬러/흑백 판정이 pdf.js와 한 쪽도 다르지 않았다(2026-10-02).
+ipcMain.handle('gs:renderThumbs', (evt, pdfPath, opts) => new Promise((resolve, reject) => {
+  try {
+    const base = path.basename(pdfPath || '');
+    if (!/^pdfedit_.*\.pdf$/i.test(base) || path.dirname(pdfPath) !== os.tmpdir()) return reject(new Error('잘못된 임시파일 경로'));
+  } catch (e) { return reject(e); }
+  // pageList = 이 쪽들만(1부터 — 컬러 재확인용) · 없으면 1~pages 전부
+  const only = Array.isArray(opts && opts.pageList)
+    ? [...new Set(opts.pageList.map(n => n | 0).filter(n => n >= 1 && n <= 100000))].sort((x, y) => x - y) : null;
+  if (only && !only.length) return reject(new Error('그릴 쪽이 없습니다'));
+  const pageNums = only || Array.from({ length: Math.max(1, Math.min(100000, (opts && opts.pages) | 0)) }, (_, i) => i + 1);
+  const total = pageNums.length;
+  const dpi = Math.max(10, Math.min(300, +(opts && opts.dpi) || 40));
+  const nProc = Math.max(1, Math.min(16, (opts && opts.procs) | 0 || 4, total));
+  // fastColor = CMYK→RGB를 단순식으로 — C=M=Y(먹만 쓴 쪽 포함)가 정확히 R=G=B가 된다.
+  //   색 판정 재확인 전용: CMYK 사진의 색이 틀어지므로 썸네일로 쓰지 말 것
+  const fast = !!(opts && opts.fastColor);
+  const quiet = !!(opts && opts.quiet);    // 진행 알림 없음(다른 탭의 분석 진행 막대를 건드리지 않게)
+  // gray = 회색 PGM(안티앨리어싱 없음) — JPEG 2000 사진 흑백변환용(app-process decodeJpxGray: 쪽 = 그림 1장, 72dpi = 원본 픽셀 1:1)
+  const gray = !!(opts && opts.gray);
+  const ext = gray ? 'pgm' : 'png';
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfedit_thumbs_'));
+  const lists = Array.from({ length: nProc }, () => []);
+  pageNums.forEach((p, i) => lists[i % nProc].push(p));
+  const procs = [];
+  let finished = 0, failed = null;
+  const countFiles = () => { try { return fs.readdirSync(outDir).length; } catch (e) { return 0; } };
+  const timer = setInterval(() => {
+    if (quiet) return;
+    try { if (!evt.sender.isDestroyed()) evt.sender.send('gs:renderThumbsProgress', { done: countFiles(), total }); } catch (e) {}
+  }, 300);
+  const done = () => {
+    clearInterval(timer);
+    if (failed) {
+      try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (e) {}
+      return reject(failed);
+    }
+    const files = {};
+    lists.forEach((l, k) => l.forEach((pg, j) => { files[pg] = path.join(outDir, `w${k}_${String(j + 1).padStart(5, '0')}.${ext}`); }));
+    const missing = Object.values(files).filter(f => !fs.existsSync(f)).length;
+    if (missing) {
+      try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (e) {}
+      return reject(new Error(`Ghostscript 렌더 결과가 ${missing}쪽 빠졌습니다`));
+    }
+    resolve({ dir: outDir, files });
+  };
+  lists.forEach((l, k) => {
+    const args = ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', gray ? '-sDEVICE=pgmraw' : '-sDEVICE=png16m', `-r${dpi}`, '-dUseCropBox',
+      ...(gray ? [] : ['-dTextAlphaBits=4', '-dGraphicsAlphaBits=4']), ...(fast ? ['-dUseFastColor=true'] : []), `-sPageList=${l.join(',')}`,
+      '-o', path.join(outDir, `w${k}_%05d.${ext}`), pdfPath];
+    const child = spawn(findGhostscript(), args, { windowsHide: true });
+    procs.push(child);
+    let err = '';
+    child.stderr.on('data', d => { if (err.length < 2000) err += d; });
+    child.on('error', e => { if (!failed) failed = e.code === 'ENOENT' ? new Error('Ghostscript가 없습니다') : e; });
+    child.on('close', code => {
+      if (code !== 0 && !failed) {
+        failed = new Error('Ghostscript 렌더 실패(' + code + '): ' + err.slice(0, 300));
+        procs.forEach(p => { try { p.kill(); } catch (e) {} });
+      }
+      if (++finished === lists.length) done();
+    });
+  });
+}));
+// 렌더 폴더 정리 — 우리가 만든 tmpdir/pdfedit_thumbs_* 만
+ipcMain.handle('gs:removeThumbs', (_, dir) => {
+  try {
+    if (!dir || path.dirname(dir) !== os.tmpdir() || !/^pdfedit_thumbs_/.test(path.basename(dir))) return false;
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (e) { return false; }
+});
+// 분석 캐시 폴더(사용자 폴더 아래) — 같은 PDF를 다시 열면 분석을 건너뛴다(렌더러 analyzePDF)
+// ⚠ 비동기(handle)로 — 동기(sendSync)는 받는 쪽이 없으면(검사 하네스 등) 화면이 응답을 기다리며 멎었다(실측 27초).
+ipcMain.handle('app:analysisCacheDir', () => path.join(app.getPath('userData'), 'analysis-cache'));
 
 // ── IPC: 2GB 넘는 PDF를 여러 개로 쪼개기 ─────────────────────────────────────
 // 화면(Chromium)은 버퍼 하나를 최대 약 2,044MB까지만 잡는다(V8 한계, 플래그로도 안 올라감).

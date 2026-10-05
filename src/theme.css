@@ -280,8 +280,14 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 .page-flag-tag { background: var(--c-accent); color: var(--c-accent-ink); border-radius: var(--c-btn-radius); }
 .page-jump-highlight { --jc: var(--c-text); }
 .page-jump-highlight.color, .page-jump-highlight.selected { --jc: var(--c-accent); }
-#pagesGrid.pv-spread .page-item:hover .page-thumbnail, #pagesGrid.pv-spread .page-item.peer-hover .page-thumbnail,
-#pagesGrid.pv-spread .page-item.selected .page-thumbnail, #previewGrid.pv-spread .pv-cell:hover .pv-canvas { outline-color: var(--c-accent); }
+/* 펼침 보기 — 카드 테두리가 없어 컬러 쪽이 구분되지 않았고, 선택이 노랑이라 일반 보기(회색)와 달랐다(사용자 지적).
+   일반 보기와 같은 뜻의 색으로: 컬러 = 강조색 외곽선 + 옅은 강조 띠 · 올림/선택 = 회색 외곽선(선택이 컬러보다 우선) */
+#pagesGrid.pv-spread .page-item.color .page-thumbnail { outline: 4px solid var(--c-accent); outline-offset: -4px; }
+#pagesGrid.pv-spread .page-item.color .page-info { background: var(--c-accent-soft); }
+#pagesGrid.pv-spread .page-item:hover .page-thumbnail, #pagesGrid.pv-spread .page-item.peer-hover .page-thumbnail { outline: 3px solid var(--c-outline); outline-offset: -3px; }
+#pagesGrid.pv-spread .page-item.selected .page-thumbnail { outline: 4px solid var(--c-outline) !important; outline-offset: -4px; }
+#pagesGrid.pv-spread .page-item.selected .page-info { background: var(--c-head); color: var(--c-text); }
+#previewGrid.pv-spread .pv-cell:hover .pv-canvas { outline-color: var(--c-outline); }
 
 /* 챕터(파일) 구분 */
 .chapter-divider { background: var(--c-accent-soft); border-color: var(--c-accent-line); border-left-color: var(--c-accent); color: var(--c-text); border-radius: var(--c-radius); }
@@ -563,3 +569,46 @@ body.edit-fullscreen #previewSection { background: var(--c-surface); }
 #sbPanelGrip:hover::before, #sbPanel.sbp-resizing #sbPanelGrip::before { background: var(--c-accent); }
 #sbPanel.sbp-folded #sbPanelGrip { height: 16px; }
 #sbPanel.sbp-folded #sbPanelGrip::after { content: '▾'; margin-left: 6px; font-size: 11px; color: var(--c-text-muted); }
+
+/* 분석·처리 중 진행 토스트 — style.css가 글자를 흰색으로 박아 라이트(흰 바탕)에서 안 보였다 */
+.loading, .loading-msg { color: var(--c-text); }
+.loading-sub { color: var(--c-text-muted); }
+.loading-bar { background: rgba(var(--c-tint-rgb), .12); }
+.spinner { border-color: rgba(var(--c-tint-rgb), .18); border-top-color: var(--c-accent); }
+
+/* 첫 화면 머리 왼쪽 위 — ☀ 주간 / 🌙 야간 (켜자마자 고를 수 있게) */
+.theme-seg { position: absolute; top: 14px; left: 18px; display: inline-flex; z-index: 2; }
+.theme-seg button {
+  background: transparent; color: var(--c-text-sub); border: 1px solid var(--c-outline); padding: 5px 11px;
+  font-size: 0.78em; font-weight: 600; font-family: var(--c-font); cursor: pointer; line-height: 1.2;
+}
+.theme-seg button + button { border-left: none; }
+.theme-seg button:hover { background: var(--c-surface-2); color: var(--c-text); }
+.theme-seg button.active { background: var(--c-accent); border-color: var(--c-accent); color: var(--c-accent-ink); }
+
+/* 사이드바 썸네일 크기(−/%/+) — 칸 최소 폭 --sb-thumb(app-ui applySbThumbZoom) */
+#thumbSidebar:not(.sb-compact) { grid-template-columns: repeat(auto-fill, minmax(min(var(--sb-thumb, 110px), 100%), 1fr)); }
+/* 썸네일 자체는 % 그대로 고정 폭 — 칸(1fr)이 넓어져도 늘리지 않고 가운데. 사이드바 폭을 바꾸면 줄 수(1·2·3·4…)만 바뀐다.
+   예전엔 칸 폭에 맞춰 늘어나, 10% 줄여도 그대로이다가 줄 수가 바뀌는 순간 건너뛰듯 변했다(사용자 지적) */
+#thumbSidebar:not(.sb-compact) .sb-item { width: min(var(--sb-thumb, 110px), 100%); justify-self: center; box-sizing: border-box; }
+#thumbSidebar.sb-compact .sbp-zoom-row { display: none; }
+.sbz-ctrl { display: inline-flex; align-items: stretch; flex: 0 0 auto; border: 1px solid var(--c-outline); }
+.sbz-btn { width: 24px; height: 22px; padding: 0; background: transparent; color: var(--c-text); border: 0; font-size: 14px; line-height: 1; cursor: pointer; font-family: var(--c-font); }
+.sbz-btn:hover:not(:disabled) { background: var(--c-accent); color: var(--c-accent-ink); }
+.sbz-btn:disabled { opacity: .35; cursor: default; }
+.sbz-pct { min-width: 44px; text-align: center; font-size: 0.72em; font-weight: 700; color: var(--c-text); border-left: 1px solid var(--c-border); border-right: 1px solid var(--c-border); display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+
+/* 크기 조절 % 알림 — 화면 가운데 잠깐 */
+#zoomFlash {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.96); z-index: 100060;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 22px; pointer-events: none;
+  background: var(--c-glass); color: var(--c-text); border: 1px solid var(--c-border-mid); border-top: 3px solid var(--c-accent);
+  box-shadow: 0 10px 30px rgba(var(--c-shadow-rgb), .35); opacity: 0; transition: opacity .15s, transform .15s; font-family: var(--c-font);
+}
+#zoomFlash.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#zoomFlash .zf-lbl { font-size: 12px; color: var(--c-text-sub); font-weight: 600; }
+#zoomFlash .zf-pct { font-size: 30px; font-weight: 800; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+
+/* 떠 있는 메뉴(챕터 메뉴·E-book 워터마크 선택 등)는 왼쪽 사이드바(z 500) 위에 —
+   예전 z 400이라 사이드바 버튼에서 연 메뉴가 사이드바 뒤에 숨어 '버튼이 안 눌린다'로 보였다 */
+.ch-menu { z-index: 100030; }
