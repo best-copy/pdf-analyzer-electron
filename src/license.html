@@ -94,11 +94,12 @@
           받은 <b>활성화 코드</b>를 붙여넣으면 끝입니다. <b>등록은 이 PC에서 한 번만</b> 가능합니다.</div>
 
         <div class="step"><b>1</b>체험 키를 입력하고 요청 코드를 만드세요</div>
-        <input type="text" id="key" placeholder="PDFE-XXXX-XXXX-XXXX" maxlength="19" autocomplete="off">
+        <input type="text" id="key" placeholder="PDFE-XXXX-XXXX-XXXX" autocomplete="off">
         <div style="display:flex; gap:8px; margin:10px 0 6px;">
           <button class="btn" onclick="makeReq()">요청 코드 만들기</button>
           <button class="btn sub" id="copyReqBtn" onclick="copyReq()" disabled>복사</button>
         </div>
+        <div class="msg" id="reqMsg"></div>
         <textarea id="reqCode" rows="3" readonly placeholder="여기에 요청 코드가 표시됩니다 — 전체를 복사해 발급자에게 보내세요."></textarea>
 
         <div class="step"><b>2</b>발급자에게 받은 활성화 코드를 붙여넣으세요</div>
@@ -208,7 +209,8 @@
 
 <script>
   function $(id) { return document.getElementById(id); }
-  function showMsg(el, text, ok) { const m = $(el); m.textContent = text; m.className = 'msg ' + (ok ? 'ok' : 'err'); }
+  // 메시지가 창 밖에 찍히면 버튼이 안 먹는 것처럼 보인다(2026-10-05 보고) — 보이는 곳으로 스크롤
+  function showMsg(el, text, ok) { const m = $(el); m.textContent = text; m.className = 'msg ' + (ok ? 'ok' : 'err'); try { m.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {} }
   function fmt(t) { return t ? new Date(t).toLocaleDateString('ko-KR') : '—'; }
 
   function showTab(which) {
@@ -268,15 +270,19 @@
   function copyHint(ok) { return ok ? '클립보드에 복사됐습니다.' : '선택해 두었으니 Ctrl+C로 복사하세요.'; }
 
   async function makeReq() {
-    const r = await lic.offlineRequest($('key').value);
-    if (!r.ok) { showMsg('offMsg', '⚠ ' + r.error, false); return; }
+    $('reqCode').value = ''; $('copyReqBtn').disabled = true;
+    let r;
+    try { r = await lic.offlineRequest($('key').value); }
+    catch (e) { r = { ok: false, error: '요청 코드를 만들지 못했습니다: ' + (e && e.message || e) }; }
+    if (!r.ok) { showMsg('reqMsg', '⚠ ' + r.error + '\n발급자에게 받은 키를 그대로 붙여넣으세요(띄어쓰기·앞뒤 글자는 자동으로 정리됩니다).', false); return; }
+    if (r.key) $('key').value = r.key;     // 정리된 키를 보여 준다
     $('reqCode').value = r.code;
     $('copyReqBtn').disabled = false;
     const ok = copyText('reqCode');
-    showMsg('offMsg', '요청 코드를 만들었습니다 — ' + copyHint(ok)
+    showMsg('reqMsg', '요청 코드를 만들었습니다 — ' + copyHint(ok)
       + '\n전체를 발급자에게 보내고, 받은 활성화 코드를 아래 2단계에 붙여넣으세요.', true);
   }
-  function copyReq() { showMsg('offMsg', copyHint(copyText('reqCode')), true); }
+  function copyReq() { showMsg('reqMsg', copyHint(copyText('reqCode')), true); }
   async function doOfflineActivate() {
     $('offBtn').disabled = true;
     const r = await lic.offlineActivate($('actCode').value);

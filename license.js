@@ -66,6 +66,15 @@ function verifyToken(token) {
 
 // ── 기기 지문(HWID) ─────────────────────────────────────────────────────────
 // 레지스트리 MachineGuid + 메인보드/시스템 UUID + 호스트명을 해시. 한 항목을 못 읽어도
+// 체험 키 입력 정리 — 카톡·메일에서 복사하면 띄어쓰기·전각 문자·다른 줄표·앞뒤 글자가 섞인다.
+// 영문·숫자만 남겨 'PDFE' 뒤 12글자를 PDFE-XXXX-XXXX-XXXX로 다시 짠다. 못 찾으면 대문자 원문(형식 검사에서 걸린다).
+// (2026-10-05: 다른 PC에서 '요청 코드 만들기'가 안 된다는 보고 — 형식 오류 안내가 창 밖에 찍혀 아무 반응이 없어 보였다)
+function normalizeKey(key) {
+  const raw = String(key || '').normalize('NFKC').toUpperCase();
+  const m = raw.replace(/[^A-Z0-9]/g, '').match(/PDFE([A-Z0-9]{12})/);
+  return m ? `PDFE-${m[1].slice(0, 4)}-${m[1].slice(4, 8)}-${m[1].slice(8, 12)}` : raw.trim();
+}
+
 // 나머지로 계속 진행한다(가상머신·권한 제한 환경 대비). 사용자 식별 정보는 남기지 않는다.
 let _hwid = null;
 function hwid() {
@@ -229,7 +238,7 @@ function normalizeServer(u) {
 async function activate(key, server) {
   const srv = normalizeServer(server);
   if (!srv) return { ok: false, error: '활성화 서버 주소를 입력하세요.' };
-  const k = String(key || '').trim().toUpperCase();
+  const k = normalizeKey(key);
   if (!/^PDFE(-[A-Z0-9]{4}){3}$/.test(k)) return { ok: false, error: '키 형식이 올바르지 않습니다. (예: PDFE-A1B2-C3D4-E5F6)' };
   try {
     const r = await postJson(srv + '/lic/activate', { key: k, hwid: hwid(), ver: _deps.appVersion, host: os.hostname() });
@@ -322,7 +331,7 @@ function revokeKey(key) {
 // 온라인 서버(/lic/activate)와 오프라인 코드 발급이 **공유하는 단일 판정**이다.
 // 한쪽에만 조건을 추가하면 "서버로는 막히는데 오프라인으로는 뚫리는" 구멍이 생긴다.
 function activateRecord({ key, hwid: hw, host, ver, offline }) {
-  const k = String(key || '').trim().toUpperCase();
+  const k = normalizeKey(key);
   const h = String(hw || '').trim();
   if (!/^PDFE(-[A-Z0-9]{4}){3}$/.test(k) || !/^[0-9a-f]{24}$/.test(h)) {
     return { code: 400, error: '키 또는 기기 정보가 올바르지 않습니다.', fail: true };
@@ -378,7 +387,7 @@ const REQ_PREFIX = 'PDFEQ1.';
 function reqCrc(raw) { return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 4).toUpperCase(); }
 
 function offlineRequest(key) {
-  const k = String(key || '').trim().toUpperCase();
+  const k = normalizeKey(key);
   if (!/^PDFE(-[A-Z0-9]{4}){3}$/.test(k)) {
     return { ok: false, error: '키 형식이 올바르지 않습니다. (예: PDFE-A1B2-C3D4-E5F6)' };
   }
