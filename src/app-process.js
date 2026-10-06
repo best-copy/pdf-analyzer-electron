@@ -819,6 +819,7 @@
         : mode === 'dup'
         ? '한 시트에 같은 페이지 <b>2벌(오른쪽 벌 180° 회전)</b>을 양면으로 앉힙니다 — Quite Imposing의 <b>1 1* 2* 2</b> 방식.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 세로 재단 → 같은 문서 <b>2部</b> 완성.'
         : '임포징 방식을 <b>선택하지 않은 기본 상태</b>입니다. 위에서 방식(중철·모아찍기·정합·반복·복제)을 고르거나 프로파일을 불러오면 옵션이 나타납니다.';
+      syncImpPerChapterUI();   // 모아찍기면 '챕터별로 따로'가 켜진 채 잠긴다
       impSettingsChanged();
     }
     function setBookletBind(dir) {
@@ -4168,9 +4169,28 @@
     let _impInflight = null;
     function clearImpCache() { _impBytesCache = { sig: null, bytes: null }; _impInflight = null; }
     // 📄 챕터(파일)별 임포징 — 켜져 있고 합본(챕터 2개 이상)일 때만 의미가 있다
+    // 📄 모아찍기(N-up)는 챕터가 둘 이상이면 **항상** 챕터별로 — 한 시트에 두 파일의 쪽이 섞이지 않고,
+    // 챕터 끝 시트의 남는 칸은 빈칸, 다음 챕터는 새 시트부터(양면이면 앞면부터). 결과 화면도 챕터별로 묶인다.
+    // (사용자 결정 2026-10-06 — 체크를 끈 옛 프로파일을 불러와도 섞이지 않게 체크와 무관하게 켠다.
+    //  중철·정합·복제·반복은 종전대로 체크했을 때만 — 중철은 합본 한 권으로 묶는 것이 보통이다)
+    function impPerChapterForced() { return _impMode === 'nup'; }
+    // 강제 중이면 체크박스를 켜진 채 잠그고 안내를 보인다(풀리면 사용자가 고른 값으로 되돌린다)
+    function syncImpPerChapterUI() {
+      const el = document.getElementById('impPerChapter');
+      if (!el) return;
+      const forced = impPerChapterForced();
+      if (forced) {
+        // 잠기기 전 값(또는 잠긴 동안 프로파일이 넣은 값)을 사용자 값으로 기억해 두고 켜진 채 잠근다
+        if (!el.disabled || !el.checked) el.dataset.userChecked = el.checked ? '1' : '';
+        el.checked = true; el.disabled = true;
+      }
+      else if (!forced && el.disabled) { el.disabled = false; el.checked = el.dataset.userChecked === '1'; }
+      const note = document.getElementById('impPerChapterForced');
+      if (note) note.style.display = forced ? '' : 'none';
+    }
     function impPerChapterOn() {
       const el = document.getElementById('impPerChapter');
-      if (!el || !el.checked) return false;
+      if (!impPerChapterForced() && (!el || !el.checked)) return false;
       try { return chapterRuns().length >= 2; } catch (e) { return false; }
     }
     // '📄 챕터별로 따로'가 켜져 있는데 실제로 적용되지 않았으면 그 이유를 한 줄로
@@ -8098,7 +8118,9 @@
 
     // 합본 그리드용 파일 구분 헤더(전체 열 너비 차지) — 위/아래 이동·삭제 버튼 포함
     // no=1based 순번, startIdx=이 챕터 첫 페이지의 pageResults 인덱스, total=챕터 총수
-    function makeChapterDivider(no, name, pageCount, startIdx, total) {
+    // afterChange — ▲▼🗑로 쪽 목록이 **실제로 바뀌었을 때만** 부른다(결과 미리보기에서 결과를 다시 만들 때).
+    //   삭제 확인창에서 취소하면 부르지 않는다. (되돌리기 기록은 상한이 있어 길이로는 판단할 수 없다)
+    function makeChapterDivider(no, name, pageCount, startIdx, total, afterChange) {
       const d = document.createElement('div');
       d.className = 'chapter-divider';
       const badge = document.createElement('span'); badge.className = 'chapter-badge'; badge.textContent = '파일 ' + no;
@@ -8112,12 +8134,18 @@
         b.onclick = (e) => { e.stopPropagation(); fn(); };
         return b;
       };
+      const withAfter = fn => () => {
+        const before = pageResults.slice();
+        fn();
+        const changed = before.length !== pageResults.length || before.some((r, i) => r !== pageResults[i]);
+        if (changed && afterChange) afterChange();
+      };
       actions.append(
         mkBtn('ch-edit', '✏ 편집', '이 챕터만 편집 — 크기·조판·여백·머리글이 이 파일에만 적용됩니다', false,
               () => editChapter(name)),
-        mkBtn('', '▲', '이 챕터를 위로 이동', no <= 1,     () => moveChapterRun(startIdx, -1)),
-        mkBtn('', '▼', '이 챕터를 아래로 이동', no >= total, () => moveChapterRun(startIdx, +1)),
-        mkBtn('ch-del', '🗑', '이 챕터 전체 삭제', total <= 1, () => deleteChapterAt(startIdx)),
+        mkBtn('', '▲', '이 챕터를 위로 이동', no <= 1,     withAfter(() => moveChapterRun(startIdx, -1))),
+        mkBtn('', '▼', '이 챕터를 아래로 이동', no >= total, withAfter(() => moveChapterRun(startIdx, +1))),
+        mkBtn('ch-del', '🗑', '이 챕터 전체 삭제', total <= 1, withAfter(() => deleteChapterAt(startIdx))),
       );
       d.append(badge, nm, pg, actions);
       // 제목 우클릭 → 챕터 메뉴(편집·선택·방향·이동·삭제)
@@ -9995,6 +10023,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
             // (구버전 작업 파일은 적용본 없이 이 표식만 있다 → 그 경우에만 다시 적용해 복원)
             applied: !!processedPdfBytes,
             resultName: processedPdfBytes ? (processedFileName || '') : '',
+            // 적용본의 챕터별 시트 구간 — 다시 열었을 때 결과 화면을 챕터별로 묶어 보여 주기 위해
+            impRanges: (processedPdfBytes && _impEnabled && _impChapterRanges) ? JSON.parse(JSON.stringify(_impChapterRanges)) : null,
             // 분석 캐시 메타(버전·원본 길이·페이지별 판정) — 썸네일 바이트는 entries의 k:'analysis'
             analysis: (analysis && analysis.meta) || null,
           },
@@ -10179,8 +10209,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           } else {
             showError('작업 파일은 열었지만 이전 버전의 적용 결과를 새로 만들지 못했습니다 — 설정은 그대로이니 [✔ 적용]을 다시 눌러 주세요.' + directNote);
           }
+        } else if (resAt >= 0 && blobs[resAt] && _impEnabled && impPerChapterOn() && !st.impRanges) {
+          // 모아찍기가 챕터별이 되기 전(2026-10-06)에 저장한 적용본 — 한 시트에 두 챕터가 섞여 있다.
+          // 같은 설정으로 챕터별로 다시 앉힌다(결과 화면도 챕터별로 묶인다).
+          showSuccess(restoreMsg + '\n⏳ 모아찍기를 챕터별로 다시 앉히는 중… (한 시트에 두 챕터가 섞이지 않게)');
+          await applyChanges();
+          if (processedPdfBytes) showSuccess(restoreMsg + '\n✔ 모아찍기를 챕터별로 다시 앉혔습니다 — 챕터 끝 시트의 남는 칸은 빈칸이고, 다음 챕터는 새 시트부터 시작합니다.'
+            + '\n→ 확인 후 [💼 작업 저장]으로 덮어 저장하면 다음부터는 바로 열립니다.');
         } else if (resAt >= 0 && blobs[resAt]) {
           // 저장된 적용본을 그대로 — 재계산 없음. 화면·다운로드 모두 저장 시점 그대로다.
+          _impChapterRanges = st.impRanges || null;   // 결과 화면의 챕터 구분선
           processedPdfBytes = blobs[resAt];
           processedFileName = st.resultName || defaultProcessedName();
           directOutputBytes = (dirAt >= 0 && blobs[dirAt]) ? blobs[dirAt] : null;

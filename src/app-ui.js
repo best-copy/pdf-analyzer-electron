@@ -2289,6 +2289,7 @@
         try { multi = (typeof chapterRuns === 'function') && chapterRuns().length >= 2; } catch (e) {}
         pcw.style.display = multi ? '' : 'none';
       }
+      if (typeof syncImpPerChapterUI === 'function') syncImpPerChapterUI();
     }
 
     // 입력 위젯 → editSettings(또는 챕터별 개별 설정) 바인딩 (1회)
@@ -3365,6 +3366,44 @@
       syncSidebarPanel();
     }
     // opts.live=true → 빠른 렌더(작은 해상도)
+    // ── 결과 미리보기의 챕터 구간 ─────────────────────────────────────────────
+    // 적용 결과(시트)를 챕터별로 묶어 구분선·챕터 버튼을 붙이기 위한 구간 [{ name, from, to }](1부터, 출력 기준).
+    // 나눌 수 없으면 null — 임포징이 챕터별이 아니라(중철 한 권 등) 한 시트에 두 챕터가 섞일 수 있을 때.
+    //   · 임포징: 챕터별 임포징이 남긴 구간(impChapterRanges — 모아찍기는 항상 챕터별)
+    //   · 원본 보기·임포징 없음: 출력 쪽 → 원본 쪽 매핑으로 그 쪽의 챕터(장 이름 없는 쪽은 앞 챕터)
+    function previewChapterRanges(total, srcMap, opts) {
+      let runs = [];
+      try { runs = chapterRuns(); } catch (e) {}
+      if (runs.length < 2) return null;
+      const valid = pageResults.filter(Boolean);
+      let chOf = null;   // 출력 i(1부터) → 챕터 이름
+      if (opts && opts.source === 'original') {
+        if (total !== valid.length) return null;
+        chOf = i => valid[i - 1].chapter;
+      } else if (typeof impIncluded === 'function' && impIncluded()) {
+        const r = (typeof impChapterRanges === 'function') ? impChapterRanges() : null;
+        return (r && r.length >= 2 && r[r.length - 1].to === total) ? r.map(x => ({ name: x.name, from: x.from, to: x.to })) : null;
+      } else if (srcMap && srcMap.length === total) {
+        const pnCh = new Map(valid.map(r => [r.pageNum, r.chapter || '']));
+        chOf = i => { for (const pn of (srcMap[i - 1] || [])) { const c = pnCh.get(pn); if (c) return c; } return ''; };
+      } else return null;
+      const out = [];
+      let prev = '';
+      for (let i = 1; i <= total; i++) {
+        const name = chOf(i) || prev;
+        const last = out[out.length - 1];
+        if (last && last.name === name) last.to = i;
+        else out.push({ name, from: i, to: i });
+        prev = name;
+      }
+      return out.length >= 2 ? out : null;
+    }
+    // 결과 화면의 ▲▼🗑로 쪽 목록이 바뀌면 결과를 다시 만든다 — 원본 목록으로 튕기지 않고 결과(챕터별 시트)를 유지
+    function previewChapterChanged() {
+      if (document.body.classList.contains('edit-fullscreen')) return;   // 편집 모드는 실시간 미리보기가 갱신한다
+      if (typeof applyChanges === 'function' && !applying) applyChanges();
+    }
+
     async function renderProcessedPreview(bytes, opts) {
       opts = opts || {};
       const section = document.getElementById('previewSection');
@@ -3449,8 +3488,33 @@
         const shownTotal = focusOnly ? focusOnly.size : total;
         // 원본 바이트 화면에서 집중 중이면 셀 번호를 문서 쪽번호로 보정(빈 페이지 삽입 대응)
         const numMap = (focusOnly && opts.source === 'original') ? wsOriginalPageNumMap() : null;
+        // 📄 챕터 구분선 — 시트를 챕터별로 묶는다(챕터 집중·펼침 보기에서는 넣지 않는다: 펼침은 홀짝으로 좌우 면을 정한다)
+        const chStart = new Map();
+        if (!focusOnly && !grid.classList.contains('pv-spread')) {
+          const ranges = previewChapterRanges(total, srcMap, opts);
+          let runs = [];
+          try { runs = chapterRuns(); } catch (e) {}
+          if (ranges) ranges.forEach((rg, k) => {
+            const run = (runs.length === ranges.length ? runs[k] : null) || runs.find(x => x.name === rg.name);
+            chStart.set(rg.from, { no: k + 1, name: rg.name, sheets: rg.to - rg.from + 1, run, count: ranges.length });
+          });
+        }
         for (let i = 1; i <= total; i++) {
           if (focusOnly && !focusOnly.has(i)) continue;
+          const chHead = chStart.get(i);
+          if (chHead) {
+            const pages = chHead.run ? chHead.run.idxs.length : chHead.sheets;
+            const d = makeChapterDivider(chHead.no, chHead.name, pages, chHead.run ? chHead.run.idxs[0] : -1, chHead.count,
+                                         previewChapterChanged);
+            const pg = d.querySelector('.chapter-pages');
+            if (pg && chHead.sheets !== pages) pg.textContent = `원고 ${pages}쪽 → ${chHead.sheets}장`;
+            if (!chHead.run) d.querySelectorAll('.ch-btn').forEach(b => { b.disabled = true; });   // 원본 쪽과 짝을 못 찾으면 조작 막기
+            mainFrag.appendChild(d);
+            const sh = document.createElement('div'); sh.className = 'sb-chapter';
+            const sb = document.createElement('span'); sb.className = 'sb-chapter-badge'; sb.textContent = chHead.no;
+            const sn2 = document.createElement('span'); sn2.className = 'sb-chapter-name'; sn2.textContent = chHead.name;
+            sh.append(sb, sn2); sbFrag.appendChild(sh);
+          }
           const src = canSelect ? srcMap[i - 1] : null;
           const sig = sigOf(i);
           const cached = sig ? _pvPageCache.get(i) : null;

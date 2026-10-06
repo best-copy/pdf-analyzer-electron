@@ -48,7 +48,8 @@ app.whenReady().then(async () => {
     await applyChanges();
     await waitFor(() => !!processedPdfBytes, 120000);
     const whole = (await PDFDocument.load(processedPdfBytes.slice(0))).getPageCount();
-    ck('전체 모아찍기 2up(단면): 6쪽 → 3시트', whole === 3, whole);
+    // 모아찍기는 챕터가 둘 이상이면 체크와 무관하게 항상 챕터별(사용자 결정 2026-10-06 — 한 시트에 두 파일이 섞이지 않게)
+    ck('체크를 꺼도 모아찍기는 챕터별: 6쪽(3+3) → 4시트(섞인 3시트가 아님)', whole === 4, whole);
 
     // 📄 파일별로 따로 — A 2시트 + B 2시트 = 4시트 (칸이 파일 경계를 넘지 않음)
     document.getElementById('impPerChapter').checked = true; impPerChapterChanged();
@@ -56,7 +57,7 @@ app.whenReady().then(async () => {
     await applyChanges();
     await waitFor(() => !!processedPdfBytes, 120000);
     const per = (await PDFDocument.load(processedPdfBytes.slice(0))).getPageCount();
-    ck('파일별 모아찍기: A 2시트 + B 2시트 = 4시트 (전체 3시트와 다름)', per === 4 && whole === 3, { per, whole });
+    ck('파일별 모아찍기: A 2시트 + B 2시트 = 4시트', per === 4, { per, whole });
     ck('구간이 파일 2개로 기록', JSON.stringify(impChapterRanges()) === JSON.stringify([
       { name: 'A.pdf', from: 1, to: 2 }, { name: 'B.pdf', from: 3, to: 4 }]), impChapterRanges());
     ck('나누지 못했다는 경고 없음', impPerChapterStatusNote() === '', impPerChapterStatusNote());
