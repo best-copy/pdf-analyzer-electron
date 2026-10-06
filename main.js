@@ -1025,6 +1025,18 @@ function removeCidFmap(m) {
   try { fs.rmSync(m.dir, { recursive: true, force: true }); } catch (e) {}
 }
 
+// gs 실패 이유 — 명령줄이 아니라 gs가 찍은 오류 줄(stdout·stderr 모두)을 보여 준다
+function gsFailureReason(err, stdout, stderr) {
+  if (err && err.killed) return 'Ghostscript가 제한 시간 안에 끝나지 않아 중단했습니다(문서가 매우 크거나 복잡함).';
+  const text = String(stdout || '') + '\n' + String(stderr || '');
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const bad = lines.filter(l => /error|unrecoverable|failed|cannot|invalid|undefined|rangecheck|typecheck|ioerror|VMerror/i.test(l)
+    && !/^%%|^Loading |^Page \d+$|--nostringval--|%stopped_push|%oparray_pop|%errorexec_pop/.test(l));   // 실행 스택 덤프 줄은 빼고
+  const pick = (bad.length ? bad : lines).slice(-6).join(' / ');
+  const code = err && typeof err.code === 'number' ? ` (종료 코드 ${err.code})` : '';
+  return ('Ghostscript 오류' + code + ': ' + (pick || '이유를 알리지 않고 실패했습니다')).slice(0, 700);
+}
+
 // ── IPC: 폰트 아웃라인화 — gs pdfwrite -dNoOutputFonts (모든 텍스트 → 곡선) ──
 // 외부 출력소 전달 표준 관행: 폰트 문제로 인한 출력 사고 원천 차단.
 ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
@@ -1074,9 +1086,11 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
       (err, stdout, stderr) => {
         removeCidFmap(cidm);
         if (err) {
+          // ⚠ gs는 오류 이유를 stdout에 찍는 경우가 많다(특히 -q 없는 완전 임베드). 예전엔 stderr만 보다가
+          //   비어 있으면 err.message(= 실행 명령줄)를 보여 줘 이유를 알 수 없었다(2026-10-06 사용자 보고).
           const msg = (err.code === 'ENOENT')
             ? 'Ghostscript(gswin64c)가 설치되어 있지 않습니다. 폰트 아웃라인화에는 Ghostscript가 필요합니다.'
-            : ((stderr || err.message || '').toString().slice(0, 300) || 'Ghostscript 실행 실패');
+            : gsFailureReason(err, stdout, stderr);
           return reject(new Error(msg));
         }
         if (!fs.existsSync(outPath)) return reject(new Error('아웃라인 PDF가 생성되지 않았습니다.'));

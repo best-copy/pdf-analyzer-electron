@@ -95,14 +95,19 @@ app.whenReady().then(async () => {
     if (typeof clearProcessCaches === 'function') clearProcessCaches();
     invalidateProcessed();
     pageResults.forEach(r => selectedPages.add(r.pageNum));
+    // 조립을 잠시 붙잡아 '적용 중' 상태를 확실히 만든다 — 예전엔 적용이 느려 0.12초 뒤에도 돌고 있었지만,
+    // PDF 읽기 설정 개선(2026-10-06) 뒤엔 그 전에 끝나 버려 이 검사가 '적용 중'을 재현하지 못했다.
+    const realBase = buildBaseProcessed; let release; const gate = new Promise(r => { release = r; });
+    window.buildBaseProcessed = async (...a) => { await gate; return realBase(...a); };
     const applyP = applyChanges();                 // 기다리지 않는다
-    await sleep(120);                              // 적용이 도는 중
+    await sleep(120);                              // 적용이 도는 중(조립 대기)
     ck('적용이 도는 중인지 확인', applying === true, applying);
     enterEditWorkspace();                          // 이 순간 들어간다 (사용자 흐름)
     const t2 = Date.now();
     let mid = null;
     const okMid = await waitFor(() => { mid = drawnCells(); return mid.drawn > 0; }, 4000);
     ck('적용 중에 들어가도 4초 안에 쪽이 보인다', okMid, { ms: Date.now() - t2, ...mid });
+    release(); window.buildBaseProcessed = realBase;   // 조립 풀어 주기
     await applyP;
     const okAfter = await waitFor(() => drawnCells().drawn > 0, 180000);
     ck('적용이 끝난 뒤에도 화면이 비지 않는다', okAfter, drawnCells());

@@ -9,6 +9,22 @@
       console.error('PDF.js 워커 로드 실패:', e);
     }
 
+    // ── PDF 읽기 옵션 (pdf-lib) — 저장(pdfSaveOpts)과 같은 문제 ─────────────────
+    // ⚠ src/editor.html·worker-assemble.js에도 같은 설정이 있다(별개 스코프) — 한쪽만 고치면 속도가 갈라진다.
+    // pdf-lib load는 기본(ParseSpeeds.Slow) **객체 100개마다 setTimeout으로 쉰다** — 객체가 많은 문서에서는
+    // 쉬는 시간이 일보다 길다. 실측(합본 교안 70.7MB·객체 69,135개, 2026-10-06):
+    //   100개마다(기존) 9.54초 · 1500개마다 1.37초(긴 멈춤 0) · 쉬지 않음 0.45초(그동안 0.45초 멈춤)
+    // 적용 한 번에 이런 읽기가 두 번 이상이라 편집 모드에서 나올 때 수십 초가 걸렸다. **읽는 결과는 같다.**
+    // → 작은 문서는 쉬지 않고(멈춤이 짧다), 큰 문서는 1500개마다. 호출부가 parseSpeed를 주면 그 값이 이긴다.
+    function pdfParseSpeedFor(bytes) {
+      const n = bytes ? (bytes.byteLength != null ? bytes.byteLength : (bytes.length || 0)) : 0;
+      return n < 4 * 1024 * 1024 ? Infinity : 1500;
+    }
+    (function setPdfLibLoadDefaults() {
+      const D = PDFLib.PDFDocument, load = D.load.bind(D);
+      D.load = (bytes, opts) => load(bytes, Object.assign({ parseSpeed: pdfParseSpeedFor(bytes) }, opts || {}));
+    })();
+
     // ── 공유 DOM ─────────────────────────────────────────────────────────────
     const fileInfo         = document.getElementById('fileInfo');
     const progressBar      = document.getElementById('progressBar');
@@ -2554,6 +2570,23 @@
         e.preventDefault();
         refreshResults();
       }
+    });
+
+    // Ctrl+S: 💼 작업 저장(지금 작업 파일에 덮어쓰기) · Ctrl+Shift+S: 📑 다른 이름으로 저장 · Ctrl+O: 📂 작업 열기
+    // 키 위치(e.code)로 본다 — 한글 입력 상태에서는 e.key가 'ㄴ'·'ㅐ'라 글자로 비교하면 안 먹는다.
+    // 입력창에 커서가 있어도 동작(일반 프로그램과 같게), 누르고 있을 때의 반복·진행 중 재입력은 무시.
+    let _workFileKeyBusy = false;
+    document.addEventListener('keydown', async e => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const save = e.code === 'KeyS', open = e.code === 'KeyO' && !e.shiftKey;
+      if (!save && !open) return;
+      e.preventDefault();
+      if (e.repeat || _workFileKeyBusy) return;
+      _workFileKeyBusy = true;
+      try {
+        if (save && typeof saveWorkFile === 'function') await saveWorkFile(e.shiftKey ? { saveAs: true } : undefined);
+        else if (open && typeof pickWorkFile === 'function') await pickWorkFile();
+      } finally { _workFileKeyBusy = false; }
     });
 
     // 단일 키: W / R / L / B / C (입력창 포커스 시 무시)

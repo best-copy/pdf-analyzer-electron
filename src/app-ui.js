@@ -865,6 +865,16 @@
         },
       };
     }
+    // 입력 요소의 HTML 기본값(처음 화면에 적힌 값) — 프로파일에 없는 항목을 되돌릴 때 쓴다
+    function presetFieldDefault(el, kind) {
+      if (kind === 'c') return !!el.defaultChecked;
+      if (el.tagName === 'SELECT') { const o = [...el.options].find(x => x.defaultSelected) || el.options[0]; return o ? o.value : ''; }
+      return el.defaultValue;
+    }
+    // ⚠ 프로파일에 **없는** 항목은 직전 값을 남기지 말고 기본값으로 — 예전 버전으로 저장한 프로파일엔
+    //   나중에 생긴 기능(↔ 양끝 맞춤·챕터별 임포징·블리드·폰트 방식)이 없어, 불러와도 직전 설정이
+    //   그대로 남았다(2026-10-06 사용자 보고: '불러온 설정으로 안 바뀌고 이전 설정이 남는다').
+    //   저장 당시엔 없던 기능 = 꺼진 상태였으므로 기본값이 곧 그 프로파일의 값이다.
     function applyExtraPreset(c) {
       const g = id => document.getElementById(id);
       if (c.proc) {
@@ -876,9 +886,11 @@
           if (k === 'inkNorm' && c.proc[k] === false) return;
           if (!!processingOptions[k] !== c.proc[k]) toggleOption(k);
         });
-        // ✒ 폰트 아웃라인화 옵션 복원 (방식 → 체크박스 순서 — 방식이 먼저여야 안내가 맞다)
-        if (c.proc.outlineMode && typeof setOutlineMode === 'function') setOutlineMode(c.proc.outlineMode);
+        // ✒ 폰트 안전화 복원 — **켜기 먼저, 방식은 나중에.** setOutlineEnabled는 켤 때 방식을 '완전 임베드'로
+        //   바꾸므로, 예전처럼 방식을 먼저 넣으면 '곡선 변환'으로 저장한 프로파일도 완전 임베드로 불러왔다.
+        //   방식이 없는 옛 프로파일은 그대로 둔다(켜지면 완전 임베드 — 용량이 수십 배 느는 곡선으로 몰래 바꾸지 않는다).
         if (typeof c.proc.outline === 'boolean' && typeof setOutlineEnabled === 'function') setOutlineEnabled(c.proc.outline);
+        if (c.proc.outlineMode && typeof setOutlineMode === 'function' && c.proc.outlineMode !== _outlineMode) setOutlineMode(c.proc.outlineMode);
         if (typeof c.proc.outlineFlatten === 'boolean' && g('outlineFlatten')) {
           g('outlineFlatten').checked = c.proc.outlineFlatten;
           if (typeof syncOutlineFlattenBtn === 'function') syncOutlineFlattenBtn();   // 토글 버튼 표시 동기
@@ -890,6 +902,11 @@
         if (g('bleedCrop') && typeof c.bleed.crop === 'boolean') g('bleedCrop').checked = c.bleed.crop;
         if (typeof c.bleed.enabled === 'boolean' && typeof setBleedEnabled === 'function'
             && !!_bleedEnabled !== c.bleed.enabled) setBleedEnabled(c.bleed.enabled);
+      }
+      else {
+        if (g('bleedGenMm')) g('bleedGenMm').value = presetFieldDefault(g('bleedGenMm'), 'v');
+        if (g('bleedCrop')) g('bleedCrop').checked = presetFieldDefault(g('bleedCrop'), 'c');
+        if (typeof setBleedEnabled === 'function' && _bleedEnabled) setBleedEnabled(false);
       }
       // 📕 표지 설정 복원
       if (c.cover && typeof applyCoverState === 'function') { try { applyCoverState(c.cover); } catch (e) { console.warn('표지 설정 복원 실패:', e); } }
@@ -913,12 +930,16 @@
           // 용지 드롭다운은 옵션을 다시 만든 뒤 값을 넣어야 한다(없는 커스텀 용지는 auto 폴백)
           if (f.bkPaper !== undefined) populatePaperSelect(f.bkPaper);
           Object.entries(IMP_PRESET_FIELDS).forEach(([id, kind]) => {
-            if (id === 'bkPaper' || f[id] === undefined) return;
+            if (id === 'bkPaper') return;
             const el = g(id);
             if (!el) return;
-            if (kind === 'c') el.checked = !!f[id];
-            else el.value = f[id];
+            const v = f[id] === undefined ? presetFieldDefault(el, kind) : f[id];   // 없으면 기본값(직전 값 남기지 않음)
+            if (kind === 'c') el.checked = !!v;
+            else el.value = v;
           });
+          // ↔ 양끝 맞춤은 체크에 따라 거터 칸 표시가 바뀐다 — 값만 넣으면 화면이 예전 상태로 남는다
+          if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
+          if (typeof impGenInvalidate === 'function') impGenInvalidate();
           // 종속 UI 동기: 사용자 지정 W×H 행·재단선 세부 행은 값만 넣으면 숨겨진 채로 남는다
           if (typeof onImpPaperChange === 'function') onImpPaperChange();
           const cropOptRow = g('impCropOptRow');

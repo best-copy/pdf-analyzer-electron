@@ -221,6 +221,17 @@ function openPdfDoc(src, extra) {
   return pdfjsLib.getDocument(Object.assign(o, extra || {}));
 }
 
+// ── PDF 읽기 옵션 (pdf-lib) — src/app-core.js setPdfLibLoadDefaults와 같은 설정 ──
+// 기본(100객체마다 쉼)은 객체가 많은 문서에서 읽기가 7배 느렸다(합본 70.7MB: 9.54초 → 1500개마다 1.37초). 읽는 결과는 같다.
+function pdfParseSpeedFor(bytes) {
+  const n = bytes ? (bytes.byteLength != null ? bytes.byteLength : (bytes.length || 0)) : 0;
+  return n < 4 * 1024 * 1024 ? Infinity : 1500;
+}
+(function setPdfLibLoadDefaults() {
+  const D = PDFLib.PDFDocument, load = D.load.bind(D);
+  D.load = (bytes, opts) => load(bytes, Object.assign({ parseSpeed: pdfParseSpeedFor(bytes) }, opts || {}));
+})();
+
 // ── PDF 저장 옵션 (pdf-lib) ────────────────────────────────────────────────
 // ⚠ src/app-core.js의 같은 이름 함수와 **같은 내용을 유지할 것** — 워커/편집기 창은
 //   별개 스코프라 전역을 공유하지 못한다. 한쪽만 고치면 저장 성능이 갈라진다.

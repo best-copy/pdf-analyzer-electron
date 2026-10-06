@@ -5,6 +5,14 @@
 
 importScripts('./libs/pdf-lib.min.js', './libs/gray-blend.js', './libs/fontkit.umd.min.js', './hf-core.js');
 
+// ── PDF 읽기 옵션 (pdf-lib) — 워커는 화면을 멈추지 않으므로 쉬지 않고 읽는다 ──
+// 기본(100객체마다 setTimeout)은 객체가 많은 문서에서 읽기가 20배 느렸다(합본 70.7MB: 9.54초 → 0.45초).
+// 읽는 결과는 같다. (메인 창은 src/app-core.js setPdfLibLoadDefaults — 큰 문서는 1500개마다 쉰다)
+(function setPdfLibLoadDefaults() {
+  const D = PDFLib.PDFDocument, load = D.load.bind(D);
+  D.load = (bytes, opts) => load(bytes, Object.assign({ parseSpeed: Infinity }, opts || {}));
+})();
+
 // ── PDF 저장 옵션 (pdf-lib) ────────────────────────────────────────────────
 // ⚠ src/app-core.js의 같은 이름 함수와 **같은 내용을 유지할 것** — 워커/편집기 창은
 //   별개 스코프라 전역을 공유하지 못한다. 한쪽만 고치면 저장 성능이 갈라진다.
@@ -141,11 +149,14 @@ async function handleLayoutTransform(payload) {
       }
     } catch (e) {}
   };
+  // 복사기는 출력 문서 하나에 하나 — 쪽마다 embedPage를 부르면 호출마다 새 복사기라 공통 글꼴·그림이
+  // 쪽 수만큼 실린다(app-process embedAllPages와 같은 문제·같은 해법, 2026-10-06).
+  const copier = PDFLib.PDFObjectCopier.for(src.context, out.context).copy;
   const emb = async i => {
     if (!embCache.has(i)) {
       ensureContents(pages[i]);
       let e2;
-      try { e2 = await out.embedPage(pages[i]); }
+      try { [e2] = await out.embedPages([{ node: copier(pages[i].node) }]); }
       catch (err) { ensureContents(pages[i], true); e2 = await out.embedPage(pages[i]); }   // 강제 복구 후 1회 재시도
       embCache.set(i, e2);
     }

@@ -119,6 +119,10 @@ scripts/smoke.js   npm run smoke
 26. **JPEG 2000(JPXDecode) 사진은 Chromium이 못 연다 — 흑백변환은 Ghostscript로 푼다** — 예전 `convertJpxXObjectToGrayscale`은 `<img>`로 시도하다 늘 실패해 사진을 **컬러로 남겼다**(도록 146쪽: 흑백 체크 131쪽 중 126쪽에 CMY → 프린터 컬러 과금). 이제 `decodeJpxGray`가 요청을 잠깐 모아 그림만 담은 임시 PDF(쪽=그림, 72dpi=1:1)를 main `gs:renderThumbs {gray:true}`(pgmraw)로 풀고, 워커 `gray2jpeg`가 1성분 JPEG으로 굽는다. JPX 알파(SMaskInData)는 건너뛴다(저장 전 검수가 알림). `bw-jpx.e2e.js`(fixtures/jpx-gradient.*).
 27. **압축된 인라인 그림(BI … /F /Fl … EI)도 흑백으로** — 바이트 단계가 압축 그림을 통째로 건너뛰어 타일 패턴 안 8×8 RGB 그림이 흑백 쪽에 C=M=Y로 남았다(K-BIC 실행계획서 19쪽). 워커 `inflateInlineImage`: Flate 하나 + PNG 예측자만, 푼 길이가 정확히 w·h·성분일 때만 비압축 회색으로 다시 쓴다(아니면 바이트 그대로). `inline-image.test.js` [압축].
    - 검증법: 실파일마다 **컬러 쪽 전체를 흑백 체크 → 적용 → 저장본 → gs inkcov 쪽마다 C+M+Y=0**(2026-10-05: 22개 파일·1,215쪽 모두 0).
+28. **pdf-lib의 쉬어 가기 기본값과 쪽별 `embedPage`가 대용량 합본을 느리고 무겁게 만든다** (2026-10-06, 합본 교안 572쪽·객체 69,135개 2-up)
+   - **읽기:** `PDFDocument.load` 기본(ParseSpeeds.Slow)은 100객체마다 setTimeout — 9.54초. 1500개마다 1.37초(긴 멈춤 0), 쉬지 않음 0.45초. app-core·editor.html `setPdfLibLoadDefaults`가 기본값을 바꾼다(4MB 미만은 쉬지 않음·이상은 1500, 워커는 항상 쉬지 않음). 저장(`pdfSaveOpts`)과 같은 문제 — 세 곳을 같이 고칠 것.
+   - **싣기:** 쪽마다 `out.embedPage(pg)`는 호출마다 새 복사기라 공통 글꼴·그림이 쪽 수만큼 실렸다(글꼴 74개 → 2,130개, 결과 70.7 → 208.5MB). 원본 문서당 `PDFObjectCopier` 하나로 노드를 복사해 `embedPages([{node}])`로 싣는다 — `embedPageShared`(임포징·독립 도구 BUILDERS)·worker-assemble `emb`. 결과 75.5MB, 286시트 gs 픽셀 동일.
+   - **같은 임포징 동시 3번:** 편집 모드 나올 때 미리보기·적용·다운로드 준비가 각자 만들었다 → `_impInflight`로 같은 입력·옵션이면 합류. 나오기 12.4초 → 0.13초, 적용 16~21초 → 2.3초.
 13. **COM 변환(한글·Office·Adobe)은 사용자가 켜 둔 앱에 붙을 수 있다** — 스크립트가 새로 띄운 프로세스만 `COMPID:n`으로 알리고, 그때만 Quit·시간 초과 시 taskkill. 켜져 있던 앱이면 우리가 연 문서만 닫는다. Office는 `AutomationSecurity=3`(매크로 차단). **한글 보안창 워처**도 같은 이유로 좁힌다: '접근하려는 시도' 창만(확인·예·계속은 절대 안 누름), 켜져 있던 한글이면 창에 **변환 중 파일 이름**이 보일 때만 '접근 허용'(모두 허용 아님), 진짜 마우스 클릭은 그 좌표 맨 위가 그 버튼일 때만(가려지면 앞으로 올리기만). 예전 워처는 사용자 한글의 저장 확인 [확인]·다른 파일 보안 창까지 눌렀다(가짜 대화상자로 재현). `scripts/test/hwp-dialog-watch.test.ps1`(왼쪽 모니터에 가짜 창을 띄워 실제 클릭 — smoke에는 안 넣음).
 
 ## 6. UI 규약

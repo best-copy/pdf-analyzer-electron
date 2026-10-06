@@ -965,9 +965,19 @@
       if (rot === 270) return { l: t, r: b, b: l, t: r };
       return { l, r, b, t };
     }
+    // ⚠ 쪽마다 out.embedPage(pg)를 부르면 pdf-lib이 **호출마다 새 복사기**로 그 쪽의 글꼴·그림을 통째로 다시
+    //   복사한다 — 같은 글꼴이 쪽 수만큼 실렸다(합본 교안 572쪽 2-up: 글꼴 74개 4.7MB → 2,130개 99.4MB,
+    //   결과 70.7MB → 208.5MB). 원본 문서 하나에 **복사기 하나**(PDFObjectCopier)를 두고 쪽 노드를 복사한 뒤
+    //   embedPages로 실으면 공통 리소스는 한 벌만 실린다(결과 75.5MB, gs 렌더 픽셀 동일 — 2026-10-06 실측).
+    //   쪽 단위 루프는 그대로라 진행 표시·화면 양보·쪽별 복구 재시도도 그대로다.
+    async function embedPageShared(out, pg, mtx, copier) {
+      const [e] = await out.embedPages([{ node: copier(pg.node) }], [undefined], [mtx]);
+      return e;
+    }
     async function embedAllPages(out, src, onProgress, extraRot) {
       const n0 = src.getPageCount();
       const embedded = [];
+      const copier = PDFLib.PDFObjectCopier.for(src.context, out.context).copy;
       for (let i = 0; i < n0; i++) {
         const pg = src.getPage(i);
         ensurePageContents(pg);
@@ -979,8 +989,8 @@
         else if (rot === 270) { mtx = [0, 1, -1, 0, h, 0];  ew = h; eh = w; }
         else                  { mtx = undefined;            ew = w; eh = h; }
         let epg;
-        try { epg = await out.embedPage(pg, undefined, mtx); }
-        catch (err) { ensurePageContents(pg, true); epg = await out.embedPage(pg, undefined, mtx); }   // 강제 복구 후 1회 재시도
+        try { epg = await embedPageShared(out, pg, mtx, copier); }
+        catch (err) { ensurePageContents(pg, true); epg = await out.embedPage(pg, undefined, mtx); }   // 강제 복구 후 1회 재시도(복구한 쪽은 새로 복사)
         embedded.push({ e: epg, w: ew, h: eh, trim: pageTrimInset(pg, w, h, rot) });
         if (onProgress && (i & 15) === 0) onProgress(Math.round(i / n0 * 40));
         await uiYield();   // 대용량 문서 임베드 중에도 화면이 멈추지 않게 주기적으로 양보
@@ -4152,7 +4162,11 @@
     // 임포징 결과 캐시 — 소스 바이트 지문 + 임포징 옵션이 같으면 시트를 다시 조립하지 않는다.
     // (편집 모드에서 임포징 무관한 옵션을 만질 때마다 전체 재조립하던 딜레이 제거)
     let _impBytesCache = { sig: null, bytes: null };
-    function clearImpCache() { _impBytesCache = { sig: null, bytes: null }; }
+    // 진행 중인 임포징 { sig, promise } — 같은 입력·같은 옵션이면 새로 만들지 않고 합류한다.
+    // 편집 모드에서 나올 때 실시간 미리보기·적용·다운로드 준비가 **같은 임포징을 동시에 세 번** 만들어
+    // CPU를 나눠 쓰느라 각각 10~12초가 걸렸다(합본 교안 572쪽 2-up, 2026-10-06 실측).
+    let _impInflight = null;
+    function clearImpCache() { _impBytesCache = { sig: null, bytes: null }; _impInflight = null; }
     // 📄 챕터(파일)별 임포징 — 켜져 있고 합본(챕터 2개 이상)일 때만 의미가 있다
     function impPerChapterOn() {
       const el = document.getElementById('impPerChapter');
@@ -4335,23 +4349,39 @@
         _impChapterRanges = _impBytesCache.ranges || null;
         return _impBytesCache.bytes;
       }
+      if (sig && _impInflight && _impInflight.sig === sig) {
+        const joined = await _impInflight.promise;
+        if (onProgress) onProgress(100);
+        _impChapterRanges = joined.ranges || null;
+        return joined.bytes;
+      }
       const build = opts.mode === 'nup' || opts.mode === 'cutstack' ? buildNupBytes
                   : opts.mode === 'repeat'   ? buildStepRepeatBytes
                   : opts.mode === 'dup'      ? buildDup2upBytes
                   : buildBookletBytes;
-      let bytes = null;
-      if (opts.perChapter) {
-        const per = await buildImposedPerChapter(u8, opts, build, onProgress);
-        if (per) { bytes = per.bytes; _impChapterRanges = per.ranges; }
+      const job = (async () => {
+        let bytes = null, ranges = null;
+        if (opts.perChapter) {
+          const per = await buildImposedPerChapter(u8, opts, build, onProgress);
+          if (per) { bytes = per.bytes; ranges = per.ranges; }
+        }
+        if (!bytes) {
+          const res = await build(srcBytes, opts, onProgress);
+          bytes = res.bytes;
+          _impAutoGapMm = opts.justifyX && res.gapMm != null ? res.gapMm : null;
+          if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
+        }
+        return { bytes, ranges };
+      })();
+      if (sig) _impInflight = { sig, promise: job };
+      try {
+        const r = await job;
+        _impChapterRanges = r.ranges;
+        _impBytesCache = sig ? { sig, bytes: r.bytes, ranges: r.ranges } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
+        return r.bytes;
+      } finally {
+        if (_impInflight && _impInflight.promise === job) _impInflight = null;
       }
-      if (!bytes) {
-        const res = await build(srcBytes, opts, onProgress);
-        bytes = res.bytes; _impChapterRanges = null;
-        _impAutoGapMm = opts.justifyX && res.gapMm != null ? res.gapMm : null;
-        if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
-      }
-      _impBytesCache = sig ? { sig, bytes, ranges: _impChapterRanges } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
-      return bytes;
     }
     // 재단 후 크기가 원고와 달라지는 흔한 원인을 짚어 주는 한 줄
     function impTrimHint(opts) {
@@ -7936,6 +7966,10 @@
         isColor: false, isBlank: true, rotation: 0,
         thumbnail: blankThumbnail(), pageSize,
       };
+      // 빈 페이지도 넣은 자리의 장(챕터)에 속하게 — 장 머리줄 'N페이지'·장 집중 편집·장별 임포징이 함께 센다
+      // (예전엔 장 이름이 비어 머리줄 쪽 수가 빈 페이지에서 끊겼다 — 2026-10-06 사용자 보고)
+      const host = pageResults[afterIdx] || pageResults[afterIdx + 1];
+      if (host && host.chapter) blank.chapter = host.chapter;
       pageResults.splice(afterIdx + 1, 0, blank);
       rebuildPageNums();
       syncTabPageResults();
@@ -8093,12 +8127,15 @@
     }
 
     // idx에서 시작해 같은 챕터가 연속되는 페이지 수 (널 항목은 건너뜀, 다른 챕터에서 중단)
+    // 장 이름이 없는 쪽(옛 작업 파일의 빈 페이지 등)은 chapterRuns와 같게 지금 장에 포함한다 —
+    // 예전엔 거기서 세기를 멈춰 장 중간에 빈 페이지를 넣으면 쪽 수가 줄어들었다.
     function chapterRunLength(results, startIdx, chapter) {
       let n = 0;
       for (let j = startIdx; j < results.length; j++) {
         const p = results[j];
         if (!p) continue;
-        if (p.chapter === chapter) n++; else break;
+        if (p.chapter && p.chapter !== chapter) break;
+        n++;
       }
       return n;
     }
