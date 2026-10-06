@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>배포본 코드 보호 · PC 성능 검토 보고서</title>
+<style>
+  @page { size: A4; margin: 18mm 17mm 18mm 17mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Malgun Gothic", "맑은 고딕", sans-serif; color: #1c1c1e; font-size: 10.2pt; line-height: 1.62; margin: 0; background: #fff; }
+  h1 { font-size: 19pt; margin: 0 0 4px; letter-spacing: -0.5px; }
+  .sub { color: #555; font-size: 9.5pt; margin-bottom: 14px; }
+  .meta { display: grid; grid-template-columns: 90px 1fr 90px 1fr; border-top: 2px solid #1c1c1e; border-bottom: 1px solid #999; font-size: 9.3pt; margin-bottom: 18px; }
+  .meta div { padding: 5px 8px; border-bottom: 1px solid #ddd; }
+  .meta .k { background: #f2f2f4; font-weight: bold; }
+  h2 { font-size: 12.5pt; margin: 22px 0 8px; padding: 4px 0 4px 10px; border-left: 5px solid #ffd60a; background: #fafafa; page-break-after: avoid; }
+  h3 { font-size: 10.6pt; margin: 14px 0 4px; page-break-after: avoid; }
+  p { margin: 4px 0 8px; }
+  ul, ol { margin: 4px 0 8px; padding-left: 20px; }
+  li { margin: 2px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 9.3pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #b8b8bd; padding: 5px 7px; vertical-align: top; text-align: left; }
+  th { background: #f2f2f4; }
+  .box { border: 1px solid #1c1c1e; padding: 9px 12px; margin: 8px 0 12px; page-break-inside: avoid; }
+  .box.key { border-width: 2px; background: #fffbe6; }
+  .tag { display: inline-block; padding: 0 6px; border: 1px solid #1c1c1e; font-size: 8.6pt; font-weight: bold; margin-right: 4px; }
+  .ok { color: #1a6b2d; font-weight: bold; }
+  .ng { color: #9b1c1c; font-weight: bold; }
+  .mid { color: #8a5a00; font-weight: bold; }
+  code { font-family: Consolas, monospace; font-size: 8.9pt; background: #f2f2f4; padding: 0 3px; }
+  .small { font-size: 8.8pt; color: #555; }
+  .pb { page-break-before: always; }
+  .sign { margin-top: 26px; display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid #b8b8bd; font-size: 9pt; text-align: center; page-break-inside: avoid; }
+  .sign div { border-right: 1px solid #b8b8bd; padding: 4px; }
+  .sign div:last-child { border-right: 0; }
+  .sign .h { background: #f2f2f4; font-weight: bold; border-bottom: 1px solid #b8b8bd; }
+  .sign .s { height: 46px; }
+  footer { margin-top: 18px; font-size: 8.5pt; color: #777; border-top: 1px solid #ddd; padding-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>배포본 코드 보호 · PC 성능 검토 보고서</h1>
+<div class="sub">PDF 분석기(pdf-analyzer-electron) 테스트 배포본 — 다른 개발자·AI에 의한 복제 및 체험판 우회 위험 검토 · 개발 이력과 복제 난이도 · 저사양 PC 성능 원인</div>
+
+<div class="meta">
+  <div class="k">작성일</div><div>2026-10-06 (10-05판에 7장 추가)</div>
+  <div class="k">대상 버전</div><div>3.8.0 (테스트 배포 zip)</div>
+  <div class="k">배포 파일</div><div>win-unpacked_3.8.0_20261005.zip (203MB)</div>
+  <div class="k">결정 상태</div><div>코드 보호 <b>보류</b> · 성능 조치 <b>다음에</b></div>
+</div>
+
+<h2>1. 요약</h2>
+<div class="box key">
+  <p><b>결론:</b> 현재 배포본은 프로그램 원본 코드가 그대로 들어 있어, 다른 개발자가 배포 파일을 AI에게 주고
+  "똑같이 만들어 달라"고 하면 <b>기능을 상당 부분 그대로 재현할 수 있습니다.</b> 체험판 제한도 코드 몇 줄을 고쳐 끌 수 있습니다.</p>
+  <p><b>성능:</b> 사무용 PC(Ryzen 3 2200G, 4코어 4스레드)에서 분석·변환·저장이 약 4배 느린 원인은 <b>CPU</b>입니다(동시 처리 스레드 16 → 4).
+  메모리(31GB)·디스크(SSD)는 충분합니다. 조치는 다음에 진행합니다(7장).</p>
+  <p style="margin-bottom:0">다만 <b>체험 키를 위조하는 것은 불가능</b>합니다(서명용 개인키는 발급자 PC에만 있음).
+  완전한 차단 방법은 없으며, 할 수 있는 것은 <b>분석 비용을 높이는 것</b>입니다. 테스트 배포를 계속한다면
+  <b>① 주석 제거·압축 + ④ 법적 장치</b>를 먼저, 정식 판매 시 <b>② 난독화·③ 바이트코드</b>를 더하는 것을 권장합니다.</p>
+</div>
+
+<h2>2. 현재 배포본의 상태</h2>
+<table>
+  <tr><th style="width:28%">항목</th><th>현재 상태</th></tr>
+  <tr><td>코드 형태</td><td>원본 JavaScript가 변환 없이 그대로 들어 있음 (<code>asar: false</code>) — 위치: <code>resources\app\</code></td></tr>
+  <tr><td>코드 분량</td><td>주요 파일 10개 약 <b>26,600줄</b> (분석 3,612 · 처리 10,354 · 화면 4,542 · 메인 1,908 · 흑백 워커 1,011 등)</td></tr>
+  <tr><td>설명 주석</td><td>주요 4개 파일에만 한 줄 주석 약 <b>2,500줄</b>. 기능의 이유·실측 수치·피해야 할 함정이 한국어로 자세히 적혀 있음</td></tr>
+  <tr><td>체험판 검사</td><td>저장·출력 시 메인 프로세스(<code>main.js</code>)가 라이선스 상태(<code>canSave</code>)를 확인 — JavaScript 코드</td></tr>
+  <tr><td>체험 키 서명</td><td>Ed25519 전자서명. <b>개인키는 발급자 PC</b>(<code>%USERPROFILE%\.pdfeditor-license</code>)에만 있고 배포본에는 공개키만 있음</td></tr>
+  <tr><td>동봉 외부 도구</td><td>Ghostscript 10.07.1 + VC++ 런타임 DLL(<code>resources\gs</code>) — 별도 설치 불필요</td></tr>
+</table>
+
+<h2>3. 위험 분석</h2>
+<table>
+  <tr><th style="width:30%">상황</th><th style="width:14%">가능 여부</th><th>설명</th></tr>
+  <tr><td>배포 파일을 AI에게 주고 같은 프로그램 개발</td><td class="ng">쉬움</td>
+      <td>코드와 주석이 그대로 있어 AI가 구조·알고리즘·실무 노하우(흑백변환, 임포징, 컬러 판정 등)를 그대로 읽어 재구성할 수 있음. 특히 주석은 수개월간 실측으로 얻은 함정·해결법이라 가장 가치가 큼</td></tr>
+  <tr><td>체험판 제한 해제</td><td class="ng">가능</td>
+      <td>저장을 막는 검사가 JavaScript라, 해당 부분을 고치면 기간 제한 없이 저장·출력 가능</td></tr>
+  <tr><td>체험 키 위조·대량 발급</td><td class="ok">불가능</td>
+      <td>키(활성화 코드)는 발급자 PC의 개인키로 서명되며, 배포본에는 검증용 공개키만 있음</td></tr>
+  <tr><td>한 키로 여러 PC 사용</td><td class="ok">불가능</td>
+      <td>활성화 코드가 PC 고유값(HWID)에 묶여 있어 다른 PC에서는 등록되지 않음</td></tr>
+  <tr><td>오프라인 발급 라이선스 원격 취소</td><td class="mid">불가</td>
+      <td>오프라인 등록은 서버 재확인을 하지 않으므로 발급 후 취소가 닿지 않음 → 기간을 짧게 주는 것이 안전</td></tr>
+</table>
+<p class="small">※ PC에서 인터넷 없이 동작하는 프로그램은 그 PC에서 결국 읽힐 수 있습니다. 어떤 방법도 "완전 차단"은 아니며, 분석에 드는 시간·비용을 높이는 것이 목표입니다.</p>
+
+<h2>4. 보호 방법 비교</h2>
+<table>
+  <tr><th style="width:22%">방법</th><th style="width:30%">효과</th><th style="width:30%">부담·주의</th><th>권장 시점</th></tr>
+  <tr><td><span class="tag">①</span>배포본 주석 제거 + 압축(minify)</td>
+      <td>가장 가치 있는 설명(주석)이 사라지고 읽기 어려워짐</td>
+      <td><b>낮음.</b> 원본 저장소는 그대로, 배포 zip을 만들 때만 처리</td><td>테스트 배포 계속 시</td></tr>
+  <tr><td><span class="tag">②</span>난독화(이름·흐름 뒤섞기)</td>
+      <td>AI·사람 모두 분석 시간이 크게 늘어남</td>
+      <td><b>중간.</b> 세 화면 파일이 전역 이름을 공유하는 구조라 설정 주의. 흑백변환 워커 등 무거운 계산은 느려질 수 있어 제외 필요. 적용 후 전체 회귀 검사 필수</td><td>정식 판매 시</td></tr>
+  <tr><td><span class="tag">③</span>라이선스·핵심을 V8 바이트코드로(bytenode)</td>
+      <td>체험판 검사를 고치기 훨씬 어려워짐</td>
+      <td><b>중간.</b> 메인 프로세스 쪽만 적용 가능</td><td>정식 판매 시</td></tr>
+  <tr><td><span class="tag">④</span>법적 장치</td>
+      <td>복제 시 대응 근거 확보</td>
+      <td><b>낮음.</b> 저작권 표시, 사용 약관(역설계·복제·재배포 금지). git 커밋 기록이 작성 시점 증거</td><td>바로</td></tr>
+</table>
+
+<h2>5. 권장 단계</h2>
+<ol>
+  <li><b>지금(보류 결정):</b> 신뢰하는 테스터에게만 배포. 오프라인 키는 짧은 기간으로 발급.</li>
+  <li><b>테스트 배포를 넓힐 때:</b> ① 주석 제거·압축을 배포 빌드에 추가, ④ 저작권 표시·사용 약관을 앱(체험판 창)과 배포 폴더에 포함.</li>
+  <li><b>정식 판매 전:</b> ② 난독화(무거운 계산 코드 제외)와 ③ 라이선스 부분 바이트코드화, 전체 회귀 검사.</li>
+</ol>
+
+<h2 class="pb">6. 개발 이력과 복제 난이도</h2>
+<h3>6-1. 지금까지의 개발 이력 (git 기록·작업내역 기준)</h3>
+<table>
+  <tr><th style="width:30%">항목</th><th>수치</th></tr>
+  <tr><td>시작</td><td>2026-06-01 (기존 HTML 도구를 Electron 데스크톱 앱으로 옮기기 시작)</td></tr>
+  <tr><td>기간</td><td>2026-10-05 기준 <b>126일(약 4개월)</b></td></tr>
+  <tr><td>커밋</td><td>70개 · 커밋한 날 37일 · 작업내역 문서 28개</td></tr>
+  <tr><td>코드 규모</td><td>약 <b>46,000줄</b>(JS·HTML·CSS·PowerShell)</td></tr>
+  <tr><td>검사</td><td>검사 스크립트 85개 · 프로젝트 지침에 기록한 함정 27개</td></tr>
+</table>
+<p class="small">※ 실제 작업 시간(시간 단위)은 기록이 남아 있지 않아 산출하지 않았습니다.</p>
+
+<h3>6-2. 시간이 가장 많이 든 일 — 코드가 아니라 "무엇이 틀렸는지 알아내기"</h3>
+<ul>
+  <li><b>화면은 흑백인데 프린터가 컬러로 세는 쪽:</b> 리치블랙(CMYK 회색), JPEG 2000 사진, 컬러 이모지(Type3 글꼴), 무늬 칠하기 속 작은 그림</li>
+  <li><b>Acrobat에서만 나는 "페이지 오류":</b> 줄바꿈 CR, 패턴 이름 오인식, 색공간 성분 수 불일치</li>
+  <li><b>실제 원고에서만 드러나는 문제:</b> 사진 띠 경계의 흰 줄, 2GB 버퍼 한계, 800쪽 초과 시 빈 A4</li>
+</ul>
+<p>이런 문제는 AI에게 "만들어 달라"고 해서는 드러나지 않습니다. <b>실제 인쇄 원고 · 실제 프린터 과금 · 인쇄 실무 지식</b>이 있어야 발견되며,
+이것이 이 프로그램의 실질적인 경쟁력입니다.</p>
+
+<h3>6-3. 다른 사람이 AI로 만들 때의 추정 소요</h3>
+<p class="small">※ 이런 경우를 측정한 공인 기준은 없습니다. 아래는 이 프로젝트의 실제 기록을 근거로 한 추정입니다.</p>
+<table>
+  <tr><th style="width:30%">누가</th><th style="width:22%">기본 기능<br>(컬러 쪽 세기·흑백변환)</th><th>지금 수준<br>(임포징·견적·실무 함정 대응)</th></tr>
+  <tr><td>인쇄 실무를 모르는 일반인 + AI</td><td>며칠 ~ 2주</td><td><span class="ng">사실상 어려움</span> — 무엇이 틀렸는지 판단할 기준(프린터 결과·실무 용어)이 없음</td></tr>
+  <tr><td>개발자(인쇄 실무 모름) + AI</td><td>1 ~ 2주</td><td>6개월 이상 — 실제 원고·프린터 검증 환경을 따로 갖춰야 함</td></tr>
+  <tr><td>인쇄 실무자 + AI</td><td>며칠</td><td>3 ~ 6개월 — 같은 함정을 하나씩 다시 겪어야 함</td></tr>
+  <tr><td><b>배포 파일을 AI에게 주고 따라 만들기</b></td><td>하루 ~ 며칠</td><td><span class="ng">수 주</span> — 주석에 함정과 해결법이 이미 적혀 있어 시행착오를 건너뜀</td></tr>
+  <tr><td>AI 없이 전통적인 개발</td><td>수 주</td><td>숙련 개발자 1~2명이 1년 이상(46,000줄 · 인쇄 도메인 감안 대략치)</td></tr>
+</table>
+
+<h3>6-4. 노력의 기준이 되는 요소</h3>
+<ol>
+  <li><b>도메인 지식</b> — 중철·정합·돔보·잉크 정규화 등 인쇄 실무를 알아야 요구를 정확히 말할 수 있다.</li>
+  <li><b>검증 습관</b> — "된다"를 눈과 수치로 확인(gs 렌더, 잉크 측정, 실파일 22개 대조). 일반인이 가장 놓치기 쉬운 부분.</li>
+  <li><b>실파일 확보</b> — 문제를 일으키는 실제 원고가 있어야 함정이 드러난다.</li>
+  <li><b>꾸준함</b> — 4개월간 한 기능씩 확인하며 쌓은 것 자체가 큰 비용이다.</li>
+</ol>
+<div class="box key">
+  <b>시사점:</b> 지금 배포본에서 가장 쉽게 복제되는 것은 코드보다 <b>코드에 담긴 주석</b>입니다. 4개월의 시행착오가 그 안에 요약돼 있어,
+  배포 파일을 받은 사람은 수개월의 시행착오를 수 주로 줄일 수 있습니다. 보호를 진행한다면 <b>① 배포본 주석 제거</b>가 효과 대비 부담이 가장 적습니다.
+</div>
+
+<h2>7. PC 자원 사용과 저사양 PC 성능</h2>
+<h3>7-1. 확인된 현상</h3>
+<p>사양이 낮은 사무용 PC에서 <b>분석·변환·저장에 개발 PC보다 약 4배</b> 시간이 걸리는 것이 확인됨(2026-10-06, 사용자 측정).</p>
+
+<h3>7-2. 이 프로그램이 주로 쓰는 자원</h3>
+<table>
+  <tr><th style="width:24%">단계</th><th style="width:20%">주로 쓰는 자원</th><th>동작 방식(코드의 동시 처리 규칙)</th></tr>
+  <tr><td>분석(썸네일·컬러 판정)</td><td><b>CPU 코어 수</b> + RAM</td><td>쪽을 CPU 스레드 수만큼(최대 16) 동시에 그림. 큰 파일·JPEG 2000은 Ghostscript를 스레드 절반만큼(2~8개) 실행</td></tr>
+  <tr><td>분석 동시 처리량</td><td><b>RAM 용량</b></td><td>같은 PDF를 여러 개 열어 동시 처리 — 24GB↑ 8개 · 12GB↑ 6개 · 8GB↑ 4개 · 그 미만 2개 (스레드 수도 상한)</td></tr>
+  <tr><td>흑백변환</td><td><b>CPU 코어 수</b></td><td>쪽마다 사진 해독·회색화·JPEG 재압축을 스레드 수만큼 동시에</td></tr>
+  <tr><td>저장(PDF 조립)</td><td><b>CPU 한 코어 속도</b></td><td>최종 파일 쓰기는 한 코어로만 동작 — 코어가 많아도 빨라지지 않음</td></tr>
+  <tr><td>대용량 파일(수백 MB)</td><td>디스크 + RAM</td><td>Ghostscript용 임시파일에 PDF 전체를 씀. RAM 부족 시 스왑으로 크게 느려짐</td></tr>
+  <tr><td>화면</td><td>그래픽 거의 안 씀</td><td>픽셀을 읽어 판정해야 해서 CPU 메모리에서 그림</td></tr>
+</table>
+
+<h3>7-3. 두 PC 비교</h3>
+<table>
+  <tr><th style="width:22%">항목</th><th style="width:28%">개발 PC</th><th style="width:28%">사무용 PC</th><th>판단</th></tr>
+  <tr><td>CPU</td><td>Ryzen 7 9800X3D (2024)</td><td><b>Ryzen 3 2200G (2018)</b></td><td class="ng">병목</td></tr>
+  <tr><td>동시 처리 스레드</td><td>16 (8코어)</td><td><b>4</b> (4코어, 하이퍼스레딩 없음)</td><td class="ng">4배 차이</td></tr>
+  <tr><td>한 코어 속도</td><td>최대 약 5.2GHz · 최신 구조</td><td>최대 약 3.7GHz · 1세대 구조</td><td class="mid">약 2배 차이(추정)</td></tr>
+  <tr><td>RAM</td><td>62GB</td><td>31GB (측정 시 8GB 사용)</td><td class="ok">충분</td></tr>
+  <tr><td>디스크</td><td>NVMe SSD</td><td>SSD</td><td class="ok">문제없음</td></tr>
+  <tr><td>그래픽</td><td>RX 7800 XT</td><td>Radeon Vega 내장</td><td class="ok">영향 거의 없음</td></tr>
+</table>
+<p>그 PC에서 앱은 스스로 <b>분석 동시 4쪽 · Ghostscript 2개</b>로 줄여 동작하며, 4개 코어를 쪽 그리기·썸네일 압축·화면 처리가 나눠 써 서로 기다리는 시간도 생깁니다.
+측정된 4배는 <b>코드 결함이 아니라 CPU 차이로 예상되는 수준</b>입니다.</p>
+
+<h3>7-4. 조치 방안 (다음에 진행)</h3>
+<table>
+  <tr><th style="width:26%">방안</th><th style="width:22%">예상 효과</th><th>비고</th></tr>
+  <tr><td><b>CPU만 교체</b>(AM4 보드 유지)<br>Ryzen 5 5600G(6코어 12스레드) 또는 Ryzen 7 5700G(8코어 16스레드)</td><td>약 2~3배 빨라짐(추정)</td>
+      <td>메인보드 모델에 따라 <b>BIOS 업데이트가 먼저 필요</b>하거나 지원하지 않을 수 있음 — 보드 확인 필수. 그래픽카드가 없는 PC는 내장 그래픽이 있는 <b>G 모델</b>을 고를 것</td></tr>
+  <tr><td>앱의 저사양 PC 조정<br>(4스레드 이하에서 동시 작업 수·썸네일 화질 조절)</td><td>10~30%(추정)</td>
+      <td>4배 차이를 메우지는 못함. 먼저 그 PC에서 단계별 시간 측정 기능으로 실측 후 결정</td></tr>
+</table>
+<h3>7-5. 권장 사양 (이 프로그램 기준)</h3>
+<ol>
+  <li><b>CPU</b> — 6코어 이상, 최근 세대일수록 좋음 (효과 가장 큼)</li>
+  <li><b>RAM</b> — 16GB 이상 (300MB 넘는 도록 등을 다루면 32GB)</li>
+  <li><b>SSD</b> — 필수 (HDD는 큰 파일에서 크게 느려짐)</li>
+  <li><b>그래픽카드</b> — 고려하지 않아도 됨</li>
+</ol>
+
+<h2>부록 A. 체험판 등록·연장 절차</h2>
+<h3>처음 등록</h3>
+<table>
+  <tr><th style="width:8%">순서</th><th style="width:18%">어디서</th><th>할 일</th></tr>
+  <tr><td>1</td><td>사용자 PC</td><td>zip을 풀고 <code>win-unpacked\PDF 분석기.exe</code> 실행 → 인증 창에 체험 키 입력 → <b>[요청 코드 만들기]</b> (자동 복사, <code>PDFEQ1.</code>로 시작)</td></tr>
+  <tr><td>2</td><td>사용자 → 발급자</td><td>요청 코드를 카톡·메일 등으로 전달</td></tr>
+  <tr><td>3</td><td>발급자 PC</td><td>앱에서 <b>Ctrl+Shift+Alt+L</b> → <b>[관리자]</b> 탭 → <b>[오프라인 활성화 코드 발급]</b>에 붙여넣고 발급</td></tr>
+  <tr><td>4</td><td>발급자 → 사용자</td><td>활성화 코드 전달</td></tr>
+  <tr><td>5</td><td>사용자 PC</td><td>인증 창 2단계에 붙여넣고 <b>[활성화 코드 등록]</b> — 인터넷 불필요</td></tr>
+</table>
+<h3>기간 연장</h3>
+<ul>
+  <li>발급자가 <b>[새 체험 키 발급]</b>으로 새 키를 만들어 보내고, 위 1~5단계를 그대로 반복합니다. 연장 전용 버튼은 없습니다.</li>
+  <li>기간은 <b>사용자가 등록한 날부터</b> 계산됩니다. 만료 전에 등록하면 남은 기간이 더해지지 않으므로 만료 직전·직후 등록이 유리합니다.</li>
+  <li>만료되면 저장·출력만 막히고 앱은 열립니다(머리의 체험판 배지를 누르면 인증 창).</li>
+  <li>키 하나는 한 PC에서 한 번만 사용할 수 있습니다.</li>
+</ul>
+
+<h2>부록 B. 이번 배포(3.8.0)에서 정리한 사항</h2>
+<ul>
+  <li><b>Ghostscript 동봉 보완:</b> Ghostscript는 이미 앱에 포함돼 있었으나 VC++ 런타임이 없는 PC에서 실행되지 않을 수 있어, Microsoft 서명 런타임 DLL 3개를 함께 넣음. 앱 폴더의 DLL을 우선 사용함을 실행 중 확인.</li>
+  <li><b>요청 코드 만들기 오류 수정:</b> 키 형식이 조금만 달라도 거절하고 안내가 창 밖에 표시돼 반응이 없어 보이던 문제 → 띄어쓰기·하이픈 누락·전각 문자·앞뒤 글자를 자동 정리, 안내를 버튼 바로 아래 표시.</li>
+  <li><b>안내 문구:</b> "키 하나는 한 PC에서 한 번만 · 연장은 새 체험 키로"로 변경.</li>
+</ul>
+
+<div class="sign">
+  <div class="h">작성</div><div class="h">검토</div><div class="h">승인</div>
+  <div class="s"></div><div class="s"></div><div class="s"></div>
+</div>
+
+<footer>일청기획 · PDF 분석기 배포본 코드 보호 · PC 성능 검토 보고서 · 2026-10-06</footer>
+</body>
+</html>
