@@ -992,7 +992,7 @@
         let epg;
         try { epg = await embedPageShared(out, pg, mtx, copier); }
         catch (err) { ensurePageContents(pg, true); epg = await out.embedPage(pg, undefined, mtx); }   // 강제 복구 후 1회 재시도(복구한 쪽은 새로 복사)
-        embedded.push({ e: epg, w: ew, h: eh, trim: pageTrimInset(pg, w, h, rot) });
+        embedded.push({ e: epg, w: ew, h: eh, trim: pageTrimInset(pg, w, h, rot), src: i });
         if (onProgress && (i & 15) === 0) onProgress(Math.round(i / n0 * 40));
         await uiYield();   // 대용량 문서 임베드 중에도 화면이 멈추지 않게 주기적으로 양보
       }
@@ -1019,7 +1019,7 @@
         embedder.embedIntoContext = async () => ref;
         const tr = it.trim;
         return { e: PDFLib.PDFEmbeddedPage.of(ref, out, embedder), w, h,
-                 trim: tr ? { l: tr.r, r: tr.l, b: tr.t, t: tr.b } : tr };
+                 trim: tr ? { l: tr.r, r: tr.l, b: tr.t, t: tr.b } : tr, src: it.src };
       });
     }
     // ── ◲ 블리드 자동 생성 — 재단여백 없는 원고의 가장자리를 미러로 확장 ─────
@@ -2868,7 +2868,20 @@
     }
     // 임포징 공용: 슬롯에 페이지 그리기(배치 + 블리드) → 트림 사각형 {x,y,w,h} 반환.
     // shiftX: 배치 후 수평 이동(중철 밀림보정). 모든 임포징 빌더가 이 함수로 그린다.
+    // 시트마다 어느 원고 쪽(입력 문서의 0부터 번호)이 앉았는지 적어 둔다 — 결과 미리보기가
+    // 바뀐 쪽이 든 시트만 다시 그리게(예전엔 한 쪽만 흑백으로 바꿔도 시트 전체를 다시 그렸다)
+    function noteSheetSrc(page, emb) {
+      if (!emb || emb.src == null || !page || !page.doc) return;
+      const m = page.doc.__sheetSrc || (page.doc.__sheetSrc = new Map());
+      const a = m.get(page);
+      if (a) a.push(emb.src); else m.set(page, [emb.src]);
+    }
+    function sheetSourcesOf(doc) {
+      const m = doc.__sheetSrc;
+      return doc.getPages().map(p => (m && m.get(p)) || []);
+    }
     function drawPlaced(page, emb, slot, opts, shiftX) {
+      noteSheetSrc(page, emb);
       // ── 원고가 이미 블리드를 품고 있으면(TrimBox < MediaBox) '트림'을 칸에 맞춘다 ──
       // 예전엔 블리드까지 포함한 전체(MediaBox)를 칸에 우겨넣어, 재단 결과물이 칸보다
       // 작아졌다(실측: 200pt 칸 → 170.9pt, −14.5%). 블리드는 칸 밖(거터)으로 넘겨야 맞다.
@@ -3174,7 +3187,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, per, across, down, sides, sheets: sheetsMade, trimMm: trimSizeMm(firstTrim), gapMm: gh * 25.4 / 72 };
+      return { bytes, sheetSrc: sheetSourcesOf(out), n0, per, across, down, sides, sheets: sheetsMade, trimMm: trimSizeMm(firstTrim), gapMm: gh * 25.4 / 72 };
     }
 
     async function buildBookletBytes(srcBytes, opts, onProgress) {
@@ -3226,7 +3239,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, n, sheets: n / 4 };
+      return { bytes, sheetSrc: sheetSourcesOf(out), n0, n, sheets: n / 4 };
     }
 
     // ── 정합(Cut & Stack) 순서 계산 (순수 함수 — 검증 용이하게 분리) ──────────
@@ -3303,7 +3316,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, n, chunk, sheets: sheets.length, nup, sides };
+      return { bytes, sheetSrc: sheetSourcesOf(out), n0, n, chunk, sheets: sheets.length, nup, sides };
     }
 
     // ── 반복 배치(Step & Repeat) — 명함·쿠폰·전단 ────────────────────────────
@@ -3389,7 +3402,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, total, grid: firstGrid, sheets: n0, trimMm: trimSizeMm(firstTrim) };
+      return { bytes, sheetSrc: sheetSourcesOf(out), n0, total, grid: firstGrid, sheets: n0, trimMm: trimSizeMm(firstTrim) };
     }
 
     async function generateStepRepeat() {
@@ -3501,7 +3514,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, n0, n, sheets: sheets.length, sides, gapMm: gh * 25.4 / 72 };
+      return { bytes, sheetSrc: sheetSourcesOf(out), n0, n, sheets: sheets.length, sides, gapMm: gh * 25.4 / 72 };
     }
 
     async function generateDup2up() {
@@ -4212,6 +4225,13 @@
     // 챕터별로 만든 결과에서 '이 챕터의 시트가 몇 번째~몇 번째인지' — 편집 모드 챕터 집중이
     // 그 챕터의 대수만 보여줄 때 쓴다. 전체 임포징을 하면 비운다(옛 범위가 남으면 오판).
     let _impChapterRanges = null;
+    // 시트 → 원고 쪽 대응(결과 미리보기의 시트별 캐시 열쇠용) — **결과 바이트 객체마다** 붙여 둔다.
+    // { n: 입력 쪽 수, map[시트] = 그 시트에 앉은 입력 쪽 번호(0부터)들 }. 미리보기는 n이 문서 쪽 수와 같을 때만 쓴다.
+    // 전역 하나로 두면 적용 직후 다운로드용 미리 만들기가 같은 임포징을 또 돌려 덮어썼다(실파일에서 시트 전부 다시 그림).
+    const _impSheetSrcOf = new WeakMap();
+    function noteImpSheetSrc(bytes, n, map) {
+      if (bytes && typeof bytes === 'object' && map) _impSheetSrcOf.set(bytes, { n, map });
+    }
     function impChapterRanges() { return _impChapterRanges; }
     // 조립된 문서를 챕터 구간으로 잘라 각각 임포징한 뒤 순서대로 이어붙인다.
     // 반환 null = 챕터 경계를 신뢰할 수 없음(페이지 매핑 불일치·챕터 1개) → 전체 임포징으로.
@@ -4254,6 +4274,7 @@
                   : buildBookletBytes;
       const out = await PDFLib.PDFDocument.create();
       const ranges = [], results = [];
+      let sheetSrc = [];   // 시트 → base 쪽 번호 — 조판이 쪽 수를 바꾸면(N-up 조판) 알 수 없어 null
       const duplex = (opts.sides | 0) === 2;
       for (let k = 0; k < runs.length; k++) {
         const idxs = runs[k].idxs;
@@ -4273,10 +4294,13 @@
         const sd = await PDFLib.PDFDocument.load(res.bytes, { ignoreEncryption: true });
         const from = out.getPageCount();
         (await out.copyPages(sd, sd.getPageIndices())).forEach(p => out.addPage(p));
+        if (sheetSrc && res.sheetSrc && res.n0 === idxs.length) res.sheetSrc.forEach(a => sheetSrc.push(a.map(j => idxs[j])));
+        else sheetSrc = null;
         // 양면 인쇄에서 다음 파일이 새 시트 앞면부터 시작하도록 — 시트 수가 홀수면 빈 시트 한 장
         if (duplex && (out.getPageCount() - from) % 2 === 1) {
           const lastPg = out.getPage(out.getPageCount() - 1);
           out.addPage([lastPg.getWidth(), lastPg.getHeight()]);
+          if (sheetSrc) sheetSrc.push([]);
         }
         ranges.push({ name: runs[k].name, from: from + 1, to: out.getPageCount() });
         await uiYield();
@@ -4284,6 +4308,7 @@
       if (onProgress) onProgress(100);
       const bytes = new Uint8Array(await savePdfDoc(out));
       _impChapterRanges = ranges;
+      noteImpSheetSrc(bytes, valid.length, sheetSrc && sheetSrc.length === out.getPageCount() ? sheetSrc : null);
       return { bytes, ranges, results };
     }
     // 파이프라인(미리보기·적용·다운로드) 공용: 조판~임포징을 파일별로 돌릴 수 있으면 그 결과를 준다.
@@ -4329,6 +4354,7 @@
       }
       const out = await PDFLib.PDFDocument.create();
       const ranges = [], results = [];
+      let sheetSrc = [];
       const duplex = (opts.sides | 0) === 2;
       for (let k = 0; k < runs.length; k++) {
         const sub = await PDFLib.PDFDocument.create();
@@ -4341,17 +4367,20 @@
         const sd = await PDFLib.PDFDocument.load(res.bytes, { ignoreEncryption: true });
         const from = out.getPageCount();
         (await out.copyPages(sd, sd.getPageIndices())).forEach(p => out.addPage(p));
+        if (sheetSrc && res.sheetSrc) res.sheetSrc.forEach(a => sheetSrc.push(a.map(j => runs[k].idxs[j])));
+        else sheetSrc = null;
         // 양면 인쇄에서 다음 파일이 새 시트 앞면부터 시작하도록 — 시트 수가 홀수면 빈 시트 한 장
         if (duplex && (out.getPageCount() - from) % 2 === 1) {
           const lastPg = out.getPage(out.getPageCount() - 1);
           out.addPage([lastPg.getWidth(), lastPg.getHeight()]);
+          if (sheetSrc) sheetSrc.push([]);
         }
         ranges.push({ name: runs[k].name, from: from + 1, to: out.getPageCount() });   // 1-based
         await uiYield();
       }
       if (onProgress) onProgress(100);
       const bytes = new Uint8Array(await savePdfDoc(out));
-      return { bytes, ranges, results };
+      return { bytes, ranges, results, sheetSrc: sheetSrc && sheetSrc.length === out.getPageCount() ? sheetSrc : null, srcN: total };
     }
 
     async function buildImposedBytes(srcBytes, onProgress) {
@@ -4367,12 +4396,14 @@
       if (sig && _impBytesCache.sig === sig && _impBytesCache.bytes) {
         if (onProgress) onProgress(100);
         _impChapterRanges = _impBytesCache.ranges || null;
+        noteImpSheetSrc(_impBytesCache.bytes, _impBytesCache.srcN, _impBytesCache.sheetSrc);
         return _impBytesCache.bytes;
       }
       if (sig && _impInflight && _impInflight.sig === sig) {
         const joined = await _impInflight.promise;
         if (onProgress) onProgress(100);
         _impChapterRanges = joined.ranges || null;
+        noteImpSheetSrc(joined.bytes, joined.srcN, joined.sheetSrc);
         return joined.bytes;
       }
       const build = opts.mode === 'nup' || opts.mode === 'cutstack' ? buildNupBytes
@@ -4380,24 +4411,25 @@
                   : opts.mode === 'dup'      ? buildDup2upBytes
                   : buildBookletBytes;
       const job = (async () => {
-        let bytes = null, ranges = null;
+        let bytes = null, ranges = null, sheetSrc = null, srcN = null;
         if (opts.perChapter) {
           const per = await buildImposedPerChapter(u8, opts, build, onProgress);
-          if (per) { bytes = per.bytes; ranges = per.ranges; }
+          if (per) { bytes = per.bytes; ranges = per.ranges; sheetSrc = per.sheetSrc; srcN = per.srcN; }
         }
         if (!bytes) {
           const res = await build(srcBytes, opts, onProgress);
-          bytes = res.bytes;
+          bytes = res.bytes; sheetSrc = res.sheetSrc || null; srcN = res.n0;
           _impAutoGapMm = opts.justifyX && res.gapMm != null ? res.gapMm : null;
           if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
         }
-        return { bytes, ranges };
+        return { bytes, ranges, sheetSrc, srcN };
       })();
       if (sig) _impInflight = { sig, promise: job };
       try {
         const r = await job;
         _impChapterRanges = r.ranges;
-        _impBytesCache = sig ? { sig, bytes: r.bytes, ranges: r.ranges } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
+        noteImpSheetSrc(r.bytes, r.srcN, r.sheetSrc);
+        _impBytesCache = sig ? { sig, bytes: r.bytes, ranges: r.ranges, sheetSrc: r.sheetSrc, srcN: r.srcN } : { sig: null, bytes: null };   // 시그니처를 못 만들면 캐시하지 않는다
         return r.bytes;
       } finally {
         if (_impInflight && _impInflight.promise === job) _impInflight = null;
@@ -6359,6 +6391,76 @@
         if (im && (im === PDFLib.PDFBool.True || im.asBoolean?.() === true || String(im) === 'true')) return;
       } catch(e) {}
 
+      // ── /Mask(마스킹) 보존 ── 변환기들은 회색으로 바꾸며 /Mask를 지운다. 그런데 /Mask가 스텐실 그림이면
+      //   색공간과 무관해 그대로 둬야 한다 — 지우면 가려져 있던 바탕(보통 검정)이 드러난다
+      //   (실파일 사업계획서 5쪽: 띠 그림 190장이 /Mask 스텐실로 배경을 비워 둠 → 흑백에서 배경이 새까맣게).
+      //   색 키 배열([min max …])은 원래 색 표본 기준이라 회색 뒤에는 틀리므로 변환 전에 스텐실 그림으로 바꿔 둔다.
+      const maskRaw = img.dict.get(Nm('Mask'));
+      let maskKeep = null;
+      if (maskRaw) {
+        let mo = maskRaw;
+        try { if (maskRaw.objectNumber != null) mo = pdfDoc.context.lookup(maskRaw); } catch(e) {}
+        if (mo && mo.dict) maskKeep = maskRaw;
+        else if (mo && typeof mo.size === 'function') maskKeep = colorKeyToStencil(pdfDoc, img, mo, csCheck);
+      }
+      await routeXObjectImageToGrayscale(pdfDoc, img, resDict, csCheck);
+      if (maskKeep && !img.dict.get(Nm('Mask'))) img.dict.set(Nm('Mask'), maskKeep);
+    }
+
+    // 색 키 마스킹 배열 → 같은 크기의 1비트 스텐실 그림(1 = 칠하지 않음). 원래 표본을 풀 수 있을 때만(무압축·Flate).
+    function colorKeyToStencil(pdfDoc, img, keyArr, cs) {
+      try {
+        const Nm = n => PDFLib.PDFName.of(n);
+        const num = o => { const v = pdfDoc.context.lookup(o) ?? o; return +(v.numberValue ?? v.asNumber?.() ?? NaN); };
+        const w = num(img.dict.get(Nm('Width'))), h = num(img.dict.get(Nm('Height')));
+        const bpcO = img.dict.get(Nm('BitsPerComponent')); const bpc = bpcO ? num(bpcO) : 8;
+        const csn = cs && cs.encodedName;
+        let n = csn === '/DeviceRGB' || csn === '/CalRGB' ? 3 : csn === '/DeviceCMYK' ? 4 : 0;
+        if (!n && cs && typeof cs.size === 'function' && cs.size() > 0) {
+          const first = (pdfDoc.context.lookup(cs.get(0)) ?? cs.get(0)).encodedName;
+          if (first === '/ICCBased') { const s = pdfDoc.context.lookup(cs.get(1)); n = s && s.dict ? num(s.dict.get(Nm('N'))) : 0; }
+          else if (first === '/Separation' || first === '/Indexed' || first === '/CalGray') n = 1;
+          else if (first === '/CalRGB' || first === '/Lab') n = 3;
+          else if (first === '/DeviceN') { const names = pdfDoc.context.lookup(cs.get(1)); n = names && names.size ? names.size() : 0; }
+        }
+        if (!(w > 0 && h > 0 && n > 0 && [1, 2, 4, 8, 16].includes(bpc)) || keyArr.size() !== 2 * n) return null;
+        const ranges = Array.from({ length: 2 * n }, (_, i) => num(keyArr.get(i)));
+        const rowBytes = Math.ceil(w * n * bpc / 8);
+        const fname = imgFilterNameOf(pdfDoc, img.dict);
+        let raw = null;
+        if (fname === '') raw = img.contents;
+        else if (fname === '/FlateDecode' || fname === '/Fl') {
+          const pred = imgPredictorOf(pdfDoc, img.dict);
+          raw = inflateLenient(img.contents, h * (pred >= 10 ? rowBytes + 1 : rowBytes));
+          if (raw && pred >= 10) raw = bpc === 8 ? removePNGPredictor(raw, w, n) : bpc === 16 ? removePNGPredictor(raw, w, n * 2) : removePNGPredictor(raw, rowBytes, 1);
+          else if (pred > 1) raw = null;   // TIFF 예측자는 모름
+        }
+        if (!raw || raw.length < rowBytes * h) return null;
+        const mRow = Math.ceil(w / 8), mask = new Uint8Array(mRow * h);
+        const smp = (row, k) => {   // 행 안 k번째 표본
+          if (bpc === 8) return raw[row + k];
+          if (bpc === 16) return (raw[row + 2 * k] << 8) | raw[row + 2 * k + 1];
+          const bit = k * bpc, b = raw[row + (bit >> 3)];
+          return (b >> (8 - bpc - (bit & 7))) & ((1 << bpc) - 1);
+        };
+        for (let y = 0; y < h; y++) {
+          const row = y * rowBytes;
+          for (let x = 0; x < w; x++) {
+            let hit = true;
+            for (let c = 0; c < n && hit; c++) { const v = smp(row, x * n + c); hit = v >= ranges[2 * c] && v <= ranges[2 * c + 1]; }
+            if (hit) mask[y * mRow + (x >> 3)] |= 0x80 >> (x & 7);
+          }
+        }
+        const z = pako.deflate(mask);
+        const stream = PDFLib.PDFRawStream.of(pdfDoc.context.obj({
+          Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ImageMask: true, BitsPerComponent: 1,
+          Filter: 'FlateDecode', Length: z.length }), z);
+        return pdfDoc.context.register(stream);
+      } catch (e) { console.warn('색 키 마스크 변환 실패 — 마스크 없이 흑백으로:', e); return null; }
+    }
+
+    async function routeXObjectImageToGrayscale(pdfDoc, img, resDict, csCheck) {
+      const Nm = n => PDFLib.PDFName.of(n);
       // ── 색공간 우선 라우팅 (필터와 무관하게 처리 가능한 유형) ──
       if (csCheck && typeof csCheck.size === 'function' && csCheck.size() > 0) {
         let first = null;

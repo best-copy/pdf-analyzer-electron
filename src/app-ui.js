@@ -3347,11 +3347,27 @@
     // 딱 1개만 상주시키고, 새 문서로 교체할 때 이전 문서를 반드시 destroy() 한다.
     let _pvDoc = { key: null, pdf: null };
     // 바이트 지문(길이+표본) — 전체 비교 없이 동일 여부만 빠르게 판단
+    // ⚠ 모든 바이트를 본다 — 예전엔 길이 + 96곳 표본만 봐서, 길이가 같고 표본 밖만 다른 결과
+    //   (흑백↔컬러 한 쪽 전환 등)를 같은 것으로 보고 옛 미리보기 문서·임포징·블리드·아웃라인 캐시를 그대로 썼다.
+    //   4바이트씩 두 갈래 해시(64비트): 75MB 약 20ms · 300MB 약 80ms(정렬 안 된 조각은 약 4배).
     function bytesFingerprint(b) {
-      const n = b.length; let h = n >>> 0;
-      const step = Math.max(1, (n / 96) | 0);
-      for (let i = 0; i < n; i += step) h = (Math.imul(h, 31) + b[i]) >>> 0;
-      return n + ':' + h;
+      if (!(b instanceof Uint8Array)) b = ArrayBuffer.isView(b) ? new Uint8Array(b.buffer, b.byteOffset, b.byteLength) : new Uint8Array(b);
+      const n = b.length;
+      let h1 = n | 0, h2 = 0x9e3779b9 ^ n;
+      const n4 = (b.byteOffset & 3) === 0 ? n >>> 2 : 0;
+      if (n4) {
+        const w = new Int32Array(b.buffer, b.byteOffset, n4);
+        for (let i = 0; i < n4; i++) {
+          const v = w[i];
+          h1 = Math.imul(h1 ^ v, 0x01000193);
+          h2 = Math.imul((h2 << 5 | h2 >>> 27) + v, 0x5bd1e995);
+        }
+      }
+      for (let i = n4 * 4; i < n; i++) {
+        h1 = Math.imul(h1 ^ b[i], 0x01000193);
+        h2 = Math.imul((h2 << 5 | h2 >>> 27) + b[i], 0x5bd1e995);
+      }
+      return n + ':' + (h1 >>> 0).toString(36) + '.' + (h2 >>> 0).toString(36);
     }
     async function releasePreviewDoc() {
       if (_pvDoc.pdf) { try { await _pvDoc.pdf.destroy(); } catch (e) {} }
@@ -3459,16 +3475,31 @@
         // 같은 쪽이라도 **어느 문서를 그렸는지**가 다르면 다시 그려야 한다 — 결과(흑백)와 원본(컬러)은
         // 쪽 구성이 같아, 이 표식이 없으면 '🖨 결과 ↔ 📄 원본' 전환에서 먼저 그린 그림이 그대로 남았다.
         const srcMark = opts.source === 'original' ? 'O' : 'R';
+        // 쪽 하나의 그림을 정하는 상태 — 흑백 여부는 isBwTarget(흑백 옵션·잉크 정규화·확정까지)로,
+        // 내부 편집은 editRev로. 원본 화면은 흑백을 반영하지 않으므로 흑백 표식을 넣지 않는다.
+        const dgSig = (typeof getDotGain === 'function') ? getDotGain() : 0;
+        const pageSig = (r) => [r.isBlank ? 'b' + (r.pageSize || []).join('x') : r.originalIdx + '@' + editRev(r.originalIdx),
+                                r.rotation || 0, (r.isRoman || r.isTocPage) ? 1 : 0, pageFlagBits(r),
+                                srcMark === 'R' && isBwTarget(r) ? 1 : 0].join(':');
+        // 임포징 시트 → 원고 쪽 대응(빌더가 남긴 것) — 이 결과 바이트의 것이고 문서 쪽 수와 맞을 때만
+        const validRs = pageResults.filter(Boolean);
+        const ss = (srcMark === 'R' && typeof _impSheetSrcOf !== 'undefined') ? _impSheetSrcOf.get(bytes) : null;
+        const sheetSrc = (ss && ss.n === validRs.length && ss.map.length === total) ? ss.map : null;
         const sigOf = (i) => {
           const src = canSelect ? srcMap[i - 1] : null;
           if (src && src.length === 1) {
             const r = pnMap.get(src[0]);
-            if (r) return [srcMark, pxW, layoutSig, total, r.originalIdx, r.rotation || 0, r.isBlank ? 1 : 0,
-                           (r.isRoman || r.isTocPage) ? 1 : 0, pageFlagBits(r),
-                           (selectedPages.has(src[0]) ? 1 : 0) + (r.appliedBw ? 2 : 0)].join('|');
+            if (r) return [srcMark, pxW, layoutSig, dgSig, total, pageSig(r)].join('|');
             return null;
           }
-          // 임포징 시트처럼 원본 1:1 매핑이 없는 페이지 — 결과 바이트 지문(fp)이 같으면 내용도 같다
+          // 임포징 시트 — 앉은 쪽들의 상태가 같으면 같은 그림이다(한 쪽만 흑백으로 바꾸면 그 쪽이 든 시트만 다시 그린다)
+          if (sheetSrc) {
+            const rs = sheetSrc[i - 1].map(k => validRs[k]);
+            // 쪽 번호(머리글 등)는 문서 안 위치를 따르므로 위치(k)도 넣는다
+            if (rs.every(Boolean)) return ['imp2', pxW, layoutSig, dgSig, total, i,
+                                           rs.map((r, j) => sheetSrc[i - 1][j] + '=' + pageSig(r)).join(',')].join('|');
+          }
+          // 대응을 모르면 결과 바이트 지문(fp)이 같을 때만 같은 그림으로 본다
           return ['imp', pxW, fp, i, total].join('|');
         };
         // 자리 크기용 기준 치수(1페이지) — 시트는 크기가 같으므로 이걸로 자리를 잡고,
@@ -4051,6 +4082,7 @@
       if (modal) modal.style.display = 'none';
       _pvvBase = null; _pvvIdx = -1;
       _pvvToken++;   // 진행 중 렌더 취소
+      pvvReleaseBwDoc();
     }
     function pvvVisible() {
       const m = document.getElementById('pageViewModal');
@@ -4110,6 +4142,7 @@
       const box = document.getElementById('pvvBody');
       if (!r || !cv || !box) return;
       const my = ++_pvvToken;
+      _pvvShowsBw = false;
       pvvSyncTitle();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const ctx = cv.getContext('2d', { willReadFrequently: true });
@@ -4126,7 +4159,11 @@
           pvvSetStat(null);
           return;
         }
-        const page = await globalPdfDoc.getPage(r.originalIdx + 1);
+        // 흑백으로 바꿀 컬러 쪽은 실제 흑백변환 결과를 그린다 — 원본을 그려서 적용 뒤에도 컬러로 보였다
+        let page = (r.isColor && isBwTarget(r)) ? await pvvBwPage(r) : null;
+        if (my !== _pvvToken) return;
+        _pvvShowsBw = !!page;
+        if (!page) page = await globalPdfDoc.getPage(r.originalIdx + 1);
         if (my !== _pvvToken) return;
         const rot = ((((page.rotate || 0) + (r.rotation || 0)) % 360) + 360) % 360;
         const vp1 = page.getViewport({ scale: 1, rotation: rot });
@@ -4138,19 +4175,52 @@
         const longSide = Math.max(vp1.width, vp1.height) * renderScale;
         if (longSide > maxSide) renderScale *= maxSide / longSide;
         const vp = page.getViewport({ scale: renderScale, rotation: rot });
-        cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
-        cv.style.width = Math.round(vp1.width * cssScale) + 'px';
-        cv.style.height = Math.round(vp1.height * cssScale) + 'px';
-        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
-        await renderPageNoSeams(page, { canvasContext: ctx, viewport: vp });   // 사진 띠 흰 줄 보정
+        // 렌더마다 따로 캔버스에 그린 뒤 옮긴다 — 그리는 도중 다시 그리면(B·◀▶ 연타) pdf.js가
+        // '같은 캔버스에 render() 두 번'으로 실패해 앞 그림이 남았다
+        const off = document.createElement('canvas');
+        off.width = Math.ceil(vp.width); off.height = Math.ceil(vp.height);
+        const octx = off.getContext('2d', { willReadFrequently: true });
+        octx.fillStyle = '#fff'; octx.fillRect(0, 0, off.width, off.height);
+        await renderPageNoSeams(page, { canvasContext: octx, viewport: vp });   // 사진 띠 흰 줄 보정
         try { page.cleanup(); } catch (e) {}
         if (my !== _pvvToken) return;
-        _pvvBase = ctx.getImageData(0, 0, cv.width, cv.height);
+        cv.width = off.width; cv.height = off.height;
+        cv.style.width = Math.round(vp1.width * cssScale) + 'px';
+        cv.style.height = Math.round(vp1.height * cssScale) + 'px';
+        _pvvBase = octx.getImageData(0, 0, off.width, off.height);
         pvvRedraw();
       } catch (e) {
         console.error('페이지 크게 보기 렌더 실패:', e);
         pvvSetStat(null);
       }
+    }
+    // 흑백 대상 쪽의 변환 결과(적용·다운로드와 같은 _bwCache)를 1쪽 문서로 떼어 pdf.js로 연다.
+    // 문서는 마지막 하나만 들고 있다(같은 쪽을 다시 보면 재사용, 창을 닫으면 해제).
+    let _pvvShowsBw = false;
+    let _pvvBwDoc = { entry: null, pdf: null };
+    async function pvvBwPage(r) {
+      try {
+        await ensureBwConverted([r.originalIdx]);
+        const c = _bwCache.get(r.originalIdx);
+        if (!c || !c.doc) return null;
+        if (_pvvBwDoc.entry !== c) {
+          const one = await PDFLib.PDFDocument.create();
+          const [pg] = await one.copyPages(c.doc, [c.idx]);
+          one.addPage(pg);
+          const pdf = await openPdfDoc({ data: await one.save() }).promise;
+          pvvReleaseBwDoc();
+          _pvvBwDoc = { entry: c, pdf };
+        }
+        return await _pvvBwDoc.pdf.getPage(1);
+      } catch (e) {
+        if (!(e && e.stale)) console.warn('크게 보기 흑백 결과를 못 그려 원본을 보여줍니다:', e);
+        return null;
+      }
+    }
+    function pvvReleaseBwDoc() {
+      const p = _pvvBwDoc.pdf;
+      _pvvBwDoc = { entry: null, pdf: null };
+      if (p) { try { p.destroy(); } catch (e) {} }
     }
     // 컬러 픽셀 비율 계산 + (옵션) 자홍색 오버레이
     function pvvRedraw() {
@@ -4179,9 +4249,11 @@
       const vd = document.getElementById('pvvVerdict');
       const r = pageResults[_pvvIdx];
       if (vd && r) {
-        const isColor = r.isColor && !r.appliedBw;
+        const isColor = r.isColor && !r.appliedBw && !_pvvShowsBw;
         vd.className = 'pvv-verdict ' + (isColor ? 'is-color' : 'is-gray');
-        vd.textContent = r.isBlank ? '빈 페이지' : (r.appliedBw ? '흑백 확정' : (r.isColor ? '🎨 컬러 판정' : '흑백 판정'));
+        vd.textContent = r.isBlank ? '빈 페이지'
+          : _pvvShowsBw ? (r.appliedBw ? '흑백 확정' : '흑백 변환 예정') + ' — 변환 결과 표시 (원본은 컬러)'
+          : (r.appliedBw ? '흑백 확정' : (r.isColor ? '🎨 컬러 판정' : '흑백 판정'));
       }
       if (!st) return;
       if (!s || !s.opaque) { st.textContent = ''; return; }
@@ -4207,6 +4279,7 @@
       else { if (el) selectPageEl(r.pageNum, el); else selectedPages.add(r.pageNum); }
       updateSelectedCount();
       pvvSyncTitle();
+      pvvRender();   // 흑백 지정·해제가 그림에도 바로 보이게(흑백변환 옵션이 켜져 있을 때)
     }
 
     // 쪽별 예외 표식 — 썸네일 번호 옆 작은 꼬리표 (우클릭 메뉴로 켠 것)
