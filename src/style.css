@@ -879,6 +879,8 @@
       font-size: 0.72em; line-height: 1; padding: 2px 4px; border-radius: 4px;
       background: #ffd60a; color: #1d1d1f; font-weight: 700;
     }
+    .page-info .page-bw-tag { margin-left: 4px; vertical-align: middle; }
+    .sb-num .page-bw-tag { font-size: 0.9em; padding: 1px 3px; margin-left: 3px; }
 
     /* ---- 썸네일 hover 반투명 오버레이 ---- */
     .page-thumb-wrap::after {

@@ -2307,9 +2307,9 @@
     }
 
     function restoreThumbnailEl(el, pageNum, sbEl) {
-      // 적용 확정된 흑백 페이지는 선택 여부와 무관하게 회색 표시 유지
+      // 원본 썸네일·원래 라벨로 — 확정 흑백(appliedBw)은 회색 대신 '흑백 적용' 표식으로 보인다
       const rr = pageResults.find(x => x && x.pageNum === pageNum);
-      if (rr && rr.appliedBw) return;
+      syncBwAppliedTag(el, rr);
       const img = el.querySelector('.page-thumbnail');
       if (img) img.style.filter = '';
       const span = el.querySelector('.page-type-inline');
@@ -2317,6 +2317,23 @@
       // 사이드바 동기
       const sb = sbEl ?? sidebar.querySelector(`[data-sb-page="${pageNum}"]`);
       if (sb) { const sbImg = sb.querySelector('img'); if (sbImg) sbImg.style.filter = ''; }
+    }
+
+    // '흑백 적용' 표식 — ✔ 적용으로 확정된 흑백 쪽(썸네일은 원본 그대로 둔다)
+    const BW_APPLIED_TAG_TITLE = '흑백 적용됨 — 저장·인쇄는 흑백입니다. 썸네일은 원본 그대로 보여 줍니다. 이 쪽만 되돌리려면 우클릭 → 컬러(C), 전부 되돌리려면 ⬛ 흑백변환을 끄세요';
+    function syncBwAppliedTag(el, r) {
+      if (!el) return;
+      const on = !!(r && r.appliedBw && !r.isBlank);
+      let tag = el.querySelector('.page-bw-tag');
+      if (on && !tag) {
+        const info = el.querySelector('.page-info');
+        if (!info) return;
+        tag = document.createElement('span');
+        tag.className = 'page-flag-tag page-bw-tag';
+        tag.title = BW_APPLIED_TAG_TITLE;
+        tag.textContent = '흑백 적용';
+        info.appendChild(tag);
+      } else if (!on && tag) tag.remove();
     }
 
     // ── 페이지 선택 ──────────────────────────────────────────────────────────
@@ -2398,29 +2415,33 @@
 
     function deselectAll() {
       if (!selectedPages.size) return;   // 이미 비어 있으면 아무 것도 무효화하지 않음
-      const isCommitted = pn => { const r = pageResults.find(x => x && x.pageNum === pn); return !!(r && r.appliedBw); };
       selectedPages.clear();
       document.querySelectorAll('.page-item.selected').forEach(el => {
         el.classList.remove('selected');
-        if (isCommitted(parseInt(el.dataset.page, 10))) return;   // 확정 흑백은 회색 유지
-        const img = el.querySelector('.page-thumbnail');
-        if (img) img.style.filter = '';
-        const span = el.querySelector('.page-type-inline');
-        if (span && span.dataset.orig) { span.textContent = span.dataset.orig; delete span.dataset.orig; }
+        restoreThumbnailEl(el, parseInt(el.dataset.page, 10));
       });
       sidebar.querySelectorAll('.sb-item.sb-selected').forEach(el => {
         el.classList.remove('sb-selected');
-        if (isCommitted(parseInt(el.dataset.sbPage, 10))) return;
         const sbImg = el.querySelector('img');
         if (sbImg) sbImg.style.filter = '';
       });
       updateSelectedCount();
     }
-    // 적용 확정 후 선택만 조용히 해제 — 결과(processedPdfBytes)·캐시·회색 표시는 유지
+    // 적용 확정 후 선택만 조용히 해제 — 결과(processedPdfBytes)·캐시는 유지.
+    // 선택할 때 걸었던 회색 미리보기는 걷고(원본 썸네일·원래 라벨) 확정한 쪽에는 '흑백 적용' 표식을 붙인다.
+    // (사용자 결정 2026-10-07: '원본 페이지 보기'는 원본 그대로 + 표식 — 예전엔 회색이 남아 라벨·집계와 어긋났고
+    //  ⬛ 흑백변환을 한 번 더 눌러야 원래대로 보였다)
     function commitClearSelection() {
       selectedPages.clear();
-      document.querySelectorAll('.page-item.selected').forEach(el => el.classList.remove('selected'));
-      sidebar.querySelectorAll('.sb-item.sb-selected').forEach(el => el.classList.remove('sb-selected'));
+      document.querySelectorAll('.page-item.selected').forEach(el => {
+        el.classList.remove('selected');
+        restoreThumbnailEl(el, parseInt(el.dataset.page, 10));
+      });
+      sidebar.querySelectorAll('.sb-item.sb-selected').forEach(el => {
+        el.classList.remove('sb-selected');
+        const sbImg = el.querySelector('img');
+        if (sbImg) sbImg.style.filter = '';
+      });
       selectedCountEl.textContent = '0개 선택됨';
       syncSidebarPanel();
       if (typeof refreshPreviewMarks === 'function') refreshPreviewMarks();
@@ -2656,10 +2677,9 @@
         const el = document.getElementById('ctxChk_' + k);
         if (el) el.classList.toggle('on', all(k));
       });
-      const sel = !!(r && selectedPages.has(r.pageNum));
       const cc = document.getElementById('ctxChk_color'), cb = document.getElementById('ctxChk_bw');
-      if (cc) cc.classList.toggle('on', !!r && !sel);
-      if (cb) cb.classList.toggle('on', sel);
+      if (cc) cc.classList.toggle('on', !!r && !isBwTarget(r));   // ✓는 실제로 흑백이 되는지로(선택 여부가 아니라)
+      if (cb) cb.classList.toggle('on', !!r && isBwTarget(r));
       const pi = document.getElementById('ctxPasteItem');
       if (pi) pi.classList.toggle('ctx-disabled', !(typeof pageClipboard !== 'undefined' && pageClipboard.length));
     }
@@ -2685,23 +2705,34 @@
       if (ctxTargetIdx < 0) return;
       rotatePage(ctxTargetIdx, deg);
     }
+    // 우클릭 '흑백'(B)·'컬러'(C)는 그 쪽의 흑백 여부를 직접 정한다 — 크게 보기 창의 B도 같은 함수.
+    // 예전 '흑백'은 선택만 해서 ⬛ 흑백변환이 꺼져 있으면 아무 일도 없었고(메뉴엔 ✓ 흑백, 크게 보기는 컬러 — '되었다 안되었다'),
+    // '컬러'는 ✔ 적용으로 확정된 쪽을 되돌리지 못해 ⬛ 흑백변환을 꺼서 전부 풀어야 했다(2026-10-07).
+    function setPageBw(r, on) {
+      if (!r || r.isBlank) return;
+      const el = document.querySelector(`.page-item[data-page="${r.pageNum}"]`);
+      if (on) {
+        if (!processingOptions.bw) toggleOption('bw');   // 흑백으로 하라고 했으니 흑백변환을 켠다(이미 고른 다른 쪽도 흑백 대상이 된다)
+        if (el) { if (!el.classList.contains('selected')) selectPageEl(r.pageNum, el); }
+        else selectedPages.add(r.pageNum);
+      } else {
+        if (r.appliedBw) delete r.appliedBw;            // 확정된 흑백도 이 쪽만 원래 색으로
+        if (el) deselectPageEl(r.pageNum, el); else selectedPages.delete(r.pageNum);
+        const sbTag = sidebar.querySelector(`[data-sb-page="${r.pageNum}"] .page-bw-tag`);
+        if (sbTag) sbTag.remove();
+      }
+      updateSelectedCount();
+      if (!on && typeof refreshResults === 'function' && !(typeof previewVisible === 'function' && previewVisible())) refreshResults();
+    }
     function ctxApplyBW() {
       hideCtxMenu();
       if (ctxTargetIdx < 0) return;
-      const r = pageResults[ctxTargetIdx];
-      if (!r) return;
-      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
-      if (el && !el.classList.contains('selected')) selectPageEl(r.pageNum, el);
-      updateSelectedCount();
+      setPageBw(pageResults[ctxTargetIdx], true);
     }
     function ctxClearBW() {
       hideCtxMenu();
       if (ctxTargetIdx < 0) return;
-      const r = pageResults[ctxTargetIdx];
-      if (!r) return;
-      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
-      if (el && el.classList.contains('selected')) deselectPageEl(r.pageNum, el);
-      updateSelectedCount();
+      setPageBw(pageResults[ctxTargetIdx], false);
     }
     function ctxDeletePage() {
       hideCtxMenu();
@@ -3136,6 +3167,7 @@
             const el = document.querySelector(`[data-page="${r.pageNum}"]`);
             if (el) restoreThumbnailEl(el, r.pageNum);
           });
+          sidebar.querySelectorAll('.page-bw-tag').forEach(t => t.remove());   // 왼쪽 썸네일의 '흑' 표식도
         }
         syncSelectionVisuals();
         if (typeof refreshResults === 'function') refreshResults();
@@ -3617,7 +3649,7 @@
         if (conv.errors > 0)
           msg += `\n⚠️ 주의: ${conv.errors}개 페이지(${conv.errPages.join(', ')})에서 일부 이미지 변환 실패 — 해당 페이지는 부분적으로 칼라가 남아있을 수 있습니다.`;
         if (committed > 0)
-          msg += `\n✅ 흑백변환 확정 — 선택은 자동 해제되었고 변환은 유지됩니다. 되돌리려면 ⬛ 흑백변환 체크를 끄세요.`;
+          msg += `\n✅ 흑백변환 확정 — 썸네일은 원본 그대로 두고 '흑백 적용' 표식을 붙였습니다. 한 쪽만 되돌리려면 우클릭 → 컬러(C), 전부 되돌리려면 ⬛ 흑백변환을 끄세요.`;
         msg += inkNormRiskNote();
         showSuccess(msg);
         // 🕓 적용 시점의 설정을 최근 작업으로 기록 — 1분 주기 스냅샷만 믿으면

@@ -3876,13 +3876,13 @@
           sbPrevChapter = r.chapter;
         }
         const item = document.createElement('div');
-        // 적용 확정 흑백(appliedBw)은 사이드바에서도 흑백으로 표시
-        item.className = 'sb-item' + (r.isBlank ? '' : ((r.isColor && !r.appliedBw) ? ' sb-color-page' : ' sb-mono-page'));
+        // 원본 썸네일 그대로 — 확정 흑백(appliedBw)은 번호 옆 '흑' 표식(메인 썸네일의 '흑백 적용'과 같은 뜻)
+        item.className = 'sb-item' + (r.isBlank ? '' : (r.isColor ? ' sb-color-page' : ' sb-mono-page'));
         item.dataset.sbPage = r.pageNum;
         item.innerHTML = r.thumbnail
-          ? `<img src="${r.thumbnail}"${r.appliedBw ? ' style="filter:grayscale(1);"' : ''} alt="${r.pageNum}">`
+          ? `<img src="${r.thumbnail}" alt="${r.pageNum}">`
           : `<div class="sb-blank" style="height:44px;background:#2c2c2e;border-radius:3px;"></div>`;
-        item.innerHTML += `<div class="sb-num">${r.pageNum}</div>`;
+        item.innerHTML += `<div class="sb-num">${r.pageNum}${r.appliedBw && !r.isBlank ? `<span class="page-flag-tag page-bw-tag" title="${BW_APPLIED_TAG_TITLE}">흑</span>` : ''}</div>`;
 
         // 클릭 → 메인 그리드 해당 페이지로 이동
         // Ctrl/Shift+클릭 → 메인 그리드와 동일한 페이지 선택 (개별 토글/범위 선택)
@@ -4129,9 +4129,9 @@
         + (onlySel ? ` · 선택 ${at + 1}/${list.length}` : '');
       const bw = document.getElementById('pvvBwBtn');
       if (bw) {
-        const on = selectedPages.has(r.pageNum);
-        bw.classList.toggle('active', on || !!r.appliedBw);
-        bw.textContent = r.appliedBw ? '⬛ 흑백 확정됨' : (on ? '⬛ 흑백변환 선택됨' : '⬛ 흑백변환 선택');
+        const on = isBwTarget(r);
+        bw.classList.toggle('active', on);
+        bw.textContent = r.appliedBw ? '⬛ 흑백 확정됨 (B: 컬러로)' : (on ? '⬛ 흑백변환 선택됨' : '⬛ 흑백변환 선택');
       }
       const z = document.getElementById('pvvZoomPct');
       if (z) z.textContent = _pvvZoomPct ? _pvvZoomPct + '%' : '맞춤';
@@ -4273,13 +4273,10 @@
     function pvvToggleBw() {
       const r = pageResults[_pvvIdx];
       if (!r || r.isBlank) return;
-      if (r.appliedBw) { showError('이미 흑백으로 확정된 페이지입니다 — 되돌리려면 ⬛ 흑백변환 옵션을 끄세요.'); return; }
-      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
-      if (selectedPages.has(r.pageNum)) { if (el) deselectPageEl(r.pageNum, el); else selectedPages.delete(r.pageNum); }
-      else { if (el) selectPageEl(r.pageNum, el); else selectedPages.add(r.pageNum); }
-      updateSelectedCount();
+      // 우클릭 '흑백'·'컬러'와 같은 규칙(app-core setPageBw) — 흑백이 아니면 흑백으로(흑백변환도 켬), 흑백이면 이 쪽만 원래 색으로
+      setPageBw(r, !isBwTarget(r));
       pvvSyncTitle();
-      pvvRender();   // 흑백 지정·해제가 그림에도 바로 보이게(흑백변환 옵션이 켜져 있을 때)
+      pvvRender();   // 흑백 지정·해제가 그림에도 바로 보이게
     }
 
     // 쪽별 예외 표식 — 썸네일 번호 옆 작은 꼬리표 (우클릭 메뉴로 켠 것)
@@ -4320,13 +4317,8 @@
         const img = el.querySelector('.page-thumbnail');
         if (img && !isBlank && processingOptions.bw) img.style.filter = 'grayscale(1)';   // 흑백 미리보기는 옵션 ON일 때만
       }
-      // 적용 확정된 흑백 페이지 — 선택과 무관하게 회색 + '흑백' 라벨 유지
-      if (r.appliedBw && !isBlank) {
-        const img = el.querySelector('.page-thumbnail');
-        if (img) img.style.filter = 'grayscale(1)';
-        const span = el.querySelector('.page-type-inline');
-        if (span) { if (!span.dataset.orig) span.dataset.orig = span.textContent; span.textContent = '흑백'; }
-      }
+      // 적용 확정된 흑백 페이지 — 썸네일·라벨은 원본 그대로, '흑백 적용' 표식만(사용자 결정 2026-10-07)
+      syncBwAppliedTag(el, r);
       el.addEventListener('click', e => {
         if (e.target.closest('button')) return;
         togglePageSelection(pageNum, el, e);
