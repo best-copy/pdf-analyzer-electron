@@ -2619,128 +2619,242 @@
     // 반환 { bytes, embedded: [이름], missing: [{ name, pages }] } — 바뀐 게 없으면 원래 bytes 그대로.
     const _cjkEmbedCache = { key: null, res: null };
     const STD14_RE = /^(Times|Helvetica|Courier|Symbol|ZapfDingbats)/i;
+    const UNI_CMAP_RE = /^\/Uni[A-Za-z0-9]+-(UTF16|UCS2)-H$/;
+    // 반환 res.missing — 넣지 못해 다른 글꼴로 바뀔 글꼴 { name, pages, why }:
+    //   한중일(Type0)은 이 PC에 있어도 못 넣었으면 넣는다(gs의 글자 번호 대체는 모양·간격이 틀어진다 — 함정 33),
+    //   단순 글꼴은 이 PC에 없을 때만(있으면 gs가 FONTPATH로, pdf.js가 이름으로 찾는다)
     async function embedInstalledCjkFonts(bytes) {
       const key = bytesFingerprint(bytes);
-      if (_cjkEmbedCache.key === key && _cjkEmbedCache.res) return _cjkEmbedCache.res;
+      // ⚠ 바뀐 게 없으면 '이번에 받은' 바이트를 돌려준다 — 캐시에 든 건 지난번 호출의 객체라, 그 사이 pdf.js가
+      //   버퍼를 워커로 넘겨 비웠을 수 있다(같은 파일을 다시 열면 빈 원본이 되어 분석이 멈췄다)
+      if (_cjkEmbedCache.key === key && _cjkEmbedCache.res) {
+        const c = _cjkEmbedCache.res;
+        return c.changed ? c : Object.assign({}, c, { bytes });
+      }
       const N = n => PDFLib.PDFName.of(n);
-      const doc = await PDFLib.PDFDocument.load(bytes.slice(0), { ignoreEncryption: true, updateMetadata: false });
+      // pdf-lib은 입력을 바꾸지 않는다 — 복사하지 않고 그대로 읽는다(250MB 원고에서 한 벌 아낌)
+      const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
       const ctx = doc.context;
       const scan = scanDocFonts(doc);
       const res = { bytes, embedded: [], missing: [] };
-      if (!scan.missing.size) { _cjkEmbedCache.key = key; _cjkEmbedCache.res = res; return res; }
-      // 빠진 Type0 글꼴 사전들(같은 이름이 여러 객체일 수 있다)
+      const allMissing = [...scan.missing.keys()].filter(n => n !== '(이름없음)' && !STD14_RE.test(n));
+      if (!allMissing.length) { _cjkEmbedCache.key = key; _cjkEmbedCache.res = res; return res; }
+      // 빠진 글꼴 사전들(같은 이름이 여러 객체일 수 있다) — Type0은 자손 폰트까지, 단순 글꼴은 디스크립터가 있는 것만
       const groups = new Map();
       for (const [, obj] of ctx.enumerateIndirectObjects()) {
-        if (!(obj instanceof PDFLib.PDFDict) || String(obj.get(N('Subtype'))) !== '/Type0') continue;
-        const dfs = ctx.lookup(obj.get(N('DescendantFonts')));
-        const df = dfs && dfs.size && dfs.size() ? ctx.lookup(dfs.get(0)) : null;
-        const fd = df && df.get ? ctx.lookup(df.get(N('FontDescriptor'))) : null;
-        if (!fd || !fd.get || ['FontFile', 'FontFile2', 'FontFile3'].some(k => fd.get(N(k)))) continue;
+        if (!(obj instanceof PDFLib.PDFDict) || String(obj.get(N('Type'))) !== '/Font') continue;
+        const sub = String(obj.get(N('Subtype')));
+        let it = null;
+        if (sub === '/Type0') {
+          const dfs = ctx.lookup(obj.get(N('DescendantFonts')));
+          const df = dfs && dfs.size && dfs.size() ? ctx.lookup(dfs.get(0)) : null;
+          const fd = df && df.get ? ctx.lookup(df.get(N('FontDescriptor'))) : null;
+          if (fd && fd.get) it = { kind: 'cid', t0: obj, df, fd };
+        } else if (sub === '/TrueType' || sub === '/Type1' || sub === '/MMType1') {
+          const fd = ctx.lookup(obj.get(N('FontDescriptor')));
+          if (fd && fd.get) it = { kind: 'simple', t0: obj, fd };
+        }
+        if (!it || ['FontFile', 'FontFile2', 'FontFile3'].some(k => it.fd.get(N(k)))) continue;
         const name = String(obj.get(N('BaseFont')) || '').replace(/^\//, '').replace(/^[A-Z]{6}\+/, '');
         if (!name) continue;
         if (!groups.has(name)) groups.set(name, []);
-        groups.get(name).push({ t0: obj, df, fd });
+        groups.get(name).push(it);
       }
-      const allMissing = [...scan.missing.keys()].filter(n => !STD14_RE.test(n));
       let found = {};
       try { found = (window.electronAPI.resolveFonts && await window.electronAPI.resolveFonts(allMissing)) || {}; } catch (e) {}
       const fontCache = new Map();
       const openFont = (hit) => {
-        if (fontCache.has(hit.path)) return fontCache.get(hit.path);
+        const k = hit.path + '#' + (hit.subfontId || 0);
+        if (fontCache.has(k)) return fontCache.get(k);
         let v = null;
         try {
-          const raw = new Uint8Array(window.electronAPI.readFile(hit.path));
-          let font = fontkit.create(raw);
-          if (font && font.fonts) font = font.fonts[hit.subfontId || 0];   // TTC
+          let raw = new Uint8Array(window.electronAPI.readFile(hit.path));
+          // TTC(굴림·바탕·돋움 등 글꼴 묶음)는 그 글꼴 하나만 떼어 낸다 — 묶음 통째로는 PDF에 못 넣는다
+          if (raw[0] === 0x74 && raw[1] === 0x74 && raw[2] === 0x63 && raw[3] === 0x66) raw = sfntFromCollection(raw, hit.subfontId || 0);
+          const font = raw ? fontkit.create(raw) : null;
           v = font ? { raw, font } : null;
         } catch (e) { console.warn('글꼴 파일을 못 읽음:', hit.path, e); }
-        fontCache.set(hit.path, v);
+        fontCache.set(k, v);
         return v;
       };
       let changed = false;
       for (const name of allMissing) {
-        const list = groups.get(name);
+        const list = groups.get(name) || [];
         const hit = found[name];
-        const v = hit && list ? openFont(hit) : null;
+        const isCid = list.some(it => it.kind === 'cid') || scan.cid.has(name);
+        const v = hit && list.length ? openFont(hit) : null;
         let ok = false;
-        if (v && list) {
-          try { ok = list.every(it => cjkEmbedOne(doc, it, v, hit.path)); } catch (e) { console.warn('글꼴 싣기 실패:', name, e); ok = false; }
+        if (v) {
+          try { ok = list.every(it => (it.kind === 'cid' ? cjkEmbedOne(doc, it, v) : simpleEmbedOne(doc, it, v))); }
+          catch (e) { console.warn('글꼴 싣기 실패:', name, e); ok = false; }
         }
+        const pages = [...(scan.missing.get(name) || [])].map(i => i + 1);
         if (ok) { res.embedded.push(name); changed = true; }
-        // 이 PC에 있으면(실지 못한 단순 글꼴·세로쓰기 등) gs는 cidfmap·FONTPATH로, pdf.js는 이름으로 찾는다 — 못 찾은 것만 경고
-        else if (!hit) res.missing.push({ name, pages: [...(scan.missing.get(name) || [])].map(i => i + 1) });
+        else if (!hit) res.missing.push({ name, pages, why: '이 PC에 없음' });
+        else if (isCid) res.missing.push({ name, pages, why: '이 PC에 있지만 넣을 수 없는 형식' });
       }
       if (changed) res.bytes = new Uint8Array(await savePdfDoc(doc));
+      res.changed = changed;
       _cjkEmbedCache.key = key; _cjkEmbedCache.res = res;
       return res;
     }
-    // 한 글꼴 사전을 실을 수 있으면 싣고 true — 못 하면 아무것도 바꾸지 않고 false
-    function cjkEmbedOne(doc, it, v, filePath) {
+    // TTC 묶음에서 글꼴 하나를 독립 sfnt로 — 표 위치는 묶음 파일 기준이라 새로 붙여 쓴다(4바이트 정렬)
+    function sfntFromCollection(raw, idx) {
+      const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      const n = dv.getUint32(8);
+      if (idx >= n) return null;
+      const off = dv.getUint32(12 + idx * 4);
+      const numTables = dv.getUint16(off + 4);
+      const recs = [];
+      for (let i = 0; i < numTables; i++) {
+        const r = off + 12 + i * 16;
+        recs.push({ tag: dv.getUint32(r), sum: dv.getUint32(r + 4), o: dv.getUint32(r + 8), len: dv.getUint32(r + 12) });
+      }
+      let size = 12 + numTables * 16;
+      recs.forEach(t => { t.no = size; size += (t.len + 3) & ~3; });
+      const out = new Uint8Array(size), ov = new DataView(out.buffer);
+      out.set(raw.subarray(off, off + 12), 0);
+      recs.forEach((t, i) => {
+        const r = 12 + i * 16;
+        ov.setUint32(r, t.tag); ov.setUint32(r + 4, t.sum); ov.setUint32(r + 8, t.no); ov.setUint32(r + 12, t.len);
+        out.set(raw.subarray(t.o, t.o + t.len), t.no);
+      });
+      return out;
+    }
+    // CFF 글리프 번호 → CID (CID 방식 CFF는 charset, 이름 방식은 글리프 번호 그대로)
+    function cffGidToCid(cff, numGlyphs) {
+      const map = new Uint32Array(numGlyphs);
+      for (let g = 0; g < numGlyphs; g++) map[g] = g;
+      if (!cff || !cff.isCIDFont) return map;
+      const cs = cff.topDict && cff.topDict.charset;
+      if (!cs) return map;
+      let g = 1;
+      if (Array.isArray(cs.glyphs)) { cs.glyphs.forEach(c => { if (g < numGlyphs) map[g++] = c; }); return map; }
+      for (const r of (cs.ranges || [])) for (let k = 0; k <= r.nLeft && g < numGlyphs; k++) map[g++] = r.first + k;
+      return map;
+    }
+    // 코드(=유니코드, BMP) → { gid, w(1000 기준) } — 글꼴의 유니코드 표에서
+    function unicodeGlyphTable(font) {
+      const k = 1000 / (font.unitsPerEm || 1000);
+      const t = new Map();
+      for (const cp of font.characterSet) {
+        if (cp > 0xFFFF || (cp >= 0xD800 && cp <= 0xDFFF)) continue;
+        const g = font.glyphForCodePoint(cp);
+        if (g && g.id) t.set(cp, { gid: g.id, w: Math.round(g.advanceWidth * k) });
+      }
+      return t;
+    }
+    // 연속 번호는 묶는 폭 표: id [w w …]
+    function widthArray(ctx, pairs) {
+      pairs.sort((a, b) => a[0] - b[0]);
+      const W = [];
+      for (let i = 0; i < pairs.length;) {
+        let j = i; while (j + 1 < pairs.length && pairs[j + 1][0] === pairs[j][0] + 1) j++;
+        W.push(PDFLib.PDFNumber.of(pairs[i][0]), ctx.obj(pairs.slice(i, j + 1).map(p => p[1])));
+        i = j + 1;
+      }
+      return W;
+    }
+    // ToUnicode = 코드 그대로(256자씩 끊어야 한다)
+    function identityToUnicode(ctx, maxCode) {
+      const ranges = [];
+      for (let hi = 0; hi <= (maxCode >> 8); hi++) {
+        if (hi >= 0xD8 && hi <= 0xDF) continue;
+        const h = hi.toString(16).padStart(2, '0').toUpperCase();
+        ranges.push(`<${h}00> <${h}FF> <${h}00>`);
+      }
+      let cm = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n'
+        + '/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n';
+      for (let i = 0; i < ranges.length; i += 100) {
+        const part = ranges.slice(i, i + 100);
+        cm += `${part.length} beginbfrange\n${part.join('\n')}\nendbfrange\n`;
+      }
+      return ctx.register(ctx.flateStream(cm + 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n'));
+    }
+    // 한중일(Type0) 글꼴 하나를 실을 수 있으면 싣고 true — 못 하면 아무것도 바꾸지 않고 false
+    function cjkEmbedOne(doc, it, v) {
       const N = n => PDFLib.PDFName.of(n), ctx = doc.context;
       const enc = String(it.t0.get(N('Encoding')) || '');
       const font = v.font, raw = v.raw;
       const isTTF = !!(font.directory && font.directory.tables && font.directory.tables.glyf);
       const cff = font['CFF '];
-      // ① 유니코드 CMap + TrueType → 코드=유니코드로 글리프를 찾는다
-      if (isTTF && /^\/Uni[A-Za-z0-9]+-(UTF16|UCS2)-H$/.test(enc)) {
-        const k = 1000 / (font.unitsPerEm || 1000);
-        const gidOf = new Uint16Array(65536), wOf = new Map();
-        let maxCode = 0;
-        for (const cp of font.characterSet) {
-          if (cp > 0xFFFF || (cp >= 0xD800 && cp <= 0xDFFF)) continue;
-          const g = font.glyphForCodePoint(cp);
-          if (!g || !g.id) continue;
-          gidOf[cp] = g.id; wOf.set(cp, Math.round(g.advanceWidth * k));
-          if (cp > maxCode) maxCode = cp;
+      const hex4 = c => c.toString(16).padStart(4, '0').toUpperCase();
+      // ① 유니코드 CMap → 문자 코드(=유니코드)로 글리프를 찾는다(아크로뱃과 같은 방식). 내용 스트림은 그대로.
+      if (UNI_CMAP_RE.test(enc) && (isTTF || cff)) {
+        const tab = unicodeGlyphTable(font);
+        if (!tab.size) return false;
+        let maxCode = 0; for (const c of tab.keys()) if (c > maxCode) maxCode = c;
+        if (isTTF) {
+          // TrueType: Identity-H + CIDToGIDMap(CID=코드 → 글리프)
+          const map = new Uint8Array((maxCode + 1) * 2);
+          for (const [c, g] of tab) { map[c * 2] = g.gid >> 8; map[c * 2 + 1] = g.gid & 255; }
+          it.fd.set(N('FontFile2'), ctx.register(ctx.flateStream(raw, { Length1: raw.length })));
+          it.df.set(N('Subtype'), N('CIDFontType2'));
+          it.df.set(N('CIDSystemInfo'), ctx.obj({ Registry: PDFLib.PDFString.of('Adobe'), Ordering: PDFLib.PDFString.of('Identity'), Supplement: 0 }));
+          it.df.set(N('CIDToGIDMap'), ctx.register(ctx.flateStream(map)));
+          it.df.set(N('W'), ctx.obj(widthArray(ctx, [...tab].map(([c, g]) => [c, g.w]))));
+          it.t0.set(N('Encoding'), N('Identity-H'));
+        } else {
+          // CFF(OTF): CIDToGIDMap을 쓸 수 없다 → 코드 → 글꼴의 CID 표(CMap)를 직접 만들어 인코딩으로 단다
+          const g2c = cffGidToCid(cff, font.numGlyphs || 65536);
+          const pairs = [...tab].map(([c, g]) => [c, g2c[g.gid] != null ? g2c[g.gid] : g.gid, g.w]).sort((a, b) => a[0] - b[0]);
+          const lines = [];   // 같은 상위 바이트 안에서 코드·CID가 함께 1씩 느는 구간은 한 줄로
+          for (let i = 0; i < pairs.length;) {
+            let j = i;
+            while (j + 1 < pairs.length && pairs[j + 1][0] === pairs[j][0] + 1 && pairs[j + 1][1] === pairs[j][1] + 1
+                   && (pairs[j + 1][0] >> 8) === (pairs[i][0] >> 8)) j++;
+            lines.push(`<${hex4(pairs[i][0])}> <${hex4(pairs[j][0])}> ${pairs[i][1]}`);
+            i = j + 1;
+          }
+          let ros = ['Adobe', 'Identity', 0];
+          if (cff.isCIDFont && cff.topDict.ROS) { try { ros = [cff.string(cff.topDict.ROS[0]), cff.string(cff.topDict.ROS[1]), +cff.topDict.ROS[2] || 0]; } catch (e) {} }
+          const safe = x => String(x).replace(/[()\\]/g, '');
+          const cmName = 'PDFE-Uni-' + safe(ros[1]) + '-' + (bytesFingerprint(raw).replace(/[^0-9a-z]/gi, '').slice(-10));
+          let cm = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n'
+            + `/CIDSystemInfo << /Registry (${safe(ros[0])}) /Ordering (${safe(ros[1])}) /Supplement ${ros[2]} >> def\n`
+            + `/CMapName /${cmName} def\n/CMapType 1 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n`;
+          for (let i = 0; i < lines.length; i += 100) {
+            const part = lines.slice(i, i + 100);
+            cm += `${part.length} begincidrange\n${part.join('\n')}\nendcidrange\n`;
+          }
+          cm += 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n';
+          const csi = ctx.obj({ Registry: PDFLib.PDFString.of(ros[0]), Ordering: PDFLib.PDFString.of(ros[1]), Supplement: ros[2] });
+          const cmRef = ctx.register(ctx.flateStream(cm, { Type: 'CMap', CMapName: cmName, CIDSystemInfo: csi }));
+          it.fd.set(N('FontFile3'), ctx.register(ctx.flateStream(raw, { Subtype: 'OpenType' })));
+          it.df.set(N('Subtype'), N('CIDFontType0'));
+          it.df.delete(N('CIDToGIDMap'));
+          it.df.set(N('CIDSystemInfo'), csi);
+          // 폭은 CID 기준 — 같은 CID가 여러 코드에 쓰이면 첫 값
+          const wByCid = new Map(); pairs.forEach(p => { if (!wByCid.has(p[1])) wByCid.set(p[1], p[2]); });
+          it.df.set(N('W'), ctx.obj(widthArray(ctx, [...wByCid])));
+          it.t0.set(N('Encoding'), cmRef);
         }
-        if (!wOf.size) return false;
-        const map = new Uint8Array((maxCode + 1) * 2);
-        for (let c = 0; c <= maxCode; c++) { map[c * 2] = gidOf[c] >> 8; map[c * 2 + 1] = gidOf[c] & 255; }
-        // 폭 표 — 연속 코드는 묶는다: c [w w w …]
-        const codes = [...wOf.keys()].sort((a, b) => a - b), W = [];
-        for (let i = 0; i < codes.length;) {
-          let j = i; while (j + 1 < codes.length && codes[j + 1] === codes[j] + 1) j++;
-          W.push(PDFLib.PDFNumber.of(codes[i]), ctx.obj(codes.slice(i, j + 1).map(c => wOf.get(c))));
-          i = j + 1;
-        }
-        // 글자 추출이 계속 되도록 ToUnicode = 코드 그대로(256자씩 끊어야 한다)
-        const ranges = [];
-        for (let hi = 0; hi <= (maxCode >> 8); hi++) {
-          if (hi >= 0xD8 && hi <= 0xDF) continue;
-          const h = hi.toString(16).padStart(2, '0').toUpperCase();
-          ranges.push(`<${h}00> <${h}FF> <${h}00>`);
-        }
-        let cm = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n'
-          + '/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n';
-        for (let i = 0; i < ranges.length; i += 100) {
-          const part = ranges.slice(i, i + 100);
-          cm += `${part.length} beginbfrange\n${part.join('\n')}\nendbfrange\n`;
-        }
-        cm += 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n';
-        const ff = ctx.flateStream(raw, { Length1: raw.length });
-        it.fd.set(N('FontFile2'), ctx.register(ff));
-        it.df.set(N('Subtype'), N('CIDFontType2'));
-        it.df.set(N('CIDSystemInfo'), ctx.obj({ Registry: PDFLib.PDFString.of('Adobe'), Ordering: PDFLib.PDFString.of('Identity'), Supplement: 0 }));
-        it.df.set(N('CIDToGIDMap'), ctx.register(ctx.flateStream(map)));
-        it.df.set(N('W'), ctx.obj(W));
         it.df.set(N('DW'), PDFLib.PDFNumber.of(1000));
-        it.t0.set(N('Encoding'), N('Identity-H'));
-        if (!it.t0.get(N('ToUnicode'))) it.t0.set(N('ToUnicode'), ctx.register(ctx.flateStream(cm)));
+        if (!it.t0.get(N('ToUnicode'))) it.t0.set(N('ToUnicode'), identityToUnicode(ctx, maxCode));
         return true;
       }
-      // ② CID 방식 CFF이고 글자 번호 체계가 PDF와 같으면 그대로
-      if (cff && cff.isCIDFont && cff.topDict && cff.topDict.ROS && String(it.df.get(N('Subtype'))) === '/CIDFontType0') {
+      // ② 유니코드가 아닌 정해진 CMap(90ms-RKSJ-H 등) + CID 방식 CFF이고 글자 번호 체계가 같으면 그대로
+      if (cff && cff.isCIDFont && cff.topDict && cff.topDict.ROS && String(it.df.get(N('Subtype'))) === '/CIDFontType0' && !/-V$/.test(enc)) {
         const si = ctx.lookup(it.df.get(N('CIDSystemInfo')));
         const ordObj = si && si.get ? si.get(N('Ordering')) : null;
         const ord = ordObj && ordObj.decodeText ? ordObj.decodeText() : String(ordObj || '').replace(/^\(|\)$/g, '');
         let fontOrd = '';
         try { fontOrd = cff.string(cff.topDict.ROS[1]); } catch (e) {}
-        if (!ord || ord !== fontOrd || /-V$/.test(enc)) return false;
-        const ff = ctx.flateStream(raw, { Subtype: 'OpenType' });
-        it.fd.set(N('FontFile3'), ctx.register(ff));
+        if (!ord || ord !== fontOrd) return false;
+        it.fd.set(N('FontFile3'), ctx.register(ctx.flateStream(raw, { Subtype: 'OpenType' })));
         return true;
       }
       return false;
+    }
+    // 단순 글꼴(한 바이트 — 영문 등): 설치본이 TrueType이면 그대로 싣는다. 폭·인코딩은 PDF 것 그대로
+    // (렌더러는 인코딩 → 글자 이름 → 글꼴의 유니코드 표로 글리프를 찾는다). CFF·없는 글꼴은 그대로 둔다.
+    function simpleEmbedOne(doc, it, v) {
+      const N = n => PDFLib.PDFName.of(n), ctx = doc.context;
+      const font = v.font, raw = v.raw;
+      if (!(font.directory && font.directory.tables && font.directory.tables.glyf)) return false;
+      it.fd.set(N('FontFile2'), ctx.register(ctx.flateStream(raw, { Length1: raw.length })));
+      it.t0.set(N('Subtype'), N('TrueType'));
+      return true;
     }
     // 이 PC에도 없는 글꼴 목록(싣지 않고 이름만 확인 — 저장 전 경고용) · 같은 바이트면 다시 보지 않는다
     const _missingFontRep = { key: null, rep: null };
@@ -2748,15 +2862,9 @@
       const key = bytesFingerprint(bytes);
       if (_missingFontRep.key === key && _missingFontRep.rep) return _missingFontRep.rep;
       let rep = [];
-      try {
-        const doc = await PDFLib.PDFDocument.load(bytes.slice(0), { ignoreEncryption: true, updateMetadata: false });
-        const scan = scanDocFonts(doc);
-        const names = [...scan.missing.keys()].filter(n => n !== '(이름없음)' && !STD14_RE.test(n));
-        if (names.length) {
-          const found = (window.electronAPI.resolveFonts && await window.electronAPI.resolveFonts(names)) || {};
-          rep = names.filter(n => !found[n]).map(n => ({ name: n, pages: [...scan.missing.get(n)].map(i => i + 1) }));
-        }
-      } catch (e) { console.warn('글꼴 확인 실패 — 경고 없이 진행:', e); }
+      // 실제로 넣어 보고 남은 것 — 이 PC에 없거나, 있어도 넣지 못한 한중일 글꼴(같은 바이트면 캐시)
+      try { rep = (await embedInstalledCjkFonts(bytes)).missing; }
+      catch (e) { console.warn('글꼴 확인 실패 — 경고 없이 진행:', e); }
       _missingFontRep.key = key; _missingFontRep.rep = rep;
       return rep;
     }
@@ -2774,9 +2882,9 @@
       const pages = new Set(); missing.forEach(m => (m.pages || []).forEach(p => pages.add(p)));
       const ps = [...pages].sort((a, b) => a - b);
       const pageText = ps.length > 12 ? ps.slice(0, 12).join(', ') + ` 외 ${ps.length - 12}쪽` : ps.join(', ');
-      return confirm(`⚠ 이 PC에 없는 글꼴이 있어 ${what}에서 다른 글꼴로 대신 나갑니다 — 글자 모양·간격이 달라질 수 있습니다.\n\n`
-        + `없는 글꼴: ${missing.map(m => m.name).join(', ')}\n쓰인 쪽: ${pageText}\n\n`
-        + `해결: 이 글꼴을 PC에 설치하거나, 원본(아크로뱃 등)에서 '글꼴 포함'으로 다시 저장해 주세요.\n\n그래도 계속할까요?`);
+      return confirm(`⚠ 넣을 수 없는 글꼴이 있어 ${what}에서 다른 글꼴로 대신 나갑니다 — 글자 모양·간격이 달라질 수 있습니다.\n\n`
+        + `글꼴: ${missing.map(m => m.name + (m.why ? ` (${m.why})` : '')).join(', ')}\n쓰인 쪽: ${pageText}\n\n`
+        + `해결: 이 글꼴(TTF 판 권장)을 PC에 설치하거나, 원본(아크로뱃 등)에서 '글꼴 포함'으로 다시 저장해 주세요.\n\n그래도 계속할까요?`);
     }
 
     function scanDocFonts(doc) {
@@ -8321,7 +8429,9 @@
           await uiYield();
         }
         if (!added) { hideLoading(); showError('넣을 페이지가 없습니다.'); return; }
-        const mergedBytes = await savePdfDoc(srcDoc);
+        let mergedBytes = await savePdfDoc(srcDoc);
+        // 끼워 넣은 파일에 빠진 글꼴도 불러올 때와 같이 이 PC의 글꼴로 넣는다
+        try { mergedBytes = (await embedInstalledCjkFonts(mergedBytes)).bytes; } catch (e) { console.warn('끼워 넣은 쪽 글꼴 싣기 실패:', e); }
         if (gen !== _cacheGen || pageResults[afterIdx] !== anchor) {
           hideLoading(); showError('그 사이 문서가 바뀌어 페이지 추가를 취소했습니다 — 다시 시도해 주세요.'); return;
         }
@@ -10707,9 +10817,11 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         } else if (resAt >= 0 && blobs[resAt]) {
           // 저장된 적용본을 그대로 — 재계산 없음. 화면·다운로드 모두 저장 시점 그대로다.
           _impChapterRanges = st.impRanges || null;   // 결과 화면의 챕터 구분선
-          processedPdfBytes = blobs[resAt];
+          // 저장해 둔 적용본도 글꼴이 빠졌으면 원본처럼 이 PC의 글꼴로 넣는다(원본만 넣으면 결과 화면이 다르게 보인다)
+          const withFonts = async b => { try { return b ? (await embedInstalledCjkFonts(b)).bytes : b; } catch (e) { return b; } };
+          processedPdfBytes = await withFonts(blobs[resAt]);
           processedFileName = st.resultName || defaultProcessedName();
-          directOutputBytes = (dirAt >= 0 && blobs[dirAt]) ? blobs[dirAt] : null;
+          directOutputBytes = (dirAt >= 0 && blobs[dirAt]) ? await withFonts(blobs[dirAt]) : null;
           _processedSig = (typeof optSignature === 'function') ? optSignature() : null;
           setDirty(true, { auto: true });   // 저장된 결과를 그대로 되살린 것 — 새 변경이 아니다
           updateDownloadBtn();

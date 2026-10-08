@@ -1751,6 +1751,17 @@
     // 분석 결과 안내에 덧붙일 경고 (해당 없으면 빈 문자열)
     const RGB_GRAY_MSG = '⚠ 화면은 흑백이지만 회색을 RGB/CMYK 값으로 칠한 원고입니다 — 이 파일을 그대로 보내면 프린터가 컬러 장수로 셉니다.';
     const RGB_GRAY_FIX = "'✔ 적용'(잉크 정규화 켠 상태)으로 저장한 파일을 보내면 DeviceGray로 바뀌어 프린터도 흑백으로 셉니다.";
+    // 불러올 때 넣은 글꼴·넣지 못한 글꼴 안내(분석 완료 안내에 덧붙임)
+    const FONT_EMBED_ON_LOAD_MAX = 1024 * 1024 * 1024;   // 1GB 넘는 원고는 메모리 때문에 불러올 때는 건너뛴다(저장·E-book 때 넣는다)
+    function fontEmbedNote(tabState) {
+      const fe = tabState && tabState.fontEmbed;
+      if (!fe) return '';
+      let m = '';
+      if (fe.embedded.length) m += `\n🔤 PDF에 빠진 글꼴 ${fe.embedded.length}종(${fe.embedded.join(', ')})을 이 PC의 글꼴로 넣었습니다 — 화면·저장본이 아크로뱃과 같게 나옵니다.`;
+      if (fe.missing.length) m += `\n⚠ 넣지 못한 글꼴: ${fe.missing.map(x => x.name + ' (' + x.why + ')').join(', ')} — 다른 글꼴로 대신 보입니다. `
+        + `이 글꼴(TTF 판 권장)을 설치하거나 원본에서 '글꼴 포함'으로 저장하세요.`;
+      return m;
+    }
     function rgbGrayWarning(tabState) {
       try {
         if (!tabState || tabState.colorCount) return '';           // 컬러 페이지가 이미 있으면 안내 불필요
@@ -1801,9 +1812,24 @@
 
       try {
         const arrayBuffer = await file.arrayBuffer();
-        tabState.originalPdfBytes = new Uint8Array(arrayBuffer.slice(0));
-        tabState.fileSize = arrayBuffer.byteLength;
-        const pdf = await openPdfDoc({ data: new Uint8Array(arrayBuffer) }).promise;
+        // 🔤 PDF에 빠진 글꼴은 **불러올 때** 이 PC의 글꼴로 원본에 넣는다(사용자 결정 2026-10-08) —
+        //   아크로뱃 머리글처럼 이름만 적힌 글꼴을 pdf.js·gs가 다른 글꼴로 대신 그려, 썸네일·크게 보기·결과 화면·저장본이
+        //   아크로뱃과 달랐다('한·일' 점 밀림·'ー' 세로 막대·'教'만 굵음). 여기서 넣으면 이후 모든 경로가 같은 글꼴을 쓴다.
+        //   대가: 원본 그대로 저장·작업 파일에도 글꼴이 들어가 그만큼 커진다. 넣을 게 없으면 바이트는 그대로.
+        let srcBytes = new Uint8Array(arrayBuffer);
+        tabState.fontEmbed = null;
+        if (srcBytes.byteLength < FONT_EMBED_ON_LOAD_MAX && typeof embedInstalledCjkFonts === 'function') {
+          try {
+            const fe = await embedInstalledCjkFonts(srcBytes);
+            if (fe.embedded.length || fe.missing.length) tabState.fontEmbed = fe;
+            srcBytes = fe.bytes;
+          } catch (e) { console.warn('불러올 때 글꼴 싣기 실패 — 원본 그대로 진행:', e); }
+        }
+        const embeddedNow = srcBytes.buffer !== arrayBuffer;
+        // pdf.js는 받은 버퍼를 워커로 넘겨 비워 버린다 — 원본 바이트와 따로 한 벌을 준다
+        tabState.originalPdfBytes = embeddedNow ? srcBytes : new Uint8Array(arrayBuffer.slice(0));
+        tabState.fileSize = tabState.originalPdfBytes.byteLength;
+        const pdf = await openPdfDoc({ data: embeddedNow ? srcBytes.slice(0) : new Uint8Array(arrayBuffer) }).promise;
         tabState.pdfDoc = pdf;
         if (isActive()) { originalPdfBytes = tabState.originalPdfBytes; globalPdfDoc = pdf; }
 
@@ -1877,7 +1903,7 @@
           if (isActive()) {
             pageResults = tabState.pageResults;
             displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
-            if (fromDisk) showSuccess(`⚡ 예전에 분석한 같은 파일이라 결과를 바로 불러왔습니다 (${totalPages}쪽 · 컬러 ${colorCount} · 흑백 ${bwCount}).\n다음: 썸네일을 확인하고 처리 옵션을 고른 뒤 ✔ 적용을 누르세요.`);
+            if (fromDisk) showSuccess(`⚡ 예전에 분석한 같은 파일이라 결과를 바로 불러왔습니다 (${totalPages}쪽 · 컬러 ${colorCount} · 흑백 ${bwCount}).\n다음: 썸네일을 확인하고 처리 옵션을 고른 뒤 ✔ 적용을 누르세요.` + fontEmbedNote(tabState));
           } else {
             tabState.quoteItems.push(...buildQuoteItems(colorCount, bwCount));
           }
@@ -1979,7 +2005,7 @@
         if (isActive()) {
           pageResults = tabState.pageResults;
           displayResults(totalPages, colorCount, bwCount, tabState.pageResults);
-          showSuccess('PDF 분석이 완료되었습니다!' + rgbGrayWarning(tabState));
+          showSuccess('PDF 분석이 완료되었습니다!' + rgbGrayWarning(tabState) + fontEmbedNote(tabState));
         } else {
           // 비활성(백그라운드) 탭: DOM은 그대로 두고 quoteItems만 채워, 나중에 이 탭으로
           // 전환했을 때 renderTabUI가 견적서를 바로 표시할 수 있게 한다.
