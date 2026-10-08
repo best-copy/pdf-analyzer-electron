@@ -340,8 +340,53 @@
             <button class="sbp-opt" data-ebbind="right" onclick="setEbBind('right')" title="세로쓰기·일본식 — 오른쪽에서 왼쪽으로 넘김">우철(세로쓰기)</button>
           </div>
           <div class="sbp-row2">
-            <button class="sbp-opt" id="ebWmBtn" onclick="openEbWmMenu(this)" title="누르면 고릅니다 — 시안: '시안' 글자를 대각선으로 연하게 겹쳐 인쇄 원본으로 쓰이는 것을 막음 · 안내: 쪽마다 바깥쪽 아래 모서리(왼쪽 쪽은 왼쪽 아래)에 '이 책자는 일청기획에서 편집 및 디자인 하였습니다. -인쇄 확인용-' 문구">💧 워터마크</button>
+            <button class="sbp-opt" id="ebWmBtn" onclick="openEbWmMenu(this)" title="누르면 고릅니다 — 글자: 시안('시안' 대각선 반복) 또는 안내 문구(쪽마다 바깥쪽 아래 모서리, 문구는 아래에서 고침) · 🖼 이미지: 로고·도장 그림을 원하는 자리에(글자와 같이 쓸 수 있음)">💧 워터마크</button>
             <button class="sbp-opt" id="ebTrimBtn" onclick="toggleEbOpt('trim')" title="블리드가 있을 때 '여기까지 잘립니다' 안내선을 표시합니다">✂ 재단선 안내</button>
+          </div>
+          <!-- 워터마크 세부 설정 — 안내 문구·이미지를 켠 동안만 보인다 (설정은 이 PC에 기억, 목록 저장) -->
+          <div id="ebWmSet" class="eb-wmset" style="display:none;">
+            <div id="ebNoteSet">
+              <div class="sbp-mini eb-wm-h">안내 문구</div>
+              <textarea id="ebNoteText" class="es-input eb-note-ta" rows="2" oninput="ebNoteTextChanged()" placeholder="쪽마다 바깥쪽 아래 모서리에 찍을 한 줄"></textarea>
+              <div class="sbp-row2">
+                <select id="ebNoteList" class="es-select" onchange="ebNotePick(this.value)" style="flex:1; min-width:0;"></select>
+                <button class="sbp-opt eb-wm-mini" onclick="ebNoteSave()" title="지금 문구를 목록에 저장합니다 — 다음에 목록에서 고르면 바로 씁니다">💾 저장</button>
+                <button class="sbp-opt eb-wm-mini" onclick="ebNoteDelete()" title="목록에서 고른 문구를 지웁니다">🗑</button>
+                <button class="sbp-opt eb-wm-mini" onclick="ebNoteReset()" title="기본 문구(일청기획 편집·디자인 / 인쇄 확인용)로 되돌립니다">↺</button>
+              </div>
+            </div>
+            <div id="ebImgSet">
+              <div class="sbp-mini eb-wm-h">이미지 워터마크</div>
+              <div class="sbp-row2 eb-wm-imgrow">
+                <img id="ebWmImgThumb" class="eb-wm-thumb" alt="" style="display:none;">
+                <span id="ebWmImgName" class="sbp-mini" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+                <button class="sbp-opt eb-wm-mini" onclick="ebWmImgPick()" title="PNG(투명 배경 권장)·JPG 그림을 고릅니다 — 긴 변 800px로 줄여 담습니다">🖼 고르기</button>
+              </div>
+              <div class="eb-wm-posgrid" title="워터마크를 놓을 자리 — 가장자리에서 쪽 폭의 4% 안쪽">
+                <button class="sbp-opt" data-ebwmpos="tl" onclick="setEbWmPos('tl')">↖</button>
+                <button class="sbp-opt" data-ebwmpos="t" onclick="setEbWmPos('t')">위</button>
+                <button class="sbp-opt" data-ebwmpos="tr" onclick="setEbWmPos('tr')">↗</button>
+                <button class="sbp-opt" data-ebwmpos="l" onclick="setEbWmPos('l')">왼쪽</button>
+                <button class="sbp-opt" data-ebwmpos="c" onclick="setEbWmPos('c')">가운데</button>
+                <button class="sbp-opt" data-ebwmpos="r" onclick="setEbWmPos('r')">오른쪽</button>
+                <button class="sbp-opt" data-ebwmpos="bl" onclick="setEbWmPos('bl')">↙</button>
+                <button class="sbp-opt" data-ebwmpos="b" onclick="setEbWmPos('b')">아래</button>
+                <button class="sbp-opt" data-ebwmpos="br" onclick="setEbWmPos('br')">↘</button>
+              </div>
+              <div class="sbp-row2">
+                <span class="sbp-mini">크기</span>
+                <input type="number" class="es-input" id="ebWmImgSize" min="1" max="100" step="1" style="flex:1; min-width:0;" oninput="ebWmImgNumChanged()" title="쪽 폭 대비 그림 폭(%)">
+                <span class="sbp-mini">%  진하기</span>
+                <input type="number" class="es-input" id="ebWmImgOp" min="5" max="100" step="5" style="flex:1; min-width:0;" oninput="ebWmImgNumChanged()" title="불투명도(%) — 낮을수록 연하게">
+                <span class="sbp-mini">%</span>
+              </div>
+              <label class="sbp-mini eb-wm-mirror"><input type="checkbox" id="ebWmImgMirror" onchange="ebWmImgMirrorChanged(this.checked)"> 왼쪽 쪽은 좌우 반대(바깥쪽 기준)</label>
+              <div class="sbp-row2">
+                <select id="ebWmImgList" class="es-select" onchange="ebWmImgListPick(this.value)" style="flex:1; min-width:0;"></select>
+                <button class="sbp-opt eb-wm-mini" onclick="ebWmImgListSave()" title="지금 그림·자리·크기·진하기를 목록에 저장합니다">💾 저장</button>
+                <button class="sbp-opt eb-wm-mini" onclick="ebWmImgListDelete()" title="목록에서 고른 이미지를 지웁니다">🗑</button>
+              </div>
+            </div>
           </div>
           <button class="sbp-btn sbp-apply" id="ebGenBtn" onclick="generateEbookProof()" title="현재 작업 결과를 고객이 브라우저에서 책처럼 넘겨볼 수 있는 HTML 파일 하나로 만듭니다">📖 E-book 시안 생성</button>
           <div class="sbp-note" id="ebNote">문서를 열면 예상 용량이 표시됩니다.</div>

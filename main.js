@@ -803,6 +803,17 @@ ipcMain.handle('app:forceReload', (event) => {
   return true;
 });
 
+// 글꼴 이름 → 이 PC의 파일(윈도우·아크로뱃 글꼴 폴더 색인) — 렌더러가 PDF에 빠진 글꼴을 직접 실을 때 쓴다
+ipcMain.handle('fonts:resolve', (_, names) => {
+  if (!Array.isArray(names)) return {};
+  const out = {};
+  for (const n of names.slice(0, 200)) {
+    const name = String(n || '').slice(0, 200);
+    if (!name) continue;
+    try { const hit = resolveFontFile(name); if (hit) out[name] = { path: hit.path, subfontId: hit.subfontId || 0 }; } catch (e) {}
+  }
+  return out;
+});
 // 렌더러 → 설치된 시스템 폰트 목록 (이름·경로). 임베드 가능한 TTF/OTF만.
 // 폰트 레지스트리(HKLM/HKCU)에서 표시 이름→파일을 읽어 반환. TTC는 pdf-lib 임베드 불가라 제외.
 ipcMain.handle('fonts:list', () => {
@@ -953,6 +964,15 @@ function buildFontIndex() {
   const put = (k, v) => { const n = normFontKey(k); if (n && !idx.has(n)) idx.set(n, v); };
   const dirs = [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts')];
   if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Windows', 'Fonts'));
+  // 아크로뱃·리더에 딸려 오는 CJK 글꼴(고즈카고딕·명조, Adobe 명조·고딕 등) — 윈도우에는 설치되지 않지만
+  // 아크로뱃 머리글처럼 이 글꼴 이름만 적고 싣지 않은 PDF가 많다(아크로뱃에서만 바르게 보이던 원인 · 2026-10-08).
+  // 윈도우 글꼴이 먼저 색인되므로 같은 이름이면 설치본이 이긴다.
+  for (const pf of [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.ProgramW6432]) {
+    if (!pf) continue;
+    for (const prod of ['Acrobat DC', 'Acrobat Reader DC', 'Acrobat Reader', 'Acrobat 2020', 'Acrobat 2017'])
+      dirs.push(path.join(pf, 'Adobe', prod, 'Resource', 'CIDFont'), path.join(pf, 'Adobe', prod, 'Resource', 'Font'));
+    dirs.push(path.join(pf, 'Common Files', 'Adobe', 'Fonts'));
+  }
   for (const d of dirs) {
     let files = [];
     try { files = fs.readdirSync(d); } catch (e) { continue; }

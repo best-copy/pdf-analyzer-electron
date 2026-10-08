@@ -213,6 +213,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 설치된 시스템 폰트 목록 (머리글/바닥글 글꼴 선택용)
   listFonts: () => ipcRenderer.invoke('fonts:list'),
+  resolveFonts: (names) => ipcRenderer.invoke('fonts:resolve', names),
 
   // Ghostscript inkcov — 페이지별 CMYK 잉크 커버리지 (프린터 기준 컬러 판정)
   inkCoverage: (pdfPath) => ipcRenderer.invoke('ink:coverage', pdfPath),

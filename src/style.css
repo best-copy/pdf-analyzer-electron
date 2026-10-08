@@ -881,6 +881,18 @@
     }
     .page-info .page-bw-tag { margin-left: 4px; vertical-align: middle; }
     .sb-num .page-bw-tag { font-size: 0.9em; padding: 1px 3px; margin-left: 3px; }
+    /* E-book 워터마크 세부 설정 */
+    .eb-wmset { margin: 2px 0 6px; padding: 6px; border: 1px solid var(--c-border); }
+    .eb-wm-h { font-weight: 700; margin: 2px 0 4px; }
+    .eb-note-ta { width: 100%; box-sizing: border-box; resize: vertical; font-size: 12px; margin-bottom: 4px; }
+    .eb-wm-mini { flex: 0 0 auto !important; padding-left: 6px !important; padding-right: 6px !important; }
+    .eb-wm-thumb { width: 28px; height: 28px; object-fit: contain; background: #fff; flex: 0 0 auto; }
+    .eb-wm-imgrow { align-items: center; }
+    .eb-wm-posgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin: 4px 0; }
+    .eb-wm-posgrid .sbp-opt { padding: 3px 0; font-size: 11px; }
+    .eb-wm-mirror { display: flex; align-items: center; gap: 4px; margin: 2px 0 4px; }
+    #ebImgSet { margin-top: 6px; }
+    #ebNoteSet + #ebImgSet { border-top: 1px dashed var(--c-border); padding-top: 6px; }
 
     /* ---- 썸네일 hover 반투명 오버레이 ---- */
     .page-thumb-wrap::after {

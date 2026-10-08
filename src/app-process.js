@@ -2411,6 +2411,9 @@
         return _outlineCache.bytes;
       }
       _outlineRasterInfo = null; _outlineSkipInfo = null; _outlineFontWarn = null; _outlineCidLinked = null;
+      // PDF에 빠진 한중일 글꼴은 이 PC의 글꼴 파일로 먼저 싣는다 — gs가 대체 글꼴(DroidSansFallback)을 굳혀 넣지 않게
+      // (그대로 두면 '한·일'의 점이 다음 글자 위로 밀린 채 저장돼 아크로뱃에서도 그렇게 보였다)
+      try { bytes = (await embedInstalledCjkFonts(bytes)).bytes; } catch (e) { console.warn('글꼴 싣기 실패 — gs로 진행:', e); }
       const gsOne = async (inBytes, cidFonts) => {
         let tmpPath = null, outPath = null;
         try {
@@ -2603,6 +2606,179 @@
     //    타일링 패턴·주석 외형(/AP /N)도 같은 이유로 함께 훑는다.
     // 반환: { embedded: Map(이름→Set(0-based 쪽)), missing: Map(...),
     //         cid: Map(이름→{ordering, supplement}) } — 이름은 서브셋 접두사 제거
+    // ── PDF에 빠진 한중일(Type0) 글꼴을 이 PC의 글꼴 파일로 직접 싣는다 ────────────────────
+    // 아크로뱃 머리글처럼 글꼴 이름만 적고 싣지 않은 PDF는 아크로뱃에서만 바르게 보였다 — pdf.js(E-book)·gs(폰트 안전화)는
+    // 다른 글꼴로 대신 그려 '한·일'의 가운데 점이 다음 글자 위로 밀리고 장음 'ー'가 세로 막대가 됐다(2026-10-08, 1-1.pdf).
+    // ⚠ 글자 번호(CID)로 글꼴을 찾으면 안 되는 경우가 있다: UniKS-UTF16-H로 적힌 '·'(U+00B7)은 Korea1 CID 104인데,
+    //   그 PDF의 폭(W)은 실제로 쓴 글꼴의 좁은 '·'(319)로 적혀 있고 CID 104 자리 글자는 전각 '・'(900, 가운데 450)다.
+    //   gs는 CID로 찾아 넓은 점을 좁은 칸에 그렸다. 아크로뱃은 문자 코드(유니코드)로 찾는다 → 여기서도 그렇게 한다.
+    //   · 유니코드 CMap(Uni…-UTF16/UCS2-H) + TrueType(glyf) 파일 → Identity-H + CIDToGIDMap(코드=유니코드 → 글리프)으로 싣는다.
+    //     내용 스트림의 2바이트 코드가 그대로 CID가 되므로 글자 내용은 고치지 않는다. 폭(W)은 글꼴에서 다시 잰다.
+    //   · CID 방식 CFF(OTF) 파일이고 글자 번호 체계(Japan1 등)가 PDF와 같으면 → 그대로(FontFile3/OpenType) 싣는다.
+    //   · 그 밖(못 찾음·세로쓰기·체계 다름)은 건드리지 않는다 → missing으로 알려 저장 전 경고에 쓴다.
+    // 반환 { bytes, embedded: [이름], missing: [{ name, pages }] } — 바뀐 게 없으면 원래 bytes 그대로.
+    const _cjkEmbedCache = { key: null, res: null };
+    const STD14_RE = /^(Times|Helvetica|Courier|Symbol|ZapfDingbats)/i;
+    async function embedInstalledCjkFonts(bytes) {
+      const key = bytesFingerprint(bytes);
+      if (_cjkEmbedCache.key === key && _cjkEmbedCache.res) return _cjkEmbedCache.res;
+      const N = n => PDFLib.PDFName.of(n);
+      const doc = await PDFLib.PDFDocument.load(bytes.slice(0), { ignoreEncryption: true, updateMetadata: false });
+      const ctx = doc.context;
+      const scan = scanDocFonts(doc);
+      const res = { bytes, embedded: [], missing: [] };
+      if (!scan.missing.size) { _cjkEmbedCache.key = key; _cjkEmbedCache.res = res; return res; }
+      // 빠진 Type0 글꼴 사전들(같은 이름이 여러 객체일 수 있다)
+      const groups = new Map();
+      for (const [, obj] of ctx.enumerateIndirectObjects()) {
+        if (!(obj instanceof PDFLib.PDFDict) || String(obj.get(N('Subtype'))) !== '/Type0') continue;
+        const dfs = ctx.lookup(obj.get(N('DescendantFonts')));
+        const df = dfs && dfs.size && dfs.size() ? ctx.lookup(dfs.get(0)) : null;
+        const fd = df && df.get ? ctx.lookup(df.get(N('FontDescriptor'))) : null;
+        if (!fd || !fd.get || ['FontFile', 'FontFile2', 'FontFile3'].some(k => fd.get(N(k)))) continue;
+        const name = String(obj.get(N('BaseFont')) || '').replace(/^\//, '').replace(/^[A-Z]{6}\+/, '');
+        if (!name) continue;
+        if (!groups.has(name)) groups.set(name, []);
+        groups.get(name).push({ t0: obj, df, fd });
+      }
+      const allMissing = [...scan.missing.keys()].filter(n => !STD14_RE.test(n));
+      let found = {};
+      try { found = (window.electronAPI.resolveFonts && await window.electronAPI.resolveFonts(allMissing)) || {}; } catch (e) {}
+      const fontCache = new Map();
+      const openFont = (hit) => {
+        if (fontCache.has(hit.path)) return fontCache.get(hit.path);
+        let v = null;
+        try {
+          const raw = new Uint8Array(window.electronAPI.readFile(hit.path));
+          let font = fontkit.create(raw);
+          if (font && font.fonts) font = font.fonts[hit.subfontId || 0];   // TTC
+          v = font ? { raw, font } : null;
+        } catch (e) { console.warn('글꼴 파일을 못 읽음:', hit.path, e); }
+        fontCache.set(hit.path, v);
+        return v;
+      };
+      let changed = false;
+      for (const name of allMissing) {
+        const list = groups.get(name);
+        const hit = found[name];
+        const v = hit && list ? openFont(hit) : null;
+        let ok = false;
+        if (v && list) {
+          try { ok = list.every(it => cjkEmbedOne(doc, it, v, hit.path)); } catch (e) { console.warn('글꼴 싣기 실패:', name, e); ok = false; }
+        }
+        if (ok) { res.embedded.push(name); changed = true; }
+        // 이 PC에 있으면(실지 못한 단순 글꼴·세로쓰기 등) gs는 cidfmap·FONTPATH로, pdf.js는 이름으로 찾는다 — 못 찾은 것만 경고
+        else if (!hit) res.missing.push({ name, pages: [...(scan.missing.get(name) || [])].map(i => i + 1) });
+      }
+      if (changed) res.bytes = new Uint8Array(await savePdfDoc(doc));
+      _cjkEmbedCache.key = key; _cjkEmbedCache.res = res;
+      return res;
+    }
+    // 한 글꼴 사전을 실을 수 있으면 싣고 true — 못 하면 아무것도 바꾸지 않고 false
+    function cjkEmbedOne(doc, it, v, filePath) {
+      const N = n => PDFLib.PDFName.of(n), ctx = doc.context;
+      const enc = String(it.t0.get(N('Encoding')) || '');
+      const font = v.font, raw = v.raw;
+      const isTTF = !!(font.directory && font.directory.tables && font.directory.tables.glyf);
+      const cff = font['CFF '];
+      // ① 유니코드 CMap + TrueType → 코드=유니코드로 글리프를 찾는다
+      if (isTTF && /^\/Uni[A-Za-z0-9]+-(UTF16|UCS2)-H$/.test(enc)) {
+        const k = 1000 / (font.unitsPerEm || 1000);
+        const gidOf = new Uint16Array(65536), wOf = new Map();
+        let maxCode = 0;
+        for (const cp of font.characterSet) {
+          if (cp > 0xFFFF || (cp >= 0xD800 && cp <= 0xDFFF)) continue;
+          const g = font.glyphForCodePoint(cp);
+          if (!g || !g.id) continue;
+          gidOf[cp] = g.id; wOf.set(cp, Math.round(g.advanceWidth * k));
+          if (cp > maxCode) maxCode = cp;
+        }
+        if (!wOf.size) return false;
+        const map = new Uint8Array((maxCode + 1) * 2);
+        for (let c = 0; c <= maxCode; c++) { map[c * 2] = gidOf[c] >> 8; map[c * 2 + 1] = gidOf[c] & 255; }
+        // 폭 표 — 연속 코드는 묶는다: c [w w w …]
+        const codes = [...wOf.keys()].sort((a, b) => a - b), W = [];
+        for (let i = 0; i < codes.length;) {
+          let j = i; while (j + 1 < codes.length && codes[j + 1] === codes[j] + 1) j++;
+          W.push(PDFLib.PDFNumber.of(codes[i]), ctx.obj(codes.slice(i, j + 1).map(c => wOf.get(c))));
+          i = j + 1;
+        }
+        // 글자 추출이 계속 되도록 ToUnicode = 코드 그대로(256자씩 끊어야 한다)
+        const ranges = [];
+        for (let hi = 0; hi <= (maxCode >> 8); hi++) {
+          if (hi >= 0xD8 && hi <= 0xDF) continue;
+          const h = hi.toString(16).padStart(2, '0').toUpperCase();
+          ranges.push(`<${h}00> <${h}FF> <${h}00>`);
+        }
+        let cm = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n'
+          + '/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n';
+        for (let i = 0; i < ranges.length; i += 100) {
+          const part = ranges.slice(i, i + 100);
+          cm += `${part.length} beginbfrange\n${part.join('\n')}\nendbfrange\n`;
+        }
+        cm += 'endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n';
+        const ff = ctx.flateStream(raw, { Length1: raw.length });
+        it.fd.set(N('FontFile2'), ctx.register(ff));
+        it.df.set(N('Subtype'), N('CIDFontType2'));
+        it.df.set(N('CIDSystemInfo'), ctx.obj({ Registry: PDFLib.PDFString.of('Adobe'), Ordering: PDFLib.PDFString.of('Identity'), Supplement: 0 }));
+        it.df.set(N('CIDToGIDMap'), ctx.register(ctx.flateStream(map)));
+        it.df.set(N('W'), ctx.obj(W));
+        it.df.set(N('DW'), PDFLib.PDFNumber.of(1000));
+        it.t0.set(N('Encoding'), N('Identity-H'));
+        if (!it.t0.get(N('ToUnicode'))) it.t0.set(N('ToUnicode'), ctx.register(ctx.flateStream(cm)));
+        return true;
+      }
+      // ② CID 방식 CFF이고 글자 번호 체계가 PDF와 같으면 그대로
+      if (cff && cff.isCIDFont && cff.topDict && cff.topDict.ROS && String(it.df.get(N('Subtype'))) === '/CIDFontType0') {
+        const si = ctx.lookup(it.df.get(N('CIDSystemInfo')));
+        const ordObj = si && si.get ? si.get(N('Ordering')) : null;
+        const ord = ordObj && ordObj.decodeText ? ordObj.decodeText() : String(ordObj || '').replace(/^\(|\)$/g, '');
+        let fontOrd = '';
+        try { fontOrd = cff.string(cff.topDict.ROS[1]); } catch (e) {}
+        if (!ord || ord !== fontOrd || /-V$/.test(enc)) return false;
+        const ff = ctx.flateStream(raw, { Subtype: 'OpenType' });
+        it.fd.set(N('FontFile3'), ctx.register(ff));
+        return true;
+      }
+      return false;
+    }
+    // 이 PC에도 없는 글꼴 목록(싣지 않고 이름만 확인 — 저장 전 경고용) · 같은 바이트면 다시 보지 않는다
+    const _missingFontRep = { key: null, rep: null };
+    async function missingFontsReport(bytes) {
+      const key = bytesFingerprint(bytes);
+      if (_missingFontRep.key === key && _missingFontRep.rep) return _missingFontRep.rep;
+      let rep = [];
+      try {
+        const doc = await PDFLib.PDFDocument.load(bytes.slice(0), { ignoreEncryption: true, updateMetadata: false });
+        const scan = scanDocFonts(doc);
+        const names = [...scan.missing.keys()].filter(n => n !== '(이름없음)' && !STD14_RE.test(n));
+        if (names.length) {
+          const found = (window.electronAPI.resolveFonts && await window.electronAPI.resolveFonts(names)) || {};
+          rep = names.filter(n => !found[n]).map(n => ({ name: n, pages: [...scan.missing.get(n)].map(i => i + 1) }));
+        }
+      } catch (e) { console.warn('글꼴 확인 실패 — 경고 없이 진행:', e); }
+      _missingFontRep.key = key; _missingFontRep.rep = rep;
+      return rep;
+    }
+    // 폰트 출력 안전화(완전 임베드·곡선화)가 켜져 있을 때만 — 꺼져 있으면 저장본의 글꼴은 원본 그대로라 바뀌지 않는다
+    async function fontsSaveConfirmed(bytes) {
+      if (!_outlineEnabled || !bytes) return true;
+      showLoading('글꼴 확인 중…');
+      let rep = [];
+      try { rep = await missingFontsReport(bytes); } finally { hideLoading(); }
+      return confirmMissingFonts(rep, _outlineMode === 'embed' ? '저장 파일(폰트 완전 임베드)' : '저장 파일(폰트 곡선화)');
+    }
+    // 저장·E-book 전에 묻는다 — 이 PC에도 없어 다른 글꼴로 바뀌는 글꼴이 있으면 목록을 보여 주고 계속할지
+    function confirmMissingFonts(missing, what) {
+      if (!missing || !missing.length) return true;
+      const pages = new Set(); missing.forEach(m => (m.pages || []).forEach(p => pages.add(p)));
+      const ps = [...pages].sort((a, b) => a - b);
+      const pageText = ps.length > 12 ? ps.slice(0, 12).join(', ') + ` 외 ${ps.length - 12}쪽` : ps.join(', ');
+      return confirm(`⚠ 이 PC에 없는 글꼴이 있어 ${what}에서 다른 글꼴로 대신 나갑니다 — 글자 모양·간격이 달라질 수 있습니다.\n\n`
+        + `없는 글꼴: ${missing.map(m => m.name).join(', ')}\n쓰인 쪽: ${pageText}\n\n`
+        + `해결: 이 글꼴을 PC에 설치하거나, 원본(아크로뱃 등)에서 '글꼴 포함'으로 다시 저장해 주세요.\n\n그래도 계속할까요?`);
+    }
+
     function scanDocFonts(doc) {
       const PDFName = PDFLib.PDFName, ctx = doc.context;
       const embedded = new Map(), missing = new Map(), cid = new Map();
@@ -4585,6 +4761,7 @@
 
     async function downloadProcessed() {
       if (!processedPdfBytes) { showError('먼저 \'✔ 적용\'을 눌러 수정사항을 적용하거나, 다운로드 버튼을 우클릭해 원본을 저장하세요.'); return; }
+      if (!(await fontsSaveConfirmed(directOutputBytes || processedPdfBytes))) return;   // 이 PC에도 없는 글꼴 — 대체돼 저장되니 먼저 묻는다
       // 외부 변환 결과(블리드 등)는 재조립하면 변환이 사라짐 — 그대로 저장
       if (directOutputBytes) {
         try {
@@ -4746,6 +4923,7 @@
         return;
       }
       if (!directOutputBytes && !inkNormSaveConfirmed()) return;
+      if (!(await fontsSaveConfirmed(directOutputBytes || processedPdfBytes))) return;
       const built = await (async () => {
         applying = true; updateDownloadBtn();
         try { return await buildFinalSaveBytes(); }
@@ -8433,6 +8611,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .wm{position:absolute;inset:0;pointer-events:none;background-repeat:repeat;opacity:.15}
 /* 안내 워터마크 — 오른쪽 아래 여백에 한 줄(사용자 지시 2026-10-01). 쪽 폭에 맞춰 늘고 줄어든다 */
 .wmn{position:absolute;inset:0;pointer-events:none;background-repeat:no-repeat;background-size:100% auto;background-position:center bottom;opacity:.8}
+/* 이미지 워터마크 — 쪽 크기 투명 SVG(자리·크기·투명도는 그림 안에 구워 둠) */
+.wmi{position:absolute;inset:0;pointer-events:none;background-repeat:no-repeat;background-size:100% 100%}
 /* ── 책 느낌(body.paper) ── 색을 정확히 봐야 할 때는 툴바에서 끌 수 있다 ── */
 .paper .spread{filter:drop-shadow(0 22px 28px rgba(0,0,0,.55))}
 .paper .pg{box-shadow:none}
@@ -8509,6 +8689,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
 .lflat{position:absolute;pointer-events:none;z-index:10}
 .stwm{position:absolute;inset:0;background-repeat:repeat;opacity:.15;pointer-events:none}
 .stwmn{position:absolute;inset:0;background-repeat:no-repeat;opacity:.8;pointer-events:none}
+.stwmi{position:absolute;inset:0;background-repeat:no-repeat;pointer-events:none}
 /* 넘김 표시 — 예전에는 띠 전체를 흐렸다 나타냈지만, 그 안에 늘 보여야 하는 버튼이 생겨
    **화살표(i)만** 흐리게 한다. 세로 배치라 버튼이 화살표 위에 온다(눕히면 옆으로). */
 .nav{position:fixed;top:52px;bottom:56px;left:0;width:15%;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;font-size:2.4em;color:#fff;touch-action:none}
@@ -8816,6 +8997,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '    if(im){ var g=take(p); box.appendChild(g); }',
       '    if(im&&D.opts.wm){ var wm=document.createElement("div"); wm.className="wm"; wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; box.appendChild(wm); }',
       '    if(im&&D.opts.note){ var wn=document.createElement("div"); wn.className="wmn"; wn.style.backgroundImage=noteBg(!single&&!k); box.appendChild(wn); }',
+      '    if(im&&D.opts.wmi){ var wi=document.createElement("div"); wi.className="wmi"; wi.style.backgroundImage=wmiBg(!single&&!k); box.appendChild(wi); }',
       '    if(im&&D.opts.trimPct>0){ var t=document.createElement("div"); t.className="trim"; var q=D.opts.trimPct;',
       '      t.style.left=(W*q)+"px"; t.style.top=(H*q)+"px"; t.style.width=(W*(1-2*q))+"px"; t.style.height=(H*(1-2*q))+"px";',
       '      box.appendChild(t); }',
@@ -8990,6 +9172,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  // 안내 문구는 쪽 전체 기준 오른쪽 아래 — 조각은 그 쪽 그림과 같은 만큼 밀어 이어지게',
       '  if(im&&D.opts.note){ var wn=document.createElement("div"); wn.className="stwmn"; wn.style.backgroundImage=noteBg(rev);',   // rev = 이 면이 왼쪽 쪽
       '    wn.style.backgroundSize=W+"px auto"; wn.style.backgroundPosition=(-slice*w)+"px bottom"; d.appendChild(wn); }',
+      '  if(im&&D.opts.wmi){ var wi=document.createElement("div"); wi.className="stwmi"; wi.style.backgroundImage=wmiBg(rev);',
+      '    wi.style.backgroundSize=W+"px "+H+"px"; wi.style.backgroundPosition=(-slice*w)+"px 0"; d.appendChild(wi); }',
       '  // 그늘 모양(조각을 가로지르는 농도 변화)은 여기서 한 번만 굽는다 —',
       '  // 프레임마다는 투명도만 바꿔 CSS 재파싱 없이 부드럽게 흐른다.',
       '  var sh=document.createElement("div"); sh.className="stsh";',
@@ -9040,6 +9224,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '// 안내 문구 — 쪽마다 **바깥쪽** 아래 모서리(오른쪽 쪽=오른쪽 아래, 왼쪽 쪽=왼쪽 아래 · 사용자 지시 2026-10-02).',
       '// 정렬은 그림 안에서 한다(noteL = 왼쪽 정렬판) — 배경은 쪽 폭 그대로라 넘김 조각에서도 같은 자리에 이어진다.',
       'function noteBg(left){ return "url(\\""+((left&&D.opts.noteL)||D.opts.note)+"\\")"; }',
+      '// 이미지 워터마크 — 왼쪽 쪽은 좌우를 뒤집은 판(wmiL)이 있으면 그것(바깥쪽 기준 자리)',
+      'function wmiBg(left){ return "url(\\""+((left&&D.opts.wmiL)||D.opts.wmi)+"\\")"; }',
       'function gutAt(u){ return Math.max(0,1-u/0.063); }   // 책등에서 페이지 폭의 6.3%까지 (예전 9% — 펼침면 골 7%→4.9%와 함께 30% 좁힘, 사용자 요청 2026-10-01)',
       '// 휨은 **책 안쪽(책등 쪽)에 몰아준다** — 실제로 책장을 넘기면 바깥은 거의 평평한 채로',
       '// 제본 근처가 크게 휜다. 바깥쪽에 몰면 종이가 스스로 말려 붙어 사라진 것처럼 보였다.',
@@ -9274,6 +9460,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       '  if(D.opts.wm){ var wm=document.createElement("div"); wm.className="wm";',
       '    wm.style.backgroundImage="url(\\""+D.opts.wm+"\\")"; el.appendChild(wm); }',
       '  if(D.opts.note){ var wn=document.createElement("div"); wn.className="wmn"; wn.style.backgroundImage=noteBg(radius==="3px 0 0 3px"); el.appendChild(wn); }',   // 그 모서리 값 = 왼쪽 쪽
+      '  if(D.opts.wmi){ var wi=document.createElement("div"); wi.className="wmi"; wi.style.backgroundImage=wmiBg(radius==="3px 0 0 3px"); el.appendChild(wi); }',
       '}',
       '// 착지 — 최종 펼침면을 먼저 깔고, 넘어간 낱장만 그 위에서 짧게 녹여 없앤다.',
       '// 곧바로 지우면 새로 그린 그림이 아직 안 올라온 프레임에 흰 자리가 보일 수 있다.',
@@ -9590,6 +9777,36 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
       return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
     }
 
+    // 이미지 워터마크 — 쪽 크기(폭 1000 기준) 투명 SVG 안에 그림을 정한 자리에 그린다.
+    // 안내 문구와 같은 방식(쪽 전체 배경)이라 넘김 조각에서도 같은 자리에 이어진다.
+    //   img = { u: data URL, w, h, pos: 'c'|'t'|'b'|'l'|'r'|'tl'|'tr'|'bl'|'br', size: 쪽 폭 대비 %, op: 불투명도 %, mirror }
+    //   aspect = 쪽 높이/폭 · left = 왼쪽 쪽용 — mirror면 좌우 자리를 바꾼다(바깥쪽 기준)
+    const EBOOK_WM_POS = ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'];
+    function ebookAspect(meta, book) {
+      if (meta && meta.mm && meta.mm[0] > 0) return meta.mm[1] / meta.mm[0];
+      const p = book && book[0];
+      return p && p.w > 0 ? p.h / p.w : 1.4142;
+    }
+    function ebookImageWmUri(img, aspect, left) {
+      if (!img || !img.u || !(img.w > 0) || !(img.h > 0)) return '';
+      const VW = 1000, VH = Math.round(VW * (aspect > 0 ? aspect : 1.4142));
+      let pos = EBOOK_WM_POS.indexOf(img.pos) >= 0 ? img.pos : 'c';
+      if (left && img.mirror) pos = pos.replace(/[lr]/, c => (c === 'l' ? 'r' : 'l'));
+      const iw = VW * Math.max(1, Math.min(100, +img.size || 20)) / 100;
+      const ih = iw * img.h / img.w;
+      const m = VW * 0.04;   // 가장자리에서 쪽 폭의 4% 안쪽
+      const x = pos.indexOf('l') >= 0 ? m : pos.indexOf('r') >= 0 ? VW - m - iw : (VW - iw) / 2;
+      const y = pos.indexOf('t') >= 0 ? m : pos.indexOf('b') >= 0 ? VH - m - ih : (VH - ih) / 2;
+      const op = Math.max(0.05, Math.min(1, (+img.op || 30) / 100));
+      const href = String(img.u).replace(/["<>&]/g, '');
+      const r = v => Math.round(v * 10) / 10;
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + VW + '" height="' + VH
+        + '" viewBox="0 0 ' + VW + ' ' + VH + '" preserveAspectRatio="none">'
+        + '<image x="' + r(x) + '" y="' + r(y) + '" width="' + r(iw) + '" height="' + r(ih) + '" opacity="' + op
+        + '" preserveAspectRatio="xMidYMid meet" href="' + href + '" xlink:href="' + href + '"/></svg>';
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    }
+
     // 시안 HTML 조립 — 이미지까지 전부 인라인된 단일 파일을 문자열로 돌려준다.
     //   data = { title, meta:{ mm:[w,h], spec, date, by, bind }, book:[{u,w,h}],
     //            sheets:[{u,w,h}], opts:{ watermark, wmText, trimPct, coverSingle } }
@@ -9623,6 +9840,9 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         opts: { wm: (opts.watermark && opts.watermark !== 'notice') ? ebookWatermarkUri(opts.wmText) : '',
                 note: opts.watermark === 'notice' ? ebookNoteUri(opts.noteText) : '',
                 noteL: opts.watermark === 'notice' ? ebookNoteUri(opts.noteText, true) : '',
+                // 이미지 워터마크(글자 워터마크와 따로 켠다) — 쪽 비율은 첫 쪽 실제 치수로
+                wmi: opts.wmImg ? ebookImageWmUri(opts.wmImg, ebookAspect(meta, book), false) : '',
+                wmiL: (opts.wmImg && opts.wmImg.mirror) ? ebookImageWmUri(opts.wmImg, ebookAspect(meta, book), true) : '',
                 trimPct: +opts.trimPct || 0 },
       };
       const hasSheets = sheets.length > 0;
@@ -9776,19 +9996,167 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
     }
     // 워터마크·재단선 — 체크박스 대신 토글 버튼(한 줄 2개)
     // 💧 워터마크 — 누르면 없음 / 시안(대각선 반복) / 안내(위·아래 여백 문구) 중 고른다(사용자 요청 2026-10-01)
+    // 글자 워터마크(없음·시안·안내)와 이미지 워터마크는 따로 켠다 — 둘 다 켜면 겹쳐 찍힌다(사용자 요청 2026-10-08).
+    // 안내 문구·이미지 설정은 이 PC에 기억하고(localStorage), 자주 쓰는 것은 목록으로 저장해 고른다.
     const EB_WM_LABEL = { '': '💧 워터마크', draft: "💧 워터마크: 시안", notice: '💧 워터마크: 안내' };
+    const EB_LS = { note: 'ebNoteText', notes: 'ebNoteList', img: 'ebWmImg', imgs: 'ebWmImgList' };
+    function ebLsGet(k, dflt) { try { const v = localStorage.getItem(k); return v == null ? dflt : JSON.parse(v); } catch (e) { return dflt; } }
+    function ebLsSet(k, v) {
+      try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+      catch (e) { showError('저장 공간이 부족해 기억하지 못했습니다 — 목록에서 쓰지 않는 이미지를 지우거나 더 작은 그림을 쓰세요.'); return false; }
+    }
+    function ebNoteText() { const t = ebLsGet(EB_LS.note, null); return (typeof t === 'string' && t.trim()) ? t : EBOOK_NOTE_TEXT; }
+    // 이미지 워터마크 설정: { on, u, w, h, name, pos, size, op, mirror } — u(그림)가 없으면 꺼진 것으로 본다
+    function ebWmImg() {
+      const v = ebLsGet(EB_LS.img, null) || {};
+      return { on: !!v.on && !!v.u, u: v.u || '', w: +v.w || 0, h: +v.h || 0, name: v.name || '',
+               pos: EBOOK_WM_POS.indexOf(v.pos) >= 0 ? v.pos : 'br', size: +v.size || 20, op: +v.op || 35, mirror: !!v.mirror };
+    }
+    function ebWmImgSave(patch) { const v = Object.assign(ebWmImg(), patch); ebLsSet(EB_LS.img, v); syncEbWmUI(); return v; }
     function setEbWm(mode) {
       _ebOpts.wm = mode === 'draft' || mode === 'notice' ? mode : false;
+      syncEbWmUI();
+    }
+    function syncEbWmUI() {
+      const img = ebWmImg();
       const b = document.getElementById('ebWmBtn');
-      if (b) { b.classList.toggle('active', !!_ebOpts.wm); b.textContent = EB_WM_LABEL[_ebOpts.wm || '']; }
+      if (b) {
+        b.classList.toggle('active', !!_ebOpts.wm || img.on);
+        b.textContent = (_ebOpts.wm ? EB_WM_LABEL[_ebOpts.wm] : (img.on ? '💧 워터마크:' : EB_WM_LABEL[''])) + (img.on ? (_ebOpts.wm ? ' + 이미지' : ' 이미지') : '');
+      }
+      const set = document.getElementById('ebWmSet');
+      if (set) set.style.display = (_ebOpts.wm === 'notice' || img.on) ? '' : 'none';
+      const ns = document.getElementById('ebNoteSet'); if (ns) ns.style.display = _ebOpts.wm === 'notice' ? '' : 'none';
+      const is = document.getElementById('ebImgSet'); if (is) is.style.display = img.on ? '' : 'none';
+      const ta = document.getElementById('ebNoteText');
+      if (ta && document.activeElement !== ta) ta.value = ebNoteText();
+      const nl = document.getElementById('ebNoteList');
+      if (nl) {
+        const list = ebLsGet(EB_LS.notes, []);
+        nl.innerHTML = '<option value="">— 저장한 문구 (' + list.length + ') —</option>'
+          + list.map((t, i) => '<option value="' + i + '"></option>').join('');
+        list.forEach((t, i) => { nl.options[i + 1].textContent = t.replace(/\s+/g, ' ').slice(0, 40); });
+      }
+      const nm = document.getElementById('ebWmImgName');
+      if (nm) nm.textContent = img.u ? (img.name || '그림') + ` (${img.w}×${img.h})` : '그림을 고르세요';
+      const th = document.getElementById('ebWmImgThumb');
+      if (th) { th.style.display = img.u ? '' : 'none'; if (img.u && th.src !== img.u) th.src = img.u; }
+      document.querySelectorAll('[data-ebwmpos]').forEach(x => x.classList.toggle('active', x.dataset.ebwmpos === img.pos));
+      const sz = document.getElementById('ebWmImgSize'); if (sz && document.activeElement !== sz) sz.value = img.size;
+      const op = document.getElementById('ebWmImgOp'); if (op && document.activeElement !== op) op.value = img.op;
+      const mi = document.getElementById('ebWmImgMirror'); if (mi) mi.checked = img.mirror;
+      const il = document.getElementById('ebWmImgList');
+      if (il) {
+        const list = ebLsGet(EB_LS.imgs, []);
+        il.innerHTML = '<option value="">— 저장한 이미지 (' + list.length + ') —</option>'
+          + list.map((t, i) => '<option value="' + i + '"></option>').join('');
+        list.forEach((t, i) => { il.options[i + 1].textContent = (t.label || t.name || '그림') + ' · ' + ebWmPosName(t.pos) + ' ' + t.size + '%'; });
+      }
+    }
+    const EB_WM_POS_NAME = { tl: '왼쪽 위', t: '위 가운데', tr: '오른쪽 위', l: '왼쪽 가운데', c: '가운데', r: '오른쪽 가운데', bl: '왼쪽 아래', b: '아래 가운데', br: '오른쪽 아래' };
+    function ebWmPosName(p) { return EB_WM_POS_NAME[p] || '가운데'; }
+    // ── 안내 문구: 고치기·목록 저장·불러오기·삭제 ──
+    function ebNoteTextChanged() {
+      const ta = document.getElementById('ebNoteText');
+      if (!ta) return;
+      const t = ta.value.replace(/[<>&"']/g, '');   // SVG 안에 들어가므로 꺾쇠·따옴표는 뺀다(그림에서도 빠진다)
+      ebLsSet(EB_LS.note, t.trim() ? t : null);
+    }
+    function ebNoteSave() {
+      const t = ebNoteText().trim();
+      if (!t) return;
+      const list = ebLsGet(EB_LS.notes, []);
+      if (list.indexOf(t) >= 0) { showSuccess('이미 목록에 있는 문구입니다.'); return; }
+      list.push(t);
+      if (ebLsSet(EB_LS.notes, list)) { syncEbWmUI(); showSuccess('안내 문구를 목록에 저장했습니다 — 다음에 목록에서 고르면 바로 씁니다.'); }
+    }
+    function ebNotePick(i) {
+      const list = ebLsGet(EB_LS.notes, []);
+      if (i === '' || !list[+i]) return;
+      ebLsSet(EB_LS.note, list[+i]);
+      const ta = document.getElementById('ebNoteText'); if (ta) ta.value = list[+i];
+      syncEbWmUI();
+    }
+    function ebNoteDelete() {
+      const sel = document.getElementById('ebNoteList');
+      const i = sel ? sel.value : '';
+      const list = ebLsGet(EB_LS.notes, []);
+      if (i === '' || !list[+i]) { showError('지울 문구를 목록에서 먼저 고르세요.'); return; }
+      if (!confirm('목록에서 이 문구를 지울까요?\n\n' + list[+i])) return;
+      list.splice(+i, 1); ebLsSet(EB_LS.notes, list); syncEbWmUI();
+    }
+    function ebNoteReset() {
+      ebLsSet(EB_LS.note, null);
+      const ta = document.getElementById('ebNoteText'); if (ta) ta.value = EBOOK_NOTE_TEXT;
+    }
+    // ── 이미지 워터마크: 고르기(긴 변 800px로 줄여 PNG로 — 투명 배경 유지)·자리·크기·투명도·목록 ──
+    function ebWmImgPick() {
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = 'image/png,image/jpeg,image/webp,image/gif,image/bmp,image/svg+xml';
+      inp.onchange = () => {
+        const f = inp.files && inp.files[0];
+        if (!f) return;
+        const rd = new FileReader();
+        rd.onload = () => {
+          const im = new Image();
+          im.onload = () => {
+            const k = Math.min(1, 800 / Math.max(im.naturalWidth || 1, im.naturalHeight || 1));
+            const w = Math.max(1, Math.round((im.naturalWidth || 300) * k)), h = Math.max(1, Math.round((im.naturalHeight || 300) * k));
+            const c = document.createElement('canvas'); c.width = w; c.height = h;
+            c.getContext('2d').drawImage(im, 0, 0, w, h);
+            ebWmImgSave({ on: true, u: c.toDataURL('image/png'), w, h, name: f.name.replace(/\.[^.]+$/, '') });
+          };
+          im.onerror = () => showError('그림을 읽지 못했습니다 — PNG·JPG 파일로 다시 골라 주세요.');
+          im.src = rd.result;
+        };
+        rd.readAsDataURL(f);
+      };
+      inp.click();
+    }
+    function setEbWmImgOn(on) {
+      const img = ebWmImg();
+      if (on && !img.u) { ebWmImgPick(); return; }
+      ebWmImgSave({ on: !!on });
+    }
+    function setEbWmPos(p) { ebWmImgSave({ pos: p }); }
+    setTimeout(() => { try { syncEbWmUI(); } catch (e) {} }, 0);   // 처음 화면: 기억한 이미지·목록 채우기
+    function ebWmImgNumChanged() {
+      const sz = +document.getElementById('ebWmImgSize').value, op = +document.getElementById('ebWmImgOp').value;
+      const patch = {};
+      if (sz >= 1 && sz <= 100) patch.size = sz;
+      if (op >= 5 && op <= 100) patch.op = op;
+      ebWmImgSave(patch);
+    }
+    function ebWmImgMirrorChanged(v) { ebWmImgSave({ mirror: !!v }); }
+    function ebWmImgListSave() {
+      const img = ebWmImg();
+      if (!img.u) { showError('먼저 그림을 고르세요.'); return; }
+      const list = ebLsGet(EB_LS.imgs, []);
+      list.push({ label: img.name || '그림', name: img.name, u: img.u, w: img.w, h: img.h, pos: img.pos, size: img.size, op: img.op, mirror: img.mirror });
+      if (ebLsSet(EB_LS.imgs, list)) { syncEbWmUI(); showSuccess('이미지 워터마크(그림·자리·크기·투명도)를 목록에 저장했습니다.'); }
+    }
+    function ebWmImgListPick(i) {
+      const list = ebLsGet(EB_LS.imgs, []);
+      if (i === '' || !list[+i]) return;
+      const t = list[+i];
+      ebWmImgSave({ on: true, u: t.u, w: t.w, h: t.h, name: t.name || t.label, pos: t.pos, size: t.size, op: t.op, mirror: !!t.mirror });
+    }
+    function ebWmImgListDelete() {
+      const sel = document.getElementById('ebWmImgList');
+      const i = sel ? sel.value : '';
+      const list = ebLsGet(EB_LS.imgs, []);
+      if (i === '' || !list[+i]) { showError('지울 이미지를 목록에서 먼저 고르세요.'); return; }
+      if (!confirm('목록에서 이 이미지 워터마크를 지울까요?')) return;
+      list.splice(+i, 1); ebLsSet(EB_LS.imgs, list); syncEbWmUI();
     }
     function openEbWmMenu(btn) {
       document.querySelectorAll('.ch-menu').forEach(m => m.remove());
       const m = document.createElement('div');
       m.className = 'ch-menu';
       const cur = _ebOpts.wm || '';
-      [['', '없음', '워터마크 없이'], ['draft', "시안", "'시안' 글자를 대각선으로 연하게 반복"],
-       ['notice', '안내', '쪽마다 바깥쪽 아래 모서리에 “' + EBOOK_NOTE_TEXT.replace(/\s+/g, ' ') + '”']].forEach(([v, label, sub]) => {
+      const note = ebNoteText().replace(/\s+/g, ' ');
+      [['', '글자 없음', '글자 워터마크 없이'], ['draft', "시안", "'시안' 글자를 대각선으로 연하게 반복"],
+       ['notice', '안내 문구', '쪽마다 바깥쪽 아래 모서리에 “' + note + '” — 아래에서 문구를 고칩니다']].forEach(([v, label, sub]) => {
         const it = document.createElement('button');
         it.className = 'ch-menu-item' + (v === cur ? ' on' : '');
         it.innerHTML = '<span>' + (v === cur ? '✓ ' : '') + label + '</span><span class="ch-menu-sub"></span>';
@@ -9796,6 +10164,13 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         it.onclick = () => { m.remove(); setEbWm(v); };
         m.appendChild(it);
       });
+      const img = ebWmImg();
+      const it2 = document.createElement('button');
+      it2.className = 'ch-menu-item' + (img.on ? ' on' : '');
+      it2.innerHTML = '<span>' + (img.on ? '✓ ' : '') + '🖼 이미지 워터마크</span><span class="ch-menu-sub"></span>';
+      it2.lastChild.textContent = img.on ? '켜짐 — 누르면 끕니다 (' + ebWmPosName(img.pos) + ')' : '로고·도장 그림을 원하는 자리에 — 글자와 같이 쓸 수 있습니다';
+      it2.onclick = () => { m.remove(); setEbWmImgOn(!img.on); };
+      m.appendChild(it2);
       document.body.appendChild(m);
       const r = btn.getBoundingClientRect(), mr = m.getBoundingClientRect();
       m.style.left = Math.max(6, Math.min(r.left, innerWidth - mr.width - 8)) + 'px';
@@ -9863,6 +10238,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         updateProgress(5);
         let bookBytes = await buildOptimizedBase(p => updateProgress(Math.round(p * 0.25)));
         bookBytes = await applyBleedStage(bookBytes);
+        // PDF에 빠진 글꼴은 이 PC의 글꼴로 실어 그린다(아크로뱃과 같은 모양) — 이 PC에도 없으면 계속할지 묻는다
+        try {
+          const fe = await embedInstalledCjkFonts(bookBytes);
+          if (fe.missing.length) {
+            hideLoading();
+            if (!confirmMissingFonts(fe.missing, 'E-book 시안')) return;
+            showLoading('📖 E-book 시안 만드는 중…');
+          }
+          bookBytes = fe.bytes;
+        } catch (e) { console.warn('글꼴 싣기 실패 — 그대로 진행:', e); }
         updateProgress(28);
 
         const dpi = _ebOpts.dpi;
@@ -9899,7 +10284,8 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           },
           book: book.pages,
           sheets: sheets.pages,
-          opts: { watermark: _ebOpts.wm, wmText: '시안', noteText: EBOOK_NOTE_TEXT, trimPct, coverSingle: true },
+          opts: { watermark: _ebOpts.wm, wmText: '시안', noteText: ebNoteText(), trimPct, coverSingle: true,
+                  wmImg: ebWmImg().on ? ebWmImg() : null },
         });
 
         updateProgress(100);
