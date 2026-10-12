@@ -910,8 +910,13 @@
       }
       // 📕 표지 설정 복원
       if (c.cover && typeof applyCoverState === 'function') { try { applyCoverState(c.cover); } catch (e) { console.warn('표지 설정 복원 실패:', e); } }
-      if (c.imp) {
-        const im = c.imp;
+      if (c.imp) applyImpPreset(c.imp);
+    }
+    // 임포징 설정 복원 — 프로파일·작업 파일(applyExtraPreset)과 문서 탭 전환(restoreTabExtras)이 같이 쓴다.
+    //   quiet: 탭 전환용 — '임포징 포함'을 toggleImpEnabled 없이 맞춘다(그 함수는 결과를 지우고 미리보기를 새로 만든다)
+    function applyImpPreset(im, quiet) {
+      const g = id => document.getElementById(id);
+      {
         // 값 세팅 도중 impSettingsChanged가 매번 재조립을 예약하지 않도록 가드 (프로파일 적용과 동일 규약)
         const hadGuard = typeof _loadingProfile !== 'undefined';
         if (hadGuard) _loadingProfile = true;
@@ -961,9 +966,91 @@
           if (typeof updateImpSheetReadout === 'function') updateImpSheetReadout();
         } finally { if (hadGuard) _loadingProfile = false; }
         // '임포징 포함' 상태 재현 — 방식이 있어야 켤 수 있다(toggleImpEnabled가 자체 검증)
-        if (typeof im.enabled === 'boolean' && typeof toggleImpEnabled === 'function'
+        if (quiet) {
+          _impEnabled = !!im.enabled && !!(_impMode || _impProfile);
+          _impUserOff = !!im.userOff;
+          const chk = g('impEnabled'); if (chk) chk.checked = _impEnabled;
+        } else if (typeof im.enabled === 'boolean' && typeof toggleImpEnabled === 'function'
             && !!_impEnabled !== im.enabled) toggleImpEnabled(im.enabled);
       }
+    }
+    // ── 문서 탭마다 따로 기억: 📖 임포징 · ◲ 블리드 · ✒ 폰트 안전화 · 📕 표지 (사용자 결정 2026-10-12) ──
+    //   크기·여백(editSettings)·흑백(processingOptions)은 원래 탭마다 따로인데 이 넷은 앱 전체 하나라,
+    //   A 문서에 건 것이 B 문서 결과·저장본에 몰래 들어갔다. 탭을 떠날 때 담아 두고 돌아올 때 조용히 되살린다
+    //   (안내 문구·결과 다시 만들기 없이). 처음 여는 문서의 시작값:
+    //     임포징 = 방식 미선택·끔 · 블리드 = 끔(폭·재단선은 지금 값) · 폰트 안전화 = 항상 켬(완전 임베드)
+    //     표지 = 지금 값을 복사하되 그 책에 딸린 값(앞·뒤표지 쪽, 본문 쪽수, 책등 폭·문구, 불러온 표지 파일)은 비움
+    //   재단선 모양·수치는 문서와 무관한 작업 습관(CROP_STYLE_KEY)이라 탭과 상관없이 지금 값을 둔다.
+    const IMP_TAB_SHARED_FIELDS = ['impCropGap', 'impCropLen', 'impCropTh', 'impCropCenter'];
+    const COVER_BOOK_FIELDS = ['coverFront', 'coverBack', 'coverBodyPages', 'coverSpineMm', 'coverSpineText'];
+    function captureTabExtras() {
+      const g = id => document.getElementById(id);
+      const ex = captureExtraPreset();
+      const im = ex.imp;
+      im.userOff = !!_impUserOff;
+      return {
+        imp: im,
+        bleed: { enabled: !!_bleedEnabled, mm: g('bleedGenMm')?.value, crop: !!g('bleedCrop')?.checked },
+        outline: { enabled: !!_outlineEnabled, mode: _outlineMode, flatten: !!g('outlineFlatten')?.checked },
+        cover: ex.cover,
+        coverFiles: (typeof _coverFiles !== 'undefined') ? Object.assign({}, _coverFiles) : null,
+      };
+    }
+    // 처음 여는 문서의 시작값 — 지금 화면 값에서 문서에 딸린 것만 바꾼다
+    function freshTabExtras() {
+      const ex = captureTabExtras();
+      ex.imp = { mode: '', enabled: false, bind: 'left', cutN: 2, cutSides: 2, scale: 'orig', fields: { bkPaper: 'auto' }, profOpts: null };
+      ex.bleed.enabled = false;
+      ex.outline = { enabled: true, mode: 'embed', flatten: false };
+      if (ex.cover) {
+        COVER_BOOK_FIELDS.forEach(id => { if (ex.cover.v) ex.cover.v[id] = ''; });
+        ex.cover.auto = { body: true, spine: true };
+      }
+      ex.coverFiles = { front: null, back: null };
+      return ex;
+    }
+    function restoreTabExtras(src) {
+      if (!src) return;
+      const files = src.coverFiles;   // 불러온 표지 파일은 바이트를 품고 있어 복사하지 않고 그대로 넘긴다
+      const ex = JSON.parse(JSON.stringify(Object.assign({}, src, { coverFiles: null })));
+      const g = id => document.getElementById(id);
+      // 📖 임포징
+      if (ex.imp) {
+        const f = ex.imp.fields || (ex.imp.fields = {});
+        IMP_TAB_SHARED_FIELDS.forEach(id => {
+          const el = g(id);
+          if (el) f[id] = IMP_PRESET_FIELDS[id] === 'c' ? !!el.checked : el.value;
+        });
+        applyImpPreset(ex.imp, true);
+      }
+      // ◲ 블리드 — setBleedEnabled는 안내를 띄우고 결과를 지우므로 상태만 맞춘다
+      if (ex.bleed) {
+        if (g('bleedGenMm') && ex.bleed.mm !== undefined) g('bleedGenMm').value = ex.bleed.mm;
+        if (g('bleedCrop')) g('bleedCrop').checked = !!ex.bleed.crop;
+        _bleedEnabled = !!ex.bleed.enabled;
+        if (g('bleedEnabled')) g('bleedEnabled').checked = _bleedEnabled;
+      }
+      // ✒ 폰트 안전화 — 'outlineOn' 기억값은 건드리지 않는다(탭 전환은 사용자의 선택이 아니다)
+      if (ex.outline) {
+        _outlineEnabled = !!ex.outline.enabled;
+        _outlineMode = ex.outline.mode === 'outline' ? 'outline' : 'embed';
+        if (g('esOutline')) g('esOutline').checked = _outlineEnabled;
+        const ob = g('olOnBtn'); if (ob) ob.classList.toggle('active', _outlineEnabled);
+        const mb = g('opt-outline'); if (mb) mb.classList.toggle('active', _outlineEnabled);
+        if (typeof activateChip === 'function') activateChip('olmode', _outlineMode);
+        if (g('outlineFlatten')) g('outlineFlatten').checked = !!ex.outline.flatten;
+        if (typeof syncOutlineModeBtns === 'function') syncOutlineModeBtns();
+        if (typeof syncOutlineFlattenBtn === 'function') syncOutlineFlattenBtn();
+        if (typeof syncOutlineBadges === 'function') syncOutlineBadges();
+      }
+      // 📕 표지 (값 + 불러온 표지 파일)
+      if (ex.cover && typeof applyCoverState === 'function') { try { applyCoverState(ex.cover); } catch (e) { console.warn('표지 설정 되살리기 실패:', e); } }
+      if (typeof _coverFiles !== 'undefined') {
+        _coverFiles = files ? Object.assign({ front: null, back: null }, files) : { front: null, back: null };
+        if (typeof updateCoverFileInfo === 'function') updateCoverFileInfo();
+      }
+      if (typeof updateEsGroupBadges === 'function') updateEsGroupBadges();
+      if (typeof coverAutoRefresh === 'function') coverAutoRefresh();
     }
     function loadPresetList() {
       const sel = document.getElementById('esPresetSel'); if (!sel) return;

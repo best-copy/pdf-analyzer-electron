@@ -1081,10 +1081,10 @@
       <div class="es-row" style="margin-top:6px;">
         <span class="es-label">표지 페이지</span>
         <span class="es-hint" style="margin:0;">앞</span>
-        <input type="number" class="es-input" id="coverFront" min="1" placeholder="1" style="flex:0 0 50px;" title="앞표지로 쓸 페이지 번호 (비우면 1페이지)" oninput="updateCoverSpineInfo()">
+        <input type="number" class="es-input" id="coverFront" min="1" placeholder="1" style="flex:0 0 50px;" title="앞표지로 쓸 페이지 번호 (비우면 1페이지)" oninput="coverAutoRefresh()">
         <button class="es-chip" style="flex:0 0 auto;" onclick="pickCoverFile('front')" title="앞표지를 외부 파일(PDF 1쪽째 또는 PNG·JPG 이미지)에서 불러오기">📂</button>
         <span class="es-hint" style="margin:0;">뒤</span>
-        <input type="number" class="es-input" id="coverBack" min="1" placeholder="끝" style="flex:0 0 50px;" title="뒤표지로 쓸 페이지 번호 (비우면 마지막 페이지)" oninput="updateCoverSpineInfo()">
+        <input type="number" class="es-input" id="coverBack" min="1" placeholder="끝" style="flex:0 0 50px;" title="뒤표지로 쓸 페이지 번호 (비우면 마지막 페이지)" oninput="coverAutoRefresh()">
         <button class="es-chip" style="flex:0 0 auto;" onclick="pickCoverFile('back')" title="뒤표지를 외부 파일(PDF 1쪽째 또는 PNG·JPG 이미지)에서 불러오기">📂</button>
       </div>
       <div class="es-hint" id="coverFileInfo" style="display:none; margin-top:4px;"></div>
@@ -1131,8 +1131,8 @@
           <span class="es-hint" style="margin:0;">mm</span>
         </div>
         <div class="es-row" style="margin-top:6px;">
-          <span class="es-label" title="책등폭 계산용 내지 쪽수 — 비우면 (전체 − 표지 2쪽)">본문 쪽수</span>
-          <input type="number" class="es-input" id="coverBodyPages" min="0" placeholder="자동" style="flex:0 0 64px;" oninput="autoFillSpine()">
+          <span class="es-label" title="책등폭 계산용 내지 쪽수 — 이 문서의 쪽 수에서 표지 쪽을 빼 자동으로 채웁니다. 직접 고치면 그 값을 쓰고, 비우면 다시 자동">본문 쪽수</span>
+          <input type="number" class="es-input" id="coverBodyPages" min="0" placeholder="자동" style="flex:0 0 64px;" oninput="coverFieldInput(this)">
           <span class="es-label" style="flex:0 0 auto;">지종</span>
           <select class="es-select" id="coverStock" style="flex:1; min-width:0;" onchange="onCoverStockChange()" title="내지 용지 — 장당 두께(mm)로 책등폭을 계산합니다. 목록은 ✎에서 수정"></select>
           <button class="es-chip" style="flex:0 0 auto;" onclick="toggleCoverStockMgmt()" title="지종 이름·장당 두께 수정, 추가·삭제">✎</button>
@@ -1155,8 +1155,8 @@
           </label>
         </div>
         <div class="es-row" style="margin-top:6px;">
-          <span class="es-label" title="비우면 본문 쪽수 × 장당 두께로 자동 계산">책등폭(mm)</span>
-          <input type="number" class="es-input" id="coverSpineMm" min="0" step="0.1" placeholder="자동" style="flex:0 0 64px;" oninput="updateCoverSpineInfo()">
+          <span class="es-label" title="본문 쪽수 × 장당 두께(양면이면 절반)로 자동으로 채웁니다(지종을 고르면 다시 계산). 직접 적으면 그 값으로 생성하고 지종을 바꿔도 유지 · 비우면 다시 자동">책등폭(mm)</span>
+          <input type="number" class="es-input" id="coverSpineMm" min="0" step="0.1" placeholder="자동" style="flex:0 0 64px;" oninput="coverFieldInput(this)">
           <span class="es-label" style="flex:0 0 auto;" title="자동 계산값에 더할 보정 두께 — 제본 풀·부피 여유 (가제본 후 조정)">보정</span>
           <input type="number" class="es-input" id="coverSpineAdj" step="0.1" value="0" style="flex:0 0 52px;" oninput="updateCoverSpineInfo()">
           <span class="es-hint" id="coverSpineInfo" style="margin:0; flex:1;"></span>

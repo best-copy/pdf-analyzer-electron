@@ -391,6 +391,7 @@
         + (sizeStr ? ` — ${sizeStr}` : '')
         + (pages ? ` · 📄 ${pages}페이지` : '');
       fileInfo.innerHTML = html;
+      if (tab.id === activeTabId && typeof coverAutoRefresh === 'function') coverAutoRefresh();   // 📕 본문 쪽수·책등 폭
       // 크기·내용이 바뀔 때만 3초간 표시 후 자동 숨김 (페이지 편집 영역을 가리지 않도록)
       showFileInfoTransient(html);
     }
@@ -423,8 +424,24 @@
       if (!tabs.has(id)) return;
       // 현재 탭의 processingOptions 저장
       if (activeTabId && tabs.has(activeTabId)) {
-        Object.assign(tabs.get(activeTabId).processingOptions, processingOptions);
+        const cur = tabs.get(activeTabId);
+        Object.assign(cur.processingOptions, processingOptions);
+        // ✔ 적용 결과·고른 서식도 그 탭에 맡겨 둔다 — 예전엔 다른 탭에 다녀오면 적용이 풀려 다시 눌러야 했다.
+        //   돌아올 때 설정 지문이 그대로일 때만 되살린다(다른 탭에서 임포징처럼 탭이 함께 쓰는 설정을 바꿨으면 버린다).
+        if (id !== activeTabId) {
+          const pv = document.getElementById('previewSection');
+          cur.savedApply = (processedPdfBytes && typeof optSignature === 'function') ? {
+            bytes: processedPdfBytes, name: processedFileName, direct: directOutputBytes,
+            sig: optSignature(), impRanges: (typeof _impChapterRanges !== 'undefined') ? _impChapterRanges : null,
+            shown: !!(pv && pv.style.display !== 'none'),
+            // 결과 화면의 쪽 그림 — 돌아왔을 때 다시 그리지 않고 이 그림을 그대로 붙인다(설정이 같으면 캐시 열쇠가 같다)
+            pvCache: (typeof _pvPageCache !== 'undefined') ? _pvPageCache : null,
+          } : null;
+          if (typeof _qpActiveForm !== 'undefined') cur.qpForm = _qpActiveForm;
+          if (typeof captureTabExtras === 'function') cur.extras = captureTabExtras();   // 📖 임포징·◲ 블리드·✒ 폰트 안전화·📕 표지도 탭마다
+        }
       }
+      const switched = !!(activeTabId && tabs.has(activeTabId) && id !== activeTabId);
       activeTabId = id;
       const tab = tabs.get(id);
 
@@ -450,6 +467,13 @@
       processedFileName  = '';
       if (typeof closePreview === 'function') closePreview();
       if (typeof clearProcessCaches === 'function') clearProcessCaches();
+      // 이 탭의 임포징·블리드·폰트 안전화·표지로 — 처음 여는 문서는 시작값(freshTabExtras).
+      //   합본·파일 교체처럼 이어받을 탭은 만든 곳이 extras를 채워 둔다.
+      if ((switched || !tab._seen) && typeof restoreTabExtras === 'function') {
+        if (!tab.extras && typeof freshTabExtras === 'function') tab.extras = freshTabExtras();
+        restoreTabExtras(tab.extras);
+      }
+      tab._seen = true;
 
       hideError(); hideSuccess();
 
@@ -457,6 +481,7 @@
         hideLoading(); progressBar.style.display = 'none';
         resultsSection.style.display = 'block';
         renderTabUI(tab);
+        restoreTabApply(tab);
       } else if (tab.status === 'loading') {
         resultsSection.style.display = 'none';
         showLoading('PDF를 분석하고 있습니다...');
@@ -471,6 +496,33 @@
         hideLoading(); progressBar.style.display = 'none';
       }
       renderTabBar();
+    }
+
+    // 탭에 맡겨 둔 적용 결과 되살리기 (activateTab) — 설정이 그대로면 결과·결과 화면을 다시 보인다
+    function restoreTabApply(tab) {
+      const sa = tab.savedApply;
+      tab.savedApply = null;
+      if (typeof _qpActiveForm !== 'undefined') {
+        _qpActiveForm = tab.qpForm || '';
+        if (typeof qpRenderForms === 'function') qpRenderForms();
+      }
+      if (!sa || typeof optSignature !== 'function') return;
+      if (optSignature() !== sa.sig) {   // 다른 탭에서 함께 쓰는 설정이 바뀜 — 결과도 서식 표시도 더는 맞지 않는다
+        if (typeof _qpActiveForm !== 'undefined') { _qpActiveForm = ''; if (typeof qpRenderForms === 'function') qpRenderForms(); }
+        return;
+      }
+      processedPdfBytes = sa.bytes;
+      processedFileName = sa.name;
+      directOutputBytes = sa.direct;
+      _processedSig = sa.sig;
+      if (typeof _impChapterRanges !== 'undefined') _impChapterRanges = sa.impRanges;
+      updateDownloadBtn();
+      if (sa.shown && typeof renderProcessedPreview === 'function') {
+        if (sa.pvCache) _pvPageCache = sa.pvCache;   // clearProcessCaches가 비운 쪽 그림 캐시를 이 탭 것으로
+        renderProcessedPreview(processedPdfBytes, { live: false });
+      }
+      // 다운로드용 최적화본 캐시는 탭 전환 때 비워졌다 — 유휴 시간에 다시 구워 둔다
+      setTimeout(() => { if (processedPdfBytes === sa.bytes && typeof prewarmOptimizedOutput === 'function') prewarmOptimizedOutput(); }, 800);
     }
 
     // 닫는 탭의 썸네일 objectURL 해제 (메모리 누수 방지; blob: URL만 대상, data:는 무시)
@@ -1063,6 +1115,7 @@
         fresh.id = tab.id;                       // 탭 id·순서는 유지 (화면 깜빡임 없음)
         fresh.editSettings = keptEs;
         fresh.processingOptions = keptOpts;
+        if (typeof captureTabExtras === 'function') fresh.extras = captureTabExtras();   // 임포징·블리드·폰트·표지도 이어 간다
         tabs.set(tab.id, fresh);
         if (typeof clearProcessCaches === 'function') { try { clearProcessCaches(); } catch (e) {} }
         processedPdfBytes = null; directOutputBytes = null; processedFileName = '';
@@ -1438,6 +1491,7 @@
         // 합본을 새 탭으로 열어 분석하고, 흡수된 베이스 탭은 닫는다
         const tab = createTab(file);
         tab.chapters = chapters;       // 분석 완료 후 페이지별 챕터 태깅에 사용
+        if (typeof captureTabExtras === 'function') tab.extras = baseTab.id === activeTabId ? captureTabExtras() : baseTab.extras;   // 같은 작업의 연장 — 베이스 탭의 임포징·블리드·폰트·표지 이어받기
         activateTab(tab.id);
         closeTab(baseTab.id);
         await analyzePDF(file, tab);

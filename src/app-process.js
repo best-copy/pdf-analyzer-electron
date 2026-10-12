@@ -1582,6 +1582,7 @@
       if (_coverFiles.back) parts.push(mk('back', _coverFiles.back));
       el.innerHTML = parts.join(' &nbsp;·&nbsp; ');
       el.style.display = parts.length ? '' : 'none';
+      coverAutoRefresh();   // 표지를 파일로 쓰면 그 쪽은 본문이다 — 본문 쪽수·책등 폭 다시 계산
     }
     // 외부 표지 파일을 문서 끝에 페이지로 추가 — 반환: 추가된 페이지 인덱스
     async function appendCoverFilePage(doc, f) {
@@ -1607,7 +1608,7 @@
       if (ai) ai.style.display = m === 'ai' ? '' : 'none';
       const keyEl = document.getElementById('coverAiKey');
       if (keyEl && !keyEl.value) keyEl.value = localStorage.getItem('aiImageApiKey') || '';
-      updateCoverSpineInfo();
+      coverAutoRefresh();   // 뒤표지가 문서 밖이 되면 본문 쪽수가 1 늘어난다
     }
     function saveCoverAiKey(v) {
       try { localStorage.setItem('aiImageApiKey', (v || '').trim()); } catch (e) {}
@@ -1676,7 +1677,7 @@
       const front = parseInt(g('coverFront')?.value) || 1;
       const back  = parseInt(g('coverBack')?.value) || total;
       const bodyRaw = parseInt(g('coverBodyPages')?.value);
-      const body = bodyRaw > 0 ? bodyRaw : Math.max(0, total - 2);   // 비우면 표지 2쪽 뺀 나머지
+      const body = bodyRaw > 0 ? bodyRaw : coverAutoBody();   // 비우면 이 문서의 쪽 수 − 문서 안 표지 쪽
       // 두께 기준은 항상 입력칸(수정 가능) — 지종 선택은 입력칸을 채우는 시작값
       let thick = parseFloat(g('coverThick')?.value);
       if (!(thick > 0)) thick = parseFloat(g('coverStock')?.value) || 0.1;
@@ -1782,21 +1783,43 @@
       const v = parseFloat(document.getElementById('coverStock')?.value);
       const inp = document.getElementById('coverThick');
       if (inp && v > 0) inp.value = v;
+      // 책등 폭을 직접 적어 두었으면 지종을 바꿔도 그 값을 지킨다(사용자 결정 2026-10-12) — 자동으로 돌리려면 칸을 비운다
       autoFillSpine();
     }
-    // 본문 쪽수·지종·양면이 바뀌면 책등폭 입력칸을 자동 계산값으로 채운다 (직접 수정 가능)
-    function autoFillSpine() {
+    // ── 📕 책등 폭 자동 (사용자 요청 2026-10-12) ──
+    //   본문 쪽수 = 이 탭의 쪽 수 − 문서 안에서 표지로 쓰는 쪽(앞·뒤, 같은 쪽이면 하나). 표지 파일을 불러왔거나
+    //   뒤표지를 자동 생성하면 그 표지는 문서 밖이라 빼지 않는다. 책등 폭 = 본문 쪽수 × 장당 두께(양면이면 ½).
+    //   두 칸 모두 계산값을 **칸에 채워** 보여 준다. 직접 적으면 그 값으로 생성하고(dataset.manual — 지종을 바꿔도 유지), 비우면 다시 자동.
+    //   쪽 수가 바뀌거나(쪽 추가·삭제·챕터 추가) 탭을 바꾸면 coverAutoRefresh가 다시 채운다.
+    function coverAutoBody() {
       const g = id => document.getElementById(id);
       const total = pageResults.filter(Boolean).length;
-      const bodyRaw = parseInt(g('coverBodyPages')?.value);
-      const body = bodyRaw > 0 ? bodyRaw : Math.max(0, total - 2);
-      let thick = parseFloat(g('coverThick')?.value);
-      if (!(thick > 0)) thick = parseFloat(g('coverStock')?.value) || 0.1;
-      const duplex = g('coverDuplex') ? !!g('coverDuplex').checked : true;
-      const el = g('coverSpineMm');
-      if (el) el.value = coverSpineMm(body, thick, duplex);
+      if (!total) return 0;
+      const inDoc = new Set();
+      if (!_coverFiles.front) inDoc.add(Math.min(Math.max(1, parseInt(g('coverFront')?.value) || 1), total));
+      if (!_coverFiles.back && _coverBackAuto === 'none') inDoc.add(Math.min(Math.max(1, parseInt(g('coverBack')?.value) || total), total));
+      return Math.max(0, total - inDoc.size);
+    }
+    function coverAutoRefresh() {
+      const g = id => document.getElementById(id);
+      const bEl = g('coverBodyPages'), sEl = g('coverSpineMm');
+      if (bEl && sEl && pageResults.filter(Boolean).length) {
+        if (bEl.dataset.manual !== '1') bEl.value = coverAutoBody();
+        const body = parseInt(bEl.value) > 0 ? parseInt(bEl.value) : coverAutoBody();
+        let thick = parseFloat(g('coverThick')?.value);
+        if (!(thick > 0)) thick = parseFloat(g('coverStock')?.value) || 0.1;
+        const duplex = g('coverDuplex') ? !!g('coverDuplex').checked : true;
+        if (sEl.dataset.manual !== '1') sEl.value = coverSpineMm(body, thick, duplex);
+      }
       updateCoverSpineInfo();
     }
+    // 본문 쪽수·책등 폭 칸을 직접 고칠 때 — 값이 있으면 그 값을 쓰고, 비우면 자동으로 돌아간다
+    function coverFieldInput(el) {
+      el.dataset.manual = String(el.value).trim() ? '1' : '';
+      coverAutoRefresh();
+    }
+    // 두께·양면이 바뀌면 다시 계산 (HTML 핸들러 이름 유지)
+    function autoFillSpine() { coverAutoRefresh(); }
     // ── 지종 목록 (이름·장당 두께 수정 가능, localStorage 'coverStocks') ─────
     const COVER_STOCK_DEFAULTS = [
       { n: '모조 70g', t: 0.09 }, { n: '모조 80g', t: 0.10 }, { n: '모조 100g', t: 0.11 }, { n: '모조 120g', t: 0.13 },
@@ -1897,6 +1920,11 @@
       const data = { v: {}, c: {}, mode: _coverMode, backAuto: _coverBackAuto, spinePos: _coverSpinePos };
       COVER_PRESET_V.forEach(id => { if (g(id)) data.v[id] = g(id).value; });
       COVER_PRESET_C.forEach(id => { if (g(id)) data.c[id] = !!g(id).checked; });
+      // 자동인 칸은 숫자 대신 빈칸 + auto 표식 — 다른 문서·핫폴더에서 불러와도 그 문서 쪽 수로 다시 계산한다
+      const man = id => !!(g(id) && g(id).dataset.manual === '1');
+      data.auto = { body: !man('coverBodyPages'), spine: !man('coverSpineMm') };
+      if (data.auto.body) data.v.coverBodyPages = '';
+      if (data.auto.spine) data.v.coverSpineMm = '';
       return data;
     }
     // 스냅샷 → 표지 UI 복원 (값 + 모드 칩 + 종속 행 표시). 프리셋 불러오기와 공용.
@@ -1905,6 +1933,13 @@
       const g = id => document.getElementById(id);
       COVER_PRESET_V.forEach(id => { if (g(id) && data.v && data.v[id] !== undefined) g(id).value = data.v[id]; });
       COVER_PRESET_C.forEach(id => { if (g(id) && data.c && data.c[id] !== undefined) g(id).checked = data.c[id]; });
+      // 자동/직접 표식 — 표식이 없는 옛 프리셋은 값이 적혀 있으면 직접 입력으로 본다(예전과 같은 결과)
+      [['coverBodyPages', 'body'], ['coverSpineMm', 'spine']].forEach(([id, k]) => {
+        const el = g(id); if (!el) return;
+        const manual = data.auto ? !data.auto[k] : String(el.value || '').trim() !== '';
+        el.dataset.manual = manual ? '1' : '';
+        if (!manual) el.value = '';
+      });
       setCoverMode(data.mode || 'extract');
       setCoverBackAuto(data.backAuto || 'none');
       setCoverSpinePos(data.spinePos || 'center');
@@ -1914,7 +1949,7 @@
       const shSel = g('coverSheetSel')?.value || '';
       if (g('coverSheetCustom')) g('coverSheetCustom').style.display = shSel === 'custom' ? '' : 'none';
       if (g('coverSheetMargins')) g('coverSheetMargins').style.display = shSel !== '' ? '' : 'none';
-      updateCoverSpineInfo();
+      coverAutoRefresh();
     }
     function saveCoverPreset() {
       const cur = document.getElementById('coverPresetSel')?.value || '';
@@ -5196,6 +5231,7 @@
         };
         const tab = createTab(file);
         tab.chapters = chapters;       // 분석 완료 후 페이지별 챕터 태깅에 사용
+        if (typeof captureTabExtras === 'function') tab.extras = captureTabExtras();   // 지금 탭의 임포징·블리드·폰트·표지를 합본이 이어받는다
         activateTab(tab.id);
         analyzePDF(file, tab);
         setDirty(true);                // 아직 저장 전 — 종료 시 저장 확인이 뜨도록 표시
