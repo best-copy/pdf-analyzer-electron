@@ -122,9 +122,9 @@ html.theme-light {
 .sbp-opt.active:hover { background: var(--c-accent); color: var(--c-accent-ink); }
 /* 기능이 꺼져 있을 때의 선택 표시는 무채색 그대로 */
 .sbp-opt.active.dim { background: var(--c-surface-2); border-color: var(--c-border-mid); color: var(--c-text-muted); }
-/* 주 버튼 — 골드 채움 · 올리면 테두리만 */
+/* 주 버튼 — 골드 채움 · 올리면 한 단계 밝은 골드(--c-accent-hover) + 아주 옅은 그림자 */
 .sbp-apply { background: var(--c-accent); border-color: var(--c-accent); color: var(--c-accent-ink); }
-.sbp-apply:not(:disabled):hover { background: transparent !important; color: var(--c-accent-text); border-color: var(--c-accent); }
+.sbp-apply:not(:disabled):hover { background: var(--c-accent-hover) !important; color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 .sbp-apply:disabled { background: transparent; border-color: var(--c-border-mid); color: var(--c-text-muted); }
 .sbp-dl { background: transparent; border-color: var(--c-accent-line); color: var(--c-accent-text); }
 .sbp-dl:not(:disabled):not(.btn-dim):hover { background: var(--c-accent); color: var(--c-accent-ink); }
@@ -169,7 +169,7 @@ html.theme-light {
 .qp-form-desc, .qp-empty, .qp-note, .qp-state, .qp-foot { color: var(--c-text-muted); }
 .qp-foot { border-top-color: var(--c-border); }
 .qp-add { background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent); border-radius: var(--c-btn-radius); }
-.qp-add:hover { background: transparent; color: var(--c-accent-text); }
+.qp-add:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 .qp-field { background: var(--c-surface); border-color: var(--c-border-mid); border-radius: var(--c-btn-radius); }
 .qp-field:focus-within { border-color: var(--c-accent); }
 .qp-ico { background: var(--c-surface-2); border-right-color: var(--c-border); color: var(--c-text); }
@@ -208,7 +208,7 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 .drop-hint { color: var(--c-text-sub); }
 .drop-sub, .recent-label { color: var(--c-text-muted); }
 .file-input-label { background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent); border-radius: var(--c-btn-radius); box-shadow: none; }
-.file-input-label:hover { background: transparent; color: var(--c-accent-text); box-shadow: none; }
+.file-input-label:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 .file-info { background: var(--c-bg); color: var(--c-text); border-radius: var(--c-radius); }
 .recent-item { background: var(--c-bg); border-color: var(--c-border); border-radius: var(--c-btn-radius); }
 .recent-item:hover { background: var(--c-accent-soft); border-color: var(--c-accent); }
@@ -256,9 +256,9 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 .opt-btn.active, .pv-view-btn.active, #spreadViewBtn.active, #spreadViewBtn2.active {
   background: var(--c-accent-soft); border-color: var(--c-accent); color: var(--c-accent-text); box-shadow: none; filter: none;
 }
-/* 주 버튼 — 골드 채움 · 올리면 테두리만 */
+/* 주 버튼 — 골드 채움 · 올리면 한 단계 밝은 골드(--c-accent-hover) + 아주 옅은 그림자 */
 .apply-btn { background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent); border-radius: var(--c-btn-radius); box-shadow: none; }
-.apply-btn:hover { background: transparent; color: var(--c-accent-text); transform: none; box-shadow: none; }
+.apply-btn:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); transform: none; }
 .apply-btn:disabled { background: transparent; color: var(--c-text-muted); border-color: var(--c-border-mid); }
 .download-btn { background: transparent; color: var(--c-accent-text); border: 1px solid var(--c-accent-line); border-radius: var(--c-btn-radius); box-shadow: none; }
 .download-btn:hover { background: var(--c-accent); color: var(--c-accent-ink); transform: none; box-shadow: none; }
@@ -298,7 +298,7 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 .ch-btn.ch-del { color: var(--c-danger); border-color: color-mix(in srgb, var(--c-danger) 50%, transparent); }
 .ch-btn.ch-del:hover:not(:disabled) { background: color-mix(in srgb, var(--c-danger) 18%, transparent); color: var(--c-danger); }
 .ch-btn.ch-edit { background: var(--c-accent); color: var(--c-accent-ink); border-color: var(--c-accent); }
-.ch-btn.ch-edit:hover:not(:disabled) { background: transparent; color: var(--c-accent-text); }
+.ch-btn.ch-edit:hover:not(:disabled) { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 .sb-chapter { background: var(--c-accent-soft); border-left-color: var(--c-accent); color: var(--c-accent-hover); border-radius: 0; }
 .sb-chapter-badge { background: var(--c-accent); color: var(--c-accent-ink); border-radius: 0; }
 .sb-ch-btn { color: var(--c-accent-hover); border-radius: 0; }
@@ -347,8 +347,11 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 .jump-bar .jump-arrow:hover, .jump-bar .jump-arrow:active { background: var(--c-accent); color: var(--c-accent-ink); }
 #scrollTopBtn { background: var(--c-surface); border: 1px solid var(--c-border-mid); border-radius: var(--c-btn-radius); }
 #scrollTopBtn:hover { background: var(--c-accent); color: var(--c-accent-ink); }
-#editToggle { background: var(--c-surface); color: var(--c-text); border-color: var(--c-border-mid); border-radius: var(--c-btn-radius); }
-#editToggle:hover { background: var(--c-accent); color: var(--c-accent-ink); }
+/* ✏ 편집 모드 탭 — '＋ 서식 추가'(.qp-add)와 같은 굵기·글자·주 버튼 색(골드 채움, 올리면 한 단계 밝게 + 옅은 그림자) — 사용자 요청 2026-10-13 */
+#editToggle { width: 34px; height: auto; min-height: 128px; padding: 12px 0; font-size: 12.5px; font-weight: 700; opacity: 1;
+  background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent); border-right: none; border-radius: var(--c-btn-radius); }
+#editToggle:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
+.es-fit-pct { margin-left: auto; font-weight: 700; color: var(--c-accent-text); white-space: nowrap; }
 #sbToggle, #qpToggle { border-radius: var(--c-btn-radius); }
 .qp-tab { border-radius: 0; }
 
@@ -378,7 +381,7 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 .merge-cancel, .pt-btn { background: transparent; color: var(--c-text); border: 1px solid var(--c-outline) !important; }
 .merge-cancel:hover, .pt-btn:hover { background: var(--c-accent); color: var(--c-accent-ink); border-color: var(--c-accent) !important; }
 .merge-confirm, .pt-ok { background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent) !important; }
-.merge-confirm:hover, .pt-ok:hover { background: transparent; color: var(--c-accent-text); }
+.merge-confirm:not(:disabled):hover, .pt-ok:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 .merge-confirm:disabled { background: transparent; color: var(--c-text-muted); border-color: var(--c-border-mid) !important; }
 .split-num, .split-text, .pt-input { background: var(--c-bg); color: var(--c-text); border: 1px solid var(--c-outline); border-radius: var(--c-btn-radius); }
 .split-num:focus, .split-text:focus, .pt-input:focus { outline: none; border-color: var(--c-accent); }
@@ -426,7 +429,7 @@ body { background: var(--c-bg); color: var(--c-text); font-family: var(--c-font)
 #editWsBar .ws-hint { color: var(--c-text-muted); }
 #editWsBar button { border-radius: var(--c-btn-radius); }
 #editWsBar .ws-save { background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent); }
-#editWsBar .ws-save:hover { background: transparent; color: var(--c-accent-text); }
+#editWsBar .ws-save:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 #editWsBar .ws-cancel { background: transparent; color: var(--c-text); border: 1px solid var(--c-outline); }
 #editWsBar .ws-cancel:hover { background: var(--c-accent); color: var(--c-accent-ink); border-color: var(--c-accent); }
 body.edit-fullscreen #previewSection { background: var(--c-surface); }
@@ -459,7 +462,7 @@ body.edit-fullscreen #previewSection { background: var(--c-surface); }
 .es-close { border-radius: 0; }
 .es-close:hover { background: var(--c-surface); }
 .es-apply-btn { background: var(--c-accent); color: var(--c-accent-ink); border: 1px solid var(--c-accent); border-radius: var(--c-btn-radius); }
-.es-apply-btn:hover { background: transparent; color: var(--c-accent-text); }
+.es-apply-btn:hover { background: var(--c-accent-hover); color: var(--c-accent-ink); border-color: var(--c-accent-hover); box-shadow: 0 2px 6px rgba(var(--c-shadow-rgb, 0,0,0), .22); }
 .es-dl-btn { background: transparent; color: var(--c-accent-text); border: 1px solid var(--c-accent-line); border-radius: var(--c-btn-radius); }
 .es-dl-btn:hover { background: var(--c-accent); color: var(--c-accent-ink); }
 .es-hf-picks { background: var(--c-bg); border-color: var(--c-border); border-radius: 0; }

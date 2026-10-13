@@ -500,6 +500,7 @@
     }
     // 그룹별 활성 기능 요약 배지 — 접혀 있어도 무엇이 켜져 있는지 보이게
     function updateEsGroupBadges() {
+      if (typeof updateFitPct === 'function') { try { updateFitPct(); } catch (e) {} }   // '여백 안에 맞추기' 배율
       const ls = editSettings ? ensureAdjustFields(activeLayoutSettings()) : null;
       const parts = { page: [], imp: [], cover: [], mark: [], tool: [] };
       if (ls) {
@@ -2243,9 +2244,78 @@
         let geo = old;
         if (!geo) { geo = document.createElement('div'); geo.className = 'pv-geo'; cell.appendChild(geo); }
         if (geo.innerHTML !== html) geo.innerHTML = html;
+        // 상자 = 쪽 그림(캔버스) 안쪽 그대로 — 예전엔 '칸 전체 − 아래 38px'로 잡아, 쪽 번호·컬러 표시 줄 높이가
+        //   38px과 달라 위아래 여백 비율이 어긋나 안내선이 위로 쏠려 보였다(2026-10-13 사용자 보고).
+        const cv = cell.querySelector('.pv-canvas');
+        if (cv && cv.clientWidth) {
+          const st = `left:${cv.offsetLeft + cv.clientLeft}px;top:${cv.offsetTop + cv.clientTop}px;width:${cv.clientWidth}px;height:${cv.clientHeight}px;`;
+          if (geo.style.cssText !== st) geo.style.cssText = st;
+        }
       });
+      if (!_geoResizeObs && typeof ResizeObserver === 'function') {   // 썸네일 크기·창 크기가 바뀌면 다시 맞춘다
+        _geoResizeObs = new ResizeObserver(() => { if (grid.querySelector('.pv-geo')) updateGeometryOverlays(); });
+        _geoResizeObs.observe(grid);
+      }
+      updateFitPct();
     }
+    let _geoResizeObs = null;
     const PT_PER_MM_UI = 72 / 25.4;
+    // ── '여백 안에 맞추기' 배율 표시 — 워커 flushBucket(1면 1쪽)과 같은 식 ──
+    //   대지 = 첫 쪽 방향을 따른 용지(방향 자동), 넣을 자리 = 대지 − 여백(맞추기 켬) − 제본여백(축소 방식),
+    //   쪽마다 min(자리 폭/쪽 폭, 자리 높이/쪽 높이). 쪽 크기가 섞이면 범위로 보인다.
+    //   용지 mm는 편집 모드 용지 목록 글자('A4 (210×297)')에서 읽는다 — 워커 PAPER_MM과 같은 값.
+    function fitScaleText() {
+      if (!editSettings) return '';
+      const ls = ensureAdjustFields(activeLayoutSettings());
+      const sc = ls.scaling;
+      if ((sc.mode !== 'standard' && sc.mode !== 'custom') || (ls.nUp | 0) > 1) return '';
+      if (typeof _impEnabled !== 'undefined' && _impEnabled) return '';   // 임포징이 배치를 다시 정한다
+      if (sc.keep100) return '100%';
+      const valid = pageResults.filter(Boolean);
+      const mask = computeScopeMask();
+      const sizes = valid.filter((r, i) => mask[i] && !r.isBlank).map(r => {
+        const w = r.pageWpt, h = r.pageHpt;
+        if (!(w > 0 && h > 0)) return null;
+        const a = (((r.rotation || 0) % 360) + 360) % 360;
+        return (a === 90 || a === 270) ? [h, w] : [w, h];
+      }).filter(Boolean);
+      if (!sizes.length) return '';
+      const [refW, refH] = sizes[0];
+      let sw, sh;
+      if (sc.mode === 'standard') {
+        const sel = document.getElementById('esPaperSel');
+        const opt = sel ? [...sel.options].find(o => o.value === sc.paper) : null;
+        const m = opt && /\((\d+(?:\.\d+)?)×(\d+(?:\.\d+)?)\)/.exec(opt.textContent);
+        if (!m) return '';
+        const w = +m[1] * PT_PER_MM_UI, h = +m[2] * PT_PER_MM_UI;
+        const land = sc.orient === 'landscape' ? true : sc.orient === 'portrait' ? false : refW > refH;
+        [sw, sh] = land ? [h, w] : [w, h];
+      } else {
+        sw = (sc.customW || 210) * PT_PER_MM_UI; sh = (sc.customH || 297) * PT_PER_MM_UI;
+        if ((sc.orient === 'landscape' && sw < sh) || (sc.orient === 'portrait' && sw > sh)
+            || (sc.orient === 'auto' && (refW > refH) !== (sw > sh))) [sw, sh] = [sh, sw];
+      }
+      const mg = (ls.margins && ls.margins.enabled && sc.fitMargins) ? ls.margins : null;
+      let rw = sw - (mg ? ((+mg.left || 0) + (+mg.right || 0)) * PT_PER_MM_UI : 0);
+      let rh = sh - (mg ? ((+mg.top || 0) + (+mg.bottom || 0)) * PT_PER_MM_UI : 0);
+      const bd = ls.bind;
+      if (bd && bd.enabled && (bd.size || 0) > 0 && bd.method !== 'shift') {
+        const b = bd.size * PT_PER_MM_UI;
+        if (bd.side === 'top' || bd.side === 'bottom') rh -= b; else rw -= b;
+      }
+      rw = Math.max(10, rw); rh = Math.max(10, rh);
+      const ks = sizes.map(([w, h]) => Math.min(rw / w, rh / h) * 100);
+      const lo = Math.round(Math.min(...ks)), hi = Math.round(Math.max(...ks));
+      return lo === hi ? `${lo}%` : `${lo}~${hi}%`;
+    }
+    function updateFitPct() {
+      const el = document.getElementById('esFitPct');
+      if (!el) return;
+      const t = fitScaleText();
+      const txt = t ? `→ ${t}` : '';
+      if (el.textContent !== txt) el.textContent = txt;
+      el.title = t ? (t.includes('~') ? '쪽마다 크기가 달라 줄어드는 비율이 다릅니다(가장 작은~가장 큰 배율)' : '원고가 이 배율로 확대·축소됩니다') : '';
+    }
 
     // ── 전체(범위) 동시 회전 — 기존 per-page rotation 모델 재사용 ────────────
     function rotateScope(deg) {

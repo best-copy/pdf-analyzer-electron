@@ -1060,6 +1060,13 @@ function gsFailureReason(err, stdout, stderr) {
 // ── IPC: 폰트 아웃라인화 — gs pdfwrite -dNoOutputFonts (모든 텍스트 → 곡선) ──
 // 외부 출력소 전달 표준 관행: 폰트 문제로 인한 출력 사고 원천 차단.
 ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
+  // gs -c "[ /Title <FEFF…> /Creator (PDF Editor) /DOCINFO pdfmark" -f — 제목은 UTF-16BE 16진(한글 그대로), 없으면 생략
+  function docInfoPdfmark(title) {
+    const t = String(title || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 200);
+    let hex = 'FEFF';
+    for (let i = 0; i < t.length; i++) hex += t.charCodeAt(i).toString(16).padStart(4, '0').toUpperCase();
+    return ['-c', `[ ${t ? `/Title <${hex}> ` : ''}/Creator (PDF Editor) /DOCINFO pdfmark`, '-f'];
+  }
   return new Promise((resolve, reject) => {
     try {
       const base = path.basename(pdfPath || '');
@@ -1101,7 +1108,11 @@ ipcMain.handle('gs:outlineFonts', (_, pdfPath, opts) => {
        '-dAutoFilterGrayImages=false', '-dGrayImageFilter=/FlateEncode',
        '-dPassThroughJPEGImages=true',
        '-dDownsampleColorImages=false', '-dDownsampleGrayImages=false', '-dDownsampleMonoImages=false',
-       `-dCompatibilityLevel=${compat}`, '-o', outPath, pdfPath],
+       `-dCompatibilityLevel=${compat}`, '-o', outPath,
+       // 문서 제목·만든 프로그램을 Info와 XMP에 **같은 값**으로 — gs는 제목 없는 원고의 XMP에만 'Untitled'를 지어 넣어,
+       //   Acrobat이 열 때 두 곳을 맞추며 '수정됨'으로 표시했다(아무것도 안 해도 저장 버튼이 켜짐 · 2026-10-13 실파일 1-1.pdf)
+       ...docInfoPdfmark(opts && opts.title),
+       pdfPath],
       { windowsHide: true, timeout: 600000, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout, stderr) => {
         removeCidFmap(cidm);

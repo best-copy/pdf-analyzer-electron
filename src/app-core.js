@@ -3461,10 +3461,11 @@
         catch (e) { if (!e.stale) console.warn('흑백·잉크 정규화 프리웜 실패:', e); }
         finally {
           _inkPrewarmPromise = null;
-          // 프리웜 도중 탭이 바뀌었으면 엉뚱한 문서의 캐시가 섞였을 수 있음 → 전체 폐기
-          if (activeTabId !== tabAtStart) clearProcessCaches();
+          // 프리웜 도중 탭이 바뀌었어도 캐시를 지우지 않는다 — ensureBwConverted가 쓰기 직전 세대(_cacheGen)를
+          //   확인해 옛 탭의 결과는 이미 버린다. 예전엔 여기서 clearProcessCaches()로 세대를 또 올려,
+          //   새 탭에서 돌던 빌드(편집본 합치기의 최종본 등)가 '작업 중 문서가 바뀌어' 실패했다(2026-10-13).
           // 이어서 다운로드용 최적화본도 미리 생성 — '적용' 전에 다운로드해도 즉시 저장
-          else setTimeout(() => { if (typeof prewarmOptimizedOutput === 'function') prewarmOptimizedOutput(); }, 500);
+          if (activeTabId === tabAtStart) setTimeout(() => { if (typeof prewarmOptimizedOutput === 'function') prewarmOptimizedOutput(); }, 500);
         }
       })();
     }

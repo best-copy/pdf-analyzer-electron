@@ -2451,11 +2451,15 @@
       // PDF에 빠진 한중일 글꼴은 이 PC의 글꼴 파일로 먼저 싣는다 — gs가 대체 글꼴(DroidSansFallback)을 굳혀 넣지 않게
       // (그대로 두면 '한·일'의 점이 다음 글자 위로 밀린 채 저장돼 아크로뱃에서도 그렇게 보였다)
       try { bytes = (await embedInstalledCjkFonts(bytes)).bytes; } catch (e) { console.warn('글꼴 싣기 실패 — gs로 진행:', e); }
+      // 문서 제목 — 원본에 있으면 그것, 없으면 파일 이름. gs가 Info·XMP 두 곳에 같은 제목을 적게 넘긴다(main docInfoPdfmark)
+      let title = '';
+      try { const md = globalPdfDoc ? await globalPdfDoc.getMetadata() : null; title = (md && md.info && md.info.Title) || ''; } catch (e) {}
+      if (!String(title).trim()) title = (typeof effectiveBaseName === 'function' ? effectiveBaseName() : '') || originalFileName || '';
       const gsOne = async (inBytes, cidFonts) => {
         let tmpPath = null, outPath = null;
         try {
           tmpPath = window.electronAPI.writeTempFile(inBytes, 'pdf');
-          const res = await window.electronAPI.outlineFonts(tmpPath, { flatten, mode, cidFonts: cidFonts || [] });
+          const res = await window.electronAPI.outlineFonts(tmpPath, { flatten, mode, cidFonts: cidFonts || [], title });
           outPath = typeof res === 'string' ? res : res.path;
           const b = new Uint8Array(window.electronAPI.readFile(outPath));
           return { bytes: b, log: typeof res === 'string' ? '' : (res.log || ''),
@@ -5155,10 +5159,13 @@
       overlay.innerHTML =
         '<div class="merge-modal">'
         + '<h3 class="merge-title">파일 합치기 순서</h3>'
-        + '<p class="merge-sub">드래그하거나 ▲▼ 버튼으로 순서를 바꾼 뒤 합치기를 누르세요. 맨 위 파일명이 합본 이름의 기준이 됩니다.</p>'
+        + '<p class="merge-sub">드래그하거나 ▲▼ 버튼으로 순서를 바꾼 뒤 합치기를 누르세요. 맨 위 파일명이 합본 이름의 기준이 됩니다.<br>'
+        + '<b>편집본 합치기</b> — 파일마다 해 둔 레이아웃·여백·흑백·임포징·블리드를 그대로 적용한 결과를 합칩니다(적용 안 한 파일은 자동 적용).<br>'
+        + '<b>원본 합치기</b> — 원본을 챕터로 합쳐 처음부터 함께 편집합니다.</p>'
         + '<ul class="merge-list" id="mergeList"></ul>'
         + '<div class="merge-actions"><button class="merge-cancel" id="mergeCancel">취소</button>'
-        + '<button class="merge-confirm" id="mergeConfirm"><span class="ic">🔗</span> 합치기</button></div>'
+        + '<button class="merge-cancel" id="mergeConfirm" title="원본끼리 합쳐 챕터로 엽니다 — 파일마다 해 둔 편집은 들어가지 않습니다"><span class="ic">🔗</span> 원본 합치기</button>'
+        + '<button class="merge-confirm" id="mergeEditedConfirm" title="파일마다 ✔ 적용한 결과(다운로드와 같은 최종본)를 이어 붙입니다"><span class="ic">🔗</span> 편집본 합치기</button></div>'
         + '</div>';
       document.body.appendChild(overlay);
       const listEl = overlay.querySelector('#mergeList');
@@ -5196,6 +5203,7 @@
       overlay.querySelector('#mergeCancel').onclick = close;
       overlay.onclick = (e) => { if (e.target === overlay) close(); };
       overlay.querySelector('#mergeConfirm').onclick = () => { close(); performMerge(order); };
+      overlay.querySelector('#mergeEditedConfirm').onclick = () => { close(); performEditedMerge(order); };
     }
 
     async function performMerge(ready) {
@@ -5242,6 +5250,61 @@
       } catch (e) {
         hideLoading(); progressBar.style.display = 'none';
         showError('파일 합치기 오류: ' + (e && e.message ? e.message : String(e)));
+      }
+    }
+
+    // ── 🔗 편집본 합치기 (사용자 결정 2026-10-13) ──
+    //   파일(탭)마다 해 둔 편집 — 레이아웃·여백·흑백·임포징·블리드·폰트 안전화 — 을 그대로 적용한 **최종본**을 이어 붙인다.
+    //   탭마다 설정을 따로 기억하므로(captureTabExtras) 그 탭으로 바꿔 '⇩ 다운로드'와 같은 buildFinalSaveBytes로 만든다.
+    //   적용 결과가 없는 탭은 먼저 ✔ 적용. 합본은 새 탭(처음 여는 문서의 시작값 — 임포징·블리드 끔)으로 열리고 파일별 챕터가 남는다.
+    //   합본은 완성된 출력물이라 거기서 임포징을 또 걸면 이미 앉힌 시트를 다시 앉힌다 — 고칠 것은 원래 탭에서 고쳐 다시 합친다.
+    async function performEditedMerge(ready) {
+      const backTo = activeTabId;
+      const parts = [];
+      try {
+        hideError(); hideSuccess();
+        for (let i = 0; i < ready.length; i++) {
+          const t = ready[i];
+          if (!tabs.has(t.id)) throw new Error(`'${t.fileName}' 탭이 닫혔습니다.`);
+          activateTab(t.id);
+          if (!processedPdfBytes) {
+            showLoading(`편집본 합치기 ${i + 1}/${ready.length} — '${t.fileName}' 적용 중…`);
+            await applyChanges();
+          }
+          if (!processedPdfBytes) throw new Error(`'${t.fileName}'의 편집본을 만들지 못했습니다 — 그 탭에서 ✔ 적용이 되는지 먼저 확인해 주세요.`);
+          showLoading(`편집본 합치기 ${i + 1}/${ready.length} — '${t.fileName}' 최종본 만드는 중…`);
+          const fin = await buildFinalSaveBytes();
+          parts.push({ name: t.fileName, bytes: fin.bytes });
+        }
+        if (backTo && tabs.has(backTo) && activeTabId !== backTo) activateTab(backTo);   // 같은 탭을 다시 부르면 그 탭의 적용 결과가 비워진다
+        showLoading(`편집본 ${parts.length}개를 하나로 합치는 중…`);
+        progressBar.style.display = 'block'; updateProgress(0);
+        const buffers = parts.map(p => p.bytes.slice(0));
+        const { bytes: rawBytes, counts } = await assembleWorkerPool.run(
+          'merge', { buffers }, buffers.map(b => b.buffer), (pct) => updateProgress(pct * 100)
+        );
+        const bytes = new Uint8Array(rawBytes);
+        const chapters = [];
+        let startPage = 1;
+        parts.forEach((p, i) => { chapters.push({ name: p.name, start: startPage, count: counts[i] }); startPage += counts[i]; });
+        hideLoading(); progressBar.style.display = 'none';
+        const mergedName = `${ready[0].fileName.replace(/\.[^.]+$/, '')}_편집본합본.pdf`;
+        const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const file = { name: mergedName, size: bytes.byteLength, type: 'application/pdf', arrayBuffer: () => Promise.resolve(ab.slice(0)) };
+        const tab = createTab(file);
+        tab.chapters = chapters;
+        tab.editedMerge = true;
+        activateTab(tab.id);   // 처음 여는 문서의 시작값(freshTabExtras) — 임포징·블리드가 두 번 걸리지 않게
+        await analyzePDF(file, tab);
+        setDirty(true);
+        showSuccess(`🔗 편집본 ${parts.length}개를 합쳤습니다 (총 ${startPage - 1}면 · 파일별 챕터).\n`
+          + parts.map((p, i) => `· ${p.name} — ${counts[i]}면`).join('\n')
+          + `\n파일마다 해 둔 편집이 그대로 들어간 완성본입니다 — 바로 '⇩ 다운로드'로 저장하세요.`
+          + `\n⚠ 여기서 임포징을 또 걸면 이미 앉힌 시트를 다시 앉힙니다. 고칠 것은 원래 탭에서 고친 뒤 다시 합치세요.`);
+      } catch (e) {
+        hideLoading(); progressBar.style.display = 'none';
+        if (backTo && tabs.has(backTo) && activeTabId !== backTo) activateTab(backTo);
+        showError('편집본 합치기 오류: ' + (e && e.message ? e.message : String(e)));
       }
     }
 

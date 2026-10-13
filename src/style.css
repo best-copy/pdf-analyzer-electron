@@ -1730,6 +1730,7 @@
     .pv-cell.pv-mono  .pv-type { color: #6e6e73; }
     .pv-cell.pv-pending .pv-type { visibility: hidden; }   /* 아직 안 그린 셀은 판정 전 */
     /* 기하 옵션 오버레이(편집 모드) — 여백 점선 박스 · 제본여백 빗금 띠 (재조립 전 선반영) */
+    /* 자리·크기는 updateGeometryOverlays가 캔버스에 맞춰 넣는다(아래는 그 전 기본값) */
     .pv-geo { position: absolute; left: 0; right: 0; top: 0; bottom: 38px; pointer-events: none; z-index: 2; }
     .pv-geo-margin { position: absolute; border: 1px dashed rgba(255, 214, 10, 0.85); }
     .pv-geo-bind {
