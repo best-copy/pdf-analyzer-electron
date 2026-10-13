@@ -971,8 +971,9 @@
     //   결과 70.7MB → 208.5MB). 원본 문서 하나에 **복사기 하나**(PDFObjectCopier)를 두고 쪽 노드를 복사한 뒤
     //   embedPages로 실으면 공통 리소스는 한 벌만 실린다(결과 75.5MB, gs 렌더 픽셀 동일 — 2026-10-06 실측).
     //   쪽 단위 루프는 그대로라 진행 표시·화면 양보·쪽별 복구 재시도도 그대로다.
+    // 주석(펜 메모·형광펜·도장 그림)은 embedPage가 버린다 — 인쇄되는 주석을 본문에 그려 넣은 노드를 싣는다(libs/annot-flatten.js)
     async function embedPageShared(out, pg, mtx, copier) {
-      const [e] = await out.embedPages([{ node: copier(pg.node) }], [undefined], [mtx]);
+      const [e] = await out.embedPages([{ node: copier(annotFlatNode(pg)) }], [undefined], [mtx]);
       return e;
     }
     async function embedAllPages(out, src, onProgress, extraRot) {
@@ -991,7 +992,7 @@
         else                  { mtx = undefined;            ew = w; eh = h; }
         let epg;
         try { epg = await embedPageShared(out, pg, mtx, copier); }
-        catch (err) { ensurePageContents(pg, true); epg = await out.embedPage(pg, undefined, mtx); }   // 강제 복구 후 1회 재시도(복구한 쪽은 새로 복사)
+        catch (err) { ensurePageContents(pg, true); [epg] = await out.embedPages([{ node: annotFlatNode(pg, true) }], [undefined], [mtx]); }   // 강제 복구 후 1회 재시도(복구한 쪽은 새로 복사)
         embedded.push({ e: epg, w: ew, h: eh, trim: pageTrimInset(pg, w, h, rot), src: i });
         if (onProgress && (i & 15) === 0) onProgress(Math.round(i / n0 * 40));
         await uiYield();   // 대용량 문서 임베드 중에도 화면이 멈추지 않게 주기적으로 양보
@@ -1221,7 +1222,8 @@
       else if (rot === 180) { mtx = [-1, 0, 0, -1, w, h]; ew = w; eh = h; }
       else if (rot === 270) { mtx = [0, 1, -1, 0, h, 0];  ew = h; eh = w; }
       else                  { mtx = undefined;            ew = w; eh = h; }
-      return { e: await out.embedPage(pg, undefined, mtx), w: ew, h: eh };
+      const [e] = await out.embedPages([{ node: annotFlatNode(pg) }], [undefined], [mtx]);   // 주석까지(annot-flatten.js)
+      return { e, w: ew, h: eh };
     }
     // 캔버스 텍스트 → PNG 임베드 (책등 텍스트용 — 한글 포함, 시스템 글꼴로 그림)
     async function coverTextPng(out, text, sizePt) {

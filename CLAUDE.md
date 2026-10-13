@@ -35,7 +35,8 @@ src/worker-gray.js 흑백변환 워커 — 콘텐츠 스트림 연산자 치환�
 src/worker-assemble.js 병합·조립 워커
 src/libs/          vendored: pdf.js, pdf-lib, fontkit, pako, jpeg-decoder.js(jpeg-js 0.4.4),
                    gray-jpeg.js(자체 1성분 JPEG 인코더 — 흑백 사진 재인코딩),
-                   gray-blend.js(저장 직전 투명도 흑백 합성 그룹 — 앱·조립 워커·편집기·임포징 도구 공용)
+                   gray-blend.js(저장 직전 투명도 흑백 합성 그룹 — 앱·조립 워커·편집기·임포징 도구 공용),
+                   annot-flatten.js(쪽을 폼으로 실을 때 인쇄되는 주석까지 — 앱·조립 워커·임포징 도구 공용)
 src/convert_*.ps1  한글/Office/Adobe COM 변환 스크립트 (convert_hwp.ps1은 UTF-8 BOM 필수)
 scripts/smoke.js   npm run smoke
 ```
@@ -131,6 +132,7 @@ scripts/smoke.js   npm run smoke
 33. **글꼴이 빠진 PDF를 다른 글꼴로 대신 그리게 두지 말 것 — 이 PC 글꼴을 '문자 코드 기준'으로 싣는다** — 아크로뱃 머리글처럼 이름만 적힌 Type0 글꼴을 pdf.js(E-book)·gs(폰트 안전화)가 대체해 '한·일'의 점이 다음 글자 위로 밀렸다. gs는 **설치본을 cidfmap으로 이어도** 글자 번호(UniKS의 '·' = Korea1 CID 104 = 전각 '・' 900)로 찾아 좁은 폭(W 319) 칸에 그려 똑같이 밀린다. `embedInstalledCjkFonts`: 유니코드 CMap + TrueType → Identity-H + CIDToGIDMap(코드=유니코드), 같은 체계의 CID CFF(고즈카 Japan1) → 그대로 FontFile3. 글꼴 색인(main `buildFontIndex`)은 아크로뱃 `Resource/CIDFont`까지. 이 PC에도 없으면 `confirmMissingFonts`로 저장·E-book 전에 묻는다. **불러올 때(`analyzePDF`, 1GB 미만)·작업 파일 적용본 복원·파일 끼워 넣기에서 원본에 싣는다** — 저장·E-book에만 실으면 썸네일·크게 보기가 대체 글꼴로 남는다. OTF(CFF)는 유니코드→그 글꼴 CID를 담은 CMap 스트림, TTC는 `sfntFromCollection`으로 하나만, 단순 글꼴은 TTF만. 캐시는 바뀐 게 없으면 **지금 받은 바이트**를 돌려줄 것(옛 바이트는 pdf.js가 워커로 넘겨 비워져 있다 — 같은 파일 두 번 열기에서 원본이 빔). `font-embed-cjk.e2e.js`.
 34. **E-book 이미지 워터마크는 쪽 크기 투명 SVG(자리·크기·진하기를 구워 넣음)로** — 안내 문구와 같은 '쪽 전체 배경' 방식이어야 넘김 조각(`stwmi`, 배경 위치 -slice*w)에서도 같은 자리에 이어진다. 뷰어에서 워터마크를 찍는 곳은 셋(쪽 상자·넘김 조각·평평한 덮개) — 새 층을 넣으면 셋 다. `ebook-watermark.e2e.js`(보이는 창으로 넘겨 화소 확인).
 35. **문서 탭을 바꿀 때 적용 결과·탭별 설정을 버리지 말 것** — `activateTab`이 결과를 비워 다른 탭에 다녀오면 '적용이 풀렸다'. 떠날 때 `savedApply`(결과·`optSignature`·쪽 그림 캐시 `_pvPageCache`)와 `extras`(📖 임포징·◲ 블리드·✒ 폰트 안전화·📕 표지 — `captureTabExtras`)를 탭에 맡기고, 돌아오면 **조용히** 되살린다(`toggleImpEnabled`·`setBleedEnabled`·`setOutlineEnabled`는 안내·결과 지우기·재조립을 하므로 쓰지 말 것). 결과는 지문이 같을 때만. 처음 여는 탭은 `freshTabExtras`(폰트 안전화 항상 켬), 합본·파일 교체는 만든 곳이 `extras`를 채워 이어받는다. 새 '앱 전체' 상태를 만들면 탭마다인지 먼저 정할 것. `tab-apply-keep.e2e.js`·`cover-spine-auto.e2e.js`.
+36. **쪽을 폼으로 실을 때(`embedPage(s)`) 주석이 버려진다 — `annotFlatNode`로 싣기** — 메모 앱 PDF는 펜 메모·형광펜·심지어 슬라이드 그림(도장)까지 주석이라, 모아찍기·크기 변환·표지에서 메모가 사라지고 쪽이 통째로 비었다(실파일 '페이지 오류.pdfw' 60쪽). `libs/annot-flatten.js`가 인쇄되는 주석(F&4, 숨김 아님)을 본문에 그린 노드 복사본을 만든다(원래 쪽 그대로·/Annots는 싣지 않음). 새로 `embedPage(s)`를 부르는 곳은 반드시 이 노드를 쓸 것(앱·조립 워커·독립 도구 BUILDERS). `annot-imposition.e2e.js`.
 13. **COM 변환(한글·Office·Adobe)은 사용자가 켜 둔 앱에 붙을 수 있다** — 스크립트가 새로 띄운 프로세스만 `COMPID:n`으로 알리고, 그때만 Quit·시간 초과 시 taskkill. 켜져 있던 앱이면 우리가 연 문서만 닫는다. Office는 `AutomationSecurity=3`(매크로 차단). **한글 보안창 워처**도 같은 이유로 좁힌다: '접근하려는 시도' 창만(확인·예·계속은 절대 안 누름), 켜져 있던 한글이면 창에 **변환 중 파일 이름**이 보일 때만 '접근 허용'(모두 허용 아님), 진짜 마우스 클릭은 그 좌표 맨 위가 그 버튼일 때만(가려지면 앞으로 올리기만). 예전 워처는 사용자 한글의 저장 확인 [확인]·다른 파일 보안 창까지 눌렀다(가짜 대화상자로 재현). `scripts/test/hwp-dialog-watch.test.ps1`(왼쪽 모니터에 가짜 창을 띄워 실제 클릭 — smoke에는 안 넣음).
 
 ## 6. UI 규약

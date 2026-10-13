@@ -48,6 +48,10 @@ const CORE_HELPERS = [exConst('SAVE_CHUNK_MS', coreSrc), exConst('SAVE_OBJS_PER_
 const GRAY_BLEND = fs.readFileSync(path.join(ROOT, 'src/libs/gray-blend.js'), 'utf8');
 if (GRAY_BLEND.includes('</scr' + 'ipt>')) throw new Error('gray-blend.js에 </script>가 있어 인라인 불가');
 
+// 쪽을 폼으로 실을 때 인쇄되는 주석까지 그리는 노드(embedPageShared가 부른다 — 앱·조립 워커와 같은 파일)
+const ANNOT_FLATTEN = fs.readFileSync(path.join(ROOT, 'src/libs/annot-flatten.js'), 'utf8');
+if (ANNOT_FLATTEN.includes('</scr' + 'ipt>')) throw new Error('annot-flatten.js에 </script>가 있어 인라인 불가');
+
 const IMP_PAPERS = exConst('IMP_PAPERS');
 const SEED = exConst('IMP_PROFILE_SEED');   // 71종 프로파일 시드
 
@@ -61,6 +65,7 @@ ${GLOBALS}
 ${IMP_PAPERS}
 ${SEED}
 ${GRAY_BLEND}
+${ANNOT_FLATTEN}
 ${CORE_HELPERS}
 ${BUILDERS}
 `;
