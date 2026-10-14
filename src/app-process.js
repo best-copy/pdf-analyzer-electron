@@ -5480,7 +5480,7 @@
         const range = arr(fd.get(Nm('Range')));
         const sizeA = arr(fd.get(Nm('Size')));
         const bps = num(fd.get(Nm('BitsPerSample')));
-        if (!range || !sizeA || sizeA.length !== 1 || ![1,2,4,8,16,32].includes(bps)) return null;
+        if (!range || !sizeA || sizeA.length !== 1 || ![1,2,4,8,12,16,24,32].includes(bps)) return null;   // 규격의 표본 비트 수 전부(12·24 포함)
         const nOut = range.length / 2;
         const raw = pdfStreamDecoded(pdfDoc, fnObj, null);
         const total = sizeA[0];
@@ -6118,7 +6118,9 @@
           if (nOut !== 3 && nOut !== 4) return false;
           const kind = nOut === 4 ? 'cmyk' : 'rgb';
           const bps = _shNum(fd.get(Nm('BitsPerSample')));
-          if (![1,2,4,8,16,32].includes(bps)) return false;
+          // 규격(7.10.2)의 표본 비트 수 전부 — 12·24가 빠져 있어 24비트 표본 그러데이션이 '변환 불가'로 컬러 그대로 남았다
+          //   (2026-10-14 '회재선조와 전통 예절' 5쪽: 흑백 체크했는데 그러데이션 3개가 CMYK로 남아 프린터가 컬러로 셈)
+          if (![1,2,4,8,12,16,24,32].includes(bps)) return false;
           const sizeArr = _shArr(fd.get(Nm('Size')));
           if (!sizeArr || !sizeArr.length) return false;
           const total = sizeArr.reduce((a, b) => a * b, 1);

@@ -165,10 +165,16 @@ function installPrintWatchdog() {
     fs.mkdirSync(dir, { recursive: true });
     const script = path.join(dir, 'print-watch.ps1');
     const exe = process.execPath;
-    const procName = path.basename(exe, '.exe');
+    const exeName = path.basename(exe);
     const ps = `﻿# PDF Editor 인쇄 감시 — 인쇄 결과가 도착하면 앱을 실행한다 (자동 생성 파일)
 $m = New-Object System.Threading.Mutex($false, 'PDFEditorPrintWatch')
-if (-not $m.WaitOne(0)) { exit }
+# 옛 감시자를 끄고 바로 띄우면 잠금이 '버려진 잠금'으로 남거나 아직 풀리지 않았다 — 넘겨받고, 10초까지 다시 시도한다
+#   (예전엔 WaitOne(0) 한 번이라 새 감시자가 곧바로 끝나, 인쇄해도 앱이 뜨지 않았다 · 2026-10-14)
+$got = $false
+for ($i = 0; $i -lt 10 -and -not $got; $i++) {
+  try { $got = $m.WaitOne(1000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+}
+if (-not $got) { exit }
 $dir = '${dir.replace(/'/g, "''")}'
 $exe = '${exe.replace(/'/g, "''")}'
 $fsw = New-Object System.IO.FileSystemWatcher $dir, '*.pdf'
@@ -177,11 +183,19 @@ while ($true) {
   $r = $fsw.WaitForChanged([System.IO.WatcherChangeTypes]'Created, Changed', 15000)
   if (-not $r.TimedOut) {
     Start-Sleep -Milliseconds 2000
-    if (-not (Get-Process -Name '${procName.replace(/'/g, "''")}' -ErrorAction SilentlyContinue)) {
+    # 앱 '본체'가 있을 때만 켜진 것으로 본다 — 이름만 보면 본체가 꺼진 뒤 남은 하위 프로세스(--type=renderer 등)에 속아
+    #   앱을 띄우지 않았다(2026-10-14: 10-08부터 남은 화면 프로세스 하나 때문에 인쇄해도 아무 반응 없음)
+    $main = Get-CimInstance Win32_Process -Filter "Name='${exeName.replace(/'/g, "''")}'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -notmatch '--type=' }
+    if (-not $main) {
       Start-Process -FilePath $exe
     }
   }
 }`;
+    // 스크립트가 바뀌었으면 이미 돌고 있는 옛 감시자를 끈다 — 뮤텍스를 쥐고 있어 새 감시자가 곧바로 끝나 버린다
+    let prev = '';
+    try { prev = fs.readFileSync(script, 'utf8'); } catch (e) {}
+    const changed = prev !== ps;
     fs.writeFileSync(script, ps, 'utf8');
     const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${script}"`;
     // 로그온 자동 시작 (HKCU — 관리자 불필요) + 지금 즉시 1개 기동
@@ -190,8 +204,13 @@ while ($true) {
     // 즉시 기동 — WMI(Win32_Process.Create)로 띄워 앱과 완전히 분리된 프로세스로 만든다.
     // (spawn detached는 Electron 종료 시 함께 죽는 문제가 있었음 — 실측 확인)
     const escaped = script.replace(/'/g, "''");
+    const stopOld = changed
+      // ⚠ 이 명령을 돌리는 PowerShell 자신도 명령줄에 print-watch.ps1이 들어 있다 — 자기($PID)는 빼고 '-File …print-watch.ps1'로 뜬 감시자만
+      //   (빼지 않으면 옛 감시자와 함께 자기도 끝나 새 감시자를 띄우지 못했다 — 2026-10-14 실측)
+      ? `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*-File*print-watch.ps1*' } | Invoke-CimMethod -MethodName Terminate | Out-Null; Start-Sleep -Milliseconds 500; `
+      : '';
     execFile('powershell.exe', ['-NoProfile', '-Command',
-      `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${escaped}"' } | Out-Null`],
+      stopOld + `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${escaped}"' } | Out-Null`],
       { windowsHide: true, timeout: 20000 }, () => {});
     return true;
   } catch (e) { console.warn('인쇄 감시자 설치 실패:', e); return false; }

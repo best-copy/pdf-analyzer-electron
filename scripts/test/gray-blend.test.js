@@ -63,7 +63,7 @@ function rawPage(doc, ops, extraRes) {
   {
     const d = await PDFDocument.create();
     const mk = cs => {
-      const sm = d.context.register(d.context.stream(new Uint8Array(4), { Type: 'XObject', Subtype: 'Image', Width: 2, Height: 2, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+      const sm = d.context.register(d.context.stream(new Uint8Array([0, 128, 255, 64]), { Type: 'XObject', Subtype: 'Image', Width: 2, Height: 2, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));   // 중간 투명도(그림자 등)
       const n = cs === 'DeviceRGB' ? 12 : 4;
       return d.context.register(d.context.stream(new Uint8Array(n), { Type: 'XObject', Subtype: 'Image', Width: 2, Height: 2, ColorSpace: cs, BitsPerComponent: 8, SMask: sm }));
     };
@@ -113,6 +113,31 @@ function rawPage(doc, ops, extraRes) {
     ck('⑦ 사전 안 회색 색상표(/CS[/I /G …]) → 그룹', hasGrayGroup(d, 2));
     ck('⑦ 사전 안 RGB 색상표 → 그룹 없음', !hasGrayGroup(d, 3));
     ck('⑦ 원래 있던 그룹은 그대로', String(d.context.lookup(d.getPage(4).node.get(N('Group'))).get(N('CS'))) === '/DeviceRGB');
+  }
+  // 9) 두 값(0/255)뿐인 그림 마스크 → 스텐실(/Mask)로 바꿔 투명도 자체를 없앤다 — 평탄화가 회색을 RGB로 섞지 않게
+  //    (실파일 '회재 선조…_중철' 5쪽: 회색 그룹을 달아도 Acrobat·일반 드라이버 평탄화가 C=M=Y 리치 그레이를 만들어 프린터가 컬러로 셈)
+  {
+    const d = await PDFDocument.create();
+    const mk = (alpha, w) => {
+      const sm = d.context.register(d.context.stream(new Uint8Array(alpha), { Type: 'XObject', Subtype: 'Image', Width: w, Height: 1, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+      return d.context.register(d.context.stream(new Uint8Array(w).fill(80), { Type: 'XObject', Subtype: 'Image', Width: w, Height: 1, ColorSpace: 'DeviceGray', BitsPerComponent: 8, SMask: sm }));
+    };
+    const imBin = mk([0, 255, 255, 0, 255, 255, 255, 255, 0], 9), imSoft = mk([0, 255, 128, 255], 4);
+    [imBin, imSoft].forEach(im => {
+      const p = d.addPage([100, 100]);
+      p.node.set(N('Resources'), d.context.obj({ XObject: { Im0: im } }));
+      p.node.set(N('Contents'), d.context.register(d.context.flateStream('q 90 0 0 10 5 45 cm /Im0 Do Q')));
+    });
+    d.getPage(0).node.set(N('Group'), d.context.obj({ Type: 'Group', S: 'Transparency', CS: 'DeviceGray' }));   // 예전 저장에서 단 그룹
+    await addGrayBlendGroups(d);
+    const bin = d.context.lookup(imBin), soft = d.context.lookup(imSoft);
+    const st = d.context.lookup(bin.dict.get(N('Mask')));
+    ck('⑨ 두 값 마스크 → SMask 없음·스텐실 /Mask', !bin.dict.get(N('SMask')) && st && String(st.dict.get(N('ImageMask'))) === 'true');
+    const bits = st ? PDFLib.decodePDFRawStream(st).decode() : null;
+    // 0(투명) 자리 = 1(칠하지 않음): x=0,3,8 → 1001 0000 1000 0000
+    ck('⑨ 스텐실 비트 = 투명 자리', bits && bits[0] === 0x90 && bits[1] === 0x80, bits && [...bits]);
+    ck('⑨ 투명도가 사라진 쪽은 예전 회색 그룹도 뗀다', !pageUsesTransparency(d, d.getPage(0).node) && !d.getPage(0).node.get(N('Group')));
+    ck('⑨ 중간 투명도 마스크는 그대로 + 회색 그룹', !!soft.dict.get(N('SMask')) && !soft.dict.get(N('Mask')) && hasGrayGroup(d, 1));
   }
   // 8) 앱 연결: 세 곳의 savePdfDoc이 저장 전에 부르고, 창·워커·편집기가 파일을 싣는다
   {

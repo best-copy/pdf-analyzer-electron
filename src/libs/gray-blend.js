@@ -362,6 +362,75 @@
     }
 
     // ── 저장 직전 호출 ─────────────────────────────────────────────────────────────
+    // ── ④ '보임/안 보임' 두 값뿐인 그림 투명 마스크(SMask)를 단순 스텐실(/Mask)로 ─────────────────
+    // 회색 그룹을 달아도 Acrobat 등이 일반 프린터로 보낼 때 투명도를 **RGB로 평탄화**해 회색이 C=M=Y가 섞인
+    // 리치 그레이가 되고 프린터가 컬러로 셌다(2026-10-14 실파일 '회재 선조…_중철' 5쪽: 그림 2장의 SMask가
+    // 0/255뿐). 값이 두 개뿐이면 스텐실과 그림이 1화소도 다르지 않으므로 바꿔서 투명도 자체를 없앤다.
+    //   중간 투명도(그림자·부드러운 가장자리)·Matte·Decode·예측자가 있는 마스크는 건드리지 않는다.
+    function binarySoftMasksToStencil(doc, pageNode) {
+      const { look, num, dictOf } = tools(doc);
+      const C = doc.context;
+      const seen = new Set();
+      let changed = 0;
+      const decode = st => {
+        try {
+          const f = look(st.dict.get(Nm('Filter')));
+          if (st.dict.get(Nm('DecodeParms'))) return null;            // 예측자 — 모르면 건드리지 않는다
+          if (!f) return st.contents;
+          return PDFLib.decodePDFRawStream(st).decode();
+        } catch (e) { return null; }
+      };
+      const image = img => {
+        const d = img.dict;
+        const smRef = d.get(Nm('SMask'));
+        const sm = look(smRef);
+        if (!sm || !sm.dict || d.get(Nm('Mask'))) return;
+        if (sm.dict.get(Nm('Matte')) || sm.dict.get(Nm('Decode'))) return;
+        const w = num(sm.dict.get(Nm('Width'))), h = num(sm.dict.get(Nm('Height')));
+        const bpcO = sm.dict.get(Nm('BitsPerComponent')); const bpc = bpcO ? num(bpcO) : 8;
+        if (!(w > 0 && h > 0) || ![1, 2, 4, 8, 16].includes(bpc)) return;
+        const raw = decode(sm);
+        const rowBytes = Math.ceil(w * bpc / 8);
+        if (!raw || raw.length < rowBytes * h) return;
+        const max = (1 << Math.min(bpc, 8)) - 1;
+        const mRow = Math.ceil(w / 8), mask = new Uint8Array(mRow * h);
+        for (let y = 0; y < h; y++) {
+          const row = y * rowBytes;
+          for (let x = 0; x < w; x++) {
+            let v;
+            if (bpc === 8) v = raw[row + x];
+            else if (bpc === 16) v = raw[row + 2 * x];                // 위 바이트만 — 0x00xx/0xFFxx만 받는다
+            else { const bit = x * bpc; v = (raw[row + (bit >> 3)] >> (8 - bpc - (bit & 7))) & max; }
+            if (bpc === 16 && raw[row + 2 * x + 1] !== v) return;      // 0x0000·0xFFFF가 아니면 중간값
+            if (v !== 0 && v !== max) return;                          // 중간 투명도 — 그대로 둔다
+            if (v === 0) mask[y * mRow + (x >> 3)] |= 0x80 >> (x & 7);  // 스텐실 1 = 칠하지 않음(투명)
+          }
+        }
+        const st = C.flateStream(mask, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ImageMask: true, BitsPerComponent: 1 });
+        d.set(Nm('Mask'), C.register(st));
+        d.delete(Nm('SMask'));
+        changed++;
+      };
+      const res = (r, depth) => {
+        r = look(r);
+        if (!r || typeof r.get !== 'function' || depth > 12 || seen.has(r)) return;
+        seen.add(r);
+        const xo = look(r.get(Nm('XObject')));
+        if (!xo || typeof xo.entries !== 'function') return;
+        for (const [, ref] of xo.entries()) {
+          const o = look(ref);
+          const dict = dictOf(o);
+          if (!dict || seen.has(o)) continue;
+          seen.add(o);
+          const st = dict.get(Nm('Subtype'));
+          if (st && st.encodedName === '/Image') image(o);
+          else res(dict.get(Nm('Resources')), depth + 1);
+        }
+      };
+      try { res(inheritedResources(doc, pageNode), 0); } catch (e) {}
+      return changed;
+    }
+
     async function addGrayBlendGroups(doc) {
       let added = 0;
       try {
@@ -369,9 +438,17 @@
         await doc.flush();                          // embedPage 폼·이미지를 문서에 넣어야 판 내용을 볼 수 있다
         for (const page of doc.getPages()) {
           const node = page.node;
-          if (node.get(Nm('Group'))) continue;
+          const grp = tools(doc).look(node.get(Nm('Group')));
+          const ourGroup = !!(grp && typeof grp.get === 'function' && tools(doc).name(grp.get(Nm('CS'))) === '/DeviceGray');
+          if (grp && !ourGroup) continue;           // 원고가 단 그룹은 그대로
           if (!pageUsesTransparency(doc, node)) continue;
           if (!pageIsNeutral(doc, node)) continue;
+          // 두 값뿐인 그림 마스크는 스텐실로 — 투명도가 다 사라지면 그룹도 달지 않는다(있으면 뗀다)
+          if (binarySoftMasksToStencil(doc, node) && !pageUsesTransparency(doc, node)) {
+            if (ourGroup) node.delete(Nm('Group'));
+            continue;
+          }
+          if (ourGroup) continue;
           node.set(Nm('Group'), doc.context.obj({ Type: 'Group', S: 'Transparency', CS: 'DeviceGray' }));
           added++;
         }
