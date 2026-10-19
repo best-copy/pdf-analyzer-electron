@@ -177,6 +177,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
+  // 🖨 인쇄 — 프린터 목록 · 드라이버 설정(정보/속성 창) · PDFium으로 인쇄 · 진행 알림
+  listPrinters: () => ipcRenderer.invoke('printer:list'),
+  printerInfo: (opts) => ipcRenderer.invoke('printer:info', opts),
+  printerProps: (opts) => ipcRenderer.invoke('printer:props', opts),
+  printPdf: (opts) => ipcRenderer.invoke('printer:print', opts),
+  onPrintProgress: (cb) => {
+    const h = (_, p) => cb(p);
+    ipcRenderer.on('printer:progress', h);
+    return () => ipcRenderer.removeListener('printer:progress', h);
+  },
   // 견적을 거래관리 시스템으로 넘긴다 (받은편지함 JSON + 앱 실행)
   sendQuoteToBusiness: (payload) => ipcRenderer.invoke('quote:sendToBusiness', payload),
 

@@ -123,6 +123,7 @@
             <button class="apply-btn" id="applyBtn" onclick="applyChanges()" style="margin-left:0;" disabled>✔ 적용</button>
             <button class="download-btn" id="downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>⇩ 다운로드</button>
             <button class="download-btn" id="splitSaveBtn" onclick="splitSaveProcessed()" oncontextmenu="splitSaveOriginal(event)" title="좌클릭: 적용본을 나눠 저장 · 우클릭: 원본 그대로 나눠 저장&#10;10쪽·20쪽 단위, 또는 21-39처럼 필요한 구간만 한 폴더에 저장합니다" disabled><span class="ic">✂</span> 분리 저장</button>
+            <button class="download-btn" id="printBtn" onclick="printProcessed()" oncontextmenu="printOriginal(event)" title="좌클릭: 적용본을 바로 인쇄 · 우클릭: 원본 그대로 인쇄 (Ctrl+P)&#10;다운로드 없이 이 앱에서 인쇄 창을 엽니다 — 프린터·속성(드라이버 설정)·쪽 범위·크기 조정·방향·양면" disabled><span class="ic">🖨</span> 인쇄</button>
           </span>
         </div>
         </div>
@@ -269,6 +270,7 @@
           <button class="sbp-btn sbp-apply" id="sb-applyBtn" onclick="applyChanges()" disabled>✔ 적용</button>
           <button class="sbp-btn sbp-dl" id="sb-downloadBtn" onclick="downloadProcessed()" oncontextmenu="downloadOriginal(event)" title="좌클릭: 적용본 다운로드 · 우클릭: 원본 다운로드" disabled>⇩ 다운로드</button>
           <button class="sbp-btn sbp-dl" id="sb-splitSaveBtn" onclick="splitSaveProcessed()" oncontextmenu="splitSaveOriginal(event)" title="좌클릭: 적용본을 나눠 저장 · 우클릭: 원본 그대로 나눠 저장 — 10쪽·20쪽 단위, 또는 21-39처럼 필요한 구간만" disabled><span class="ic">✂</span> 분리 저장</button>
+          <button class="sbp-btn sbp-dl" id="sb-printBtn" onclick="printProcessed()" oncontextmenu="printOriginal(event)" title="좌클릭: 적용본을 바로 인쇄 · 우클릭: 원본 그대로 인쇄 (Ctrl+P) — 다운로드 없이 이 앱에서 인쇄 창을 엽니다(프린터·속성·쪽 범위·크기 조정·방향·양면)" disabled><span class="ic">🖨</span> 인쇄</button>
         </div>
       </div>
       <!-- ✒ 폰트 출력 안전화 — 편집 작업공간에서 메인으로 옮김.
@@ -1503,8 +1505,9 @@
       </div>
       <div class="es-action-row">
         <button class="es-dl-btn" id="esSplitSaveBtn" onclick="splitSaveProcessed()" oncontextmenu="splitSaveOriginal(event)" title="좌클릭: 적용본을 나눠 저장 · 우클릭: 원본 그대로 나눠 저장 — 10쪽·20쪽 단위, 또는 21-39처럼 필요한 구간만" disabled><span class="ic">✂</span> 분리 저장</button>
+        <button class="es-dl-btn" id="esPrintBtn" onclick="printProcessed()" oncontextmenu="printOriginal(event)" title="좌클릭: 적용본을 바로 인쇄 · 우클릭: 원본 그대로 인쇄 (Ctrl+P) — 다운로드 없이 이 앱에서 인쇄 창을 엽니다(프린터·속성·쪽 범위·크기 조정·방향·양면)" disabled><span class="ic">🖨</span> 인쇄</button>
       </div>
-      <div class="es-hint" style="margin-top:2px;">옵션을 바꾸면 미리보기가 실시간 반영됩니다. <b>⇩ 다운로드</b>로 저장하세요. 여러 파일로 나누려면 <b>✂ 분리 저장</b>(우클릭하면 원본 그대로).</div>
+      <div class="es-hint" style="margin-top:2px;">옵션을 바꾸면 미리보기가 실시간 반영됩니다. <b>⇩ 다운로드</b>로 저장하세요. 여러 파일로 나누려면 <b>✂ 분리 저장</b>, 저장 없이 바로 출력하려면 <b>🖨 인쇄</b>(둘 다 우클릭하면 원본 그대로).</div>
     </div>
   </div>
   <div id="editResizer" title="드래그하여 편집창 폭 조절"></div>
@@ -1610,11 +1613,11 @@
 
   <!-- 플로팅 썸네일 줌 위젯 -->
   <div id="thumbZoomWidget">
-    <button class="thumb-zoom-btn" id="zoomOutBtn" onclick="changeThumbZoom(-1)" title="썸네일 축소 (Ctrl+[)">−</button>
+    <button class="thumb-zoom-btn" id="zoomOutBtn" onclick="changeThumbZoom(-1)" title="썸네일 축소 (Ctrl+[ · Ctrl+휠 아래) — 펼침 모드에서는 펼침 크기">−</button>
     <span class="thumb-zoom-divider"></span>
     <span class="thumb-zoom-pct" id="zoomPct">100%</span>
     <span class="thumb-zoom-divider"></span>
-    <button class="thumb-zoom-btn" id="zoomInBtn" onclick="changeThumbZoom(+1)" title="썸네일 확대 (Ctrl+])">+</button>
+    <button class="thumb-zoom-btn" id="zoomInBtn" onclick="changeThumbZoom(+1)" title="썸네일 확대 (Ctrl+] · Ctrl+휠 위) — 펼침 모드에서는 펼침 크기">+</button>
   </div>
 
   <!-- 여러 문서 열 순서 지정 모달 — 보내기·다중 전달 시 순서 확정 후 챕터로 병합 -->

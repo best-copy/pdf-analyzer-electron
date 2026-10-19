@@ -36,7 +36,8 @@ src/worker-assemble.js 병합·조립 워커
 src/libs/          vendored: pdf.js, pdf-lib, fontkit, pako, jpeg-decoder.js(jpeg-js 0.4.4),
                    gray-jpeg.js(자체 1성분 JPEG 인코더 — 흑백 사진 재인코딩),
                    gray-blend.js(저장 직전 투명도 흑백 합성 그룹 — 앱·조립 워커·편집기·임포징 도구 공용),
-                   annot-flatten.js(쪽을 폼으로 실을 때 인쇄되는 주석까지 — 앱·조립 워커·임포징 도구 공용)
+                   annot-flatten.js(쪽을 폼으로 실을 때 인쇄되는 주석까지 — 앱·조립 워커·임포징 도구 공용),
+                   pdfium/(🖨 인쇄 엔진 pdfium.dll + LICENSE — print_helper.cs가 씀)
 src/convert_*.ps1  한글/Office/Adobe COM 변환 스크립트 (convert_hwp.ps1은 UTF-8 BOM 필수)
 scripts/smoke.js   npm run smoke
 ```
@@ -51,6 +52,7 @@ scripts/smoke.js   npm run smoke
 - 페이지별: 저해상 렌더 → 15k 픽셀 샘플 RGB 중성 판정(`r≈g≈b`) → 썸네일 toBlob(파이프라인 비블로킹, promise 수집 후 일괄 대기) → `page.cleanup()`.
 - **분석은 RGB 기준**이므로 리치블랙(CMYK 회색)은 흑백으로 판정됨 — 프린터 과금과의 차이는 '잉크 정규화'와 '🧾 프린터 판정'(gs inkcov)이 담당.
 - 대용량(≥256MB)·JPEG 2000 원고는 **Ghostscript 병렬 렌더**(`analyzeWithGs`, main `gs:renderThumbs`)로, 판정은 같은 `pixelsLookColor`. 4초 넘게 걸린 분석은 **디스크 캐시**(`userData/analysis-cache`, SHA-256 열쇠, .pdfw 캐시와 같은 형식). `analyze-gs-cache.e2e.js`.
+- **썸네일 화질**: 분석은 `thumbDisplayPx`(배율 1.5 상한)로 빨리 굽고, 화면에 보이는 쪽만 `thumbSharpPx`(실제 배율 × 1.5, JPEG 92%)로 다시 굽는다(`scheduleThumbUpgrade` — 격자·사이드바 둘 다, 목록을 그린 뒤 자동). 분석 해상도를 올리면 분석이 느려지니 건드리지 말 것(2026-10-18 배율 200%에서 흐림 지적).
 - **🎯 컬러 판정 보정**(`refineNeutralPages`) — 렌더(pdf.js·gs 기본)는 CMYK **먹(K만)·C=M=Y 회색을 따뜻한 RGB로 그려 컬러로 센다**(도록 146쪽 중 14쪽). 분석 끝에 컬러 쪽만 ① `pageIsNeutral` 내용 확인(ms) ② 그래도 남은 쪽 중 렌더가 거의 회색(spread ≤ 40)인 쪽만 gs `-dUseFastColor`(C=M=Y → 정확히 R=G=B)로 다시 그려 같은 규칙으로 판정. **컬러→흑백으로만** 바꾼다. 처음 분석·작업 파일 캐시에 없던 쪽·내부 편집 재판정·파일 끼워 넣기 네 곳이 같은 함수. 보정을 거친 캐시는 `meta.nv=1`(없으면 열 때 ①만 다시). `-dUseFastColor` 렌더는 CMYK 사진 색이 틀어지므로 **썸네일로 쓰지 말 것**. `analyze-neutral-refine.e2e.js`.
 
 ### 3.2 흑백변환·잉크 정규화
@@ -138,12 +140,15 @@ scripts/smoke.js   npm run smoke
 39. **흑백변환의 '변환 불가 → 그대로 둠' 경로는 조용히 컬러를 남긴다 — 규격 값 목록을 빠짐없이** — 표본 함수(FunctionType 0) 비트 수 허용 목록에 12·24가 빠져 24비트 그러데이션이 CMYK로 남았다(실파일 '회재선조와 전통 예절' 5쪽, 프린터 컬러 과금). 규격 7.10.2 = `1,2,4,8,12,16,24,32`. `bw-shading-bps.e2e.js`.
 40. **무채색 쪽의 투명도는 회색 그룹만으로 막을 수 없다** — Acrobat 등이 일반 드라이버로 보낼 때 투명도를 RGB로 평탄화해 리치 그레이(C=M=Y)가 된다(gs `-dCompatibilityLevel=1.3` pdfwrite로 재현). 0/255뿐인 그림 SMask는 `binarySoftMasksToStencil`(gray-blend.js)이 스텐실 /Mask로 바꿔 투명도 자체를 없앤다. gs 회색 변환+평탄화로 미리 합성하는 방법은 글자를 망가뜨려 기각. `gray-blend.test.js` ⑨.
 41. **가상 프린터 상주 감시자: 이름으로 앱 실행 여부를 보지 말 것·자기 자신을 끄지 말 것·버려진 뮤텍스를 넘겨받을 것** — 본체가 꺼진 뒤 남은 하위 프로세스(--type=renderer)에 속아 앱을 안 띄웠다. 감시자 교체 명령은 `$PID` 제외, 새 감시자는 `AbandonedMutexException`을 잡고 재시도. 옛 버전 앱이 떠 있으면 켜질 때 감시 스크립트를 옛 버전으로 되돌려 쓰니, 감시자를 고친 뒤엔 최신 앱으로 한 번 교체할 것.
+42. **🖨 인쇄는 앱 안 인쇄 창 + 프린터 드라이버 + PDFium(벡터)** (사용자 결정 2026-10-18 — 아크로뱃 인쇄 창처럼 '속성'에서 드라이버 설정, RAW 직접 전송은 없앰). 최종본은 다운로드와 같은 `buildFinalSaveBytes`. main `printer:list/info/props/print` → `src/print_helper.ps1` → `src/print_helper.cs`(Add-Type, userData에 지문 이름으로 캐시 · **ASCII만**) → `src/libs/pdfium/pdfium.dll`(bblanchon/pdfium-binaries chromium/8066, Apache 2.0)이 `FPDF_RenderPage`로 프린터 DC에 그린다. 드라이버 설정은 DEVMODE 통째(base64)로 주고받고, 창에서 바꾼 부수·한 부씩·양면·방향·회색만 덮어쓴다. **미리보기 배치 `printPlacement`(app-process)와 C# `Print()`는 같은 식**(자동 방향 = 반시계 90°, 맞추기 = 인쇄 가능 영역 가운데, 그 밖 = 용지 가운데). 드라이버 속성 창은 앱 창에 딸린 창이라 `Process.MainWindowHandle`로 안 잡힌다(EnumWindows로 찾을 것). 회색 명암은 기억하지 않는다(컬러 원고가 모르게 흑백으로). 드라이버 속성 창은 powershell.exe가 고해상도 인식이 없어 흐리게 늘어난다 — 그 창을 띄우는 동안만 스레드를 GDI 확대(-5)로(-4 모니터별은 선명하지만 드라이버 아이콘·탭이 작아짐). Ctrl+P = 적용본(없으면 원본). 검사는 `direct-print.e2e.js` — 'Microsoft Print to PDF' + StartDoc 출력 파일(PE_OUTPUT)로만, 다른 프린터면 막는다. v4 드라이버도 이 경로는 된다(RAW만 안 됐다).
 13. **COM 변환(한글·Office·Adobe)은 사용자가 켜 둔 앱에 붙을 수 있다** — 스크립트가 새로 띄운 프로세스만 `COMPID:n`으로 알리고, 그때만 Quit·시간 초과 시 taskkill. 켜져 있던 앱이면 우리가 연 문서만 닫는다. Office는 `AutomationSecurity=3`(매크로 차단). **한글 보안창 워처**도 같은 이유로 좁힌다: '접근하려는 시도' 창만(확인·예·계속은 절대 안 누름), 켜져 있던 한글이면 창에 **변환 중 파일 이름**이 보일 때만 '접근 허용'(모두 허용 아님), 진짜 마우스 클릭은 그 좌표 맨 위가 그 버튼일 때만(가려지면 앞으로 올리기만). 예전 워처는 사용자 한글의 저장 확인 [확인]·다른 파일 보안 창까지 눌렀다(가짜 대화상자로 재현). `scripts/test/hwp-dialog-watch.test.ps1`(왼쪽 모니터에 가짜 창을 띄워 실제 클릭 — smoke에는 안 넣음).
 
 ## 6. UI 규약
 
 - **버튼 설명은 `title`로만 적는다** — 왼쪽 패널·편집 모드 패널의 button·select·label title은 app-ui `initSbHelp`이 떼어 버튼 **오른쪽 ? 표식**(편집 모드 칩은 오른쪽 위 모서리)으로 옮기고, ?에 커서를 올릴 때만 패널 옆에 설명을 띄운다(나중에 바뀐 title·새로 그린 목록도 감시). 숫자 입력칸 title은 그대로 둔다. `sb-help-spread.e2e.js`.
 - 버튼/섹션 제목: `이모지 + 한글` (예: `📖 임포징 PDF 생성`). 이모지가 컬러면 무채색 필터 적용.
+- 📖 펼침 보기의 PageDown/PageUp = **맞춤 넘기기**(app-ui `spreadPageNav`): 펼침 한 줄을 보이는 높이(고정 막대 아래)로 고정하고 그 높이에 맞는 펼침 %로 키워 앞뒤 펼침이 안 보이게. 키마다 보이는 높이를 다시 재서 편집 모드 진입·창 크기 변화를 따라간다. 줄 간격 0은 ID 규칙(`#previewGrid.pv-spread` gap 26px)보다 세게 써야 먹는다. `spread-pagekey.e2e.js`.
+- **Ctrl+마우스 휠** = 썸네일 크기(펼침 모드면 펼침 %) — 가운데 쪽 목록·결과 미리보기 위에서만(app-core `changeThumbZoom`과 같은 단계). 왼쪽 사이드바는 자기 Ctrl+휠(사이드바 썸네일)이 따로 있다. 휠 한 번에 한 단계까지만·작은 값(터치패드)은 50까지 모아서. 브라우저 화면 확대는 막는다. `ctrl-wheel-zoom.e2e.js`.
 - 진행 표시: 하단 중앙 고정 토스트(`showLoading` + `updateProgress`) — 완료 시 사라짐. 상단 인라인 진행바는 사용 안 함.
 - 성공 메시지(`showSuccess`): 여러 줄 허용(`white-space:pre-line`). **결과 요약 + 인쇄/후속 지침**(예: "가로 용지 · 양면 · 짧은 쪽 넘김 → 재단 → …")을 포함.
 - 파괴적/외부 동작 전 confirm. 옵션 기본값은 실무에서 가장 자주 쓰는 값(예: 잉크 정규화 ON, 정합 양면).

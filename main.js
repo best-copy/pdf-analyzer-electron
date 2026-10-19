@@ -1778,6 +1778,127 @@ ipcMain.handle('print:toPDF', (_, html) => {
   return renderHtmlToPdf(html);
 });
 
+// ── 🖨 인쇄 — 앱 안 인쇄 창(아크로뱃식) + 프린터 드라이버 + PDFium ────────────
+// 사용자 결정(2026-10-18): 아크로뱃처럼 프린터를 고르고 '속성'(드라이버 자체 설정 창)에서 용지함·품질·후가공까지
+// 정한 뒤 인쇄. 그림은 PDFium(크롬·엣지의 PDF 엔진, src/libs/pdfium)이 프린터 DC에 벡터로 그린다(EMF) —
+// 그림으로 굽지 않아 글자가 선명하고 인쇄 데이터가 작다.
+// 드라이버 설정은 DEVMODE(공개부+드라이버 전용부) 통째로 base64로 주고받는다 — 속성 창에서 고른 것이 그대로 인쇄에 쓰인다.
+// 도우미: src/print_helper.ps1 → src/print_helper.cs (Add-Type, 처음 한 번 컴파일해 userData에 캐시).
+// 'PDF Editor'(이 앱의 가상 프린터)는 고르면 인쇄물이 이 앱으로 되돌아오므로 목록에서 뺀다.
+function listPrintQueues() {
+  return new Promise(resolve => {
+    const ps = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+      + "@(Get-CimInstance Win32_Printer | Select-Object Name,DriverName,PortName,Default,WorkOffline,Network) | ConvertTo-Json -Compress";
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { windowsHide: true, encoding: 'buffer', timeout: 20000 }, (err, stdout) => {
+        if (err) return resolve([]);
+        try {
+          let arr = JSON.parse(stdout.toString('utf8').trim() || '[]');
+          if (!Array.isArray(arr)) arr = [arr];
+          resolve(arr.filter(p => p && p.Name && p.Name !== 'PDF Editor').map(p => ({
+            name: String(p.Name), driver: String(p.DriverName || ''), port: String(p.PortName || ''),
+            isDefault: !!p.Default, offline: !!p.WorkOffline, network: !!p.Network,
+          })).sort((a, b) => a.name.localeCompare(b.name, 'ko')));
+        } catch (e) { resolve([]); }
+      });
+  });
+}
+
+// 컴파일한 도우미 캐시 — 소스가 바뀌면 이름(내용 지문)이 바뀌어 새로 컴파일된다
+let _printHelperDll = null;
+function printHelperDll() {
+  if (_printHelperDll) return _printHelperDll;
+  const h = require('crypto').createHash('sha1');
+  h.update(fs.readFileSync(path.join(__dirname, 'src', 'print_helper.cs')));
+  _printHelperDll = path.join(app.getPath('userData'), 'print-helper', `print-helper-${h.digest('hex').slice(0, 12)}.dll`);
+  return _printHelperDll;
+}
+
+// 드라이버 설정 덮어쓰기(앱 인쇄 창의 부수·한 부씩·양면·방향·회색) → 도우미 환경변수
+function printOverrideEnv(o) {
+  const v = o || {};
+  const n = (x, lo, hi) => (Number.isFinite(+x) && +x >= lo && +x <= hi ? String(Math.floor(+x)) : '');
+  return {
+    PE_COPIES: n(v.copies, 1, 9999), PE_COLLATE: v.collate === undefined || v.collate === null ? '' : (v.collate ? '1' : '0'),
+    PE_DUPLEX: n(v.duplex, 1, 3), PE_ORIENT: n(v.orient, 1, 2), PE_COLOR: n(v.color, 1, 2), PE_PAPER: n(v.paper, 1, 32767),
+  };
+}
+
+// 도우미 실행 — onLine: 진행 줄(P:i/n) 받기. 결과: { ok, json?, pages?, error? }
+function runPrintHelper(env, onLine) {
+  return new Promise(resolve => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'src', 'print_helper.ps1')], {
+      windowsHide: true,
+      env: { ...process.env, PE_CS: path.join(__dirname, 'src', 'print_helper.cs'), PE_DLL: printHelperDll(), PE_OUTPUT: '', ...env },
+    });
+    let buf = '', last = { ok: false, error: '인쇄 도우미가 응답하지 않았습니다.' };
+    const take = (line) => {
+      line = line.trim();
+      if (!line) return;
+      if (line.startsWith('JSON:')) { try { last = { ok: true, json: JSON.parse(line.slice(5)) }; } catch (e) { last = { ok: false, error: '인쇄 도우미 응답을 읽지 못했습니다.' }; } }
+      else if (line.startsWith('OK:')) last = { ok: true, pages: +line.slice(3) || 0 };
+      else if (line.startsWith('ERR:')) last = { ok: false, error: line.slice(4).trim() };
+      else if (line.startsWith('P:') && onLine) onLine(line);
+    };
+    child.stdout.on('data', d => { buf += d.toString('utf8'); let i; while ((i = buf.indexOf('\n')) >= 0) { take(buf.slice(0, i)); buf = buf.slice(i + 1); } });
+    child.on('error', e => resolve({ ok: false, error: e.message }));
+    child.on('close', () => { take(buf); resolve(last); });
+  });
+}
+
+ipcMain.handle('printer:list', () => listPrintQueues());
+
+// 프린터 정보 — 드라이버 기본 설정(또는 받은 DEVMODE)에 덮어쓰기를 반영해 용지·인쇄 가능 영역·지원 기능을 돌려준다
+ipcMain.handle('printer:info', async (_, a) => {
+  const o = a || {};
+  if (typeof o.printer !== 'string' || !o.printer) return { ok: false, error: '프린터를 고르세요.' };
+  return runPrintHelper({ PE_MODE: 'info', PE_PRINTER: o.printer, PE_DEVMODE: typeof o.devmode === 'string' ? o.devmode : '', ...printOverrideEnv(o.set) });
+});
+
+// 드라이버 '속성' 창 — 이 앱 창을 주인으로 띄운다(뒤로 숨지 않게)
+ipcMain.handle('printer:props', async (e, a) => {
+  const o = a || {};
+  if (typeof o.printer !== 'string' || !o.printer) return { ok: false, error: '프린터를 고르세요.' };
+  let hwnd = '0';
+  try {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    const b = w && w.getNativeWindowHandle();
+    if (b) hwnd = (b.length >= 8 ? b.readBigUInt64LE(0) : BigInt(b.readUInt32LE(0))).toString();
+  } catch (err) {}
+  return runPrintHelper({ PE_MODE: 'props', PE_PRINTER: o.printer, PE_DEVMODE: typeof o.devmode === 'string' ? o.devmode : '', PE_HWND: hwnd, ...printOverrideEnv(o.set) });
+});
+
+// 인쇄 — 렌더러가 만든 임시 PDF(tmpdir의 pdfedit_*.pdf)만 받는다
+ipcMain.handle('printer:print', async (e, a) => {
+  const o = a || {};
+  const file = typeof o.path === 'string' ? path.resolve(o.path) : '';
+  const okFile = file && path.dirname(file).toLowerCase() === path.resolve(os.tmpdir()).toLowerCase()
+    && /^pdfedit_[\w.-]+\.pdf$/i.test(path.basename(file)) && fs.existsSync(file);
+  const cleanup = () => { try { if (okFile) fs.unlinkSync(file); } catch (err) {} };
+  if (!okFile) return { ok: false, error: '인쇄할 임시 파일을 찾지 못했습니다.' };
+  if (!licenseGate('인쇄본')) { cleanup(); return { ok: false, canceled: true }; }
+  if (typeof o.printer !== 'string' || !(await listPrintQueues()).some(q => q.name === o.printer)) {
+    cleanup(); return { ok: false, error: `프린터 '${o.printer}'를 찾지 못했습니다.` };
+  }
+  const pages = (Array.isArray(o.pages) ? o.pages : []).filter(n => Number.isInteger(n) && n >= 0);
+  if (!pages.length) { cleanup(); return { ok: false, error: '인쇄할 쪽이 없습니다.' }; }
+  const scale = ['fit', 'actual', 'shrink', 'custom'].includes(o.scale) ? o.scale : 'fit';
+  const pct = Math.max(1, Math.min(1000, +o.pct || 100));
+  const res = await runPrintHelper({
+    PE_MODE: 'print', PE_PRINTER: o.printer, PE_DEVMODE: typeof o.devmode === 'string' ? o.devmode : '',
+    PE_PDFIUM: path.join(__dirname, 'src', 'libs', 'pdfium', 'pdfium.dll'), PE_FILE: file,
+    PE_DOCNAME: String(o.docName || 'PDF Editor').replace(/[\x00-\x1f]/g, ' ').slice(0, 200),
+    PE_PAGES: pages.join(','), PE_SCALE: scale, PE_PCT: String(pct),
+    PE_AUTOROT: o.autoRotate ? '1' : '0', PE_GRAY: o.gray ? '1' : '0', PE_ANNOT: o.annots === false ? '0' : '1',
+    PE_PAPERBYPAGE: o.paperByPage ? '1' : '0', ...printOverrideEnv(o.set),
+  }, line => {
+    const m = line.match(/^P:(\d+)\/(\d+)/);
+    if (m) try { e.sender.send('printer:progress', { done: +m[1], total: +m[2] }); } catch (err) {}
+  });
+  cleanup();
+  return res;
+});
+
 // ── IPC: 견적을 거래관리 시스템(business-mgmt)으로 넘기기 ────────────────────
 // 두 앱이 약속한 받은편지함 폴더에 JSON 한 개를 떨어뜨린다. 거래관리 앱은 그 폴더를
 // 지켜보다가 파일이 생기면 견적서 작성 창을 품목까지 채워서 연다(고객은 거기서 고르거나 새로 등록).

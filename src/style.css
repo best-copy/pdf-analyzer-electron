@@ -78,7 +78,7 @@
       border: 1px solid rgba(255,255,255,0.08);
       box-shadow: 0 12px 40px rgba(0,0,0,0.45);
       pointer-events: none;
-      animation: loadingPop 0.25s cubic-bezier(0.2,0.9,0.3,1.2);
+      animation: loadingPop 0.25s cubic-bezier(0.2,0.9,0.3,1);   /* 넘쳤다 되돌아오는 1px 튐 없이(2026-10-19) */
     }
     @keyframes loadingPop {
       from { opacity: 0; transform: translateX(-50%) translateY(14px); }
@@ -1700,7 +1700,7 @@
     .preview-section { margin: 30px 0 8px; }
     .preview-head { display: flex; align-items: center; gap: 12px; margin: 0 0 8px; flex-wrap: wrap; }
     .preview-head h3 { font-size: 1.17em; }
-    .preview-sub { font-size: 0.82em; color: #48484a; }
+    .preview-sub { font-size: 0.82em; color: #48484a; flex: 1 1 auto; min-width: 0; font-variant-numeric: tabular-nums; }   /* 남는 폭을 차지 — '미리보기 채우는 중… 290/333'의 글자 폭이 바뀌어도 뒤 버튼(📖 펼침 등)이 좌우로 떨리지 않게(2026-10-19) */
     .preview-close {
       margin-left: auto; background: #fff; border: 1px solid #d0d0d5; color: #1d1d1f;
       padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85em; font-weight: 600;
@@ -1764,6 +1764,11 @@
     #pagesGrid.pv-spread { grid-template-columns: repeat(2, minmax(0, var(--spread-w, 480px))); justify-content: center; gap: 26px 0; }
     #pagesGrid.pv-spread .page-item.spread-first { grid-column: 2; }
     #pagesGrid.pv-spread .chapter-divider { grid-column: 1 / -1; }
+    /* 📖 펼침 맞춤 넘기기(PageDown/PageUp) — 펼침 한 줄 = 보이는 영역 높이, 내용은 줄 가운데 → 앞뒤 펼침이 화면 밖 */
+    #pagesGrid.pv-spread.spread-fit, #previewGrid.pv-spread.spread-fit { row-gap: 0; }   /* ID 규칙(gap 26px)보다 우선 */
+    .pv-spread.spread-fit > .page-item, .pv-spread.spread-fit > .pv-cell {
+      height: var(--spread-fit-h); display: flex; flex-direction: column; justify-content: center;
+    }
     #pagesGrid.pv-spread .page-item { padding: 0; border-width: 0; border-radius: 0; background: transparent; overflow: visible; }
     #pagesGrid.pv-spread .page-thumb-wrap { border-radius: 0; margin-bottom: 4px; background: transparent; }
     #pagesGrid.pv-spread .page-thumbnail { border-radius: 0; box-shadow: none; }

@@ -2108,6 +2108,7 @@
       const ag = document.getElementById('pagesGrid');
       const on = force !== undefined ? !!force : !(pg && pg.classList.contains('pv-spread'));
       [pg, ag].forEach(g => { if (g) g.classList.toggle('pv-spread', on); });
+      if (!on) spreadFitOff();
       markSpreadFirst();
       ['spreadViewBtn', 'spreadViewBtn2'].forEach(id => {
         const b = document.getElementById(id);
@@ -2135,7 +2136,8 @@
     let _spreadZoomPct = 100;
     let _spreadRerenderTimer = null;
     function changeSpreadZoom(dir) {
-      _spreadZoomPct = Math.max(50, Math.min(200, _spreadZoomPct + dir * 10));
+      if (typeof spreadFitOff === 'function') spreadFitOff();   // 직접 크기를 바꾸면 맞춤 넘기기는 풀린다
+      _spreadZoomPct = Math.max(50, Math.min(200, Math.round(_spreadZoomPct / 10) * 10 + dir * 10));
       applySpreadZoom();
       flashZoomPct('펼침 크기', _spreadZoomPct);
     }
@@ -2146,7 +2148,7 @@
       if (pg) pg.style.setProperty('--spread-w', Math.round(560 * k) + 'px');
       if (ag) ag.style.setProperty('--spread-w', Math.round(480 * k) + 'px');
       const pctEl = document.getElementById('zoomPct');
-      if (pctEl) pctEl.textContent = _spreadZoomPct + '%';
+      if (pctEl) pctEl.textContent = Math.round(_spreadZoomPct) + '%';
       const zo = document.getElementById('zoomOutBtn'), zi = document.getElementById('zoomInBtn');
       if (zo) zo.disabled = _spreadZoomPct <= 50;
       if (zi) zi.disabled = _spreadZoomPct >= 200;
@@ -2193,6 +2195,157 @@
         else { el.classList.add('sp-right'); col = 1; }
       }
     }
+    // 📖 펼침 맞춤 넘기기 — 펼침 보기에서 PageDown/PageUp을 누르면 한 펼침(두 쪽)이 보이는 영역에 딱 맞게
+    // 커지고, 펼침 한 줄이 정확히 화면 높이를 차지해 앞뒤 펼침이 보이지 않는다(사용자 요청 2026-10-19).
+    // 분석 썸네일(#pagesGrid)·결과 미리보기(#previewGrid) 중 보이는 쪽에 건다. 펼침 크기를 직접 바꾸거나
+    // 펼침을 끄면 풀린다. 크기는 펼침 % 그대로 써서(소수) 미리보기 재렌더·썸네일 선명화가 함께 따라온다.
+    let _spreadFit = null;   // { grid, row } — 맞춤 중인 그리드와 지금 보이는 줄
+    function spreadVisibleGrid() {
+      for (const id of ['previewGrid', 'pagesGrid']) {
+        const g = document.getElementById(id);
+        if (!g || !g.classList.contains('pv-spread') || !g.getClientRects().length) continue;
+        const r = g.getBoundingClientRect();
+        if (r.height > 0 && r.bottom > 0 && r.top < window.innerHeight) return g;
+      }
+      return null;
+    }
+    // 스크롤하는 상자(없으면 문서 전체 = null)
+    function spreadScrollBox(grid) {
+      for (let el = grid.parentElement; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+        const oy = getComputedStyle(el).overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) return el;
+      }
+      return null;
+    }
+    // 펼침이 보일 수 있는 화면 구간(뷰포트 좌표) — 위에 붙어 있는(sticky) 막대는 뺀다
+    function spreadViewport(box, grid) {
+      let top, bottom;
+      if (box) {
+        const r = box.getBoundingClientRect();
+        top = r.top; bottom = Math.min(r.bottom, window.innerHeight);
+        for (const c of box.children) {
+          if (c.contains(grid)) continue;
+          const cs = getComputedStyle(c);
+          if (cs.position === 'sticky' && c.offsetHeight && parseFloat(cs.top || '0') <= 1) top += c.offsetHeight;
+        }
+      } else {
+        top = 0; bottom = window.innerHeight;
+        for (const sel of ['#mainTabBar', '.sticky-panel']) {
+          const e = document.querySelector(sel);
+          if (e && e.offsetHeight && getComputedStyle(e).position === 'sticky') top += e.offsetHeight;
+        }
+      }
+      return { top, bottom };
+    }
+    // 펼침 줄 — 같은 높이에 놓인 쪽 칸끼리(구분선 제외)
+    function spreadRows(grid) {
+      const rows = [];
+      for (const el of grid.children) {
+        if (el.classList.contains('chapter-divider') || !el.offsetHeight) continue;
+        const t = el.offsetTop, last = rows[rows.length - 1];
+        if (last && Math.abs(last.top - t) < 4) last.cells.push(el); else rows.push({ top: t, cells: [el] });
+      }
+      return rows;
+    }
+    function spreadFitOff() {
+      if (!_spreadFit) return;
+      ['previewGrid', 'pagesGrid'].forEach(id => { const g = document.getElementById(id); if (g) { g.classList.remove('spread-fit'); g.style.removeProperty('--spread-fit-h'); } });
+      _spreadFit = null;
+    }
+    // 칸 안 내용(쪽 그림 + 쪽 번호 줄)의 높이 — 맞춤 중에는 칸 자체가 화면 높이로 고정돼 있어 칸 높이를 재면 안 된다
+    function spreadCellContentH(el) {
+      let lo = Infinity, hi = -Infinity;
+      for (const c of el.children) { if (!c.offsetHeight || getComputedStyle(c).position === 'absolute') continue; lo = Math.min(lo, c.offsetTop); hi = Math.max(hi, c.offsetTop + c.offsetHeight); }
+      return hi > lo ? hi - lo : el.offsetHeight;
+    }
+    // 보이는 영역 높이 H에 펼침 한 줄이 들어가는 펼침 % — 칸 높이 = 폭에 비례 + 쪽 번호 줄(고정)이라 두 번 재서 맞춘다
+    function spreadFitPct(grid, H) {
+      const base = grid.id === 'previewGrid' ? 560 : 480;
+      for (let i = 0; i < 3; i++) {
+        let maxH = 0, w = 0;
+        for (const el of grid.children) {
+          if (el.classList.contains('chapter-divider') || !el.offsetHeight) continue;
+          maxH = Math.max(maxH, spreadCellContentH(el)); w = Math.max(w, el.offsetWidth);
+        }
+        if (!maxH || !w) break;
+        const kH = H / maxH;                                 // 높이에 맞추는 배율
+        const kW = (grid.clientWidth / 2) / w;               // 두 쪽이 가로로 들어가는 배율
+        const k = Math.min(kH, kW);
+        _spreadZoomPct = Math.max(20, Math.min(400, _spreadZoomPct * k * 0.995));
+        grid.style.setProperty('--spread-w', Math.round(base * _spreadZoomPct / 100) + 'px');
+        if (Math.abs(k - 1) < 0.01) break;
+      }
+      applySpreadZoom();   // 두 그리드·% 표시·고해상도 재렌더
+    }
+    function spreadGoto(grid, rowIdx) {
+      const box = spreadScrollBox(grid);
+      const vp = spreadViewport(box, grid);
+      const rows = spreadRows(grid);
+      if (!rows.length) return false;
+      rowIdx = Math.max(0, Math.min(rows.length - 1, rowIdx));
+      const cell = rows[rowIdx].cells[0];
+      const delta = cell.getBoundingClientRect().top - vp.top;
+      if (box) box.scrollTop += delta; else window.scrollBy(0, delta);
+      _spreadFit = { grid, row: rowIdx };
+      return true;
+    }
+    // dir: +1 다음 펼침 · -1 이전 펼침. 맞춤 중이 아니면 지금 가장 많이 보이는 줄에서 한 칸 이동
+    function spreadPageNav(dir) {
+      const grid = spreadVisibleGrid();
+      if (!grid) return false;
+      const box = spreadScrollBox(grid);
+      let cur;
+      if (_spreadFit && _spreadFit.grid === grid && grid.classList.contains('spread-fit')) {
+        cur = _spreadFit.row;
+        // 보이는 높이가 바뀌었으면(편집 모드 들어가기·나오기, 창 크기) 그 높이로 다시 맞춘다
+        const vp = spreadViewport(box, grid), H = Math.floor(vp.bottom - vp.top);
+        if (Math.abs(H - (parseFloat(grid.style.getPropertyValue('--spread-fit-h')) || 0)) > 2) {
+          grid.style.setProperty('--spread-fit-h', H + 'px');
+          spreadFitPct(grid, H - 24);
+        }
+      } else {
+        const vp = spreadViewport(box, grid);
+        const rows = spreadRows(grid);
+        let best = -1, bestVis = -1;
+        rows.forEach((r, i) => {
+          const b = r.cells[0].getBoundingClientRect();
+          const vis = Math.min(b.bottom, vp.bottom) - Math.max(b.top, vp.top);
+          if (vis > bestVis) { bestVis = vis; best = i; }
+        });
+        cur = best < 0 ? 0 : best;
+        // 맞춤 켜기 — 칸 높이 = 보이는 영역 높이(앞뒤 줄이 화면 밖으로), 펼침 크기는 그 높이에 맞춤
+        const H = Math.floor(vp.bottom - vp.top);
+        grid.classList.add('spread-fit');
+        grid.style.setProperty('--spread-fit-h', H + 'px');
+        spreadFitPct(grid, H - 24);
+        _spreadFit = { grid, row: cur };
+        if (bestVis < 0) dir = 0;   // 펼침이 아직 화면에 없으면 첫 줄부터
+      }
+      return spreadGoto(grid, cur + dir);
+    }
+    // 창 크기가 바뀌면 맞춤을 다시 계산(지금 줄 유지)
+    let _spreadFitResizeT = null;
+    window.addEventListener('resize', () => {
+      if (!_spreadFit) return;
+      clearTimeout(_spreadFitResizeT);
+      _spreadFitResizeT = setTimeout(() => {
+        if (!_spreadFit) return;
+        const { grid, row } = _spreadFit;
+        const vp = spreadViewport(spreadScrollBox(grid), grid);
+        const H = Math.floor(vp.bottom - vp.top);
+        grid.style.setProperty('--spread-fit-h', H + 'px');
+        spreadFitPct(grid, H - 24);
+        spreadGoto(grid, row);
+      }, 200);
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'PageDown' && e.key !== 'PageUp') return;
+      if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || e.target.isContentEditable) return;
+      if (document.querySelector('.merge-overlay') || (typeof pvvVisible === 'function' && pvvVisible())) return;
+      if (spreadPageNav(e.key === 'PageDown' ? 1 : -1)) e.preventDefault();
+    });
+
     // 펼침 보기는 항상 꺼진 상태로 시작 — 필요할 때만 켜는 확인용 보기(기본 꺼짐).
     try { localStorage.removeItem('spreadView'); } catch (e) {}   // 과거 저장값 정리
 
@@ -4166,10 +4319,11 @@
       g('sb-applyBtn').disabled    = applying || !hasMod || upToDate;
       g('sb-downloadBtn').disabled = applying || !originalPdfBytes;
       g('sb-downloadBtn').classList.toggle('btn-dim', !processedPdfBytes);
-      if (g('sb-splitSaveBtn')) {   // ✂ 문서가 있으면 누를 수 있다(우클릭 = 원본 그대로) · 적용 전이면 흐리게
-        g('sb-splitSaveBtn').disabled = applying || !originalPdfBytes;
-        g('sb-splitSaveBtn').classList.toggle('btn-dim', !processedPdfBytes);
-      }
+      ['sb-splitSaveBtn', 'sb-printBtn'].forEach(id => {   // ✂·🖨 문서가 있으면 누를 수 있다(우클릭 = 원본 그대로) · 적용 전이면 흐리게
+        if (!g(id)) return;
+        g(id).disabled = applying || !originalPdfBytes;
+        g(id).classList.toggle('btn-dim', !processedPdfBytes);
+      });
       g('sb-clearOptsBtn').style.display = anyActive ? '' : 'none';
       g('sb-refreshBtn').style.display = '';
     }

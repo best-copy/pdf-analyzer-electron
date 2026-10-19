@@ -1683,7 +1683,15 @@
     // 📖 펼침 보기(분석 그리드)에서는 썸네일이 480px × 펼침%로 커진다 — 그 크기(한 단계 높인 해상도)가 기준.
     // thumbDisplayPx는 분석 때 굽는 폭이라 건드리지 않는다(분석 속도·색 판정과 얽혀 있다).
     function thumbSpreadOn() { const ag = document.getElementById('pagesGrid'); return !!(ag && ag.classList.contains('pv-spread')); }
-    function thumbNeedPx() { return (thumbSpreadOn() && typeof spreadRenderPx === 'function') ? spreadRenderPx(480) : thumbDisplayPx(); }
+    // 선명한 썸네일 폭 — 화면 실제 픽셀(배율 200%면 2배, 상한 없이) × 1.5. 분석 때는 thumbDisplayPx로 빨리 굽고,
+    // 화면에 보이는 쪽만 이 폭으로 다시 굽는다(scheduleThumbUpgrade). 표시 폭과 거의 같은 크기를 줄여 보이면
+    // 작은 글자가 뭉개졌다(사용자 지적 2026-10-18: 배율 200%에서 358px을 307px로 줄여 표시 + JPEG 85%).
+    const THUMB_SHARP = 1.5;
+    function thumbSharpPx() {
+      const css = (typeof THUMB_STEPS !== 'undefined' && THUMB_STEPS[thumbStepIdx]) || 160;
+      return Math.min(2000, Math.round(Math.max(120, css) * (window.devicePixelRatio || 1) * THUMB_SHARP));
+    }
+    function thumbNeedPx() { return (thumbSpreadOn() && typeof spreadRenderPx === 'function') ? Math.max(spreadRenderPx(480), thumbSharpPx()) : thumbSharpPx(); }
     // 원본에서 다시 구울 수 있는 쪽인가 — 빈 쪽(originalIdx null)·내부 편집한 쪽은 원본 쪽 그림이 아니다.
     // ⚠ 빈 쪽을 원본에서 구우면 getPage(null + 1) = 1쪽이 그려져, 펼침 보기에서 마지막 빈 쪽에
     //    1쪽 내용이 보였다(실파일 울진군 보고서 .pdfw, 2026-10-01). 편집한 쪽은 편집 전 모습으로 되돌아간다.
@@ -1692,8 +1700,8 @@
         && !(typeof contentEdits !== 'undefined' && contentEdits && contentEdits.has && contentEdits.has(r.originalIdx));
     }
     function anyThumbTooSmall() {
-      const px = thumbNeedPx(), sp = thumbSpreadOn();
-      return (pageResults || []).some(r => thumbUpgradable(r) && (r.thumbLow || sp) && (!r.thumbW || r.thumbW < px * 0.95));
+      const px = thumbNeedPx();
+      return (pageResults || []).some(r => thumbUpgradable(r) && (!r.thumbW || r.thumbW < px * 0.95));
     }
 
     // 크게 볼 때만 그 페이지를 원해상도로 다시 렌더해 썸네일을 교체한다(저해상 캐시 보정).
@@ -1715,6 +1723,8 @@
           const el = document.querySelector(`[data-page="${r.pageNum}"]`);
           const img = el && el.querySelector('.page-thumbnail');
           if (img) img.src = t;
+          const sbImg = document.querySelector(`[data-sb-page="${r.pageNum}"] img`);   // 왼쪽 사이드바 썸네일도 같은 그림
+          if (sbImg) sbImg.src = t;
         }
         return !!t;
       } catch (e) { return false; }
@@ -1733,15 +1743,15 @@
         const wait = _jumpScrollUntil - Date.now();
         if (wait > 0) { setTimeout(scheduleThumbUpgrade, wait + 60); return; }   // 멎은 뒤에 다시
         if (!anyThumbTooSmall()) return;
-        const needPx = thumbNeedPx(), sp = thumbSpreadOn();
-        const els = [...document.querySelectorAll('#pagesGrid [data-page], #previewGrid [data-page]')];
+        const needPx = thumbNeedPx();
+        const els = [...document.querySelectorAll('#pagesGrid [data-page], #previewGrid [data-page], [data-sb-page]')];
         const vis = els.filter(el => {
           const b = el.getBoundingClientRect();
           return b.bottom > -200 && b.top < window.innerHeight + 200;
-        }).map(el => +el.dataset.page);
-        for (const pn of vis) {
-          const r = (pageResults || []).find(x => x && x.pageNum === pn && thumbUpgradable(x) && (x.thumbLow || sp));
-          if (r && (!r.thumbW || r.thumbW < needPx * 0.95)) await upgradeThumb(r.originalIdx, sp ? needPx : undefined);
+        }).map(el => +(el.dataset.page || el.dataset.sbPage));
+        for (const pn of [...new Set(vis)]) {
+          const r = (pageResults || []).find(x => x && x.pageNum === pn && thumbUpgradable(x));
+          if (r && (!r.thumbW || r.thumbW < needPx * 0.95)) await upgradeThumb(r.originalIdx, needPx);
         }
       }, 250);
     }
@@ -2315,7 +2325,7 @@
         // 레인이 다음 페이지 렌더를 시작할 수 있어 렌더·인코딩이 겹쳐 진행된다.
         await thumbSlot();
         const thumbPromise = new Promise(res => {
-          canvas.toBlob(b => { thumbRelease(); res(b ? URL.createObjectURL(b) : null); }, 'image/jpeg', 0.85);
+          canvas.toBlob(b => { thumbRelease(); res(b ? URL.createObjectURL(b) : null); }, 'image/jpeg', opts && opts.px ? 0.92 : 0.85);   // 선명하게 다시 굽는 썸네일은 글자 뭉개짐이 덜하게
         });
         // vp1(실제 페이지 크기 pt)은 위에서 산출함. thumbW/H는 캔버스 실제 픽셀.
         return { isColor, spread, thumbPromise, thumbW: canvas.width, thumbH: canvas.height,
@@ -2618,6 +2628,29 @@
       if (document.body.classList.contains('edit-fullscreen') && typeof scheduleLivePreview === 'function') scheduleLivePreview();
     }
 
+    // Ctrl+마우스 휠 = 썸네일 크기(펼침 모드면 펼침 크기) — 가운데 쪽 목록·결과 미리보기 위에서만.
+    // 왼쪽 사이드바는 자기 Ctrl+휠(사이드바 썸네일 크기)이 따로 있고, 크게 보기·대화상자 위에서는 건드리지 않는다.
+    // 마우스 휠 한 칸 = 한 단계(휠 값은 화면 배율에 따라 50~120). 터치패드의 작은 값은 50이 모일 때까지 모은다.
+    // 한 번의 휠 신호로는 한 단계까지만 — 큰 값이 와도 여러 단계로 튀지 않게.
+    let _zoomWheelAcc = 0, _zoomWheelT = 0;
+    document.addEventListener('wheel', e => {
+      if (!e.ctrlKey || e.altKey || e.shiftKey) return;
+      const t = e.target;
+      if (!t || !t.closest || !t.closest('#pagesGrid, #previewGrid, #resultsSection, #previewSection')) return;
+      if (t.closest('#thumbSidebar, #editSidebar, .merge-overlay, #pageViewModal, #jumpBar')) return;
+      if (!pageResults.filter(Boolean).length) return;
+      e.preventDefault();   // 화면 전체 확대(브라우저 줌)는 막는다
+      const now = performance.now();
+      if (now - _zoomWheelT > 400) _zoomWheelAcc = 0;   // 잠깐 쉬었다 다시 굴리면 새로 센다
+      _zoomWheelT = now;
+      _zoomWheelAcc += e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      if (Math.abs(_zoomWheelAcc) >= 50) {
+        const dir = _zoomWheelAcc < 0 ? 1 : -1;   // 위로 굴리면 확대
+        _zoomWheelAcc = 0;
+        changeThumbZoom(dir);
+      }
+    }, { passive: false });
+
     function setThumbZoomWidgetVisible(visible) {
       document.getElementById('thumbZoomWidget').style.display = visible ? 'flex' : 'none';
     }
@@ -2673,20 +2706,23 @@
       }
     });
 
-    // Ctrl+S: 💼 작업 저장(지금 작업 파일에 덮어쓰기) · Ctrl+Shift+S: 📑 다른 이름으로 저장 · Ctrl+O: 📂 작업 열기
+    // Ctrl+S: 💼 작업 저장(지금 작업 파일에 덮어쓰기) · Ctrl+Shift+S: 📑 다른 이름으로 저장 · Ctrl+O: 📂 작업 열기 · Ctrl+P: 🖨 인쇄
     // 키 위치(e.code)로 본다 — 한글 입력 상태에서는 e.key가 'ㄴ'·'ㅐ'라 글자로 비교하면 안 먹는다.
     // 입력창에 커서가 있어도 동작(일반 프로그램과 같게), 누르고 있을 때의 반복·진행 중 재입력은 무시.
     let _workFileKeyBusy = false;
     document.addEventListener('keydown', async e => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const save = e.code === 'KeyS', open = e.code === 'KeyO' && !e.shiftKey;
-      if (!save && !open) return;
+      const print = e.code === 'KeyP' && !e.shiftKey;   // Ctrl+P: 🖨 인쇄 — 적용본이 있으면 적용본, 없으면 원본 그대로(창 제목에 표시)
+      if (!save && !open && !print) return;
       e.preventDefault();
       if (e.repeat || _workFileKeyBusy) return;
+      if (print && (document.querySelector('.pr-modal') || !originalPdfBytes || applying)) return;   // 인쇄 창이 이미 떠 있거나 문서가 없으면 무시
       _workFileKeyBusy = true;
       try {
         if (save && typeof saveWorkFile === 'function') await saveWorkFile(e.shiftKey ? { saveAs: true } : undefined);
         else if (open && typeof pickWorkFile === 'function') await pickWorkFile();
+        else if (print) await (processedPdfBytes ? printProcessed() : printOriginal());
       } finally { _workFileKeyBusy = false; }
     });
 
@@ -3153,10 +3189,10 @@
         downloadBtn.disabled = applying || !originalPdfBytes;
         downloadBtn.classList.toggle('btn-dim', !processedPdfBytes);
       }
-      // ✂ 분리 저장: 문서가 열려 있으면 누를 수 있다(우클릭 = 원본 그대로 나누기).
+      // ✂ 분리 저장·🖨 인쇄: 문서가 열려 있으면 누를 수 있다(우클릭 = 원본 그대로).
       // 적용본이 없으면 흐리게 — 좌클릭은 '✔ 적용부터' 안내를 낸다.
       // ⚠ disabled 버튼은 우클릭(contextmenu)도 먹지 않는다 — 적용 전이라고 잠그면 안 된다.
-      ['splitSaveBtn', 'sb-splitSaveBtn', 'esSplitSaveBtn'].forEach(id => {
+      ['splitSaveBtn', 'sb-splitSaveBtn', 'esSplitSaveBtn', 'printBtn', 'sb-printBtn', 'esPrintBtn'].forEach(id => {
         const b = document.getElementById(id);
         if (!b) return;
         b.disabled = applying || !originalPdfBytes;

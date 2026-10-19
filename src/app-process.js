@@ -5137,6 +5137,395 @@
       }
     }
 
+    // ── 🖨 인쇄 — 다운로드 없이 이 앱에서 바로(아크로뱃식 인쇄 창) ─────────────────
+    // 다운로드와 **같은 최종본**(buildFinalSaveBytes — 잉크 정규화·폰트 안전화·컬러 검수까지)을 만든 뒤,
+    // 프린터·드라이버 '속성'·쪽 범위·크기 조정·방향·양면을 골라 인쇄한다. 그리기는 main의 PDFium(벡터).
+    // 좌클릭 = 적용본, 우클릭 = 원본(⇩ 다운로드와 같은 규칙).
+    // 크기 계산(printPlacement)은 print_helper.cs Print()와 **같은 식**이어야 미리보기와 출력이 일치한다.
+    const PRINT_PREFS_KEY = 'printPrefs';
+    function loadPrintPrefs() { try { return JSON.parse(localStorage.getItem(PRINT_PREFS_KEY) || '{}') || {}; } catch (e) { return {}; } }
+    function savePrintPrefs(p) { try { localStorage.setItem(PRINT_PREFS_KEY, JSON.stringify(p)); } catch (e) {} }
+
+    // 인쇄할 쪽(0부터) — range: 'all' | 'current' | 'pages', subset: 'all' | 'odd' | 'even'(쪽 번호 기준), reverse
+    function printPageList(total, o) {
+      let list;
+      if (o.range === 'current') list = [Math.max(0, Math.min(total - 1, o.current | 0))];
+      else if (o.range === 'pages') {
+        list = [];
+        parseSplitRanges(o.spec, total).forEach(r => { for (let p = r.from; p <= r.to; p++) list.push(p - 1); });
+      } else list = Array.from({ length: total }, (_, i) => i);
+      if (o.subset === 'odd') list = list.filter(i => (i + 1) % 2 === 1);
+      else if (o.subset === 'even') list = list.filter(i => (i + 1) % 2 === 0);
+      if (o.reverse) list.reverse();
+      return list;
+    }
+
+    // 용지 위 배치(mm) — print_helper.cs Print()와 같은 규칙
+    //  · 자동 방향: 쪽과 용지의 가로/세로가 다르면 쪽을 반시계 90° 돌려 앉힌다
+    //  · 맞추기 = 인쇄 가능 영역 안 가운데 / 그 밖(실제 크기·축소·비율) = 용지 가운데
+    function printPlacement(pageW, pageH, info, o) {
+      const P = info.paper, A = info.printable;
+      let w = pageW, h = pageH, rotate = 0;
+      if (o.autoRotate && ((pageW > pageH) !== (P.w > P.h)) && Math.abs(pageW - pageH) > 0.35) { rotate = 3; w = pageH; h = pageW; }
+      const fit = Math.min(A.w / w, A.h / h);
+      const s = o.scale === 'fit' ? fit : o.scale === 'shrink' ? Math.min(1, fit) : o.scale === 'custom' ? (o.pct / 100) : 1;
+      const dw = w * s, dh = h * s;
+      const x = o.scale === 'fit' ? A.x + (A.w - dw) / 2 : (P.w - dw) / 2;
+      const y = o.scale === 'fit' ? A.y + (A.h - dh) / 2 : (P.h - dh) / 2;
+      return { x, y, w: dw, h: dh, rotate, scale: s,
+               clipped: x < A.x - 0.3 || y < A.y - 0.3 || x + dw > A.x + A.w + 0.3 || y + dh > A.y + A.h + 0.3 };
+    }
+
+    // 인쇄 창 — 고른 설정을 돌려준다(취소면 null)
+    function askPrintSettings(pdfBytes, total, opts) {
+      return new Promise(resolve => {
+        const prefs = loadPrintPrefs();
+        const isOriginal = !!(opts && opts.original);
+        const booklet = !isOriginal && typeof _impEnabled !== 'undefined' && _impEnabled && _impMode === 'booklet';
+        const ov = document.createElement('div');
+        ov.className = 'merge-overlay';
+        ov.innerHTML =
+          '<div class="merge-modal pr-modal">'
+          + '<h3 class="merge-title"><span class="ic">🖨</span> 인쇄'
+          + `<span class="pr-sub">${isOriginal ? '원본 그대로 — 흑백 변환·조판은 반영되지 않습니다' : '완성본(다운로드와 같은 파일)'} · ${total}쪽</span></h3>`
+          + '<div class="pr-body"><div class="pr-left">'
+          // 프린터
+          + '<div class="pr-sec"><div class="pr-line"><span class="pr-lab">프린터</span>'
+          + '<select id="prPrinter" class="split-text pr-grow"><option value="">프린터 목록을 읽는 중…</option></select>'
+          + '<button class="merge-cancel pr-btn" id="prProps" title="설치된 프린터 드라이버의 설정 창 — 용지함·인쇄 품질·스테이플 등 드라이버가 제공하는 모든 설정">속성…</button></div>'
+          + '<div class="pr-line"><span class="pr-lab">복사본</span><input type="number" id="prCopies" class="split-num" min="1" max="9999" step="1" value="1">'
+          + '<label class="pr-chk"><input type="checkbox" id="prCollate"> 한 부씩 인쇄</label>'
+          + '<label class="pr-chk"><input type="checkbox" id="prGray"> 회색 명암(흑백)으로 인쇄</label></div>'
+          + '<div class="pr-status" id="prStatus"></div></div>'
+          // 쪽
+          + '<div class="pr-sec"><div class="pr-h">인쇄할 페이지</div>'
+          + '<div class="pr-line pr-radios"><label><input type="radio" name="prRange" value="all" checked> 모두</label>'
+          + '<label><input type="radio" name="prRange" value="current"> 현재 페이지</label>'
+          + '<label><input type="radio" name="prRange" value="pages"> 페이지</label><input type="text" id="prSpec" class="split-text pr-spec" placeholder="예: 1-8, 12"></div>'
+          + '<div class="pr-line"><span class="pr-lab">기타</span><select id="prSubset" class="split-text pr-sel"><option value="all">모든 페이지</option><option value="odd">홀수 페이지만</option><option value="even">짝수 페이지만</option></select>'
+          + '<label class="pr-chk"><input type="checkbox" id="prReverse"> 역순으로 인쇄</label></div></div>'
+          // 크기
+          + '<div class="pr-sec"><div class="pr-h">페이지 크기 조정 및 처리</div>'
+          + '<div class="pr-line pr-radios pr-grid"><label><input type="radio" name="prScale" value="fit"> 맞추기</label>'
+          + '<label><input type="radio" name="prScale" value="actual"> 실제 크기</label>'
+          + '<label><input type="radio" name="prScale" value="shrink"> 큰 페이지 축소</label>'
+          + '<label><input type="radio" name="prScale" value="custom"> 사용자 지정 비율 <input type="number" id="prPct" class="split-num" min="1" max="1000" step="1" value="100">%</label></div>'
+          + '<label class="pr-chk pr-line"><input type="checkbox" id="prPaperByPage"> PDF 페이지 크기에 따라 용지 선택</label></div>'
+          // 방향·양면
+          + '<div class="pr-sec"><div class="pr-line pr-radios"><span class="pr-lab">방향</span>'
+          + '<label><input type="radio" name="prOrient" value="auto" checked> 자동</label>'
+          + '<label><input type="radio" name="prOrient" value="1"> 세로</label>'
+          + '<label><input type="radio" name="prOrient" value="2"> 가로</label></div>'
+          + '<div class="pr-line"><span class="pr-lab">양면</span><select id="prDuplex" class="split-text pr-sel">'
+          + '<option value="1">단면 인쇄</option><option value="2">양면 — 긴 쪽 넘김</option><option value="3">양면 — 짧은 쪽 넘김</option></select>'
+          + '<label class="pr-chk"><input type="checkbox" id="prAnnots" checked> 주석·메모 함께 인쇄</label></div></div>'
+          + '</div>'
+          // 미리보기
+          + '<div class="pr-right"><div class="pr-dim" id="prDocDim"></div><div class="pr-dim pr-paper" id="prPaperDim"></div>'
+          + '<div class="pr-canvas-wrap"><canvas id="prCanvas" width="300" height="400"></canvas></div>'
+          + '<div class="pr-nav"><button class="merge-cancel pr-btn" id="prPrev">‹</button><input type="range" id="prSlider" min="1" max="1" value="1" class="pr-slider">'
+          + '<button class="merge-cancel pr-btn" id="prNext">›</button></div><div class="pr-dim" id="prPageNo"></div><div class="pr-warn" id="prWarn"></div></div>'
+          + '</div>'
+          + '<div class="merge-actions"><button class="merge-cancel" id="prCancel">취소</button>'
+          + '<button class="merge-confirm" id="prGo" disabled><span class="ic">🖨</span> 인쇄</button></div>'
+          + '</div>';
+        document.body.appendChild(ov);
+        const $ = id => ov.querySelector('#' + id);
+        const radio = n => ov.querySelector(`input[name=${n}]:checked`).value;
+        const setRadio = (n, v) => { const r = ov.querySelector(`input[name=${n}][value="${v}"]`); if (r) r.checked = true; };
+
+        // 기억한 설정(부수는 늘 1부부터 — 아크로뱃과 같다)
+        setRadio('prScale', prefs.scale || 'actual');
+        $('prPct').value = prefs.pct || 100;
+        $('prPaperByPage').checked = !!prefs.paperByPage;
+        $('prAnnots').checked = prefs.annots !== false;
+        // 회색 명암은 기억하지 않는다 — 지난 작업의 '흑백'이 남아 컬러 원고가 모르게 흑백으로 나가면 안 된다
+        if (prefs.orient) setRadio('prOrient', prefs.orient);
+        const devmodes = prefs.devmodes || {};
+
+        let printers = [], info = null, devmode = '', busy = false, infoSeq = 0, closed = false;
+        let pdfDoc = null, pageSizes = [], list = [], cur = 0, renderSeq = 0, shownPage = 0;   // shownPage = 미리보기에 보이는 문서 쪽(‘현재 페이지’)
+        const touched = { copies: false, collate: false, duplex: false };
+
+        // 드라이버에 덮어쓸 값 — 사용자가 이 창에서 바꾼 것만(나머지는 속성 창·드라이버 기본값 그대로)
+        function overrides() {
+          const s = { copies: Math.max(1, parseInt($('prCopies').value, 10) || 1) };
+          if (touched.collate) s.collate = $('prCollate').checked;
+          if (touched.duplex || booklet) s.duplex = +$('prDuplex').value;
+          const orient = radio('prOrient');
+          if (orient !== 'auto') s.orient = +orient;
+          if ($('prGray').checked) s.color = 1;
+          return s;
+        }
+        function settings() {
+          return {
+            printer: $('prPrinter').value, devmode, set: overrides(),
+            scale: radio('prScale'), pct: Math.max(1, Math.min(1000, +$('prPct').value || 100)),
+            autoRotate: radio('prOrient') === 'auto', gray: $('prGray').checked, annots: $('prAnnots').checked,
+            paperByPage: $('prPaperByPage').checked,
+            range: radio('prRange'), spec: $('prSpec').value, subset: $('prSubset').value, reverse: $('prReverse').checked,
+          };
+        }
+        function showInfo() {
+          if (!info) return;
+          $('prPaperDim').textContent = `용지: ${info.paper.w.toFixed(1)} × ${info.paper.h.toFixed(1)} mm`
+            + (info.paper.form ? ` (${info.paper.form})` : '') + ` · ${info.dpi}dpi`;
+          if (!touched.collate) $('prCollate').checked = info.collate === 1;
+          if (!touched.duplex && !booklet) $('prDuplex').value = String(info.duplex >= 1 && info.duplex <= 3 ? info.duplex : 1);
+          $('prDuplex').disabled = !info.caps.duplex;
+          if (!info.caps.duplex) $('prDuplex').value = '1';
+          $('prCollate').disabled = !info.caps.collate;
+          $('prStatus').textContent = (info.caps.color ? '' : '흑백 프린터 · ') + (info.caps.duplex ? '' : '양면 미지원 · ')
+            + '드라이버 설정은 [속성…]에서';
+        }
+        async function loadInfo() {
+          const name = $('prPrinter').value;
+          if (!name) return;
+          const seq = ++infoSeq;
+          $('prGo').disabled = true;
+          $('prStatus').textContent = '프린터 정보를 읽는 중…';
+          const r = await window.electronAPI.printerInfo({ printer: name, devmode: devmode || devmodes[name] || '', set: overrides() });
+          if (seq !== infoSeq || closed) return;
+          if (!r || !r.ok) { info = null; $('prStatus').textContent = '⚠ ' + ((r && r.error) || '프린터 정보를 읽지 못했습니다'); refresh(); return; }
+          info = r.json; devmode = info.devmode;
+          showInfo(); refresh();
+        }
+        let infoTimer = null;
+        const loadInfoSoon = () => { clearTimeout(infoTimer); infoTimer = setTimeout(loadInfo, 250); };
+
+        // 미리보기 — 용지(흰 종이)·인쇄 가능 영역(점선)·쪽(배치대로)
+        async function drawPreview() {
+          const cv = $('prCanvas'), ctx = cv.getContext('2d');
+          const seq = ++renderSeq;
+          const st = settings();
+          $('prSlider').max = Math.max(1, list.length);
+          $('prSlider').value = cur + 1;
+          $('prPageNo').textContent = list.length ? `${cur + 1} / ${list.length}쪽 (문서 ${list[cur] + 1}쪽)` : '인쇄할 쪽이 없습니다';
+          if (!info || !list.length || !pdfDoc) { ctx.clearRect(0, 0, cv.width, cv.height); return; }
+          const pi = list[cur];
+          if (radio('prRange') !== 'current') shownPage = pi;
+          if (!pageSizes[pi]) {
+            const pg = await pdfDoc.getPage(pi + 1);
+            const vp = pg.getViewport({ scale: 1 });
+            pageSizes[pi] = { w: vp.width / 72 * 25.4, h: vp.height / 72 * 25.4 };
+          }
+          if (seq !== renderSeq) return;
+          const ps = pageSizes[pi];
+          $('prDocDim').textContent = `문서: ${ps.w.toFixed(1)} × ${ps.h.toFixed(1)} mm`;
+          let P = info.paper, A = info.printable;
+          if (st.paperByPage && info.papers && info.papers.length) {   // 쪽마다 맞는 용지(±3mm) — 없으면 지금 용지
+            const m = info.papers.filter(p => p.code < 256).map(p => ({ p, d: Math.min(Math.max(Math.abs(p.w - ps.w), Math.abs(p.h - ps.h)), Math.max(Math.abs(p.w - ps.h), Math.abs(p.h - ps.w))) }))
+              .filter(x => x.d <= 3).sort((a, b) => a.d - b.d)[0];
+            if (m) {
+              const land = ps.w > ps.h, pw = land ? Math.max(m.p.w, m.p.h) : Math.min(m.p.w, m.p.h), ph = land ? Math.min(m.p.w, m.p.h) : Math.max(m.p.w, m.p.h);
+              const mg = { l: A.x, t: A.y, r: P.w - A.x - A.w, b: P.h - A.y - A.h };
+              P = { w: pw, h: ph, form: m.p.name };
+              A = { x: mg.l, y: mg.t, w: pw - mg.l - mg.r, h: ph - mg.t - mg.b };
+            }
+          }
+          const pl = printPlacement(ps.w, ps.h, { paper: P, printable: A }, { ...st, autoRotate: st.autoRotate && !st.paperByPage });
+          const box = $('prCanvas').parentElement;
+          const maxW = box.clientWidth - 8 || 300, maxH = box.clientHeight - 8 || 380;
+          const k = Math.min(maxW / P.w, maxH / P.h);
+          const dpr = window.devicePixelRatio || 1;
+          cv.width = Math.round(P.w * k * dpr); cv.height = Math.round(P.h * k * dpr);
+          cv.style.width = Math.round(P.w * k) + 'px'; cv.style.height = Math.round(P.h * k) + 'px';
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, P.w * k, P.h * k);
+          // 쪽 그림 — 한 번 그려 두고 배치대로 옮긴다
+          const pg = await pdfDoc.getPage(pi + 1);
+          if (seq !== renderSeq) return;
+          // 쪽 자신의 가로(mm) → 캔버스에 그려질 가로(px). 돌려 앉히면 용지 위 세로가 쪽의 가로다
+          const vp = pg.getViewport({ scale: Math.max(0.05, ((pl.rotate ? pl.h : pl.w) * k * dpr) / (ps.w / 25.4 * 72)) });
+          const tmp = document.createElement('canvas');
+          tmp.width = Math.max(1, Math.round(vp.width)); tmp.height = Math.max(1, Math.round(vp.height));
+          const tctx = tmp.getContext('2d'); tctx.fillStyle = '#fff'; tctx.fillRect(0, 0, tmp.width, tmp.height);
+          try { await pg.render({ canvasContext: tctx, viewport: vp, annotationMode: st.annots ? 1 : 0 }).promise; } catch (e) { if (seq !== renderSeq) return; }
+          if (seq !== renderSeq) return;
+          if (st.gray) { const id = tctx.getImageData(0, 0, tmp.width, tmp.height), d = id.data;
+            for (let i = 0; i < d.length; i += 4) { const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; d[i] = d[i + 1] = d[i + 2] = g; } tctx.putImageData(id, 0, 0); }
+          ctx.save();
+          ctx.beginPath(); ctx.rect(A.x * k, A.y * k, A.w * k, A.h * k); ctx.clip();   // 인쇄 가능 영역 밖은 프린터가 못 찍는다
+          ctx.translate((pl.x + pl.w / 2) * k, (pl.y + pl.h / 2) * k);
+          if (pl.rotate === 3) ctx.rotate(-Math.PI / 2);
+          const dw = (pl.rotate ? pl.h : pl.w) * k, dh = (pl.rotate ? pl.w : pl.h) * k;
+          ctx.drawImage(tmp, -dw / 2, -dh / 2, dw, dh);
+          ctx.restore();
+          ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1;
+          ctx.strokeRect(A.x * k + .5, A.y * k + .5, A.w * k - 1, A.h * k - 1); ctx.restore();
+          $('prPaperDim').textContent = `용지: ${P.w.toFixed(1)} × ${P.h.toFixed(1)} mm` + (P.form ? ` (${P.form})` : '') + (info.dpi ? ` · ${info.dpi}dpi` : '');
+          $('prWarn').textContent = (pl.clipped ? '⚠ 인쇄 가능 영역(점선)을 벗어난 부분은 잘립니다. ' : '')
+            + `배율 ${Math.round(pl.scale * 1000) / 10}%` + (pl.rotate ? ' · 90° 돌려 앉힘' : '');
+        }
+        let drawTimer = null;
+        const drawSoon = () => { clearTimeout(drawTimer); drawTimer = setTimeout(() => drawPreview().catch(e => console.warn('인쇄 미리보기:', e)), 60); };
+
+        function refresh() {
+          let err = '';
+          try { list = printPageList(total, { ...settings(), current: shownPage }); }
+          catch (e) { list = []; err = (e && e.message) || String(e); }
+          if (!err && !list.length) err = '고른 조건에 맞는 쪽이 없습니다.';
+          if (cur >= list.length) cur = Math.max(0, list.length - 1);
+          $('prPct').disabled = radio('prScale') !== 'custom';
+          $('prGo').disabled = !!err || !info || busy || !$('prPrinter').value;
+          if (err) $('prWarn').textContent = '⚠ ' + err; else if ($('prWarn').classList.contains('pr-bad')) $('prWarn').textContent = '';
+          if (err) $('prWarn').classList.add('pr-bad'); else $('prWarn').classList.remove('pr-bad');
+          drawSoon();
+        }
+
+        ov.querySelectorAll('input, select').forEach(el => {
+          el.addEventListener('input', () => {
+            if (el.id === 'prCollate') touched.collate = true;
+            if (el.id === 'prDuplex') touched.duplex = true;
+            if (el.id === 'prSpec') setRadio('prRange', 'pages');
+            if (el.id === 'prPct') setRadio('prScale', 'custom');
+            refresh();
+          });
+          el.addEventListener('change', () => {
+            if (el.id === 'prPrinter') { devmode = devmodes[el.value] || ''; info = null; touched.collate = touched.duplex = false; loadInfo(); return; }
+            if (el.name === 'prOrient' || el.id === 'prGray') loadInfoSoon();   // 용지 방향·색 → 드라이버가 정하는 용지 크기가 바뀐다
+            refresh();
+          });
+        });
+        $('prSpec').addEventListener('focus', () => { setRadio('prRange', 'pages'); refresh(); });
+        $('prPrev').onclick = () => { if (cur > 0) { cur--; drawSoon(); } };
+        $('prNext').onclick = () => { if (cur < list.length - 1) { cur++; drawSoon(); } };
+        $('prSlider').oninput = () => { cur = Math.max(0, Math.min(list.length - 1, ($('prSlider').value | 0) - 1)); drawSoon(); };
+
+        $('prProps').onclick = async () => {
+          const name = $('prPrinter').value;
+          if (!name || busy) return;
+          busy = true; refresh();
+          $('prStatus').textContent = '프린터 속성 창에서 설정한 뒤 [확인]을 누르세요…';
+          ov.classList.add('pr-wait');
+          const r = await window.electronAPI.printerProps({ printer: name, devmode, set: overrides() });
+          ov.classList.remove('pr-wait');
+          busy = false;
+          if (closed) return;
+          if (r && r.ok && r.json && !r.json.canceled) {
+            info = r.json; devmode = info.devmode;
+            // 속성 창에서 고른 값이 이 창의 칸보다 우선 — 부수·한 부씩·양면·방향을 맞춰 보여 준다
+            $('prCopies').value = Math.max(1, info.copies || 1);
+            touched.collate = false; touched.duplex = false;
+            if (radio('prOrient') !== 'auto') setRadio('prOrient', String(info.orient === 2 ? 2 : 1));
+            showInfo();
+          } else if (r && !r.ok) $('prStatus').textContent = '⚠ ' + (r.error || '속성 창을 열지 못했습니다');
+          else showInfo();
+          refresh();
+        };
+
+        const finish = (v) => {
+          if (closed) return;
+          closed = true;
+          document.removeEventListener('keydown', onKey);
+          clearTimeout(drawTimer); clearTimeout(infoTimer);
+          try { pdfDoc && pdfDoc.destroy(); } catch (e) {}
+          ov.remove();
+          if (v) {
+            const p = loadPrintPrefs();
+            p.printer = v.printer; p.scale = v.scale; p.pct = v.pct; p.paperByPage = v.paperByPage; p.annots = v.annots;
+            p.orient = radio('prOrient');
+            p.devmodes = Object.assign({}, p.devmodes || {}, { [v.printer]: v.devmode });
+            savePrintPrefs(p);
+          }
+          resolve(v);
+        };
+        const onKey = (e) => {
+          if (e.key === 'Escape' && !busy) finish(null);
+          else if (e.key === 'Enter' && !$('prGo').disabled && e.target.tagName !== 'SELECT' && e.target.tagName !== 'BUTTON') finish({ ...settings(), pages: list.slice() });
+        };
+        document.addEventListener('keydown', onKey);
+        $('prCancel').onclick = () => { if (!busy) finish(null); };
+        $('prGo').onclick = () => { if (!$('prGo').disabled) finish({ ...settings(), pages: list.slice() }); };
+
+        // 미리보기용 문서 · 프린터 목록
+        pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise.then(d => { if (closed) { d.destroy(); return; } pdfDoc = d; drawSoon(); }).catch(() => {});
+        Promise.resolve(window.electronAPI.listPrinters()).then(listP => {
+          if (closed) return;
+          printers = listP || [];
+          const sel = $('prPrinter');
+          sel.innerHTML = '';
+          if (!printers.length) { const o = document.createElement('option'); o.value = ''; o.textContent = '설치된 프린터가 없습니다'; sel.appendChild(o); }
+          printers.forEach(p => {
+            const o = document.createElement('option');
+            o.value = p.name;
+            o.textContent = p.name + (p.isDefault ? ' (기본)' : '') + (p.offline ? ' — 오프라인' : '');
+            o.title = p.driver;
+            sel.appendChild(o);
+          });
+          const pick = printers.find(p => p.name === prefs.printer) || printers.find(p => p.isDefault) || printers[0];
+          if (pick) { sel.value = pick.name; devmode = devmodes[pick.name] || ''; }
+          if (booklet) { $('prDuplex').value = '3'; touched.duplex = true; }
+          loadInfo();
+        }).catch(() => { $('prStatus').textContent = '⚠ 프린터 목록을 읽지 못했습니다'; });
+        refresh();
+      });
+    }
+
+    async function printProcessed() {
+      if (!processedPdfBytes) {
+        showError("먼저 '✔ 적용'을 눌러 수정사항을 적용한 뒤 인쇄하세요. (원본 그대로 인쇄하려면 🖨 인쇄 버튼을 마우스 오른쪽으로 클릭하세요)");
+        return;
+      }
+      if (!directOutputBytes && !inkNormSaveConfirmed()) return;
+      if (!(await fontsSaveConfirmed(directOutputBytes || processedPdfBytes))) return;
+      const built = await (async () => {
+        applying = true; updateDownloadBtn();
+        try { return await buildFinalSaveBytes(); }
+        finally { applying = false; updateDownloadBtn(); }
+      })().catch(err => { console.error('인쇄 준비 오류:', err); hideLoading(); showError('인쇄 준비 중 오류: ' + ((err && err.message) || String(err))); return null; });
+      if (!built) return;
+      await runPrint(built.bytes, processedFileName || 'output.pdf', built.colorCheck);
+    }
+
+    async function printOriginal(ev) {
+      if (ev) ev.preventDefault();
+      if (!originalPdfBytes) { showError('인쇄할 PDF가 없습니다 — 먼저 문서를 여세요.'); return; }
+      await runPrint(originalPdfBytes, (originalFileName || 'document') + '.pdf', null, { original: true });
+    }
+
+    // 인쇄 본체 — 적용본·원본 공용
+    async function runPrint(bytes, docName, colorCheck, opts) {
+      let tmp = null, off = null;
+      try {
+        const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+        const total = doc.getPageCount();
+        const st = await askPrintSettings(bytes, total, opts);
+        if (!st) return;
+        const ccWarn = colorCheckWarning(colorCheck);
+        if (ccWarn && !confirm(ccWarn)) return;
+        showLoading(`인쇄 중… 0 / ${st.pages.length}쪽`);
+        progressBar.style.display = 'block'; updateProgress(0);
+        off = window.electronAPI.onPrintProgress(p => {
+          showLoading(`인쇄 중… ${p.done} / ${p.total}쪽`);
+          updateProgress(Math.round(p.done / Math.max(1, p.total) * 100));
+        });
+        tmp = window.electronAPI.writeTempFile(bytes, 'pdf');
+        const res = await window.electronAPI.printPdf({
+          path: tmp, printer: st.printer, devmode: st.devmode, set: st.set, pages: st.pages,
+          scale: st.scale, pct: st.pct, autoRotate: st.autoRotate && !st.paperByPage, gray: st.gray, annots: st.annots,
+          paperByPage: st.paperByPage, docName,
+        });
+        tmp = null;   // main이 인쇄 뒤(성공·실패 모두) 지운다
+        hideLoading(); progressBar.style.display = 'none';
+        if (!res || res.canceled) return;
+        if (!res.ok) { showError('인쇄하지 못했습니다: ' + (res.error || '알 수 없는 오류') + '\n프린터가 켜져 있고 연결돼 있는지 확인하세요.'); return; }
+        const sc = { fit: '맞추기', actual: '실제 크기', shrink: '큰 페이지 축소', custom: `${st.pct}%` }[st.scale];
+        const dup = { 1: '단면', 2: '양면 · 긴 쪽 넘김', 3: '양면 · 짧은 쪽 넘김' }[st.set.duplex] || '드라이버 설정대로';
+        showSuccess(`🖨 ${st.printer}(으)로 보냈습니다 — ${res.pages}쪽 × ${st.set.copies}부 · ${sc} · ${dup}`
+          + (st.gray ? ' · 회색 명암' : '') + (opts && opts.original ? ' (원본 그대로)' : '')
+          + '\n인쇄 진행은 Windows 인쇄 대기열(프린터 아이콘)에서 확인하세요. 재단 전 첫 장의 크기·방향을 먼저 확인하세요.');
+      } catch (err) {
+        console.error('인쇄 오류:', err);
+        showError('인쇄 중 오류: ' + ((err && err.message) || String(err)));
+      } finally {
+        if (off) off();
+        if (tmp) { try { window.electronAPI.removeTempFile(tmp); } catch (e) {} }
+        hideLoading();
+        progressBar.style.display = 'none';
+      }
+    }
+
     // ── 여러 파일을 하나의 PDF로 합치기 ──────────────────────────────────────
     // 열려 있는 모든 탭의 원본 PDF(HWP/HWPX는 변환된 PDF)를 탭 순서대로 병합.
     // 병합본은 저장 다이얼로그로 바로 저장하고, 동시에 새 탭으로 열어 분석한다.
@@ -8607,6 +8996,7 @@
       });
       renderSidebar(results);
       if (typeof markSpreadFirst === 'function') markSpreadFirst();   // 📖 펼침 모드 첫 페이지 표식
+      if (typeof scheduleThumbUpgrade === 'function') setTimeout(scheduleThumbUpgrade, 800);   // 보이는 쪽부터 선명하게
     }
 
     // 합본 그리드용 파일 구분 헤더(전체 열 너비 차지) — 위/아래 이동·삭제 버튼 포함
