@@ -203,6 +203,7 @@ function setMode(m) {
   show('rowSides', nu || cs || dp);
   show('rowRep', rp);
   show('rowShuffle', rp);
+  show('rowDup', mode === 'dup');
   $('hint').textContent = ({
     booklet: '중철(북클릿): 앞/뒤 교대로 재배열 → 가로 용지·양면·짧은 쪽 넘김 → 반 접어 중철.',
     nup: '모아찍기(N-up): 연속 페이지를 열×행 그리드로 앉힙니다.',
@@ -259,7 +260,7 @@ function buildOpts() {
   if (mode === 'nup') return Object.assign(common, { mode, sheet: paperPt(nupOrient), across, down, sides, order: 'sequential' });
   if (mode === 'cutstack') return Object.assign(common, { mode, sheet: paperPt(down > 1 ? 'portrait' : 'landscape'), across, down, sides, order: 'cutstack' });
   if (mode === 'repeat') return Object.assign(common, { mode, sheet: paperPt(null), cols: parseInt($('repCols').value) || 0, rows: parseInt($('repRows').value) || 0, shuffleCopies: $('repShuffle').checked ? Math.max(1, parseInt($('repCopies').value) || 1) : 0, shuffleDuplex: $('repShuffle').checked ? $('repShuffleSides').value : '' });
-  if (mode === 'dup') return Object.assign(common, { mode, sheet: paperPt('landscape'), sides });
+  if (mode === 'dup') return Object.assign(common, { mode, sheet: paperPt('landscape'), sides, dupDir: $('dupDir').value || 'auto' });
   return Object.assign(common, { mode: 'booklet', sheet: paperPt('landscape'), creep: parseFloat($('creep').value) || 0, binding: document.querySelector('#bindGrp button.active')?.dataset.b || 'left' });
 }
 
@@ -380,6 +381,7 @@ function applyProfile() {
   $('margin').value = p.mg != null ? p.mg : (p.ml || 0);
   $('gutter').value = p.hg || 0; $('bleed').value = p.bl || 0;
   $('crop').checked = !!p.cr; $('frame').checked = !!p.fr;
+  $('dupDir').value = p.dd || 'auto';
   setStatus("프로파일 '" + p.n + "' 불러옴 — [임포징 생성]을 누르세요.");
 }
 function saveProfileAs() {
@@ -396,6 +398,7 @@ function saveProfileAs() {
   if (o.place.offX) s.ox = o.place.offX;
   if (o.place.offY) s.oy = o.place.offY;
   if (mode === 'booklet' && o.binding === 'right') s.bd = 'right';
+  if (mode === 'dup' && $('dupDir').value !== 'auto') s.dd = $('dupDir').value;
   const list = loadProfiles(); const at = list.findIndex(x => x.n === name);
   if (at >= 0) { if (!confirm("'" + name + "' 덮어쓸까요?")) return; list[at] = s; } else list.push(s);
   saveProfiles(list); fillProfiles(); setStatus("프로파일 '" + name + "' 저장됨.");
@@ -634,6 +637,10 @@ const html = `<!doctype html>
         <input type="number" id="repCols" min="1" placeholder="가로" style="flex:0 0 60px;"> ×
         <input type="number" id="repRows" min="1" placeholder="세로" style="flex:0 0 60px;">
         <span class="hint" style="margin:0;">비우면 자동</span>
+      </div>
+      <div class="row" id="rowDup" style="display:none;">
+        <label class="lbl">배치</label>
+        <select id="dupDir" title="두 벌을 놓는 방향 — 자동은 원고가 대지에 들어가는 쪽(가로형 원고는 위아래). 좌우 = 가로 용지·짧은 쪽 넘김, 위아래 = 세로 용지·긴 쪽 넘김"><option value="auto">자동</option><option value="h">좌우 (가로 용지)</option><option value="v">위아래 (세로 용지)</option></select>
       </div>
       <div class="row" id="rowShuffle" style="display:none;">
         <label class="ck" title="N부 전체를 칸마다 더미로 나눠 PDF 하나에 — 1부만 단면 인쇄 → 한 번에 재단 → 1번 더미 위에 2번, 3번… 겹치면 1부부터 순서대로"><input type="checkbox" id="repShuffle"> 🔀 셔플</label>

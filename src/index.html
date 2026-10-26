@@ -762,6 +762,15 @@
         <input type="number" class="es-input" id="repRows" min="1" placeholder="세로" style="flex:0 0 56px;" title="세로 칸 수 — 비우면 원고 실제 크기로 자동 최대 배치" oninput="impSettingsChanged()">
         <span class="es-hint" style="margin:0; flex:1;">비우면 실제 크기 자동 최대</span>
       </div>
+      <!-- 복제 2부 전용: 두 벌을 놓는 방향 -->
+      <div class="es-row" id="impDupRow" style="margin-top:6px; display:none;">
+        <span class="es-label">배치</span>
+        <select class="es-input" id="impDupDir" style="flex:1 1 auto; min-width:0;" title="두 벌을 놓는 방향 — 자동은 원고가 대지에 들어가는 쪽을 고릅니다(가로형 원고는 위아래). 좌우 = 가로 용지·짧은 쪽 넘김, 위아래 = 세로 용지·긴 쪽 넘김" onchange="impSettingsChanged()">
+          <option value="auto">자동</option>
+          <option value="h">좌우 (가로 용지)</option>
+          <option value="v">위아래 (세로 용지)</option>
+        </select>
+      </div>
       <!-- 반복 전용: 🔀 셔플 — N부 전체를 PDF 하나로(재단 후 더미를 차례로 겹치면 1부·2부… 순서대로) -->
       <div class="es-row" id="impShuffleRow" style="margin-top:6px; display:none;">
         <label class="icr-chk" style="font-size:12px;" title="한 쪽을 시트 가득 반복하는 대신, N부 전체(1부 1~끝쪽, 2부 1~끝쪽 …)를 칸마다 더미로 나눠 PDF 하나에 담습니다. 1부만 인쇄 → 한 번에 재단 → 1번 더미 위에 2번, 3번… 차례로 겹치면 1부부터 순서대로 나옵니다(단면)">

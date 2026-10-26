@@ -855,6 +855,7 @@
       if (g('impStackWrap'))  g('impStackWrap').style.display  = (cs || (rp && !!g('repShuffle')?.checked)) ? '' : 'none';   // 묶음번호는 정합·셔플
       if (g('impRepRow'))     g('impRepRow').style.display     = rp ? '' : 'none';
       if (g('impShuffleRow')) g('impShuffleRow').style.display = rp ? '' : 'none';
+      if (g('impDupRow'))     g('impDupRow').style.display     = mode === 'dup' ? '' : 'none';   // 복제 2부 배치 방향
       if (g('bkCreepWrap'))   g('bkCreepWrap').style.display   = bk ? 'flex' : 'none';   // 밀림보정은 중철 전용
       if (g('impJustifyWrap')) g('impJustifyWrap').style.display = (cs || nu || mode === 'dup') ? '' : 'none';   // ↔ 양끝 맞춤
       if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
@@ -867,7 +868,7 @@
         : rp
         ? '명함·쿠폰·전단용 <b>같은 원고 반복 배치</b>. 각 페이지를 한 시트에 여러 벌 깔아 별도 PDF로 저장합니다.<br>배치를 비우면 <b>원고 실제 크기</b>로 최대 배치(용지 방향 자동 선택), 칸수를 지정하면 칸에 맞춰 확대/축소됩니다.'
         : mode === 'dup'
-        ? '한 시트에 같은 페이지 <b>2벌(오른쪽 벌 180° 회전)</b>을 양면으로 앉힙니다 — Quite Imposing의 <b>1 1* 2* 2</b> 방식.<br>인쇄: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 세로 재단 → 같은 문서 <b>2部</b> 완성.'
+        ? '한 시트에 같은 페이지 <b>2벌(둘째 벌 180° 회전)</b>을 양면으로 앉힙니다 — Quite Imposing의 <b>1 1* 2* 2</b> 방식.<br>좌우: <b>가로 용지 · 양면 · 짧은 쪽 넘김</b> → 세로 재단 / 위아래: <b>세로 용지 · 양면 · 긴 쪽 넘김</b> → 가로 재단 → 같은 문서 <b>2部</b> 완성. 배치 \'자동\'은 원고가 대지에 들어가는 쪽을 고릅니다(가로형 원고 → 위아래).'
         : '임포징 방식을 <b>선택하지 않은 기본 상태</b>입니다. 위에서 방식(중철·모아찍기·정합·반복·복제)을 고르거나 프로파일을 불러오면 옵션이 나타납니다.';
       syncImpPerChapterUI();   // 모아찍기면 '챕터별로 따로'가 켜진 채 잠긴다
       impSettingsChanged();
@@ -1140,84 +1141,142 @@
       _bleedCache = { sig, bytes: res.bytes };
       return res.bytes;
     }
+    // ── ◲ 블리드 생성 — 본문은 벡터 그대로 한 번, 바깥 띠는 그림으로 ─────────────────────
+    // 예전에는 바깥 띠(사방 4곳 + 모서리 4곳)를 만들려고 **쪽 전체를 8번 더** 그리고 클립으로 잘랐다.
+    // 클립은 그리는 비용을 줄이지 못해(렌더러가 내용 전체를 해석·합성) 투명도·사진이 많은 도록은
+    // 아크로뱃이 열 때 한참 멈췄다(gs 전체 렌더 4.6초 → 블리드 + 2벌 67.7초, 2026-10-26).
+    // 이제 쪽을 pdf.js로 한 번 렌더해 띠 4개(위·아래 = 모서리 포함 전체 폭, 좌·우)를 화소로 만들어 붙인다.
+    // 띠는 재단으로 잘려 나가는 자리 + 트림 안쪽 0.2~0.5mm라 그림이어도 인쇄물에 차이가 없다.
+    // 띠가 무채색이면 DeviceGray(Flate)로 — RGB 그림이면 흑백 쪽이 컬러로 과금된다(함정 15).
     async function buildBleedBytes(srcBytes, bleedMm, onProgress, opts) {
       const MM = 72 / 25.4, b = bleedMm * MM;
       const src = await PDFLib.PDFDocument.load(srcBytes.slice ? srcBytes.slice(0) : srcBytes);
       const out = await PDFLib.PDFDocument.create();
-      const embedded = await embedAllPages(out, src, onProgress);
-      const { pushGraphicsState, popGraphicsState, moveTo, lineTo, closePath, clip, endPath, PDFName } = PDFLib;
-      const clipDraw = (pg, cx, cy, cw, ch, e, opts) => {
-        pg.pushOperators(pushGraphicsState(), moveTo(cx, cy), lineTo(cx+cw, cy), lineTo(cx+cw, cy+ch), lineTo(cx, cy+ch), closePath(), clip(), endPath());
-        pg.drawPage(e, opts);
-        pg.pushOperators(popGraphicsState());
-      };
+      const embedded = await embedAllPages(out, src, p => onProgress && onProgress(Math.round(p * 0.3)));
+      const { pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject, PDFName } = PDFLib;
       // 채우는 방식 두 가지 ────────────────────────────────────────────────
-      //  · 미러(mirror): 가장자리를 접어 반사. 사진·그라데이션 원고에 자연스럽다.
-      //    다만 원고 가장자리에 '테두리'가 있으면 그 테두리가 반사돼 트림선 바깥에
-      //    한 줄 더 생긴다 — 재단선 부근의 '얇은 선'으로 보인다.
-      //  · 늘리기(stretch, 기본): 가장자리 한 줄을 바깥으로 잡아 늘린다. 테두리가
-      //    있어도 색이 그대로 이어질 뿐이라 선이 생기지 않는다.
-      // 어느 쪽이든 이음매가 벌어지지 않게 eps만큼 겹쳐 그린 뒤, 원본을 맨 위에 덮는다.
-      // 기본은 지금까지와 같은 '미러'. 늘리기는 opts.mode='stretch'로 명시할 때만 쓴다
-      // (테두리 있는 원고에서 반사가 거슬릴 때를 위한 대안 — 아직 UI로는 노출하지 않았다).
+      //  · 미러(mirror, 기본): 가장자리를 접어 반사. 사진·그라데이션 원고에 자연스럽다.
+      //  · 늘리기(stretch): 가장자리 한 줄을 바깥으로 잡아 늘린다(테두리 있는 원고용 — UI 미노출).
       const stretch = !!(opts && opts.mode === 'stretch');
       const eps = Math.min(0.75, b * 0.5);   // pt (약 0.26mm 이하)
       // ⚠ 원고 맨 가장자리의 '한 줄'을 쓰지 않는다 ────────────────────────────
-      // 실무 원고에는 맨 바깥 한 줄이 주변과 다른 경우가 흔하다(디자인 툴이 남긴 테두리
-      // 자국·이미지 가장자리). 원본에서는 페이지 끝이라 안 보이지만, 블리드를 만들면
-      // 그 줄이 트림선 안쪽으로 옮겨 앉아 **사방에 얇은 선**으로 인쇄된다.
-      // (사용자 원고에서 실측: 원고 맨 아랫줄 179 / 안쪽 238 → 블리드본에서 그대로 선이 됨)
-      // → 반사축을 가장자리가 아니라 ov만큼 안쪽으로 잡는다. 그러면 미러가 그 줄을
-      //   반사하지도 않고, 트림 바깥+안쪽 ov까지 덮어 원고의 그 줄을 가려 준다.
-      //   ov는 재단선 바로 옆(잘려 나가는 자리)이라 실제 인쇄물에는 영향이 없다.
+      // 실무 원고에는 맨 바깥 한 줄이 주변과 다른 경우가 흔하다(디자인 툴이 남긴 테두리 자국).
+      // 블리드를 만들면 그 줄이 트림선 안쪽으로 옮겨 앉아 사방에 얇은 선으로 인쇄된다
+      // (사용자 원고 실측: 맨 아랫줄 179 / 안쪽 238). → 반사축을 ov만큼 안쪽으로 잡고, 띠가 트림 안쪽
+      // ov까지 덮어 그 줄을 가린다(재단선 바로 옆 — 인쇄물에는 영향 없음).
       const ov = Math.min(1.5, Math.max(0.6, b * 0.35));   // pt (0.2~0.5mm)
-      // 늘리기: 가장자리 sl(pt) 한 줄을 b+eps 폭으로 확대한다. 배율이 클수록 '한 줄'에
-      // 가까워 색이 깔끔하게 이어지고, 너무 얇으면 안티에일리어싱된 반투명 줄을 늘려
-      // 흐린 띠가 된다 → 0.5pt 정도가 안정적.
-      const sl = 0.5, sx = (b + eps) / sl, sy = (b + eps) / sl;
-      for (let i = 0; i < embedded.length; i++) {
-        const { e, w, h } = embedded[i];
-        const pg = out.addPage([w + 2*b, h + 2*b]);
-        // ① 원본을 먼저 깐다. 바깥 띠는 그 **위에** 덮는다 — 원고 가장자리의 얇은 줄을
-        //    띠가 가려 주도록(위에서 설명한 ov). 순서를 바꾸면 그 줄이 그대로 남는다.
-        pg.drawPage(e, { x: b, y: b });
-        if (stretch) {
-          // 좌: 원고 x∈[0,sl] → 캔버스 [b+eps-(b+eps), b+eps] = [0, b+eps]
-          clipDraw(pg, 0,       b-eps,   b+eps,   h+2*eps, e, { x: b+eps-sl*sx,      y: b,               xScale: sx });
-          clipDraw(pg, b+w-eps, b-eps,   b+eps,   h+2*eps, e, { x: b+w-eps-(w-sl)*sx, y: b,              xScale: sx });
-          clipDraw(pg, b-eps,   0,       w+2*eps, b+eps,   e, { x: b,                y: b+eps-sl*sy,     yScale: sy });
-          clipDraw(pg, b-eps,   b+h-eps, w+2*eps, b+eps,   e, { x: b,                y: b+h-eps-(h-sl)*sy, yScale: sy });
-          // 모서리 — 양쪽으로 함께 늘린다
-          clipDraw(pg, 0,       0,       b+eps, b+eps, e, { x: b+eps-sl*sx,       y: b+eps-sl*sy,        xScale: sx, yScale: sy });
-          clipDraw(pg, b+w-eps, 0,       b+eps, b+eps, e, { x: b+w-eps-(w-sl)*sx, y: b+eps-sl*sy,        xScale: sx, yScale: sy });
-          clipDraw(pg, 0,       b+h-eps, b+eps, b+eps, e, { x: b+eps-sl*sx,       y: b+h-eps-(h-sl)*sy,  xScale: sx, yScale: sy });
-          clipDraw(pg, b+w-eps, b+h-eps, b+eps, b+eps, e, { x: b+w-eps-(w-sl)*sx, y: b+h-eps-(h-sl)*sy,  xScale: sx, yScale: sy });
-        } else {
-          // 반사축을 가장자리에서 ov만큼 안쪽으로 — 가장자리 한 줄은 반사도 안 하고 가려진다.
-          // 좌: 축 x=b+ov → 원고 x=s 는 캔버스 b+2ov-s. 클립은 [0, b+ov].
-          clipDraw(pg, 0,       b-ov,    b+ov, h+2*ov, e, { x: b+2*ov,        y: b,             xScale:-1 });          // 좌
-          clipDraw(pg, b+w-ov,  b-ov,    b+ov, h+2*ov, e, { x: b+2*w-2*ov,    y: b,             xScale:-1 });          // 우
-          clipDraw(pg, b-ov,    0,       w+2*ov, b+ov, e, { x: b,             y: b+2*ov,        yScale:-1 });          // 하
-          clipDraw(pg, b-ov,    b+h-ov,  w+2*ov, b+ov, e, { x: b,             y: b+2*h-2*ov,    yScale:-1 });          // 상
-          clipDraw(pg, 0,       0,       b+ov, b+ov, e, { x: b+2*ov,     y: b+2*ov,     xScale:-1, yScale:-1 });       // 좌하
-          clipDraw(pg, b+w-ov,  0,       b+ov, b+ov, e, { x: b+2*w-2*ov, y: b+2*ov,     xScale:-1, yScale:-1 });       // 우하
-          clipDraw(pg, 0,       b+h-ov,  b+ov, b+ov, e, { x: b+2*ov,     y: b+2*h-2*ov, xScale:-1, yScale:-1 });       // 좌상
-          clipDraw(pg, b+w-ov,  b+h-ov,  b+ov, b+ov, e, { x: b+2*w-2*ov, y: b+2*h-2*ov, xScale:-1, yScale:-1 });       // 우상
+      const ci = stretch ? eps : ov;                        // 띠가 트림 안쪽으로 덮는 폭
+      const sl = 0.25;                                      // 늘리기: 가장자리에서 이만큼 안쪽 한 줄을 늘린다
+      const DPI = 200, k = DPI / 72;                         // 띠 해상도 — 잘려 나가는 자리라 200dpi면 충분
+      const mapAxis = (u, L) => {
+        if (stretch) return Math.min(L - sl, Math.max(sl, u));
+        const m = u < ov ? 2 * ov - u : u > L - ov ? 2 * (L - ov) - u : u;
+        return Math.min(L, Math.max(0, m));
+      };
+      // ② 쪽마다 한 번 렌더해 띠 화소를 만든다 — pdf.js는 문서당 작업 스레드가 하나라 같은 바이트로 문서를
+      //    몇 개 더 열어 여러 쪽을 동시에 렌더한다(분석과 같은 예산: 512MB ÷ 파일 크기, PC 메모리로 상한).
+      //    76쪽 146MB 도록: 문서 1개 20.7초.
+      const srcLen = Math.max(1, srcBytes.byteLength || srcBytes.length || 1);
+      let ramGB = 0;
+      try { ramGB = (window.electronAPI && window.electronAPI.totalMemoryGB) ? window.electronAPI.totalMemoryGB() : 0; } catch (e) {}
+      const ramCap = ramGB >= 24 ? 6 : ramGB >= 12 ? 4 : ramGB >= 8 ? 3 : 2;
+      const nDocs = embedded.length >= 4 ? Math.max(1, Math.min(ramCap, navigator.hardwareConcurrency || 4, Math.floor(512 * 1024 * 1024 / srcLen))) : 1;
+      const docs = [];
+      const bandsOf = async (doc, i) => {
+        const { w, h } = embedded[i];
+        // pdf-lib이 싣는 상자(MediaBox)와 같은 영역·같은 회전으로
+        const mb = src.getPage(i).getMediaBox();
+        const page = await doc.getPage(i + 1);
+        const ks = Math.min(k, 4000 / Math.max(w, h));   // 아주 큰 쪽은 긴 변 4000px까지
+        // pdf.js는 PageViewport를 바깥에 내보내지 않는다 — 쪽 뷰포트의 생성자를 빌려 MediaBox 기준으로 만든다
+        //   (getViewport는 CropBox 기준이라 CropBox가 작은 원고면 띠가 어긋난다)
+        const VP = page.getViewport({ scale: 1 }).constructor;
+        const vp = new VP({ viewBox: [mb.x, mb.y, mb.x + mb.width, mb.y + mb.height], scale: ks, rotation: page.rotate || 0, offsetX: 0, offsetY: 0 });
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.ceil(vp.width)); cv.height = Math.max(1, Math.ceil(vp.height));
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+        cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+        await renderPageNoSeams(page, { canvasContext: cx, viewport: vp });   // 사진 띠 흰 줄 보정
+        page.cleanup();
+        const sd = cx.getImageData(0, 0, cv.width, cv.height).data, SW = cv.width, SH = cv.height;
+        cv.width = cv.height = 0;
+        // ③ 띠 4개 — 출력 쪽 좌표(pt, 아래가 0). 좌·우는 위아래 띠와 1pt 겹치게(이음매 틈 방지), 위·아래를 나중에.
+        const e2 = 1;
+        const bands = [
+          { x: 0,         y: b + ci - e2, w: b + ci,      h: h - 2 * ci + 2 * e2 },   // 좌
+          { x: b + w - ci, y: b + ci - e2, w: b + ci,      h: h - 2 * ci + 2 * e2 },   // 우
+          { x: 0,         y: 0,           w: w + 2 * b,   h: b + ci },                // 아래(모서리 포함)
+          { x: 0,         y: b + h - ci,  w: w + 2 * b,   h: b + ci },                // 위(모서리 포함)
+        ];
+        let neutral = true;
+        const pix = bands.map(bd => {
+          const pw = Math.max(1, Math.round(bd.w * k)), ph = Math.max(1, Math.round(bd.h * k));
+          const rgb = new Uint8Array(pw * ph * 3);
+          for (let py = 0; py < ph; py++) {
+            const v = mapAxis(bd.y + bd.h - (py + 0.5) * bd.h / ph - b, h);      // 쪽 좌표(위로 +)
+            const sy = Math.min(SH - 1, Math.max(0, Math.floor((h - v) * ks)));
+            for (let px = 0; px < pw; px++) {
+              const u = mapAxis(bd.x + (px + 0.5) * bd.w / pw - b, w);
+              const sx = Math.min(SW - 1, Math.max(0, Math.floor(u * ks)));
+              const so = (sy * SW + sx) * 4, o = (py * pw + px) * 3;
+              const r = sd[so], g = sd[so + 1], bl = sd[so + 2];
+              rgb[o] = r; rgb[o + 1] = g; rgb[o + 2] = bl;
+              if (neutral && (Math.abs(r - g) > 4 || Math.abs(g - bl) > 4 || Math.abs(r - bl) > 4)) neutral = false;
+            }
+          }
+          return { bd, pw, ph, rgb };
+        });
+        return { pix, neutral };
+      };
+      try {
+        docs.push(await openPdfDoc({ data: srcBytes.slice ? srcBytes.slice(0) : srcBytes }).promise);
+        if (nDocs > 1) {
+          const opened = await Promise.allSettled(Array.from({ length: nDocs - 1 },
+            () => openPdfDoc({ data: srcBytes.slice ? srcBytes.slice(0) : srcBytes }).promise));
+          for (const o of opened) if (o.status === 'fulfilled') docs.push(o.value);
         }
-        // 재단 정보 기록 — 임포징·출력기가 트림 위치를 알 수 있게
-        pg.node.set(PDFName.of('TrimBox'),  out.context.obj([b, b, b+w, b+h]));
-        pg.node.set(PDFName.of('BleedBox'), out.context.obj([0, 0, w+2*b, h+2*b]));
-        // ✂ 재단선 — 트림 모서리에, 블리드 영역 안에 딱 맞게 (간격+길이 = 블리드 폭)
-        if (opts && opts.crop) {
-          // 모양·굵기·중앙마크는 임포징과 같은 설정을 쓰고, 간격·길이만 블리드 폭 안에 맞춘다
-          const st = (typeof _impCropStyle === 'function' ? _impCropStyle() : null) || {};
-          const gap = Math.min(st.gap != null ? st.gap : 1, bleedMm * 0.25);
-          const len = Math.max(1, Math.min(st.len != null ? st.len : 3, bleedMm - gap));
-          drawCropMarks(pg, b, b, w, h, Object.assign({}, st, { gap, len }));
+        // 문서당 2쪽씩 한 묶음으로 동시에 렌더 → 순서대로 쪽을 붙인다(띠 화소는 묶음만큼만 들고 있다)
+        const CH = docs.length * 2;
+        for (let c0 = 0; c0 < embedded.length; c0 += CH) {
+          const idx = [];
+          for (let i = c0; i < Math.min(embedded.length, c0 + CH); i++) idx.push(i);
+          const got = await Promise.all(idx.map((i, j) => bandsOf(docs[j % docs.length], i)));
+          for (let j = 0; j < idx.length; j++) {
+            const i = idx[j];
+            const { e, w, h } = embedded[i];
+            const { pix, neutral } = got[j]; got[j] = null;
+            const pg = out.addPage([w + 2 * b, h + 2 * b]);
+            // ① 원본(벡터)을 먼저 깐다. 바깥 띠는 그 **위에** 덮는다 — 원고 가장자리의 얇은 줄을 띠가 가리도록.
+            pg.drawPage(e, { x: b, y: b });
+            // ④ 그림으로 싣기 — 무채색이면 회색 1성분, 아니면 RGB(무손실 Flate — 띠가 작아 용량 부담이 적다)
+            for (let t = 0; t < pix.length; t++) {
+              const { bd, pw, ph, rgb } = pix[t];
+              let data = rgb;
+              if (neutral) { data = new Uint8Array(pw * ph); for (let q = 0; q < data.length; q++) data[q] = rgb[q * 3]; }
+              const st = out.context.flateStream(data, {
+                Type: 'XObject', Subtype: 'Image', Width: pw, Height: ph,
+                ColorSpace: neutral ? 'DeviceGray' : 'DeviceRGB', BitsPerComponent: 8,
+              });
+              const ref = out.context.register(st);
+              const name = pg.node.newXObject('Bleed', ref);
+              pg.pushOperators(pushGraphicsState(), concatTransformationMatrix(bd.w, 0, 0, bd.h, bd.x, bd.y), drawObject(name), popGraphicsState());
+            }
+            // 재단 정보 기록 — 임포징·출력기가 트림 위치를 알 수 있게
+            pg.node.set(PDFName.of('TrimBox'),  out.context.obj([b, b, b + w, b + h]));
+            pg.node.set(PDFName.of('BleedBox'), out.context.obj([0, 0, w + 2 * b, h + 2 * b]));
+            // ✂ 재단선 — 트림 모서리에, 블리드 영역 안에 딱 맞게 (간격+길이 = 블리드 폭)
+            if (opts && opts.crop) {
+              // 모양·굵기·중앙마크는 임포징과 같은 설정을 쓰고, 간격·길이만 블리드 폭 안에 맞춘다
+              const cst = (typeof _impCropStyle === 'function' ? _impCropStyle() : null) || {};
+              const gap = Math.min(cst.gap != null ? cst.gap : 1, bleedMm * 0.25);
+              const len = Math.max(1, Math.min(cst.len != null ? cst.len : 3, bleedMm - gap));
+              drawCropMarks(pg, b, b, w, h, Object.assign({}, cst, { gap, len }));
+            }
+            if (onProgress) onProgress(30 + Math.round((i + 1) / embedded.length * 70));
+          }
+          await uiYield();
         }
-        if (onProgress && (i & 7) === 0) onProgress(40 + Math.round(i / embedded.length * 60));
-        await uiYield();
-      }
+      } finally { for (const d of docs) { try { await d.destroy(); } catch (e) {} } }
       return { bytes: await savePdfDoc(out), n: embedded.length };
     }
     async function generateBleed() {
@@ -1393,7 +1452,7 @@
       }
       if (o.fold && sp > 0) {
         // 오시선(접는선) — 책등 양쪽 경계 위·아래 여백에 짧은 선 (재단 후 접는 위치 표시)
-        const black = PDFLib.rgb(0, 0, 0);
+        const black = PDFLib.cmyk(0, 0, 0, 1);   // 먹 1도(K100) — RGB 검정은 프린터가 C·M·Y까지 써 흑백 쪽이 컬러로 셀 수 있다
         const gap = ((o.bleedMm || 0) + 1) * MM, len = 4 * MM;
         [ox + tw, ox + tw + sp].forEach(fx => {
           page.drawLine({ start: { x: fx, y: trimAll.y - gap }, end: { x: fx, y: Math.max(0, trimAll.y - gap - len) }, thickness: 0.4, color: black, dashArray: [2, 2] });
@@ -3129,7 +3188,7 @@
       const gap = (s.gap != null ? s.gap : 1) * MM, len = (s.len != null ? s.len : 3) * MM;
       const th = s.th != null ? s.th : 0.4;
       const shape = s.shape || 'corner';
-      const black = PDFLib.rgb(0, 0, 0);
+      const black = PDFLib.cmyk(0, 0, 0, 1);   // 먹 1도(K100) — RGB 검정은 프린터가 C·M·Y까지 써 흑백 쪽이 컬러로 셀 수 있다
       const L = (x1, y1, x2, y2) =>
         page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: th, color: black });
       const corners = [[x, y, -1, -1], [x + w, y, 1, -1], [x, y + h, -1, 1], [x + w, y + h, 1, 1]];
@@ -3323,7 +3382,7 @@
     // 임포징 공용: 각 페이지 주위 얇은 테두리(프레임) — trim 사각형에 그림
     function drawFrame(page, t) {
       if (!t) return;
-      page.drawRectangle({ x: t.x, y: t.y, width: t.w, height: t.h, borderColor: PDFLib.rgb(0, 0, 0), borderWidth: 0.3 });
+      page.drawRectangle({ x: t.x, y: t.y, width: t.w, height: t.h, borderColor: PDFLib.cmyk(0, 0, 0, 1), borderWidth: 0.3 });
     }
     // ── 임포징 공용: 슬러그(시트 작업정보) + 정합 묶음번호 ──────────────────────
     // opts.slug = { text: '파일명 · 날짜', fontBytes: TTF ArrayBuffer|null } — 한글은 fontBytes가
@@ -3356,7 +3415,7 @@
         text = ((slug.base ? slug.base + ' · ' : '') + `sheet ${i}/${n} ${side === 'B' ? 'B' : 'F'}`)
           .replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim();
       }
-      try { page.drawText(text, { x: 4 * MM, y: 1.2 * MM, size: 6.5, font: slug.font, color: PDFLib.rgb(0, 0, 0) }); } catch (e) {}
+      try { page.drawText(text, { x: 4 * MM, y: 1.2 * MM, size: 6.5, font: slug.font, color: PDFLib.cmyk(0, 0, 0, 1) }); } catch (e) {}
     }
     // 정합 묶음번호 — 흰 원+검정 번호를 트림 '왼쪽 바깥'에(공간 없으면 위 바깥 → 최후 트림 안 좌상단).
     // 재단선 밖이라 재단 시 잘려나감 — 전지 상태에서 묶음 겹치기 순서 안내용.
@@ -3366,7 +3425,7 @@
     // 같은 좌표가 여러 칸에서 겹치면 한 번만 찍는다(0.1mm 단위로 묶음).
     function drawCutDims(page, trims, font, sw, sh, style) {
       if (!font || !trims || !trims.length) return;
-      const MM = 72 / 25.4, size = 6.5, black = PDFLib.rgb(0, 0, 0);
+      const MM = 72 / 25.4, size = 6.5, black = PDFLib.cmyk(0, 0, 0, 1);   // 먹 1도
       const uniq = vals => [...new Set(vals.map(v => Math.round(v / MM * 10) / 10))].sort((a, b) => a - b);
       const xs = uniq(trims.flatMap(t => t ? [t.x, t.x + t.w] : []));
       const ys = uniq(trims.flatMap(t => t ? [t.y, t.y + t.h] : []));
@@ -3426,9 +3485,9 @@
       if (cy + r > sh - 0.5 * MM || cy - r < 0.5 * MM) { cx = t.x + r + 0.8 * MM; cy = t.y + t.h - r - 0.8 * MM; } // 최후: 트림 안 좌상
       const s = String(num);
       try {
-        page.drawCircle({ x: cx, y: cy, size: r, color: PDFLib.rgb(1, 1, 1), borderColor: PDFLib.rgb(0, 0, 0), borderWidth: 0.6 });
+        page.drawCircle({ x: cx, y: cy, size: r, color: PDFLib.cmyk(0, 0, 0, 0), borderColor: PDFLib.cmyk(0, 0, 0, 1), borderWidth: 0.6 });
         const w = font.widthOfTextAtSize(s, 7);
-        page.drawText(s, { x: cx - w / 2, y: cy - 2.4, size: 7, font, color: PDFLib.rgb(0, 0, 0) });
+        page.drawText(s, { x: cx - w / 2, y: cy - 2.4, size: 7, font, color: PDFLib.cmyk(0, 0, 0, 1) });
       } catch (e) {}
     }
 
@@ -3958,27 +4017,59 @@
       const emb0   = await embedAllPages(out, src, p => onProgress && onProgress(p), 0);
       const emb180 = rotate180Embeds(out, emb0);
 
-      let sw, sh;
-      if (opts.sheet)                { [sw, sh] = opts.sheet; }
-      else if (!opts.paper || opts.paper === 'auto') { sw = emb0[0].w * 2; sh = emb0[0].h; }
-      else                           { [sw, sh] = IMP_PAPERS[opts.paper] || IMP_PAPERS.A4; }
+      // 두 벌을 놓는 방향 — 'h' 좌우(가로 대지) / 'v' 위아래(세로 대지) / 'auto'(기본).
+      // 가로형 원고(가로 A5 등)는 좌우로 놓으면 대지를 넘는다 → 위아래(사용자 요청 2026-10-26).
       const mg = impMargins(opts), gp = impGaps(opts);
-      const slotW = (sw - mg.l - mg.r - gp.h) / 2, slotH = sh - mg.t - mg.b;
-      // 예전엔 원고를 대지 **반쪽의 가운데**에 앉혀, 거터 0이어도 사이가 뜨고 거터를 올려도 그만큼
-      // 벌어지지 않았다(사용자 제보 — 복제 2부). 모아찍기와 같은 규칙으로 두 원고를 거터만큼 띄운 한
-      // 블록으로 묶어 정렬한다 → 원고 사이 = 거터 그대로, 대지 좌우 = 남는 폭.
-      const { packW, packH } = impPackCell(emb0, opts, slotW, slotH);
-      const areaW = sw - mg.l - mg.r, areaH = sh - mg.t - mg.b;
-      const J = impJustifyLayout(opts, sw, 2, packW);   // ↔ 양끝 맞춤이면 가운데 간격 자동
-      const gh = J ? J.gap : gp.h;
-      const blockW = 2 * packW + gh;
+      const dupLayout = dir => {
+        let sw, sh;
+        if (opts.sheet) {
+          const a = Math.max(opts.sheet[0], opts.sheet[1]), b = Math.min(opts.sheet[0], opts.sheet[1]);
+          [sw, sh] = dir === 'v' ? [b, a] : [a, b];
+        }
+        else if (!opts.paper || opts.paper === 'auto') { [sw, sh] = dir === 'v' ? [emb0[0].w, emb0[0].h * 2] : [emb0[0].w * 2, emb0[0].h]; }
+        else {
+          const p0 = IMP_PAPERS[opts.paper] || IMP_PAPERS.A4;
+          const a = Math.max(p0[0], p0[1]), b = Math.min(p0[0], p0[1]);
+          [sw, sh] = dir === 'v' ? [b, a] : [a, b];
+        }
+        const areaW = sw - mg.l - mg.r, areaH = sh - mg.t - mg.b;
+        const g = dir === 'v' ? gp.v : gp.h;
+        const slotW = dir === 'v' ? areaW : (areaW - g) / 2, slotH = dir === 'v' ? (areaH - g) / 2 : areaH;
+        // 예전엔 원고를 대지 **반쪽의 가운데**에 앉혀, 거터 0이어도 사이가 뜨고 거터를 올려도 그만큼
+        // 벌어지지 않았다(사용자 제보 — 복제 2부). 모아찍기와 같은 규칙으로 두 원고를 거터만큼 띄운 한
+        // 블록으로 묶어 정렬한다 → 원고 사이 = 거터 그대로, 대지 남는 폭은 바깥으로.
+        const { packW, packH } = impPackCell(emb0, opts, slotW, slotH);
+        // ↔ 양끝 맞춤이면 두 벌을 놓는 방향의 양 끝에 붙이고 가운데 간격 자동
+        const J = dir === 'v' ? impJustifyLayout(opts, sh, 2, packH) : impJustifyLayout(opts, sw, 2, packW);
+        const gap = J ? J.gap : g;
+        const blockW = dir === 'v' ? packW : 2 * packW + gap, blockH = dir === 'v' ? 2 * packH + gap : packH;
+        const over = Math.max(0, blockW - areaW) + Math.max(0, blockH - areaH);
+        return { dir, sw, sh, areaW, areaH, packW, packH, J, gap, blockW, blockH, over };
+      };
+      let L;
+      if (opts.dupDir === 'v' || opts.dupDir === 'h') L = dupLayout(opts.dupDir);
+      else {
+        // 자동: 대지를 덜 넘는 쪽 → 같으면 더 크게 앉는 쪽 → 같으면 예전처럼 좌우
+        const H = dupLayout('h'), V = dupLayout('v');
+        const tol = 0.5;
+        L = V.over + tol < H.over ? V
+          : H.over + tol < V.over ? H
+          : (V.packW * V.packH > H.packW * H.packH * 1.001 ? V : H);
+      }
+      const { sw, sh, areaW, areaH, packW, packH, J, gap: gh, blockW, blockH } = L;
+      const vert = L.dir === 'v';
       const al = (opts.place && opts.place.align) || 'cc';
-      const blockX = J ? J.x0 : mg.l + (al[1] === 'l' ? 0 : al[1] === 'r' ? areaW - blockW : (areaW - blockW) / 2);
-      const blockY = mg.b + (al[0] === 'b' ? 0 : al[0] === 't' ? areaH - packH : (areaH - packH) / 2);
+      const blockX = (!vert && J) ? J.x0 : mg.l + (al[1] === 'l' ? 0 : al[1] === 'r' ? areaW - blockW : (areaW - blockW) / 2);
+      const blockY = (vert && J) ? J.x0 : mg.b + (al[0] === 'b' ? 0 : al[0] === 't' ? areaH - blockH : (areaH - blockH) / 2);
 
+      // side 'L' = 첫 칸(좌우면 왼쪽, 위아래면 위), 'R' = 둘째 칸(오른쪽 / 아래)
       const drawCell = (page, cell, side) => {
         if (cell.p > n0) return null;   // 홀수 패딩 빈 면
         const emb = (cell.r === 180 ? emb180 : emb0)[cell.p - 1];
+        if (vert) {
+          const y0 = side === 'L' ? blockY + packH + gh : blockY;   // PDF 좌표는 아래에서 위로
+          return drawPlaced(page, emb, { x: blockX, y: y0, w: packW, h: packH }, opts);
+        }
         const x0 = side === 'L' ? blockX : blockX + packW + gh;
         return drawPlaced(page, emb, { x: x0, y: blockY, w: packW, h: packH }, opts);
       };
@@ -3995,7 +4086,9 @@
         drawSlug(fp, slug, i + 1, sheets.length, 'F');
         if (back) {   // 단면은 뒷면 없음
           const bp = out.addPage([sw, sh]);
-          const bt = [drawCell(bp, back[0], 'L'), drawCell(bp, back[1], 'R')];
+          // 위아래 배치는 세로 대지를 긴 쪽(세로축)으로 넘겨 위 칸 뒤 = 위 칸 → 정방향이 위로 가게 순서를 바꾼다
+          const bt = vert ? [drawCell(bp, back[1], 'L'), drawCell(bp, back[0], 'R')]
+                          : [drawCell(bp, back[0], 'L'), drawCell(bp, back[1], 'R')];
           if (opts.crop) drawTrimMarks(bp, bt, opts);
           if (opts.cropDims && slug) drawCutDims(bp, bt, slug.ascii, sw, sh, opts.cropStyle);
           drawSlug(bp, slug, i + 1, sheets.length, 'B');
@@ -4005,7 +4098,7 @@
       }
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
-      return { bytes, sheetSrc: sheetSourcesOf(out), n0, n, sheets: sheets.length, sides, gapMm: gh * 25.4 / 72 };
+      return { bytes, sheetSrc: sheetSourcesOf(out), n0, n, sheets: sheets.length, sides, gapMm: gh * 25.4 / 72, dir: L.dir };
     }
 
     async function generateDup2up() {
@@ -4026,12 +4119,14 @@
         const single = res.sides === 1;
         const outName = `${nameWithImpTag(base, `2up${single ? '단면' : '양면'}`)}.pdf`;
         adoptImposedResult(res.bytes, outName);
+        const vv = res.dir === 'v';
+        const howTo = vv ? '세로 용지' : '가로 용지', cutTo = vv ? '가로 재단' : '세로 재단', other = vv ? '아래' : '오른쪽';
         let msg = single
-          ? `📖 복제 2-up(단면 2부) 생성 완료 — 시트 ${res.sheets}장 (페이지당 1시트, 본문 ${res.n0}쪽)`
-            + `\n인쇄: 가로 용지 · 단면 → 세로 재단 → 2部 완성 (오른쪽 部는 180° — 돌리면 정방향)`
+          ? `📖 복제 2-up(단면 2부${vv ? ' · 위아래' : ''}) 생성 완료 — 시트 ${res.sheets}장 (페이지당 1시트, 본문 ${res.n0}쪽)`
+            + `\n인쇄: ${howTo} · 단면 → ${cutTo} → 2部 완성 (${other} 部는 180° — 돌리면 정방향)`
             + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`
-          : `📖 복제 2-up(양면 2부) 생성 완료 — 시트 ${res.sheets}장 (양면 ${res.n}면, 본문 ${res.n0}쪽${res.n - res.n0 ? ` + 빈 면 ${res.n - res.n0}쪽` : ''})`
-            + `\n인쇄: 가로 용지 · 양면 · '짧은 쪽 넘김' → 세로 재단 → 2部 완성 (오른쪽 部는 180° — 돌리면 정방향)`
+          : `📖 복제 2-up(양면 2부${vv ? ' · 위아래' : ''}) 생성 완료 — 시트 ${res.sheets}장 (양면 ${res.n}면, 본문 ${res.n0}쪽${res.n - res.n0 ? ` + 빈 면 ${res.n - res.n0}쪽` : ''})`
+            + `\n인쇄: ${howTo} · 양면 · '${vv ? '긴 쪽 넘김' : '짧은 쪽 넘김'}' → ${cutTo} → 2部 완성 (${other} 部는 180° — 돌리면 정방향)`
             + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
         if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
           msg += `\n⚠ 블리드(${opts.bleed}mm)가 거터(${opts.gutter}mm)의 절반보다 큽니다 — 거터를 ${opts.bleed * 2}mm 이상 권장`;
@@ -4205,7 +4300,7 @@
         cropStyle: (typeof _impCropStyle === 'function' ? _impCropStyle() : null),
         creep: 0, binding: p.bd === 'right' ? 'right' : 'left',
         order: p.m === 'cutstack' ? 'cutstack' : 'sequential',
-        cols: p.ax || 0, rows: p.dn || 0, shuffleCopies: p.m === 'repeat' ? (p.rs || 0) : 0, shuffleDuplex: p.m === 'repeat' && p.rs ? (p.rd || '') : '',
+        cols: p.ax || 0, rows: p.dn || 0, dupDir: p.dd || 'auto', shuffleCopies: p.m === 'repeat' ? (p.rs || 0) : 0, shuffleDuplex: p.m === 'repeat' && p.rs ? (p.rd || '') : '',
         place: { scale: p.sc || 'fit', fixedScale: p.fx, align: p.al || 'cc', offX: p.ox || 0, offY: p.oy || 0 },
         paper: (p.sw && p.sh) ? `${p.sw}×${p.sh}mm` : 'auto',
         _profName: p.n,
@@ -4257,6 +4352,7 @@
         if (g('impFrame'))  g('impFrame').checked = !!p.fr;
         if (g('impSlug'))   g('impSlug').checked = !!p.sl;
         if (g('impStackNum')) g('impStackNum').checked = !!p.sn;
+        if (g('impDupDir')) g('impDupDir').value = p.dd || 'auto';
         if (p.m === 'repeat') {
           if (g('repCols')) g('repCols').value = p.ax || '';
           if (g('repRows')) g('repRows').value = p.dn || '';
@@ -4382,6 +4478,7 @@
       const ox = parseFloat(g('impOffX')?.value) || 0; if (ox) s.ox = ox;
       const oy = parseFloat(g('impOffY')?.value) || 0; if (oy) s.oy = oy;
       if (_impMode === 'booklet' && _bkBind === 'right') s.bd = 'right';
+      if (_impMode === 'dup') { const dd = g('impDupDir')?.value || 'auto'; if (dd !== 'auto') s.dd = dd; }   // 복제 2부 배치 방향
       if (_impMode === 'repeat') {
         const rc = parseInt(g('repCols')?.value) || 0, rr = parseInt(g('repRows')?.value) || 0;
         if (rc && rr) { s.ax = rc; s.dn = rr; }
@@ -4651,7 +4748,7 @@
       if (_impMode === 'repeat')
         return Object.assign(common, { sheet: resolveImpPaper(paperVal, null), cols: parseInt(g('repCols')?.value) || 0, rows: parseInt(g('repRows')?.value) || 0, shuffleCopies: repShuffleCopies(), shuffleDuplex: repShuffleDuplex() });
       if (_impMode === 'dup')
-        return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), sides: _cutSides });
+        return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), sides: _cutSides, dupDir: g('impDupDir')?.value || 'auto' });
       return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), creep: parseFloat(g('bkCreep')?.value) || 0, binding: _bkBind, sides: _cutSides });
     }
     // 저장 파일명에 붙일 임포징 명칭 — 시트 한 장에 들어가는 페이지 수 기준(2up·N-up).

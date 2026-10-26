@@ -227,7 +227,7 @@ async function handleLayoutTransform(payload) {
   }
 
   function drawCropMarks(p, x, y, w, h) {
-    const L = mm2pt(4), off = mm2pt(1.5), lw = 0.5, col = PDFLib.rgb(0, 0, 0);
+    const L = mm2pt(4), off = mm2pt(1.5), lw = 0.5, col = PDFLib.cmyk(0, 0, 0, 1);   // 먹 1도(K100)
     const line = (x1, y1, x2, y2) => p.drawLine({ start:{x:x1,y:y1}, end:{x:x2,y:y2}, thickness:lw, color:col });
     line(x - off - L, y, x - off, y);             line(x, y - off - L, x, y - off);
     line(x + w + off, y, x + w + off + L, y);     line(x + w, y - off - L, x + w, y - off);
@@ -238,7 +238,7 @@ async function handleLayoutTransform(payload) {
     if (border === 'none') return;
     if (border === 'crop') { drawCropMarks(p, x, y, w, h); return; }
     const lw = border === 'medium' ? 2 : border === 'thin' ? 0.75 : 1;
-    const opt = { x, y, width: w, height: h, borderColor: PDFLib.rgb(0, 0, 0), borderWidth: lw };
+    const opt = { x, y, width: w, height: h, borderColor: PDFLib.cmyk(0, 0, 0, 1), borderWidth: lw };   // 먹 1도
     if (border === 'dotted') opt.borderDashArray = [lw * 2.5, lw * 2.5];
     p.drawRectangle(opt);
   }

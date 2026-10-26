@@ -824,7 +824,7 @@
     const IMP_PRESET_FIELDS = {
       bkPaper: 'v', impCustomW: 'v', impCustomH: 'v', impCustomName: 'v',
       bkGutter: 'v', bkCreep: 'v', impMargin: 'v', impBleed: 'v', impJustify: 'c', impJustifyEdge: 'v',
-      impAcross: 'v', impDown: 'v', repCols: 'v', repRows: 'v', repShuffle: 'c', repCopies: 'v', repShuffleSides: 'v',
+      impAcross: 'v', impDown: 'v', repCols: 'v', repRows: 'v', repShuffle: 'c', repCopies: 'v', repShuffleSides: 'v', impDupDir: 'v',
       impFixed: 'v', impAlign: 'v', impOffX: 'v', impOffY: 'v',
       impCropGap: 'v', impCropLen: 'v', impCropTh: 'v',
       impCrop: 'c', impFrame: 'c', impSlug: 'c', impStackNum: 'c', impCropCenter: 'c', bkCoverSplit: 'c',
