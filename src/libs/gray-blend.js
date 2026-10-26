@@ -195,13 +195,18 @@
       };
 
       // 콘텐츠 스트림 훑기 — 연산자 순서대로 색공간·색 값을 따라간다
-      function streamNeutral(st, res, depth) {
+      // fill0·stroke0: 시작 색공간. 폼(Do)·Type3 글리프는 부른 쪽의 그래픽 상태를 이어받는다 — 쪽에서 '/C1 cs'(ICC RGB)만
+      // 정하고 폼 안에서는 'r g b scn'만 쓰는 PDF(Figma 등)를 회색으로 읽어, 컬러 달력 12쪽 중 7쪽에 회색 그룹을 달았다
+      // (저장본이 Acrobat·프린터에서 흑백, 분석도 흑백). 같은 폼이라도 시작 상태가 다르면 따로 판정한다.
+      function streamNeutral(st, res, depth, fill0, stroke0) {
         if (!st || depth > 12) return false;
-        const key = st;
-        if (memo.has(key)) return memo.get(key);
-        memo.set(key, true);                            // 순환 참조는 '문제 없음'으로 끊는다(실제 판정은 첫 방문이 한다)
-        const ok = scan(st, res, depth);
-        memo.set(key, ok);
+        const sk = (fill0 || 'gray') + '|' + (stroke0 || 'gray');
+        let m = memo.get(st);
+        if (!m) { m = new Map(); memo.set(st, m); }
+        if (m.has(sk)) return m.get(sk);
+        m.set(sk, true);                                // 순환 참조는 '문제 없음'으로 끊는다(실제 판정은 첫 방문이 한다)
+        const ok = scan(st, res, depth, fill0 || 'gray', stroke0 || 'gray');
+        m.set(sk, ok);
         return ok;
       }
       // 바이트 분류표 — 1 공백, 2 구분자
@@ -210,7 +215,7 @@
       const K = s => opKey(s.charCodeAt(0) || 0, s.charCodeAt(1) || 0, s.charCodeAt(2) || 0);
       const OP = { q: K('q'), Q: K('Q'), g: K('g'), G: K('G'), rg: K('rg'), RG: K('RG'), k: K('k'), Kk: K('K'), cs: K('cs'), CS: K('CS'),
         sc: K('sc'), scn: K('scn'), SC: K('SC'), SCN: K('SCN'), sh: K('sh'), Do: K('Do'), Tf: K('Tf'), BI: K('BI') };
-      function scan(st, res, depth) {
+      function scan(st, res, depth, fill0, stroke0) {
         const bytes = bytesOf(st);
         if (!bytes) return false;
         const L = bytes.length;
@@ -219,7 +224,7 @@
         let nameS = -1, nameE = -1, prevS = -1, prevE = -1;
         const lastNums = n => { if (nCount < n) return null; const out = new Array(n); for (let k = 0; k < n; k++) out[k] = nb[(nCount - n + k) & 7]; return out; };
         const nameStr = (s, e) => { let r = ''; for (let k = s + 1; k < e; k++) r += String.fromCharCode(bytes[k]); return r; };
-        let fill = 'gray', stroke = 'gray';
+        let fill = fill0, stroke = stroke0;
         const stack = [];
         const xobjs = res && look(res.get(Nm('XObject')));
         const pats = res && look(res.get(Nm('Pattern')));
@@ -293,7 +298,7 @@
               if (!x || !x.dict) return false;
               const sub = name(x.dict.get(Nm('Subtype')));
               if (sub === '/Image') { if (!imageNeutral(x)) return false; }
-              else if (sub === '/Form') { if (!streamNeutral(x, look(x.dict.get(Nm('Resources'))) || res, depth + 1)) return false; }
+              else if (sub === '/Form') { if (!streamNeutral(x, look(x.dict.get(Nm('Resources'))) || res, depth + 1, fill, stroke)) return false; }
               else if (sub !== '/PS') return false;
               break;
             }
@@ -302,7 +307,7 @@
               if (f && typeof f.get === 'function' && name(f.get(Nm('Subtype'))) === '/Type3') {
                 const procs = look(f.get(Nm('CharProcs')));
                 const fres = look(f.get(Nm('Resources'))) || res;
-                if (procs && typeof procs.entries === 'function') for (const [, p] of procs.entries()) if (!streamNeutral(look(p), fres, depth + 1)) return false;
+                if (procs && typeof procs.entries === 'function') for (const [, p] of procs.entries()) if (!streamNeutral(look(p), fres, depth + 1, fill, stroke)) return false;
               }
               break;
             }
@@ -441,6 +446,12 @@
           const grp = tools(doc).look(node.get(Nm('Group')));
           const ourGroup = !!(grp && typeof grp.get === 'function' && tools(doc).name(grp.get(Nm('CS'))) === '/DeviceGray');
           if (grp && !ourGroup) continue;           // 원고가 단 그룹은 그대로
+          // 옛 판정 오류(폼이 이어받은 ICC RGB 색을 회색으로 읽음)로 컬러 쪽에 단 회색 그룹을 뗀다 — 남겨 두면
+          // Acrobat·gs·프린터가 그 쪽을 흑백으로 합성한다(pdf.js 화면만 컬러). 우리가 다는 모양 그대로일 때만.
+          if (ourGroup && grp.keys().length === 3 && tools(doc).name(grp.get(Nm('S'))) === '/Transparency' && !pageIsNeutral(doc, node)) {
+            node.delete(Nm('Group'));
+            continue;
+          }
           if (!pageUsesTransparency(doc, node)) continue;
           if (!pageIsNeutral(doc, node)) continue;
           // 두 값뿐인 그림 마스크는 스텐실로 — 투명도가 다 사라지면 그룹도 달지 않는다(있으면 뗀다)

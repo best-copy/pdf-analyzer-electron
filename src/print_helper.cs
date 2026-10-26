@@ -222,11 +222,15 @@ public static class PePrint {
     try {
       byte[] dm = Prepare(hp, printer, dmB64);
       bool canceled;
-      // powershell.exe is not DPI aware -> Windows bitmap-stretches the driver dialog (blurry at 150-200%).
-      // GDI-scaled unaware (-5) for this thread while the dialog is up: text/lines drawn at full resolution, layout and
-      // icons keep their size (per-monitor v2 made driver dialogs sharp but shrank their icons/tabs). Windows 10 1809+.
+      // DPI context for the driver dialog comes from PE_DPICTX (main.js): -5 gdi-scaled by default, -1 unaware in "compat" mode.
+      // Measured at 200% (2026-10-19 / 2026-10-22, 9 drivers):
+      //   -1 unaware: Windows stretches the dialog - Korean text looks like a doubled bitmap font (FUJI D110 report)
+      //   -5 gdi-scaled: sharp text, icons fine for FUJI/EPSON/Canon/Hancom/Adobe/MS PDF - but RICOH one-click 32-bit icons turn black
+      //   -2/-3/-4 aware: sharp but driver fonts mix sizes (some labels much smaller)
       IntPtr oldCtx = IntPtr.Zero;
-      try { oldCtx = SetThreadDpiAwarenessContext(new IntPtr(-5)); } catch (EntryPointNotFoundException) { }
+      int ctx = -1, envCtx;   // -1 unaware, -2 system, -3 per-monitor, -4 per-monitor v2, -5 gdi-scaled
+      if (Int32.TryParse(Environment.GetEnvironmentVariable("PE_DPICTX"), out envCtx) && envCtx <= -1 && envCtx >= -5) ctx = envCtx;
+      try { oldCtx = SetThreadDpiAwarenessContext(new IntPtr(ctx)); } catch (EntryPointNotFoundException) { }
       byte[] outDm;
       try { outDm = Merge(hp, printer, dm, new IntPtr(hwnd), true, out canceled); }
       finally { if (oldCtx != IntPtr.Zero) { try { SetThreadDpiAwarenessContext(oldCtx); } catch (EntryPointNotFoundException) { } } }

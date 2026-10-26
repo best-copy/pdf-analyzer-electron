@@ -824,7 +824,7 @@
     const IMP_PRESET_FIELDS = {
       bkPaper: 'v', impCustomW: 'v', impCustomH: 'v', impCustomName: 'v',
       bkGutter: 'v', bkCreep: 'v', impMargin: 'v', impBleed: 'v', impJustify: 'c', impJustifyEdge: 'v',
-      impAcross: 'v', impDown: 'v', repCols: 'v', repRows: 'v',
+      impAcross: 'v', impDown: 'v', repCols: 'v', repRows: 'v', repShuffle: 'c', repCopies: 'v', repShuffleSides: 'v',
       impFixed: 'v', impAlign: 'v', impOffX: 'v', impOffY: 'v',
       impCropGap: 'v', impCropLen: 'v', impCropTh: 'v',
       impCrop: 'c', impFrame: 'c', impSlug: 'c', impStackNum: 'c', impCropCenter: 'c', bkCoverSplit: 'c',
@@ -842,7 +842,8 @@
         proc: { bw: !!processingOptions.bw, inkNorm: !!processingOptions.inkNorm,
                 outline: (typeof _outlineEnabled !== 'undefined') && _outlineEnabled,
                 outlineMode: (typeof _outlineMode !== 'undefined') ? _outlineMode : 'outline',
-                outlineFlatten: !!g('outlineFlatten')?.checked },
+                outlineFlatten: !!g('outlineFlatten')?.checked,
+                k100: (typeof _k100Enabled !== 'undefined') && _k100Enabled },   // ⚫ 검정 K100
         // ◲ 블리드(매직미러) 옵션 — 예전엔 빠져 있어 최근 작업을 불러와도 블리드가 꺼진 채였다
         bleed: {
           enabled: (typeof _bleedEnabled !== 'undefined') && _bleedEnabled,
@@ -891,6 +892,7 @@
         //   바꾸므로, 예전처럼 방식을 먼저 넣으면 '곡선 변환'으로 저장한 프로파일도 완전 임베드로 불러왔다.
         //   방식이 없는 옛 프로파일은 그대로 둔다(켜지면 완전 임베드 — 용량이 수십 배 느는 곡선으로 몰래 바꾸지 않는다).
         if (typeof c.proc.outline === 'boolean' && typeof setOutlineEnabled === 'function') setOutlineEnabled(c.proc.outline);
+        if (typeof c.proc.k100 === 'boolean' && typeof setK100Enabled === 'function') setK100Enabled(c.proc.k100, true);
         if (c.proc.outlineMode && typeof setOutlineMode === 'function' && c.proc.outlineMode !== _outlineMode) setOutlineMode(c.proc.outlineMode);
         if (typeof c.proc.outlineFlatten === 'boolean' && g('outlineFlatten')) {
           g('outlineFlatten').checked = c.proc.outlineFlatten;
@@ -945,6 +947,7 @@
           });
           // ↔ 양끝 맞춤은 체크에 따라 거터 칸 표시가 바뀐다 — 값만 넣으면 화면이 예전 상태로 남는다
           if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
+          if (typeof syncRepShuffleUI === 'function') syncRepShuffleUI();   // 🔀 셔플 부수 칸 활성
           if (typeof impGenInvalidate === 'function') impGenInvalidate();
           // 종속 UI 동기: 사용자 지정 W×H 행·재단선 세부 행은 값만 넣으면 숨겨진 채로 남는다
           if (typeof onImpPaperChange === 'function') onImpPaperChange();
@@ -993,6 +996,7 @@
         imp: im,
         bleed: { enabled: !!_bleedEnabled, mm: g('bleedGenMm')?.value, crop: !!g('bleedCrop')?.checked },
         outline: { enabled: !!_outlineEnabled, mode: _outlineMode, flatten: !!g('outlineFlatten')?.checked },
+        k100: { enabled: !!_k100Enabled, off: [..._k100Off] },   // ⚫ 검정 K100 — 탭마다(뺀 개체 포함 · RGB 포함 여부는 앱 전체 설정)
         cover: ex.cover,
         coverFiles: (typeof _coverFiles !== 'undefined') ? Object.assign({}, _coverFiles) : null,
       };
@@ -1003,6 +1007,7 @@
       ex.imp = { mode: '', enabled: false, bind: 'left', cutN: 2, cutSides: 2, scale: 'orig', fields: { bkPaper: 'auto' }, profOpts: null };
       ex.bleed.enabled = false;
       ex.outline = { enabled: true, mode: 'embed', flatten: false };
+      ex.k100 = { enabled: false, off: [] };
       if (ex.cover) {
         COVER_BOOK_FIELDS.forEach(id => { if (ex.cover.v) ex.cover.v[id] = ''; });
         ex.cover.auto = { body: true, spine: true };
@@ -1031,6 +1036,9 @@
         _bleedEnabled = !!ex.bleed.enabled;
         if (g('bleedEnabled')) g('bleedEnabled').checked = _bleedEnabled;
       }
+      // ⚫ 검정 K100 — 조용히(안내 없이)
+      if (typeof _k100Off !== 'undefined') _k100Off = new Set((ex.k100 && ex.k100.off) || []);
+      if (typeof setK100Enabled === 'function') setK100Enabled(!!(ex.k100 && ex.k100.enabled), true);
       // ✒ 폰트 안전화 — 'outlineOn' 기억값은 건드리지 않는다(탭 전환은 사용자의 선택이 아니다)
       if (ex.outline) {
         _outlineEnabled = !!ex.outline.enabled;
@@ -1194,6 +1202,8 @@
         })),
         selected: [...selectedPages],
         pageAdjust: (editSettings && editSettings.pageAdjust) ? JSON.parse(JSON.stringify(editSettings.pageAdjust)) : {},
+        // ⚫ 검정 K100에서 뺀 개체 — 이 문서에만 맞는 이름표라 서식(프리셋)이 아니라 문서 상태에 둔다
+        k100Off: (typeof _k100Off !== 'undefined' && _k100Off.size) ? [..._k100Off] : undefined,
       };
     }
     function recordWorkHistory() {
@@ -1264,6 +1274,7 @@
     function restoreDocState(ds) {
       try {
         if (!ds || !Array.isArray(ds.order) || !ds.order.length) return false;
+        if (typeof _k100Off !== 'undefined') _k100Off = new Set(ds.k100Off || []);
         const byOi = new Map();
         pageResults.forEach(r => { if (r && !r.isBlank && r.originalIdx != null && !byOi.has(r.originalIdx)) byOi.set(r.originalIdx, r); });
         const next = [];
@@ -1848,6 +1859,8 @@
       add('🎯 이 챕터 전체 선택', '흑백변환·회전·삭제용', () => selectChapterPages(name));
       add('📐 이 챕터 방향 맞춤', '가로/세로 섞인 쪽 바로잡기',
           () => { selectChapterPages(name); if (typeof autoOrientPages === 'function') autoOrientPages(); });
+      add('⤒ 위 챕터와 합치기', '쪽 순서 그대로 · 이름은 위 챕터', () => mergeChapterRun(startIdx, -1), no <= 1);
+      add('⤓ 아래 챕터와 합치기', '쪽 순서 그대로 · 이름은 이 챕터', () => mergeChapterRun(startIdx, +1), no >= total);
       add('▲ 위로 이동', '', () => moveChapterRun(startIdx, -1), no <= 1);
       add('▼ 아래로 이동', '', () => moveChapterRun(startIdx, +1), no >= total);
       add('🗑 이 챕터 전체 삭제', '', () => deleteChapterAt(startIdx), total <= 1);
@@ -4219,10 +4232,12 @@
         item.draggable = true;
         item.addEventListener('dragstart', e => {
           dragSrcPageNum = r.pageNum;
+          document.body.classList.add('page-dragging');   // 끄는 동안 안내 토스트가 놓기를 막지 않게(style.css)
           e.dataTransfer.effectAllowed = 'move';
           requestAnimationFrame(() => item.classList.add('sb-dragging'));
         });
         item.addEventListener('dragend', () => {
+          endPageDrag();
           item.classList.remove('sb-dragging');
           sidebar.querySelectorAll('.sb-drag-before,.sb-drag-after')
             .forEach(el => el.classList.remove('sb-drag-before','sb-drag-after'));
@@ -4668,11 +4683,18 @@
       el.draggable = true;
       el.addEventListener('dragstart', e => {
         dragSrcPageNum = pageNum;
+        document.body.classList.add('page-dragging');   // 끄는 동안 안내 토스트가 놓기를 막지 않게(style.css)
         e.dataTransfer.effectAllowed = 'move';
         // 약간 지연 후 반투명 처리 (dragImage가 먼저 캡처된 뒤 적용)
-        requestAnimationFrame(() => el.classList.add('dragging'));
+        // 고른 쪽(2개 이상) 중 하나를 끌면 고른 쪽 전체가 함께 옮겨진다 — 모두 반투명으로 보여 준다
+        const multi = selectedPages.size > 1 && selectedPages.has(pageNum);
+        requestAnimationFrame(() => {
+          if (multi) document.querySelectorAll('#pagesGrid > .page-item.selected').forEach(x => x.classList.add('dragging'));
+          else el.classList.add('dragging');
+        });
       });
       el.addEventListener('dragend', () => {
+        endPageDrag();
         el.classList.remove('dragging');
         document.querySelectorAll('.drag-before, .drag-after').forEach(e => {
           e.classList.remove('drag-before', 'drag-after');
@@ -4706,14 +4728,46 @@
 
     // ── 페이지 순서 이동 ─────────────────────────────────────────────────────
     let dragSrcPageNum = null;
+    // 끌기가 끝나면 끌던 쪽을 잊는다 — 남아 있으면 나중에 다른 것(파일 등)을 쪽 위에 놓을 때 엉뚱한 쪽이 옮겨졌다.
+    // 놓은 쪽 카드는 다시 그려져 사라지므로 dragend가 오지 않을 수 있다 → 놓기(drop)가 끝난 뒤에도 정리한다.
+    function endPageDrag() {
+      dragSrcPageNum = null;
+      document.body.classList.remove('page-dragging');
+      document.querySelectorAll('#pagesGrid > .page-item.dragging').forEach(x => x.classList.remove('dragging'));
+    }
+    document.addEventListener('drop', () => setTimeout(endPageDrag, 0), true);
 
+    // 다른 챕터로 옮기면 **놓은 자리의 챕터로 들어간다**(2026-10-21) — 예전엔 원래 챕터 이름을 달고 가서
+    // 'B | A | B'로 챕터가 쪼개졌고, 챕터 경계(A 끝 ↔ B 처음)에 놓으면 순서가 그대로라 아무 일도 없어 보였다.
+    // 끈 쪽이 고른 쪽(2개 이상) 중 하나면 **고른 쪽 전체**를 문서 순서대로 한 덩어리로 옮긴다(2026-10-22 —
+    // 예전엔 끈 쪽 하나만 옮겨졌다). 놓은 자리(target)가 옮기는 쪽 중 하나면 그 뒤(앞에 놓기)·앞(뒤에 놓기)의
+    // 옮기지 않는 쪽을 기준으로 삼는다. 옮긴 쪽은 모두 놓은 자리의 챕터로 들어간다.
     function movePage(srcIdx, dstIdx, insertAfter) {
+      const page = pageResults[srcIdx];
+      let target = pageResults[dstIdx];
+      if (!page || !target) return;
+      const multi = selectedPages.size > 1 && selectedPages.has(page.pageNum);
+      const moving = multi ? pageResults.filter(r => r && selectedPages.has(r.pageNum)) : [page];
+      const movingSet = new Set(moving);
+      if (movingSet.has(target)) {
+        const at = pageResults.indexOf(target);
+        let j = -1;
+        if (!insertAfter) { for (let k = at + 1; k < pageResults.length; k++) if (pageResults[k] && !movingSet.has(pageResults[k])) { j = k; break; } }
+        else { for (let k = at - 1; k >= 0; k--) if (pageResults[k] && !movingSet.has(pageResults[k])) { j = k; break; } }
+        if (j < 0) return;   // 옮기지 않는 쪽이 그쪽에 없다 — 할 일 없음
+        target = pageResults[j];
+      }
       pushHistory();
-      const [page] = pageResults.splice(srcIdx, 1);
-      // splice 후 dstIdx 보정 (srcIdx가 앞에 있으면 한 칸 당겨짐)
-      let insertIdx = srcIdx < dstIdx ? dstIdx - 1 : dstIdx;
+      const rest = pageResults.filter(r => !movingSet.has(r));
+      let insertIdx = rest.indexOf(target);
+      // 놓은 자리의 챕터 — 옮기는 쪽을 뺀 목록에서(이름 없는 빈 쪽은 앞 챕터) · 옮기는 쪽의 옛 챕터를 물려받지 않게
+      let ch = '';
+      for (let k = insertIdx; k >= 0; k--) { const p = rest[k]; if (p && p.chapter) { ch = p.chapter; break; } }
       if (insertAfter) insertIdx++;
-      pageResults.splice(insertIdx, 0, page);
+      rest.splice(insertIdx, 0, ...moving);
+      pageResults.length = 0;
+      rest.forEach(r => pageResults.push(r));
+      if (ch) moving.forEach(p => { if (p && p.chapter !== ch) p.chapter = ch; });
       rebuildPageNums();
       syncTabPageResults();
       rerenderPages();
@@ -4798,18 +4852,27 @@
         return;
       }
       const dropped = [...e.dataTransfer.files].filter(f =>
-        f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name)
+        f.type.includes('pdf') || /\.pdf$/i.test(f.name) || CONVERT_RE.test(f.name) || ARCHIVE_RE.test(f.name)
       );
-      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) · Adobe(AI·PSD·INDD) · 이미지(PNG·JPG·GIF·BMP·WEBP·TIFF) 파일만 업로드 가능합니다.'); return; }
+      if (!dropped.length) { showError('PDF · 한글(HWP·HWPX) · MS Office(Word·Excel·PowerPoint) · Adobe(AI·PSD·INDD) · 이미지(PNG·JPG·GIF·BMP·WEBP·TIFF) · 압축(ZIP·7Z·RAR) 파일만 업로드 가능합니다.'); return; }
       hideError(); hideSuccess();
+      // 📦 압축이 섞여 있으면 풀어서 — 속 문서가 여러 개면 순서 지정 창(📄 개별창 · 📚 통합창)
+      if (dropped.some(f => ARCHIVE_RE.test(f.name))) {
+        try { await openItemsWithArchives(dropped.map(f => ({ name: f.name, path: window.electronAPI.getPathForFile(f) }))); }
+        catch (err) { hideLoading(); showError('압축 파일 처리 오류: ' + (err && err.message ? err.message : String(err))); }
+        return;
+      }
       try {
-        const needConvert = dropped.some(f => CONVERT_RE.test(f.name));
-        if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
         // 드롭된 File → 실제 경로 취득 후 prepareFiles로 일괄 처리(HWP·Office는 PDF 변환)
         const items = dropped.map(f => ({ name: f.name, path: window.electronAPI.getPathForFile(f) }));
+        // 열린 문서가 있으면 챕터로 붙일지 새 탭으로 열지 — 변환 전에 묻는다(여러 개면 '○○ 외 n개'로 한 번)
+        const mode = await askAddMode(items, 'open');
+        if (!mode) return;
+        const needConvert = dropped.some(f => CONVERT_RE.test(f.name));
+        if (needConvert) showLoading('문서를 PDF로 변환하고 있습니다…');
         const files = await prepareFiles(items);
         if (needConvert) hideLoading();
-        if (files.length) startLoad(files);
+        if (files.length) startLoad(files, { newTab: mode !== 'chapter' });
       } catch(err) {
         hideLoading();
         showError('파일 처리 오류: ' + (err && err.message ? err.message : String(err)));
@@ -4868,6 +4931,102 @@
     // 여러 파이프라인의 입력이라, 사이드바·본문 여백을 무심코 클릭만 해도 풀리는 사고가
     // 반복됐다(흑백 모드만 막아도 체크 전에 선택하는 흐름에서 여전히 풀림).
     // 해제는 명시적 동작으로만: '선택 해제' 버튼 또는 C 키.
+
+    // ── ⬚ 끌어서 쪽 고르기(사각형 선택) — 2026-10-22 ──────────────────────────
+    // 쪽 카드 밖 빈 곳(카드 사이 틈·목록 옆 여백·챕터 구분선의 빈 부분)에서 누르고 끌면 사각형에 닿은 쪽을 고른다.
+    // 쪽 카드에서 끌면 지금처럼 쪽 이동이다. 선택은 클릭 선택과 같은 selectedPages — 회전·삭제·흑백변환 등이 그대로 쓴다.
+    //  · 그냥 끌기 = 선택에 **더하기**(클릭 선택도 다른 선택을 지우지 않는다 — 빈 곳 클릭 해제를 없앤 이유와 같다)
+    //  · Ctrl+끌기 = 사각형에 닿은 쪽을 **빼기** · Esc = 끌기 전 선택으로 되돌림
+    //  · 화면 위·아래 끝으로 가면 목록이 저절로 스크롤된다(사각형은 문서 좌표로 잡아 스크롤해도 시작점이 그대로)
+    (function initPageMarquee() {
+      const sec = document.getElementById('resultsSection');
+      if (!sec || !pagesGrid) return;
+      const MIN_MOVE = 5, EDGE = 60;
+      let st = null;
+      const canStart = e => {
+        if (e.button !== 0 || document.body.classList.contains('edit-fullscreen')) return false;
+        const t = e.target;
+        if (!(t instanceof Element) || !sec.contains(t)) return false;
+        if (t.closest('.page-item, button, input, select, textarea, a, label, .sb-help-q')) return false;
+        if (t === pagesGrid || t.closest('.chapter-divider')) return true;
+        // 목록 옆 여백 — 쪽 목록을 품은 바탕을 같은 높이에서 누른 경우만
+        const g = pagesGrid.getBoundingClientRect();
+        return g.height > 0 && e.clientY >= g.top && e.clientY <= g.bottom && t.contains(pagesGrid);
+      };
+      const pageXY = (cx, cy) => ({ x: cx + window.scrollX, y: cy + window.scrollY });
+      function arm() {
+        const { pageElMap, sbElMap } = buildElMaps();
+        st.boxes = [];
+        pageElMap.forEach((el, pn) => {
+          const b = el.getBoundingClientRect();
+          if (!b.width) return;
+          st.boxes.push({ pn, el, sb: sbElMap.get(pn), l: b.left + window.scrollX, t: b.top + window.scrollY, r: b.right + window.scrollX, b: b.bottom + window.scrollY });
+        });
+        st.base = new Set(selectedPages);
+        st.div = document.createElement('div');
+        st.div.className = 'page-marquee';
+        document.body.appendChild(st.div);
+        document.body.classList.add('page-marqueeing');
+        st.armed = true;
+      }
+      function update() {
+        if (!st || !st.armed) return;
+        const p = pageXY(st.cx, st.cy);
+        const l = Math.min(st.x0, p.x), r = Math.max(st.x0, p.x), t = Math.min(st.y0, p.y), b = Math.max(st.y0, p.y);
+        Object.assign(st.div.style, { left: (l - window.scrollX) + 'px', top: (t - window.scrollY) + 'px', width: (r - l) + 'px', height: (b - t) + 'px' });
+        for (const x of st.boxes) {
+          const hit = x.l < r && x.r > l && x.t < b && x.b > t;
+          const want = hit ? !st.sub : st.base.has(x.pn);
+          if (want === selectedPages.has(x.pn)) continue;
+          if (want) selectPageEl(x.pn, x.el, x.sb); else deselectPageEl(x.pn, x.el, x.sb);
+        }
+      }
+      function tick() {   // 위·아래 끝에서 자동 스크롤
+        if (!st || !st.armed) return;
+        const dy = st.cy < EDGE ? -Math.ceil((EDGE - st.cy) / 3) : st.cy > window.innerHeight - EDGE ? Math.ceil((st.cy - (window.innerHeight - EDGE)) / 3) : 0;
+        if (dy) { window.scrollBy(0, dy); update(); }
+        st.raf = requestAnimationFrame(tick);
+      }
+      function end(cancel) {
+        if (!st) return;
+        const s = st; st = null;
+        window.removeEventListener('mousemove', onMove, true);
+        window.removeEventListener('mouseup', onUp, true);
+        document.removeEventListener('keydown', onKey, true);
+        if (!s.armed) return;
+        cancelAnimationFrame(s.raf);
+        s.div.remove();
+        document.body.classList.remove('page-marqueeing');
+        if (cancel) for (const x of s.boxes) {
+          const want = s.base.has(x.pn);
+          if (want !== selectedPages.has(x.pn)) { if (want) selectPageEl(x.pn, x.el, x.sb); else deselectPageEl(x.pn, x.el, x.sb); }
+        }
+        // 끄는 동안 지나간 쪽이 '마우스가 올라간 쪽'(ctxTargetIdx)으로 남으면 Delete·R 등이 고른 쪽 대신 그 쪽에 걸린다
+        ctxTargetIdx = -1;
+        updateSelectedCount();
+      }
+      const onMove = e => {
+        if (!st) return;
+        st.cx = e.clientX; st.cy = e.clientY;
+        if (!st.armed) {
+          if (Math.abs(e.clientX - st.sx) < MIN_MOVE && Math.abs(e.clientY - st.sy) < MIN_MOVE) return;
+          arm(); tick();
+        }
+        e.preventDefault();
+        update();
+      };
+      const onUp = () => end(false);
+      const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); end(true); } };
+      sec.addEventListener('mousedown', e => {
+        if (st || !canStart(e)) return;
+        e.preventDefault();   // 글자 선택이 시작되지 않게
+        const p = pageXY(e.clientX, e.clientY);
+        st = { sx: e.clientX, sy: e.clientY, cx: e.clientX, cy: e.clientY, x0: p.x, y0: p.y, sub: e.ctrlKey || e.metaKey, armed: false };
+        window.addEventListener('mousemove', onMove, true);
+        window.addEventListener('mouseup', onUp, true);
+        document.addEventListener('keydown', onKey, true);
+      });
+    })();
 
     // 메인 그리드 → 사이드바
     pagesGrid.addEventListener('mouseover', e => {

@@ -35,7 +35,7 @@ const BUILDERS = [
   'embedPageShared', 'embedAllPages', 'rotate180Embeds', 'placeInSlot', 'drawnTrimSize', 'impPackCell', 'impJustifyLayout', 'noteSheetSrc', 'sheetSourcesOf', 'drawPlaced', 'impMargins', 'impGaps', 'drawFrame',
   'prepSlug', 'drawSlug', 'drawStackNum', 'trimSizeMm',
   'drawCropMarks', 'drawTrimMarks', 'drawCutDims',
-  'bookletSheetOrder', 'cutStackOrder', 'dup2upOrder',
+  'bookletSheetOrder', 'cutStackOrder', 'dup2upOrder', 'shuffleStackOrder', 'shuffleBackSlot',
   'buildBookletBytes', 'buildNupBytes', 'buildStepRepeatBytes', 'buildDup2upBytes',
 ].map(n => exFn(n)).join('\n\n');
 // 빌더가 저장에 쓰는 공용 헬퍼(app-core.js) — 9/2 성능 작업 뒤 빌더가 savePdfDoc을 부르는데 목록에 없어,
@@ -198,10 +198,11 @@ function setMode(m) {
   document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('active', b.dataset.m === m));
   const show = (id, on) => { const el = $(id); if (el) el.style.display = on ? '' : 'none'; };
   const bk = m === 'booklet', nu = m === 'nup', cs = m === 'cutstack', rp = m === 'repeat', dp = m === 'dup';
-  show('rowBind', bk); show('rowCreep', bk); show('rowCover', bk); show('rowStackNum', cs);
+  show('rowBind', bk); show('rowCreep', bk); show('rowCover', bk); show('rowStackNum', cs || rp);   // 셔플도 묶음번호
   show('rowGrid', nu || cs);
   show('rowSides', nu || cs || dp);
   show('rowRep', rp);
+  show('rowShuffle', rp);
   $('hint').textContent = ({
     booklet: '중철(북클릿): 앞/뒤 교대로 재배열 → 가로 용지·양면·짧은 쪽 넘김 → 반 접어 중철.',
     nup: '모아찍기(N-up): 연속 페이지를 열×행 그리드로 앉힙니다.',
@@ -257,7 +258,7 @@ function buildOpts() {
   const nupOrient = $('paper').value === '__custom__' ? null : (across > down ? 'landscape' : 'portrait');
   if (mode === 'nup') return Object.assign(common, { mode, sheet: paperPt(nupOrient), across, down, sides, order: 'sequential' });
   if (mode === 'cutstack') return Object.assign(common, { mode, sheet: paperPt(down > 1 ? 'portrait' : 'landscape'), across, down, sides, order: 'cutstack' });
-  if (mode === 'repeat') return Object.assign(common, { mode, sheet: paperPt(null), cols: parseInt($('repCols').value) || 0, rows: parseInt($('repRows').value) || 0 });
+  if (mode === 'repeat') return Object.assign(common, { mode, sheet: paperPt(null), cols: parseInt($('repCols').value) || 0, rows: parseInt($('repRows').value) || 0, shuffleCopies: $('repShuffle').checked ? Math.max(1, parseInt($('repCopies').value) || 1) : 0, shuffleDuplex: $('repShuffle').checked ? $('repShuffleSides').value : '' });
   if (mode === 'dup') return Object.assign(common, { mode, sheet: paperPt('landscape'), sides });
   return Object.assign(common, { mode: 'booklet', sheet: paperPt('landscape'), creep: parseFloat($('creep').value) || 0, binding: document.querySelector('#bindGrp button.active')?.dataset.b || 'left' });
 }
@@ -634,6 +635,11 @@ const html = `<!doctype html>
         <input type="number" id="repRows" min="1" placeholder="세로" style="flex:0 0 60px;">
         <span class="hint" style="margin:0;">비우면 자동</span>
       </div>
+      <div class="row" id="rowShuffle" style="display:none;">
+        <label class="ck" title="N부 전체를 칸마다 더미로 나눠 PDF 하나에 — 1부만 단면 인쇄 → 한 번에 재단 → 1번 더미 위에 2번, 3번… 겹치면 1부부터 순서대로"><input type="checkbox" id="repShuffle"> 🔀 셔플</label>
+        <input type="number" id="repCopies" min="1" value="1" style="flex:0 0 70px;"> <span class="hint" style="margin:0;">부</span>
+        <select id="repShuffleSides" title="양면이면 낱장 단위로 섞고 뒷면 칸을 넘김 방향에 맞춰 거울로 — 프린터 설정과 같게"><option value="">단면</option><option value="long">양면 · 긴 쪽 넘김</option><option value="short">양면 · 짧은 쪽 넘김</option></select>
+      </div>
       <div class="row">
         <label class="lbl">배치크기</label>
         <div class="grp" id="scaleGrp">
@@ -698,7 +704,7 @@ const html = `<!doctype html>
         <label class="ck" title="시험 기능 — 자를 때마다의 거리(재단기 입력값)를 재단선 옆에 인쇄"><input type="checkbox" id="cropDims"> 📏 재단 치수(시험)</label>
         <label class="ck"><input type="checkbox" id="frame"> ▢ 프레임</label>
         <label class="ck" title="시트 하단에 파일명·날짜·시트번호 인쇄 (브라우저 도구는 영문·숫자만)"><input type="checkbox" id="slug"> 🏷 슬러그</label>
-        <span id="rowStackNum" style="display:none;"><label class="ck" title="정합 전용 — 각 묶음 트림 왼쪽 바깥에 겹치기 순서 번호. 재단 시 잘려나감"><input type="checkbox" id="stackNum"> ① 묶음번호</label></span>
+        <span id="rowStackNum" style="display:none;"><label class="ck" title="정합·셔플 — 각 묶음 트림 왼쪽 바깥에 겹치기 순서 번호. 재단 시 잘려나감"><input type="checkbox" id="stackNum"> ① 묶음번호</label></span>
       </div>
     </div>
 

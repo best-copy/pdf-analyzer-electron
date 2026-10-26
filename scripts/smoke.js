@@ -9,7 +9,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const JS_FILES = [
-  'main.js', 'preload.js',
+  'main.js', 'archive.js', 'preload.js',
   'src/app-core.js', 'src/app-process.js', 'src/app-ui.js', 'src/seam-repair.js',
   'src/worker-gray.js', 'src/worker-assemble.js', 'src/libs/gray-jpeg.js', 'src/libs/gray-blend.js',
 ];
@@ -61,7 +61,7 @@ for (const f of HTML_FILES) {
 
 // ── 1-c) 창 없이 도는 단위 테스트 (Electron을 띄우지 않는다) ─────────────────
 for (const t of ['scripts/test/seam-repair.test.js', 'scripts/test/inline-image.test.js', 'scripts/test/gray-colorspace.test.js', 'scripts/test/gray-jpeg.test.js', 'scripts/test/gray-blend.test.js', 'scripts/test/inflate-tolerant.test.js',
-                 'scripts/test/workfile.test.js', 'scripts/test/download-name.test.js', 'scripts/test/split-save.test.js']) {
+                 'scripts/test/workfile.test.js', 'scripts/test/download-name.test.js', 'scripts/test/split-save.test.js', 'scripts/test/archive.test.js']) {
   try {
     execFileSync(process.execPath, [path.join(ROOT, t)], { stdio: 'pipe' });
     console.log(`  ✔ test    ${t}`);

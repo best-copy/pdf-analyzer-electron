@@ -382,23 +382,30 @@
     // valid[i] ↔ outDoc i쪽(임포징·레이아웃 전 단계라 1:1). pageIsNeutral은 모르는 색공간을 '색 있음'으로 치므로
     // leftover는 보수적으로 나올 수 있다 — 그래서 저장을 막지 않고 확인만 받는다.
     // srcDoc: 원본(내부편집이 없는 쪽만 원본 쪽과 대조한다 — 편집된 쪽은 원본이 기준이 아니다)
-    function checkColorIntent(doc, valid, srcDoc) {
+    // 쪽마다 화면에 양보한다(uiYield) — 글자를 곡선으로 바꾼 231쪽 보고서에서 한 번에 2.9초 화면이 멈췄다(2026-10-21).
+    // 양보하는 사이 사용자가 쪽을 흑백 지정·내부 편집해도 판정 기준이 섞이지 않게, 시작할 때 쪽별 기준을 찍어 둔다
+    // (바뀐 상태의 결과는 buildBaseOptimized의 세대 확인이 저장 직후 버린다).
+    // ⚠ '원본과 내용이 같으면 한 번만 보기' 지름길은 쓰지 말 것 — 이 검수가 잡는 사고(함정 18)는 쪽 내용은 그대로이고
+    //   함께 쓰는 그림·폼만 바뀌는 경우다.
+    async function checkColorIntent(doc, valid, srcDoc) {
       if (typeof pageIsNeutral !== 'function') return null;
       const lost = [], leftover = [];
       let keepColor = 0, bw = 0;
       const pages = doc.getPages();
       const srcPages = srcDoc ? srcDoc.getPages() : [];
-      valid.forEach((r, i) => {
-        if (!r || r.isBlank || !pages[i]) return;
-        const target = isBwTarget(r);
-        if (target) { bw++; if (!pageIsNeutral(doc, pages[i].node)) leftover.push(i + 1); return; }
-        const edited = contentEdits && contentEdits.has(r.originalIdx);
-        const sp = !edited ? srcPages[r.originalIdx] : null;
-        const srcHasColor = sp ? !pageIsNeutral(srcDoc, sp.node) : !!r.isColor;
-        if (!srcHasColor) return;                          // 원래 무채색이고 손대지 않는 쪽 — 기대가 없다
+      const plan = valid.map(r => (!r || r.isBlank) ? null
+        : { r, target: isBwTarget(r), edited: !!(contentEdits && contentEdits.has(r.originalIdx)), isColor: !!r.isColor });
+      for (let i = 0; i < plan.length; i++) {
+        const p = plan[i];
+        if (!p || !pages[i]) continue;
+        await uiYield();
+        if (p.target) { bw++; if (!pageIsNeutral(doc, pages[i].node)) leftover.push(i + 1); continue; }
+        const sp = !p.edited ? srcPages[p.r.originalIdx] : null;
+        const srcHasColor = sp ? !pageIsNeutral(srcDoc, sp.node) : p.isColor;
+        if (!srcHasColor) continue;                        // 원래 무채색이고 손대지 않는 쪽 — 기대가 없다
         keepColor++;
         if (pageIsNeutral(doc, pages[i].node)) lost.push(i + 1);
-      });
+      }
       return { lost, leftover, keepColor, bw };
     }
     // 저장 전 확인 문구 — 문제가 없으면 null
@@ -425,7 +432,7 @@
       // base는 편집 옵션·임포징 옵션과 무관하다(페이지 순서·회전·흑백변환·내부편집만 반영).
       // 그래서 baseSignature()로 캐시해 두면 여백 1mm·거터 1mm 같은 조작에서 전 페이지
       // 재변환을 통째로 건너뛴다. 캐시 무효화는 clearProcessCaches 한 곳에서만.
-      const cacheSig = baseSignature();
+      const cacheSig = baseSignature() + k100Sig();   // ⚫ K100(켜짐·뺀 개체)이 바뀌면 다시 만든다
       if (!skipBw && _optBaseCache.sig === cacheSig && _optBaseCache.bytes) {
         if (onProgress) onProgress(100);
         return { bytes: _optBaseCache.bytes, stats: _optBaseCache.stats };
@@ -462,6 +469,28 @@
           page.setRotation(PDFLib.degrees((ex + r.rotation) % 360));
         }
       }
+      // ⚫ 검정 K100 — 흑백으로 바꾸지 않는 쪽만(흑백 쪽은 어차피 먹 1도). 쪽 열쇠 = 원본 쪽(+내부편집)이라
+      //   점검 창(runRichBlackCheck)에서 고르고 뺀 개체가 그대로 맞는다.
+      let k100Res = null;
+      if (_k100Enabled && !skipBw && typeof richBlackFixDoc === 'function') {
+        const idx = [], keyOf = new Map();
+        valid.forEach((r, i) => { if (!r.isBlank && !isBwTarget(r)) { idx.push(i); keyOf.set(i, k100PageKey(r)); } });
+        if (idx.length) {
+          try { k100Res = richBlackFixDoc(outDoc, { rgb: false, pages: idx, pageKey: i => keyOf.get(i), isSelected: k => !_k100Off.has(k) }); }
+          catch (e) { console.warn('K100 바꾸기 실패 — 그대로 진행:', e); }
+        }
+      }
+      // 🖤 RGB검정 리치블랙처리 — **컬러 쪽만**(흑백 판정 쪽에 리치블랙을 넣으면 그 쪽이 컬러로 과금된다 · 흑백 변환 쪽은 먹 1도).
+      //   K100보다 뒤 — 만든 리치블랙(C40 M30 Y30 K100)은 K100 판정상 혼합 검정이라 앞에 두면 K100으로 되돌아간다.
+      let rgbRichRes = null;
+      if (_rgbRich && !skipBw && typeof rgbRichBlackDoc === 'function') {
+        const idx = [];
+        valid.forEach((r, i) => { if (!r.isBlank && r.isColor && !isBwTarget(r)) idx.push(i); });
+        if (idx.length) {
+          try { rgbRichRes = rgbRichBlackDoc(outDoc, { pages: idx, rich: RGB_RICH_CMYK }); }
+          catch (e) { console.warn('RGB 검정 리치블랙 처리 실패 — 그대로 진행:', e); }
+        }
+      }
       if (onProgress) onProgress(10);
       // 변환 대상 판정은 적용 파이프라인과 공유(isBwTarget) — 누락 불일치 방지.
       // 컬러 페이지(UI Dot Gain 적용)와 회색 판정 페이지(Dot Gain 0 강제)를 나눠
@@ -473,7 +502,7 @@
       let sem = SEM; const q = [];
       const wait = () => sem > 0 ? (sem--, Promise.resolve()) : new Promise(r => q.push(r));
       const rel = () => { if (q.length) q.shift()(); else sem++; };
-      let done = 0; const stats = { errors: 0, errPages: [], converted: toConvert.length };
+      let done = 0; const stats = { errors: 0, errPages: [], converted: toConvert.length, k100: k100Res, rgbRich: rgbRichRes };
       const runBatch = (batch, dgOverride) => Promise.all(batch.map(({ idx, pageNum }) => (async () => {
         await wait();
         try { await convertPageToGrayscaleVector(outDoc, idx, stats, dgOverride); }
@@ -486,11 +515,11 @@
       }
       if (onProgress) onProgress(94);
       // 🎨 저장본 컬러 검수 — 컬러로 둘 쪽이 회색이 되거나, 흑백으로 바꾼 쪽에 색이 남았는지 저장 전에 가린다
-      if (!skipBw) { try { stats.colorCheck = checkColorIntent(outDoc, valid, srcDoc); } catch (e) { console.warn('컬러 검수 실패:', e); } }
+      if (!skipBw) { try { stats.colorCheck = await checkColorIntent(outDoc, valid, srcDoc); } catch (e) { console.warn('컬러 검수 실패:', e); } }
       const outBytes = await savePdfDoc(outDoc);
       // 저장 도중 상태가 바뀌었으면(페이지 편집 등) 캐시하지 않는다 — 낡은 base가 남는 사고 방지
       if (gen !== _cacheGen) throw staleCacheError();
-      if (!skipBw && baseSignature() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
+      if (!skipBw && baseSignature() + k100Sig() === cacheSig) _optBaseCache = { sig: cacheSig, bytes: outBytes, stats };
       return { bytes: outBytes, stats };
     }
     // 다운로드용 최종 바이트 (용량 최적화 base + 레이아웃 변환)
@@ -507,7 +536,7 @@
     // 다운로드·저장하고 닫기가 옛 결과를 그대로 재사용한다.
     function optSignature() {
       const pf = (typeof computePageFlags === 'function') ? computePageFlags() : null;
-      return baseSignature() + '|' + JSON.stringify(editSettings) + impSignature() + bleedSig() + (pf ? '|pf' + pf.join('') : '');
+      return baseSignature() + k100Sig() + '|' + JSON.stringify(editSettings) + impSignature() + bleedSig() + (pf ? '|pf' + pf.join('') : '');
     }
     // 같은 시그니처의 빌드가 이미 진행 중이면(예: 프리웜 도중 다운로드 클릭) 그 결과를
     // 공유한다. 늦게 합류한 쪽(다운로드)의 onProgress를 진행 중 빌드의 리스너에 등록해
@@ -793,6 +822,26 @@
       impSettingsChanged();
     }
 
+    // 🔀 셔플 켬/끔 → 부수 칸 활성·묶음번호 표시
+    function syncRepShuffleUI() {
+      const g = id => document.getElementById(id);
+      const on = !!g('repShuffle')?.checked;
+      if (g('repCopies')) g('repCopies').disabled = !on;
+      if (g('repShuffleSides')) g('repShuffleSides').disabled = !on;
+      if (g('impStackWrap')) g('impStackWrap').style.display = (_impMode === 'cutstack' || (_impMode === 'repeat' && on)) ? '' : 'none';
+    }
+    // 셔플 부수(꺼져 있으면 0) — 반복 모드에서만 의미가 있다
+    function repShuffleCopies() {
+      const g = id => document.getElementById(id);
+      if (_impMode !== 'repeat' || !g('repShuffle')?.checked) return 0;
+      return Math.max(1, Math.min(100000, parseInt(g('repCopies')?.value) || 1));
+    }
+    // 셔플 인쇄 면 — '' = 단면, 'long' = 양면 긴 쪽 넘김, 'short' = 양면 짧은 쪽 넘김
+    function repShuffleDuplex() {
+      if (!repShuffleCopies()) return '';
+      const v = document.getElementById('repShuffleSides')?.value || '';
+      return v === 'long' || v === 'short' ? v : '';
+    }
     function setImpMode(mode) {
       _impMode = mode;
       document.querySelectorAll('#impModeGroup .es-chip').forEach(b =>
@@ -803,8 +852,9 @@
       if (g('impBookletRow2')) g('impBookletRow2').style.display = bk ? '' : 'none';   // 표지 분리는 중철 전용
       if (g('impCutRow2'))    g('impCutRow2').style.display    = (cs || nu || mode === 'dup') ? '' : 'none';   // 단면/양면
       if (g('impGridRow'))    g('impGridRow').style.display    = (cs || nu) ? '' : 'none';   // 열×행 그리드
-      if (g('impStackWrap'))  g('impStackWrap').style.display  = cs ? '' : 'none';   // 묶음번호는 정합 전용
+      if (g('impStackWrap'))  g('impStackWrap').style.display  = (cs || (rp && !!g('repShuffle')?.checked)) ? '' : 'none';   // 묶음번호는 정합·셔플
       if (g('impRepRow'))     g('impRepRow').style.display     = rp ? '' : 'none';
+      if (g('impShuffleRow')) g('impShuffleRow').style.display = rp ? '' : 'none';
       if (g('bkCreepWrap'))   g('bkCreepWrap').style.display   = bk ? 'flex' : 'none';   // 밀림보정은 중철 전용
       if (g('impJustifyWrap')) g('impJustifyWrap').style.display = (cs || nu || mode === 'dup') ? '' : 'none';   // ↔ 양끝 맞춤
       if (typeof syncImpJustifyUI === 'function') syncImpJustifyUI();
@@ -974,7 +1024,7 @@
     // 주석(펜 메모·형광펜·도장 그림)은 embedPage가 버린다 — 인쇄되는 주석을 본문에 그려 넣은 노드를 싣는다(libs/annot-flatten.js)
     async function embedPageShared(out, pg, mtx, copier) {
       const [e] = await out.embedPages([{ node: copier(annotFlatNode(pg)) }], [undefined], [mtx]);
-      return e;
+      return fastEmbed(e);   // 쪽 내용을 풀었다 다시 압축하지 않는다(annot-flatten.js)
     }
     async function embedAllPages(out, src, onProgress, extraRot) {
       const n0 = src.getPageCount();
@@ -992,7 +1042,7 @@
         else                  { mtx = undefined;            ew = w; eh = h; }
         let epg;
         try { epg = await embedPageShared(out, pg, mtx, copier); }
-        catch (err) { ensurePageContents(pg, true); [epg] = await out.embedPages([{ node: annotFlatNode(pg, true) }], [undefined], [mtx]); }   // 강제 복구 후 1회 재시도(복구한 쪽은 새로 복사)
+        catch (err) { ensurePageContents(pg, true); [epg] = await out.embedPages([{ node: annotFlatNode(pg, true) }], [undefined], [mtx]); fastEmbed(epg); }   // 강제 복구 후 1회 재시도(복구한 쪽은 새로 복사)
         embedded.push({ e: epg, w: ew, h: eh, trim: pageTrimInset(pg, w, h, rot), src: i });
         if (onProgress && (i & 15) === 0) onProgress(Math.round(i / n0 * 40));
         await uiYield();   // 대용량 문서 임베드 중에도 화면이 멈추지 않게 주기적으로 양보
@@ -1223,6 +1273,7 @@
       else if (rot === 270) { mtx = [0, 1, -1, 0, h, 0];  ew = h; eh = w; }
       else                  { mtx = undefined;            ew = w; eh = h; }
       const [e] = await out.embedPages([{ node: annotFlatNode(pg) }], [undefined], [mtx]);   // 주석까지(annot-flatten.js)
+      fastEmbed(e);
       return { e, w: ew, h: eh };
     }
     // 캔버스 텍스트 → PNG 임베드 (책등 텍스트용 — 한글 포함, 시스템 글꼴로 그림)
@@ -3644,6 +3695,30 @@
       return { bytes, sheetSrc: sheetSourcesOf(out), n0, n, chunk, sheets: sheets.length, nup, sides };
     }
 
+    // ── 🔀 셔플(반복 배치 옵션) — N부 전체를 PDF 하나로, 재단 후 더미를 차례로 겹치면 1부·2부…가 순서대로 ──
+    // 순서열 S = 1부의 1~P쪽, 2부의 1~P쪽, …(길이 N·P). 시트 M = ceil(N·P / 칸 수).
+    // 칸 j(왼쪽 위부터 가로 먼저)의 더미 = S[j·M … j·M+M−1] → 시트 s의 칸 j = S[j·M + s].
+    // 빈 칸은 마지막 더미의 맨 끝에만 생긴다(겹친 뒤 맨 아래). 반환: sheets[s][j] = 0부터 센 쪽 번호(−1 = 빈 칸)
+    function shuffleStackOrder(n0, copies, per) {
+      n0 = Math.max(1, n0 | 0); copies = Math.max(1, copies | 0); per = Math.max(1, per | 0);
+      const S = n0 * copies, M = Math.max(1, Math.ceil(S / per));
+      const sheets = [];
+      for (let s = 0; s < M; s++) {
+        const row = [];
+        for (let j = 0; j < per; j++) { const k = j * M + s; row.push(k < S ? k % n0 : -1); }
+        sheets.push(row);
+      }
+      return { sheets, M, S, blanks: M * per - S };
+    }
+    // 🔀 양면 셔플의 뒷면 칸 — 앞면 칸 j(왼쪽 위부터 가로 먼저)에 앉은 낱장의 뒷면이 놓일 칸.
+    // 종이를 '긴 변'을 축으로 뒤집으면(긴 쪽 넘김) 세로 대지는 좌우가, 가로 대지는 위아래가 바뀐다.
+    // 짧은 쪽 넘김은 그 반대. 프린터가 뒷면을 바로 세워 찍으므로 원고는 돌리지 않는다.
+    function shuffleBackSlot(j, cols, rows, flip, landscape) {
+      const r = Math.floor(j / cols), c = j % cols;
+      const mirrorCols = (flip === 'short') === !!landscape;
+      return mirrorCols ? r * cols + (cols - 1 - c) : (rows - 1 - r) * cols + c;
+    }
+
     // ── 반복 배치(Step & Repeat) — 명함·쿠폰·전단 ────────────────────────────
     // 각 원고 페이지를 한 시트에 여러 벌 배치. cols/rows 미지정(0) 시 원고 '실제 크기'로
     // 자동 최대 배치 — 용지 가로/세로 방향 중 더 많이 들어가는 쪽을 자동 선택.
@@ -3663,6 +3738,7 @@
       const wantC = opts.cols | 0, wantR = opts.rows | 0;
 
       const slug = await prepSlug(out, opts);
+      if ((opts.shuffleCopies | 0) >= 1) return buildShuffleSheets();
       let total = 0, firstGrid = null, firstTrim = null;
       for (let pi = 0; pi < n0; pi++) {
         const { e, w, h } = embedded[pi];
@@ -3728,6 +3804,84 @@
       if (onProgress) onProgress(98);
       const bytes = await savePdfDoc(out);
       return { bytes, sheetSrc: sheetSourcesOf(out), n0, total, grid: firstGrid, sheets: n0, trimMm: trimSizeMm(firstTrim) };
+
+      // 🔀 셔플: 칸 배치는 가장 큰 쪽 하나로 정하고(모든 시트 같은 칸 — 재단선이 같아야 한 번에 자른다),
+      // 시트마다 칸에 shuffleStackOrder 순서대로 쪽을 앉힌다.
+      async function buildShuffleSheets() {
+        const copies = opts.shuffleCopies | 0;
+        const duplex = opts.shuffleDuplex === 'long' || opts.shuffleDuplex === 'short' ? opts.shuffleDuplex : '';
+        // 양면: 단위가 낱장(앞 = 홀수 쪽, 뒤 = 짝수 쪽). 1부 = ceil(P/2)장 — 홀수 쪽이면 마지막 장 뒷면은 비워
+        // 다음 부가 새 장의 앞면에서 시작하게 한다.
+        const units = duplex ? Math.ceil(n0 / 2) : n0;
+        let big = 0;
+        for (let i = 1; i < n0; i++) if (embedded[i].w * embedded[i].h > embedded[big].w * embedded[big].h) big = i;
+        const w = Math.max(...embedded.map(x => x.w)), h = Math.max(...embedded.map(x => x.h));
+        let best = null;
+        for (const [sw, sh] of cands) {
+          const W = sw - 2 * mPt, H = sh - 2 * mPt;
+          if (wantC > 0 && wantR > 0) {
+            const cellW = (W - (wantC - 1) * gutterPt) / wantC, cellH = (H - (wantR - 1) * gutterPt) / wantR;
+            if (cellW <= 0 || cellH <= 0) continue;
+            const s = Math.min(cellW / w, cellH / h);
+            if (!best || s > best.score) best = { sw, sh, cols: wantC, rows: wantR, cellW, cellH, score: s };
+          } else {
+            const cols = Math.floor((W + gutterPt) / (w + gutterPt)), rows = Math.floor((H + gutterPt) / (h + gutterPt));
+            if (cols < 1 || rows < 1) continue;
+            if (!best || cols * rows > best.score) best = { sw, sh, cols, rows, cellW: w, cellH: h, score: cols * rows };
+          }
+        }
+        if (!best) throw new Error(wantC > 0 ? '칸 수가 너무 많거나 여백·거터가 커서 배치할 수 없습니다.'
+          : `원고(${Math.round(w / MM)}×${Math.round(h / MM)}mm)가 용지보다 큽니다 — 더 큰 용지를 선택하세요.`);
+        {
+          const d = drawnTrimSize({ x: 0, y: 0, w: best.cellW, h: best.cellH }, embedded[big], opts);
+          if (d.w > 0 && d.h > 0) { best.cellW = Math.min(best.cellW, d.w); best.cellH = Math.min(best.cellH, d.h); }
+        }
+        const { sw, sh, cols, rows, cellW, cellH } = best;
+        const per = cols * rows;
+        const blockW = cols * cellW + (cols - 1) * gutterPt, blockH = rows * cellH + (rows - 1) * gutterPt;
+        const ox = (sw - blockW) / 2, oy = (sh - blockH) / 2;
+        const slots = [];
+        for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+          slots.push({ x: ox + c * (cellW + gutterPt), y: oy + (rows - 1 - r) * (cellH + gutterPt), w: cellW, h: cellH });
+        const ord = shuffleStackOrder(units, copies, per);
+        let firstT = null, drawn = 0;
+        // 빈 칸도 재단선은 같은 자리에 — 칸 크기 그대로 넣어 둔다(한 번에 자를 수 있게)
+        const markOf = (t, j) => t || (firstT ? { x: slots[j].x + (slots[j].w - firstT.w) / 2, y: slots[j].y + (slots[j].h - firstT.h) / 2, w: firstT.w, h: firstT.h } : null);
+        const backAt = duplex ? slots.map((_, j) => shuffleBackSlot(j, cols, rows, duplex, sw > sh)) : null;
+        for (let s = 0; s < ord.M; s++) {
+          const page = out.addPage([sw, sh]);
+          const trims = ord.sheets[s].map((u, j) => u < 0 ? null : drawPlaced(page, embedded[duplex ? u * 2 : u], slots[j], opts));
+          if (!firstT) firstT = trims.find(Boolean) || null;
+          const marks = trims.map(markOf);
+          if (opts.crop) drawTrimMarks(page, marks, opts);
+          if (opts.cropDims && slug) drawCutDims(page, marks, slug.ascii, sw, sh, opts.cropStyle);
+          if (opts.stackNum && slug && s === 0) marks.forEach((t, j) => drawStackNum(page, t, j + 1, slug.ascii, sw, sh));   // 더미 번호는 첫 시트(각 더미 맨 위)에만
+          drawSlug(page, slug, s + 1, ord.M, 'F');
+          if (duplex) {
+            // 뒷면: 앞면 칸 j 낱장의 짝수 쪽을 거울 칸 backAt[j]에. 빈 칸(홀수 쪽 문서의 마지막 장 뒤·남는 칸)도 재단선은 같은 자리
+            const bp = out.addPage([sw, sh]);
+            const bt = new Array(per).fill(null);
+            ord.sheets[s].forEach((u, j) => {
+              const pi = u * 2 + 1;
+              if (u >= 0 && pi < n0) bt[backAt[j]] = drawPlaced(bp, embedded[pi], slots[backAt[j]], opts);
+            });
+            const bm = bt.map(markOf);
+            if (opts.crop) drawTrimMarks(bp, bm, opts);
+            if (opts.cropDims && slug) drawCutDims(bp, bm, slug.ascii, sw, sh, opts.cropStyle);
+            drawSlug(bp, slug, s + 1, ord.M, 'B');
+          }
+          drawn += per;
+          if (drawn >= 256 || s === ord.M - 1) {
+            drawn = 0;
+            if (onProgress) onProgress(40 + Math.round((s + 1) / ord.M * 55));
+            await uiYield();
+          }
+        }
+        if (onProgress) onProgress(98);
+        const bytes = await savePdfDoc(out);
+        return { bytes, sheetSrc: sheetSourcesOf(out), n0, total: n0 * copies, grid: { cols, rows }, sheets: ord.M,
+          trimMm: trimSizeMm(firstT), shuffle: { copies, blanks: ord.blanks, per, duplex, leaves: duplex ? units : 0 } };
+      }
     }
 
     async function generateStepRepeat() {
@@ -3745,9 +3899,21 @@
         try { renderProcessedPreview(res.bytes); } catch (e) { console.warn('임포징 미리보기 실패:', e); }
         const base = effectiveBaseName();   // 챕터 삭제 후에는 남은 첫 챕터명
         const g = res.grid || { cols: 0, rows: 0 };
-        const outName = `${nameWithImpTag(base, `반복${g.cols}x${g.rows}`)}.pdf`;
+        const sf = res.shuffle;
+        const outName = `${nameWithImpTag(base, sf ? `셔플${sf.copies}부${sf.duplex ? '양면' : ''}_${g.cols}x${g.rows}` : `반복${g.cols}x${g.rows}`)}.pdf`;
         adoptImposedResult(res.bytes, outName);
-        let msg = `📖 반복 배치(Step&Repeat) 생성 완료 — 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${g.cols * g.rows}벌 (총 ${res.total}벌)`
+        let msg = sf
+          ? `🔀 셔플 생성 완료 — ${sf.copies}부 × ${res.n0}쪽 = ${res.total}쪽 → 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${sf.per}칸`
+            + (sf.blanks ? ` (마지막 더미 끝 빈 칸 ${sf.blanks})` : '')
+            + (res.trimMm ? `\n재단 후 크기: ${res.trimMm[0]} × ${res.trimMm[1]} mm` + impTrimHint(opts) : '')
+            + (sf.duplex
+              ? `\n양면 — 1부 = 낱장 ${sf.leaves}장${res.n0 % 2 ? '(마지막 장 뒷면은 비움)' : ''} · PDF ${res.sheets * 2}쪽(앞·뒤)`
+                + `\n인쇄: 이 PDF를 1부만 · 양면 ${sf.duplex === 'long' ? '긴 쪽 넘김' : '짧은 쪽 넘김'}(시트 순서 그대로) → 쌓인 채로 한 번에 재단`
+                + `\n※ 첫 장으로 앞뒤 칸이 맞는지 먼저 확인하세요 — 프린터의 넘김 방향이 다르면 뒷면이 다른 칸에 찍힙니다`
+              : `\n인쇄: 이 PDF를 1부만 · 단면(시트 순서 그대로) → 쌓인 채로 한 번에 재단`)
+            + `\n→ 더미 1~${sf.per}(왼쪽 위부터 가로 순서)를 1번 위에 2번, 3번… 차례로 겹치면 1부부터 ${sf.copies}부까지 순서대로`
+            + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`
+          : `📖 반복 배치(Step&Repeat) 생성 완료 — 시트 ${res.sheets}장 · 시트당 ${g.cols}×${g.rows}=${g.cols * g.rows}벌 (총 ${res.total}벌)`
           + (res.trimMm ? `\n재단 후 크기: ${res.trimMm[0]} × ${res.trimMm[1]} mm` + impTrimHint(opts) : '')
           + `\n화면에 결과가 표시됩니다 — 저장은 메인 창의 '⇩ 다운로드' 버튼으로 진행하세요(임포징 반영본).`;
         if (opts.bleed > 0 && opts.gutter < opts.bleed * 2)
@@ -4039,7 +4205,7 @@
         cropStyle: (typeof _impCropStyle === 'function' ? _impCropStyle() : null),
         creep: 0, binding: p.bd === 'right' ? 'right' : 'left',
         order: p.m === 'cutstack' ? 'cutstack' : 'sequential',
-        cols: p.ax || 0, rows: p.dn || 0,
+        cols: p.ax || 0, rows: p.dn || 0, shuffleCopies: p.m === 'repeat' ? (p.rs || 0) : 0, shuffleDuplex: p.m === 'repeat' && p.rs ? (p.rd || '') : '',
         place: { scale: p.sc || 'fit', fixedScale: p.fx, align: p.al || 'cc', offX: p.ox || 0, offY: p.oy || 0 },
         paper: (p.sw && p.sh) ? `${p.sw}×${p.sh}mm` : 'auto',
         _profName: p.n,
@@ -4091,6 +4257,14 @@
         if (g('impFrame'))  g('impFrame').checked = !!p.fr;
         if (g('impSlug'))   g('impSlug').checked = !!p.sl;
         if (g('impStackNum')) g('impStackNum').checked = !!p.sn;
+        if (p.m === 'repeat') {
+          if (g('repCols')) g('repCols').value = p.ax || '';
+          if (g('repRows')) g('repRows').value = p.dn || '';
+          if (g('repShuffle')) g('repShuffle').checked = !!p.rs;
+          if (g('repCopies')) g('repCopies').value = p.rs || 1;
+          if (g('repShuffleSides')) g('repShuffleSides').value = p.rd || '';
+          syncRepShuffleUI();
+        }
         if (p.sd) { _cutSides = p.sd; document.querySelectorAll('#cutSidesGroup .es-chip').forEach(b => b.classList.toggle('active', +b.dataset.sides === p.sd)); }
         if (p.m === 'booklet') { _bkBind = p.bd === 'right' ? 'right' : 'left'; document.querySelectorAll('#bkBindGroup .es-chip').forEach(b => b.classList.toggle('active', b.dataset.bind === _bkBind)); }
         updateImpSheetReadout();
@@ -4201,13 +4375,19 @@
       if (g('impCropDims')?.checked) s.cd = 1;
       if (g('impFrame')?.checked) s.fr = 1;
       if (g('impSlug')?.checked) s.sl = 1;
-      if (_impMode === 'cutstack' && g('impStackNum')?.checked) s.sn = 1;
+      if ((_impMode === 'cutstack' || repShuffleCopies()) && g('impStackNum')?.checked) s.sn = 1;
       if (_impScale === 'fixed') s.fx = (parseFloat(g('impFixed')?.value) || 100) / 100;
       if (_impMode === 'nup' || _impMode === 'cutstack') { s.ax = parseInt(g('impAcross')?.value) || 1; s.dn = parseInt(g('impDown')?.value) || 1; }
       if (_impMode === 'nup' || _impMode === 'cutstack' || _impMode === 'dup' || _impMode === 'booklet') s.sd = _cutSides;
       const ox = parseFloat(g('impOffX')?.value) || 0; if (ox) s.ox = ox;
       const oy = parseFloat(g('impOffY')?.value) || 0; if (oy) s.oy = oy;
       if (_impMode === 'booklet' && _bkBind === 'right') s.bd = 'right';
+      if (_impMode === 'repeat') {
+        const rc = parseInt(g('repCols')?.value) || 0, rr = parseInt(g('repRows')?.value) || 0;
+        if (rc && rr) { s.ax = rc; s.dn = rr; }
+        const rs = repShuffleCopies(); if (rs) s.rs = rs;   // 🔀 셔플 부수
+        const rd = repShuffleDuplex(); if (rd) s.rd = rd;   // 🔀 셔플 양면(long/short)
+      }
       return s;
     }
     // 저장 — 이름칸 기준 업서트: 같은 이름이 있으면 덮어쓰기(수정), 없으면 신규 추가.
@@ -4430,6 +4610,7 @@
         o.slug = currentSlugOpt();
         o.stackNum = !!document.getElementById('impStackNum')?.checked;
         o.perChapter = impPerChapterOn();
+        if (o.mode === 'repeat') { o.shuffleCopies = repShuffleCopies(); o.shuffleDuplex = repShuffleDuplex(); }
         return o;
       }
       const g = id => document.getElementById(id);
@@ -4468,7 +4649,7 @@
       if (_impMode === 'cutstack')
         return Object.assign(common, { sheet: resolveImpPaper(paperVal, down > 1 ? 'portrait' : 'landscape'), across, down, sides: _cutSides, order: 'cutstack' });
       if (_impMode === 'repeat')
-        return Object.assign(common, { sheet: resolveImpPaper(paperVal, null), cols: parseInt(g('repCols')?.value) || 0, rows: parseInt(g('repRows')?.value) || 0 });
+        return Object.assign(common, { sheet: resolveImpPaper(paperVal, null), cols: parseInt(g('repCols')?.value) || 0, rows: parseInt(g('repRows')?.value) || 0, shuffleCopies: repShuffleCopies(), shuffleDuplex: repShuffleDuplex() });
       if (_impMode === 'dup')
         return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), sides: _cutSides });
       return Object.assign(common, { sheet: resolveImpPaper(paperVal, 'landscape'), creep: parseFloat(g('bkCreep')?.value) || 0, binding: _bkBind, sides: _cutSides });
@@ -4489,6 +4670,7 @@
       if (mode === 'dup')      return '2up';
       if (mode === 'repeat') {
         const c = parseInt(o && o.cols) || 0, r = parseInt(o && o.rows) || 0;
+        if (o && o.shuffleCopies > 0) return `셔플${o.shuffleCopies}부${o.shuffleDuplex ? '양면' : ''}`;
         return (c > 0 && r > 0) ? `반복${c * r}up` : '반복배치';
       }
       if (mode === 'cutstack') return `정합${cell(o && o.across, o && o.down)}up`;
@@ -4865,6 +5047,607 @@
       } finally { setBtnBusy('impGenBtn', false); }
     }
 
+    // ── ⚫ 검정 K100(먹 1도) — 혼합 검정(리치 블랙)·RGB 검정을 K100으로 (2026-10-20) ──────
+    // 화면 모양은 그대로(검정은 검정)라 폰트 안전화처럼 **저장할 때** 반영한다 — 다운로드·분리 저장·인쇄가
+    // 지나는 buildFinalSaveBytes 한 곳. 판정·바꾸기는 libs/rich-black.js(rich-black.test.js).
+    // 흑백 변환 쪽은 이미 DeviceGray(먹 1도)라 바뀌는 것이 없다 — 주로 컬러 쪽의 검정.
+    let _k100Enabled = false;   // 탭마다(captureTabExtras) — 처음 여는 문서는 꺼짐
+    // 🖤 RGB검정 리치블랙처리 — 켜 두면 저장·인쇄 때 컬러 쪽의 RGB 검정(0,0,0 근처)을 면은 리치블랙 C40 M30 Y30 K100,
+    //   글자·선은 K100으로 바꾼다(사용자 결정 2026-10-20). 앱 전체 설정·기억. 검정 점검(K100)은 CMYK 혼합 검정만 본다.
+    //   **기본 꺼짐 — 켰을 때만 동작**(사용자 결정 2026-10-21): 글자를 곡선으로 바꾼 원고는 본문 글자가 '면'이라 전부 4색
+    //   리치블랙이 됐고(231쪽 보고서 42,025곳), 저장 준비가 28초 화면을 멈췄다. 옛 기억 키(rgbRichBlack)는 버리고 새 키로 —
+    //   예전 기본 켜짐을 이어받지 않게.
+    const RGB_RICH_CMYK = '0.4 0.3 0.3 1';
+    let _rgbRich = (() => { try { localStorage.removeItem('rgbRichBlack'); return localStorage.getItem('rgbRichBlackOn') === '1'; } catch (e) { return false; } })();
+    let _rgbRichLastStats = null;
+    let _k100Cache = { key: null, bytes: null, stats: null };
+    let _k100Off = new Set();   // 점검 창에서 뺀 개체 이름표(문서마다 — 문서 상태·탭 상태에 저장)
+    // 쪽 열쇠 — 원본 쪽 번호(+내부편집이면 e). 점검·바꾸기 둘 다 이걸로 이름표를 만든다
+    function k100PageKey(r) { return 'o' + r.originalIdx + ((typeof contentEdits !== 'undefined' && contentEdits.has(r.originalIdx)) ? 'e' : ''); }
+    function k100Sig() {
+      const rr = _rgbRich ? '|rgbrich:' + RGB_RICH_CMYK : '';
+      if (!_k100Enabled) return rr;
+      const off = [..._k100Off].sort().join(',');
+      let h = 0; for (let i = 0; i < off.length; i++) h = (Math.imul(h, 31) + off.charCodeAt(i)) | 0;
+      return '|k100:' + _k100Off.size + ':' + (h >>> 0).toString(36) + rr;
+    }
+    let _k100LastStats = null;
+    function syncK100UI() {
+      const on = document.getElementById('k100OnBtn');
+      if (on) on.classList.toggle('active', _k100Enabled);   // 글자는 그대로 — 버튼 안의 ? 표식(initSbHelp)을 지우지 않게
+      const rb = document.getElementById('rgbRichBtn');
+      if (rb) rb.classList.toggle('active', _rgbRich);
+    }
+    function setK100Enabled(on, quiet) {
+      _k100Enabled = !!on;
+      syncK100UI();
+      if (typeof updateDownloadBtn === 'function') updateDownloadBtn();
+      if (processedPdfBytes && typeof prewarmOptimizedOutput === 'function') setTimeout(prewarmOptimizedOutput, 400);   // 다운로드본을 미리
+      if (!quiet && _k100Enabled) showSuccess("⚫ 검정 K100 켜짐 — 혼합 검정(CMYK 섞인 검정·RGB 검정)의 면·선·글자를 K100(먹 1도)으로 바꿔 저장합니다.\n"
+        + "화면 모양은 그대로입니다. '⇩ 다운로드'·'✂ 분리 저장'·'🖨 인쇄' 때 반영되며, 사진·그러데이션·별색은 건드리지 않습니다.\n어느 쪽에 혼합 검정이 있는지는 '🔍 검정 점검'으로 먼저 확인하세요.");
+    }
+    function toggleRgbRich() {
+      _rgbRich = !_rgbRich;
+      try { localStorage.setItem('rgbRichBlackOn', _rgbRich ? '1' : '0'); } catch (e) {}
+      syncK100UI();
+      if (typeof updateDownloadBtn === 'function') setTimeout(updateDownloadBtn, 0);
+      if (processedPdfBytes && typeof prewarmOptimizedOutput === 'function') setTimeout(prewarmOptimizedOutput, 400);
+      showSuccess(_rgbRich
+        ? "🖤 RGB검정 리치블랙처리 켜짐 — 컬러 쪽의 RGB 검정을 '⇩ 다운로드'·'✂ 분리 저장'·'🖨 인쇄' 때 면은 C40 M30 Y30 K100, 글자·선은 K100으로 바꿉니다.\n화면 모양은 그대로이고, 흑백 쪽은 원래대로 먹 1도입니다."
+        : "🖤 RGB검정 리치블랙처리 꺼짐 — RGB 검정을 그대로 저장합니다(출력기가 C·M·Y·K 네 색으로 바꿔 찍을 수 있습니다).");
+    }
+    // 최종본에 K100 바꾸기 — 바꿀 것이 없으면 받은 바이트 그대로
+    async function applyK100Stage(bytes) {
+      if (typeof richBlackFixDoc !== 'function') return bytes;
+      const key = bytesFingerprint(bytes);
+      if (_k100Cache.key === key && _k100Cache.bytes) { _k100LastStats = _k100Cache.stats; return _k100Cache.bytes; }
+      const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+      const st = richBlackFixDoc(doc, { rgb: false });
+      const out = st.total.edits ? new Uint8Array(await savePdfDoc(doc)) : bytes;
+      _k100LastStats = st;
+      if (bytes.byteLength < 400 * 1024 * 1024) _k100Cache = { key, bytes: out, stats: st };
+      return out;
+    }
+    document.addEventListener('DOMContentLoaded', syncK100UI);   // 'RGB검정 리치블랙처리'를 기억값대로 표시
+    if (document.readyState !== 'loading') setTimeout(syncK100UI, 0);
+    function k100ResultNote() {
+      const rr = (_rgbRich && _rgbRichLastStats && _rgbRichLastStats.total.edits)
+        ? ` · 🖤 RGB 검정 ${_rgbRichLastStats.total.editPages}쪽·${_rgbRichLastStats.total.edits}곳 → 리치블랙(면 C40 M30 Y30 K100 · 글자·선 K100)` : '';
+      if (!_k100Enabled || !_k100LastStats) return rr;
+      const s = _k100LastStats;
+      return (s.total.edits ? ` · ⚫ 검정 K100 ${s.total.editPages || s.pages.length}쪽·${s.total.edits}곳 바꿈` : ' · ⚫ 혼합 검정 없음(그대로)') + rr;
+    }
+
+    // 🔍 검정 점검 — 미리보기 창에서 개체(면·선·글자)마다 골라 K100으로 바꾸거나 뺀다 (2026-10-20 사용자 요청)
+    // 점검은 지금 쪽(원본 쪽 · 내부편집·K100을 구운 쪽이면 그 편집본)을 훑는다. [바꾸기]는 고른 개체를 그 쪽에 굽는다
+    // (k100BakeRows — 썸네일·다운로드·인쇄가 모두 바뀐 쪽을 쓴다). 흑백으로 바꾸는 쪽은 먹 1도로 나가 고를 것이 없다.
+    // (왼쪽 패널 'K100 켜기'는 이와 별개로 저장할 때 문서 전체를 바꾸는 단계 — buildBaseOptimized·_k100Off)
+    async function k100ScanPages() {
+      const src = await getSourceDoc();
+      const rows = [];
+      let n = 0;
+      for (const r of pageResults.filter(Boolean)) {
+        if (r.isBlank) continue;
+        let doc = src, pi = r.originalIdx;
+        if (contentEdits.has(r.originalIdx)) { const ed = await getEditedPageDoc(r.originalIdx); if (ed) { doc = ed; pi = 0; } }
+        const sc = richBlackScanDoc(doc, { rgb: false, pages: [pi], pageKey: () => k100PageKey(r) });
+        if (sc.pages.length) rows.push({ r, shown: r.pageNum, bw: isBwTarget(r), items: sc.pages[0].items, colors: sc.pages[0].colors, doc, pi, skipped: sc.skipped });
+        if (++n % 20 === 0) await uiYield();
+      }
+      return rows;
+    }
+    // 한 쪽만 담은 PDF — 미리보기 그림·개체 색 칠하기용
+    async function k100OnePage(row, withIds) {
+      const d = await PDFLib.PDFDocument.create();
+      const [pg] = await d.copyPages(row.doc, [row.pi]);
+      d.addPage(pg);
+      const ids = withIds ? richBlackIdDoc(d, { rgb: false, pageKey: () => k100PageKey(row.r) }).ids : null;
+      return { bytes: await d.save(), ids };
+    }
+    async function k100DrawPdf(bytes, widthPx) {
+      const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+      try {
+        const page = await pdf.getPage(1);
+        const vp = page.getViewport({ scale: widthPx / page.getViewport({ scale: 1 }).width });
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        return cv;
+      } finally { try { pdf.destroy(); } catch (e) {} }
+    }
+    // 한 쪽의 미리보기 그림 + 개체 자리 — 개체마다 다른 색으로 칠한 쪽(richBlackIdDoc)과 원래 쪽을 같은 크기로 그려 비교
+    async function k100PagePreview(row, widthPx) {
+      const base = await k100OnePage(row, false), idv = await k100OnePage(row, true);
+      const cvBase = await k100DrawPdf(base.bytes, widthPx), cvId = await k100DrawPdf(idv.bytes, widthPx);
+      const W = cvBase.width, H = cvBase.height;
+      const a = cvBase.getContext('2d').getImageData(0, 0, W, H).data;
+      const b = cvId.getContext('2d').getImageData(0, 0, W, Math.min(H, cvId.height)).data;
+      const keyOfId = new Map(idv.ids.map((k, i) => [i + 1, k]));
+      const strict = new Map(), loose = new Map();
+      const grow = (m, id, x, y) => { const v = m.get(id); if (!v) m.set(id, [x, y, x, y]); else { if (x < v[0]) v[0] = x; if (y < v[1]) v[1] = y; if (x > v[2]) v[2] = x; if (y > v[3]) v[3] = y; } };
+      const idAt = (k) => {
+        const R = b[k], G = b[k + 1], B = b[k + 2];
+        const r6 = Math.round((R - 2) / 4), g6 = Math.round((G - 2) / 4), b6 = Math.round((B - 2) / 4);
+        if (r6 < 0 || g6 < 0 || b6 < 0 || Math.abs(R - r6 * 4 - 2) > 1 || Math.abs(G - g6 * 4 - 2) > 1 || Math.abs(B - b6 * 4 - 2) > 1) return 0;
+        const id = (r6 << 12) | (g6 << 6) | b6;
+        return keyOfId.has(id) ? id : 0;
+      };
+      for (let y = 0; y < H - 1; y++) {
+        for (let x = 0; x < W - 1; x++) {
+          const k = (y * W + x) * 4;
+          if (Math.abs(a[k] - b[k]) + Math.abs(a[k + 1] - b[k + 1]) + Math.abs(a[k + 2] - b[k + 2]) < 9) continue;   // 원래 그림과 같은 곳 = 개체 아님
+          const id = idAt(k);
+          if (!id) continue;
+          grow(loose, id, x, y);
+          // 안쪽 화소(오른쪽·아래도 같은 개체) — 가장자리 섞인 색이 다른 개체로 읽히는 것을 막는다
+          if (idAt(k + 4) === id && idAt(k + W * 4) === id) grow(strict, id, x, y);
+        }
+      }
+      const boxes = new Map();
+      keyOfId.forEach((key, id) => {
+        const v = strict.get(id) || loose.get(id);
+        if (v) boxes.set(key, { x: v[0] / W, y: v[1] / H, w: (v[2] - v[0] + 1) / W, h: (v[3] - v[1] + 1) / H });
+      });
+      return { canvas: cvBase, boxes, bytes: base.bytes };
+    }
+
+    // ── K100을 쪽에 굽기 — 내부 편집처럼 그 쪽의 편집본(contentEdits)이 된다 (사용자 결정 2026-10-20) ──
+    // 그래서 메인 썸네일·결과 미리보기·다운로드·분리 저장·인쇄가 모두 바뀐 쪽을 쓴다. 다시 점검하면 바꾼 개체는
+    // 더 이상 혼합 검정이 아니라 나오지 않는다(고르지 않은 개체만 남음).
+    // 편집본에 k100 = { off:[고르지 않은 이름표(쪽 번호 표기 'o{n}:')], n:바꾼 수, rgb } 를 남긴다 — 내부 편집기는 원본에서
+    // 다시 굽기 때문에(editor.html saveAndClose) 편집기 저장 뒤 k100ReapplyEdit로 다시 바꾼다.
+    const k100NormKey = k => String(k).replace(/^o(\d+)e:/, 'o$1:');
+    async function k100BakeDoc(doc, idx, pageKeyStr, isSelected, rgb) {
+      const st = richBlackFixDoc(doc, { rgb, pageKey: () => pageKeyStr, isSelected });
+      return { st, bytes: new Uint8Array(await savePdfDoc(doc)) };
+    }
+    // 고른 개체를 쪽마다 굽는다. 반환 { pages, items, undo: Map(idx → 이전 편집본|null) }
+    async function k100BakeRows(rows, isOn, onProgress) {
+      const undo = new Map();
+      let pages = 0, items = 0, done = 0;
+      const changed = [];
+      for (const x of rows) {
+        if (x.bw) continue;
+        const sel = x.items.filter(it => isOn(it.key));
+        if (sel.length) {
+          const idx = x.r.originalIdx;
+          const d = await PDFLib.PDFDocument.create();
+          const [pg] = await d.copyPages(x.doc, [x.pi]);
+          d.addPage(pg);
+          const rgb = false;   // RGB 검정은 'RGB검정 리치블랙처리'가 맡는다
+          const { st, bytes } = await k100BakeDoc(d, idx, k100PageKey(x.r), k => isOn(k), rgb);
+          if (st.total.edits) {
+            const prev = contentEdits.get(idx) || null;
+            undo.set(idx, prev);
+            const offKeys = x.items.filter(it => !isOn(it.key)).map(it => k100NormKey(it.key));
+            contentEdits.set(idx, { model: prev ? prev.model || [] : [], bytes, rev: (prev ? prev.rev || 0 : 0) + 1,
+                                    k100: { off: offKeys, n: ((prev && prev.k100 && prev.k100.n) || 0) + st.total.edits, rgb } });
+            changed.push(idx); pages++; items += st.total.edits;
+          }
+        }
+        if (onProgress) onProgress(++done / rows.length);
+        await uiYield();
+      }
+      if (changed.length) await k100AfterPagesChanged(changed);
+      return { pages, items, undo, changed };
+    }
+    // 쪽 편집본이 바뀐 뒤 — 캐시·썸네일·화면·다운로드 버튼(내부 편집 반영과 같은 순서)
+    async function k100AfterPagesChanged(changed) {
+      clearProcessCaches();
+      await regenEditedThumbs([...new Set(changed)]);
+      setDirty(true);
+      refreshResults();
+      updateDownloadBtn();
+      if (previewVisible() || shouldPreview()) scheduleLivePreview(); else invalidateProcessed();
+    }
+    async function k100UndoBake(undo) {
+      const changed = [];
+      undo.forEach((prev, idx) => { if (prev) contentEdits.set(idx, Object.assign({}, prev, { rev: ((contentEdits.get(idx) || {}).rev || 0) + 1 })); else contentEdits.delete(idx); changed.push(idx); });
+      if (changed.length) await k100AfterPagesChanged(changed);
+    }
+    // 내부 편집기 저장 뒤 — 그 쪽에 K100을 구웠었으면 새 결과(bytes, 없으면 원본 쪽)에 다시 굽는다. 반환: 새 편집본 bytes
+    async function k100ReapplyEdit(idx, bytes, k100) {
+      let doc;
+      if (bytes) doc = await PDFLib.PDFDocument.load(bytes.slice ? bytes.slice(0) : bytes, { ignoreEncryption: true, updateMetadata: false });
+      else {
+        doc = await PDFLib.PDFDocument.create();
+        const [pg] = await doc.copyPages(await getSourceDoc(), [idx]);
+        doc.addPage(pg);
+      }
+      const off = new Set(k100.off || []);
+      const { bytes: out } = await k100BakeDoc(doc, idx, 'o' + idx, k => !off.has(k), false);
+      return out;
+    }
+
+    let _rbFull = false;   // 점검 창 전체화면 — 다시 열어도 그대로
+    async function runRichBlackCheck() {
+      if (!originalPdfBytes) { showError('점검할 PDF가 없습니다 — 먼저 문서를 여세요.'); return; }
+      if (typeof richBlackScanDoc !== 'function') { showError('검정 점검 모듈을 불러오지 못했습니다.'); return; }
+      showLoading('혼합 검정(리치 블랙) 점검 중…');
+      let rows;
+      try { rows = await k100ScanPages(); }
+      catch (e) { hideLoading(); showError('검정 점검 실패: ' + ((e && e.message) || String(e))); return; }
+      hideLoading();
+      const KIND = { fill: '면', stroke: '선', both: '면+선', text: '글자' };
+      const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const off = new Set();                           // 이 창 안에서 해제한 개체(처음엔 전부 선택)
+      const live = rows.filter(x => !x.bw);
+      const allKeys = new Map();                       // 이름표 → 종류(함께 쓰는 개체는 한 번만)
+      live.forEach(x => x.items.forEach(it => allKeys.set(it.key, it.kind)));
+      const cntKind = k => [...allKeys.values()].filter(v => v === k || (k === 'fill' && v === 'both') || (k === 'stroke' && v === 'both')).length;
+
+      const ov = document.createElement('div');
+      ov.className = 'merge-overlay';
+      if (!live.length) {
+        ov.innerHTML = '<div class="merge-modal rb-modal"><h3 class="merge-title"><span class="ic">⚫</span> 검정 점검</h3>'
+          + '<p class="merge-sub">혼합 검정이 없습니다 — 검은 면·선·글자가 모두 K100(먹 1도)입니다. <span class="split-dim">(RGB 검정은 \'🖤 RGB검정 리치블랙처리\'가 맡습니다)</span>'
+          + (rows.length ? ` <span class="split-dim">(흑백 변환 쪽 ${rows.length}쪽은 먹 1도로 나갑니다)</span>` : '') + '</p>'
+          + '<div class="merge-actions"><button class="merge-confirm" id="rbClose">닫기</button></div></div>';
+        document.body.appendChild(ov);
+        ov.querySelector('#rbClose').onclick = () => ov.remove();
+        return;
+      }
+      rows = live;   // 흑백 쪽은 먹 1도로 나가 고를 것이 없다
+      ov.innerHTML =
+        `<div class="merge-modal rbv-modal${_rbFull ? ' rbv-full' : ''}">`
+        + '<div class="rbv-titlebar"><h3 class="merge-title"><span class="ic">⚫</span> 검정 점검 — 혼합 검정 미리보기</h3>'
+        + `<button class="merge-cancel rbv-btn" id="rbFull" title="전체화면으로 보기 / 원래 크기로 (제목줄을 두 번 눌러도 됩니다)">${_rbFull ? '🗗 원래 크기' : '⛶ 전체화면'}</button></div>`
+        + `<p class="merge-sub" id="rbSub"><b>${rows.length}쪽</b>에서 CMYK가 섞인 검정을 찾았습니다 — 면 <b>${cntKind('fill')}</b> · 선 <b>${cntKind('stroke')}</b> · 글자 <b>${cntKind('text')}</b>곳</p>`
+        + '<div class="rbv-tools" id="rbTools"><button class="merge-cancel rbv-btn" id="rbAll">전체 선택</button><button class="merge-cancel rbv-btn" id="rbNone">전체 해제</button>'
+        + '<span class="rbv-sep"></span>'
+        + ['fill', 'stroke', 'text'].filter(k => cntKind(k)).map(k => `<button class="merge-cancel rbv-btn" data-kind="${k}">${KIND[k]} 모두 선택/해제</button>`).join('')
+        + '</div>'
+        + '<div class="rbv-body"><div class="rbv-list" id="rbList"></div>'
+        + '<div class="rbv-view"><div class="rbv-pagebar"><button class="merge-cancel rbv-btn" id="rbPrev" title="이전 쪽 (PageUp)">‹</button><span id="rbPageLbl"></span><button class="merge-cancel rbv-btn" id="rbNext" title="다음 쪽 (PageDown)">›</button>'
+        + '<span class="rbv-sep"></span><button class="merge-cancel rbv-btn" id="rbZoomOut" title="축소 (Ctrl + − · Ctrl+휠 아래)">−</button><span id="rbZoomPct" class="rbv-zoom">100%</span>'
+        + '<button class="merge-cancel rbv-btn" id="rbZoomIn" title="확대 (Ctrl + + · Ctrl+휠 위)">+</button><button class="merge-cancel rbv-btn" id="rbZoomFit" title="화면에 맞춤 (Ctrl + 0)">맞춤</button>'
+        + '<span class="split-dim rbv-hint" id="rbHint">상자 클릭 = 선택·해제 · Space 누른 채 끌기 = 이동 · Ctrl + + / − = 확대·축소</span></div>'
+        + '<div class="rbv-canvas-wrap" id="rbWrap"><div class="rbv-stage" id="rbStage"><canvas id="rbCanvas"></canvas><div class="rbv-boxes" id="rbBoxes"></div></div>'
+        + '<div class="rbv-loading" id="rbLoading">미리보기 그리는 중…</div></div>'
+        + '<div class="rbv-legend" id="rbLegend"><span class="rbv-key on"></span>K100으로 바꿈 <span class="rbv-key off"></span>그대로 둠 <span class="split-dim" id="rbHidden"></span></div></div></div>'
+        + '<p class="split-dim rb-note" id="rbNote">바꾸면 고른 면·선·글자가 C0 M0 Y0 K100으로 그 쪽에 바로 적용됩니다(썸네일·다운로드·인쇄에 반영). 사진·그러데이션·별색은 그대로입니다. '
+        + '<b>함께 쓰는 개체</b>(여러 쪽이 같이 쓰는 로고·머리글 등)는 한 곳에서 고르면 모든 쪽에 같이 적용됩니다.</p>'
+        + '<div class="merge-actions"><button class="merge-cancel" id="rbUndo" style="display:none" title="방금 K100으로 바꾼 것을 되돌립니다">↺ 되돌리기</button>'
+        + '<button class="merge-cancel" id="rbClose">닫기</button>'
+        + '<button class="merge-confirm" id="rbApply"></button></div>'
+        + '</div>';
+      document.body.appendChild(ov);
+      const $ = id => ov.querySelector('#' + id);
+      let cur = 0;
+      let hoverKey = null, preview = null, prevSeq = 0;
+      let zoom = 1, fitW = 0, fitH = 0, hiSeq = 0;
+      let applied = null;        // 바꾼 뒤: { pages, items, undo, perPage: Map(idx → {n, left}) }
+      const cache = new Map();   // 쪽 → { canvas, boxes, bytes, hi:{w, canvas} }
+
+      const isOn = key => !off.has(key);
+      function syncApply() {
+        const sel = [...allKeys.keys()].filter(isOn).length;
+        $('rbApply').textContent = sel ? `⚫ 선택한 ${sel}곳 K100으로 바꾸고 다시 점검` : '바꿀 곳을 고르세요';
+        $('rbApply').disabled = !sel;
+      }
+      function renderList() {
+        const list = $('rbList');
+        if (applied) {   // 바꾼 뒤 — 고를 것 없이 쪽마다 결과만
+          list.innerHTML = rows.map((x, i) => {
+            const p = applied.perPage.get(x.r.originalIdx) || { n: 0, left: x.items.length };
+            return `<div class="rbv-pg"><div class="rbv-pghead${i === cur ? ' cur' : ''}" data-row="${i}"><b>${x.shown}쪽</b> `
+              + (p.n ? `<span class="rb-tag rb-done">✔ K100 ${p.n}곳</span>` : '')
+              + (p.left ? ` <span class="split-dim">그대로 ${p.left}곳</span>` : '') + '</div></div>';
+          }).join('');
+          return;
+        }
+        list.innerHTML = rows.map((x, i) => {
+          const keys = x.items.map(it => it.key), on = keys.filter(isOn).length;
+          const head = `<div class="rbv-pghead${i === cur ? ' cur' : ''}" data-row="${i}">`
+            + `<input type="checkbox" class="rbv-pgchk" data-row="${i}" ${on === keys.length ? 'checked' : ''}>`
+            + `<b>${x.shown}쪽</b> <span class="split-dim">${KIND.fill} ${x.items.filter(it => it.kind === 'fill' || it.kind === 'both').length}·${KIND.stroke} ${x.items.filter(it => it.kind === 'stroke' || it.kind === 'both').length}·${KIND.text} ${x.items.filter(it => it.kind === 'text').length}</span>`
+            + ` <span class="split-dim">${on}/${keys.length}</span></div>`;
+          if (i !== cur) return `<div class="rbv-pg">${head}</div>`;
+          return `<div class="rbv-pg">${head}<div class="rbv-items">` + x.items.map((it, j) =>
+            `<label class="rbv-item${hoverKey === it.key ? ' hov' : ''}${preview && !preview.boxes.has(it.key) ? ' hid' : ''}" data-key="${esc(it.key)}">`
+            + `<input type="checkbox" data-key="${esc(it.key)}" ${isOn(it.key) ? 'checked' : ''}>`
+            + `<span class="rbv-kind">${KIND[it.kind]} ${j + 1}</span><span class="rbv-c">${esc(it.color)}</span>`
+            + (it.key.startsWith('x') ? '<span class="rb-tag">함께 쓰는 개체</span>' : '')
+            + (preview && !preview.boxes.has(it.key) ? '<span class="rb-tag">가려져 안 보임</span>' : '') + '</label>').join('') + '</div></div>';
+        }).join('');
+        list.querySelectorAll('.rbv-pgchk').forEach(c => {
+          const x = rows[+c.dataset.row];
+          const on = x.items.filter(it => isOn(it.key)).length;
+          c.indeterminate = on > 0 && on < x.items.length;
+        });
+        syncApply();
+      }
+      // 개체 상자 — 쪽 그림 위의 겹친 상자(비율 위치라 확대해도 그대로 따라온다). 바꾼 뒤에는 없다
+      function renderBoxes() {
+        const host = $('rbBoxes');
+        host.innerHTML = '';
+        if (!preview || applied) { $('rbHidden').textContent = ''; return; }
+        const x = rows[cur];
+        const frag = document.createDocumentFragment();
+        x.items.forEach(it => {
+          const bx = preview.boxes.get(it.key);
+          if (!bx) return;
+          const d = document.createElement('div');
+          d.className = 'rbv-box ' + (isOn(it.key) ? 'on' : 'off') + (it.key === hoverKey ? ' hov' : '');
+          d.dataset.key = it.key;
+          d.style.left = (bx.x * 100) + '%'; d.style.top = (bx.y * 100) + '%';
+          d.style.width = (bx.w * 100) + '%'; d.style.height = (bx.h * 100) + '%';
+          d.title = `${KIND[it.kind]} · ${it.color}${isOn(it.key) ? ' — K100으로 바꿈' : ' — 그대로'}`;
+          frag.appendChild(d);
+        });
+        host.appendChild(frag);
+        const hidden = x.items.filter(it => !preview.boxes.has(it.key)).length;
+        $('rbHidden').textContent = hidden ? `· 가려져 보이지 않는 개체 ${hidden}곳(목록에서 고르기)` : '';
+      }
+      function syncHover() {
+        $('rbBoxes').querySelectorAll('.rbv-box').forEach(d => d.classList.toggle('hov', d.dataset.key === hoverKey));
+        $('rbList').querySelectorAll('.rbv-item').forEach(l => l.classList.toggle('hov', l.dataset.key === hoverKey));
+      }
+      // 확대 — 맞춤 크기 × 배율. 화면 크기보다 크게 보이면 그 배율로 다시 선명하게 그린다
+      function layoutStage(anchor) {
+        const wrap = $('rbWrap'), stage = $('rbStage');
+        if (!preview) return;
+        const pc = preview.canvas;
+        const maxW = wrap.clientWidth - 16, maxH = wrap.clientHeight - 16;
+        const k = Math.min(maxW / pc.width, maxH / pc.height);
+        fitW = pc.width * k; fitH = pc.height * k;
+        const w = Math.round(fitW * zoom), h = Math.round(fitH * zoom);
+        const before = anchor ? { sx: wrap.scrollLeft, sy: wrap.scrollTop, w: stage.offsetWidth || w, h: stage.offsetHeight || h } : null;
+        stage.style.width = w + 'px'; stage.style.height = h + 'px';
+        const cv = $('rbCanvas');
+        cv.style.width = w + 'px'; cv.style.height = h + 'px';
+        if (before && anchor) {   // 마우스가 가리키던 점을 그 자리에
+          const fx = (before.sx + anchor.x - stage.offsetLeft) / before.w, fy = (before.sy + anchor.y - stage.offsetTop) / before.h;
+          wrap.scrollLeft = fx * w + stage.offsetLeft - anchor.x;
+          wrap.scrollTop = fy * h + stage.offsetTop - anchor.y;
+        }
+        $('rbZoomPct').textContent = Math.round(zoom * 100) + '%';
+        $('rbZoomOut').disabled = zoom <= 1; $('rbZoomIn').disabled = zoom >= 8;
+        wrap.classList.toggle('zoomed', zoom > 1);
+        // 선명하게 다시 그리기 — 보이는 크기가 지금 그림보다 크면(잠깐 쉬었다가)
+        const needW = Math.min(6000, Math.round(w * (window.devicePixelRatio || 1)));
+        const have = (preview.hi && preview.hi.w) || pc.width;
+        if (needW > have * 1.15) {
+          const seq = ++hiSeq, pv = preview;
+          setTimeout(async () => {
+            if (seq !== hiSeq || pv !== preview) return;
+            try {
+              const c2 = await k100DrawPdf(pv.bytes, needW);
+              if (seq !== hiSeq || pv !== preview) return;
+              pv.hi = { w: needW, canvas: c2 };
+              cv.width = c2.width; cv.height = c2.height; cv.getContext('2d').drawImage(c2, 0, 0);
+            } catch (e) { console.warn('확대 그림 실패:', e); }
+          }, 250);
+        }
+      }
+      function setZoom(z, anchor) {
+        const nz = Math.max(1, Math.min(8, z));
+        if (Math.abs(nz - zoom) < 0.001) return;
+        zoom = nz;
+        layoutStage(anchor || { x: $('rbWrap').clientWidth / 2, y: $('rbWrap').clientHeight / 2 });
+      }
+      // 바꾼 뒤의 쪽 그림 — 그 쪽 편집본(1쪽 PDF) 그대로
+      async function appliedPreview(x, widthPx) {
+        const ed = contentEdits.get(x.r.originalIdx);
+        if (!ed || !ed.bytes) return k100PagePreview(x, widthPx);
+        const bytes = ed.bytes.slice(0);
+        return { canvas: await k100DrawPdf(bytes.slice(0), widthPx), boxes: new Map(), bytes };
+      }
+      async function showPage(i) {
+        cur = Math.max(0, Math.min(rows.length - 1, i));
+        const x = rows[cur];
+        $('rbPageLbl').textContent = `${x.shown}쪽 (${cur + 1}/${rows.length})${applied ? ' · 바뀐 결과' : ''}`;
+        preview = cache.get(cur) || null;
+        renderList(); renderBoxes();
+        const curEl = ov.querySelector('.rbv-pghead.cur');
+        if (curEl) curEl.scrollIntoView({ block: 'nearest' });
+        const seq = ++prevSeq;
+        const wrap = $('rbWrap');
+        if (!preview) {
+          $('rbLoading').style.display = ''; $('rbLoading').textContent = '미리보기 그리는 중…';
+          try {
+            const dpr = window.devicePixelRatio || 1;
+            const wpx = Math.min(2400, Math.round(Math.max(wrap.clientWidth, 520) * dpr));
+            const res = applied ? await appliedPreview(x, wpx) : await k100PagePreview(x, wpx);
+            cache.set(cur, res);
+            if (seq !== prevSeq) return;
+            preview = res;
+          } catch (e) {
+            console.warn('검정 미리보기 실패:', e);
+            if (seq === prevSeq) $('rbLoading').textContent = '미리보기를 그리지 못했습니다' + (applied ? '' : ' — 목록에서 고르세요');
+            return;
+          }
+        }
+        $('rbLoading').style.display = 'none';
+        const pc = (preview.hi && preview.hi.canvas) || preview.canvas, cv = $('rbCanvas');
+        cv.width = pc.width; cv.height = pc.height; cv.getContext('2d').drawImage(pc, 0, 0);
+        layoutStage();
+        renderList(); renderBoxes();
+      }
+      const setKeys = (keys, on) => keys.forEach(k => { if (on) off.delete(k); else off.add(k); });
+      const refresh = () => { renderList(); renderBoxes(); };
+
+      $('rbList').addEventListener('click', e => {
+        const t = e.target;
+        if (!applied && t.classList.contains('rbv-pgchk')) { const x = rows[+t.dataset.row]; setKeys(x.items.map(it => it.key), t.checked); refresh(); return; }
+        if (!applied && t.tagName === 'INPUT' && t.dataset.key) { setKeys([t.dataset.key], t.checked); refresh(); return; }
+        const h = t.closest('.rbv-pghead');
+        if (h && +h.dataset.row !== cur) showPage(+h.dataset.row);
+      });
+      $('rbList').addEventListener('mouseover', e => {
+        const l = e.target.closest('.rbv-item');
+        const k = l ? l.dataset.key : null;
+        if (k !== hoverKey) { hoverKey = k; syncHover(); }
+      });
+      $('rbList').addEventListener('mouseleave', () => { hoverKey = null; syncHover(); });
+      // 상자: 누르면 선택·해제(겹치면 가장 작은 상자 — 브라우저가 맨 위 것을 주므로 크기로 다시 고른다)
+      const boxAt = (e) => {
+        if (!preview || applied) return null;
+        const rc = $('rbStage').getBoundingClientRect();
+        const px = (e.clientX - rc.left) / rc.width, py = (e.clientY - rc.top) / rc.height;
+        let best = null, bestA = Infinity;
+        rows[cur].items.forEach(it => {
+          const b = preview.boxes.get(it.key);
+          if (!b) return;
+          const pad = 3 / rc.width;
+          if (px >= b.x - pad && px <= b.x + b.w + pad && py >= b.y - pad && py <= b.y + b.h + pad && b.w * b.h < bestA) { bestA = b.w * b.h; best = it.key; }
+        });
+        return best;
+      };
+      // Space를 누른 채 끌면 이동(손 도구)
+      let spaceDown = false, drag = null, dragMoved = false;
+      const wrapEl = $('rbWrap');
+      wrapEl.addEventListener('mousedown', e => {
+        if (!(spaceDown || e.button === 1)) return;
+        e.preventDefault();
+        drag = { x: e.clientX, y: e.clientY, sl: wrapEl.scrollLeft, st: wrapEl.scrollTop }; dragMoved = false;
+        wrapEl.classList.add('panning');
+      });
+      const onMove = e => {
+        if (!drag) return;
+        const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved = true;
+        wrapEl.scrollLeft = drag.sl - dx; wrapEl.scrollTop = drag.st - dy;
+      };
+      const onUp = () => { if (drag) { drag = null; wrapEl.classList.remove('panning'); } };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      $('rbStage').addEventListener('click', e => {
+        if (spaceDown || dragMoved) { dragMoved = false; return; }
+        const best = boxAt(e);
+        if (!best) return;
+        setKeys([best], !isOn(best));
+        hoverKey = best;
+        refresh();
+        const el = ov.querySelector(`.rbv-item[data-key="${CSS.escape(best)}"]`);
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      });
+      $('rbStage').addEventListener('mousemove', e => {
+        if (drag || spaceDown) return;
+        const best = boxAt(e);
+        $('rbStage').style.cursor = best ? 'pointer' : 'default';
+        if (best !== hoverKey) { hoverKey = best; syncHover(); }
+      });
+      // Ctrl+휠 = 마우스 자리를 중심으로 확대·축소(휠만 = 스크롤)
+      wrapEl.addEventListener('wheel', e => {
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        const rc = wrapEl.getBoundingClientRect();
+        setZoom(zoom * (e.deltaY < 0 ? 1.25 : 0.8), { x: e.clientX - rc.left, y: e.clientY - rc.top });
+      }, { passive: false });
+      $('rbZoomIn').onclick = () => setZoom(zoom * 1.25);
+      $('rbZoomOut').onclick = () => setZoom(zoom * 0.8);
+      $('rbZoomFit').onclick = () => setZoom(1);
+      const toggleFull = () => {
+        _rbFull = !_rbFull;
+        ov.querySelector('.rbv-modal').classList.toggle('rbv-full', _rbFull);
+        $('rbFull').textContent = _rbFull ? '🗗 원래 크기' : '⛶ 전체화면';
+        requestAnimationFrame(() => layoutStage());
+      };
+      $('rbFull').onclick = toggleFull;
+      ov.querySelector('.rbv-titlebar').addEventListener('dblclick', toggleFull);
+      const onResize = () => layoutStage();
+      window.addEventListener('resize', onResize);
+      $('rbPrev').onclick = () => showPage(cur - 1);
+      $('rbNext').onclick = () => showPage(cur + 1);
+      $('rbAll').onclick = () => { setKeys([...allKeys.keys()], true); refresh(); };
+      $('rbNone').onclick = () => { setKeys([...allKeys.keys()], false); refresh(); };
+      ov.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => {
+        const k = b.dataset.kind;
+        const keys = [...allKeys.entries()].filter(([, v]) => v === k || (v === 'both' && k !== 'text')).map(([key]) => key);
+        setKeys(keys, !keys.some(isOn));
+        refresh();
+      });
+      const api = window.electronAPI;
+      const onZoomKey = k => { if (k === 'in') setZoom(zoom * 1.25); else if (k === 'out') setZoom(zoom * 0.8); else if (k === 'fit') setZoom(1); };
+      // Ctrl + + / − / 0은 앱 확대(main installZoomShortcuts)가 먼저 가로챈다 — 창이 떠 있는 동안 이 창으로 넘겨받는다
+      if (api && api.setZoomCapture) { api.setZoomCapture(true); api.onZoomKey(onZoomKey); }
+      let busy = false;
+      const close = () => {
+        if (busy) return;
+        if (api && api.setZoomCapture) { api.setZoomCapture(false); api.onZoomKey(null); }
+        document.removeEventListener('keydown', onKey); document.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); window.removeEventListener('resize', onResize);
+        ov.remove();
+        if (applied && applied.items) showSuccess(`⚫ 검정 K100 — ${applied.pages}쪽 ${applied.items}곳을 K100(먹 1도)으로 바꿨습니다. 썸네일에 반영돼 있습니다.\n`
+          + "'⇩ 다운로드'·'✂ 분리 저장'·'🖨 인쇄'가 바뀐 쪽 그대로 나갑니다.");
+      };
+      const typing = e => e.target.tagName === 'INPUT' && e.target.type !== 'checkbox';
+      const onKey = e => {
+        if (e.key === 'Escape') close();
+        else if (e.code === 'Space' && !typing(e)) { e.preventDefault(); if (!spaceDown) { spaceDown = true; wrapEl.classList.add('pan-ready'); } }
+        else if (e.ctrlKey && !e.altKey && ['Equal', 'NumpadAdd', 'Minus', 'NumpadSubtract', 'Digit0', 'Numpad0'].includes(e.code)) {
+          // 메인이 넘겨주지 않는 환경(검사 하네스)에서도 같은 키로
+          e.preventDefault();
+          onZoomKey(/Equal|Add/.test(e.code) ? 'in' : /Minus|Subtract/.test(e.code) ? 'out' : 'fit');
+        }
+        else if (e.key === 'PageDown' || (e.key === 'ArrowRight' && !typing(e))) { e.preventDefault(); showPage(cur + 1); }
+        else if (e.key === 'PageUp' || (e.key === 'ArrowLeft' && !typing(e))) { e.preventDefault(); showPage(cur - 1); }
+      };
+      // Space는 손 도구 전용 — 초점이 버튼·체크박스에 있어도 눌리지 않게 뗄 때도 막는다(버튼은 키를 뗄 때 눌린다)
+      const onKeyUp = e => { if (e.code === 'Space') { if (!typing(e)) e.preventDefault(); spaceDown = false; wrapEl.classList.remove('pan-ready'); } };
+      document.addEventListener('keydown', onKey);
+      document.addEventListener('keyup', onKeyUp);
+      $('rbClose').onclick = close;
+      // 바꾸기 → 그 쪽들에 K100을 굽고 같은 창에서 바뀐 결과를 보여 준다(왼쪽은 고를 것 없이 결과만)
+      $('rbApply').onclick = async () => {
+        if (busy || ![...allKeys.keys()].some(isOn)) return;
+        busy = true;
+        $('rbApply').disabled = true; $('rbApply').textContent = '바꾸는 중…';
+        let res;
+        try {
+          res = await k100BakeRows(rows, isOn, p => { $('rbApply').textContent = `바꾸는 중… ${Math.round(p * 100)}%`; });
+        } catch (e) {
+          busy = false; syncApply();
+          showError('K100 바꾸기 실패: ' + ((e && e.message) || String(e)));
+          return;
+        }
+        // 다시 점검 — 바꾼 쪽에 남은 혼합 검정 = 고르지 않은 것만이어야 한다
+        const perPage = new Map();
+        let leftAll = 0, bad = 0;
+        try {
+          const fresh = await k100ScanPages();
+          const leftOf = new Map(fresh.filter(x => !x.bw).map(x => [x.r.originalIdx, x.items.length]));
+          rows.forEach(x => {
+            const n = x.items.filter(it => isOn(it.key)).length, left = leftOf.get(x.r.originalIdx) || 0;
+            const want = x.items.length - n;
+            if (left !== want) bad++;
+            leftAll += left;
+            perPage.set(x.r.originalIdx, { n, left });
+          });
+        } catch (e) { console.warn('K100 다시 점검 실패:', e); }
+        busy = false;
+        applied = { pages: res.pages, items: res.items, undo: res.undo, perPage };
+        cache.clear(); hiSeq++;
+        ov.querySelector('.rbv-modal').classList.add('rbv-applied-mode');
+        $('rbSub').innerHTML = `<span class="rb-tag rb-done">✔ 적용됨</span> <b>${res.pages}쪽 ${res.items}곳</b>을 K100(먹 1도)으로 바꿨습니다 — 미리보기는 바뀐 결과입니다.`
+          + (leftAll ? ` <span class="split-dim">고르지 않은 ${leftAll}곳은 그대로입니다(다시 '🔍 검정 점검'에서 고를 수 있습니다).</span>` : '')
+          + (bad ? ` <span class="rb-tag rb-bad">⚠ ${bad}쪽은 다시 점검한 결과가 고른 것과 다릅니다 — 확인하세요</span>` : '');
+        $('rbTools').style.display = 'none';
+        $('rbLegend').style.display = 'none';
+        $('rbNote').textContent = "닫으면 메인 썸네일에 바뀐 쪽이 보이고, '⇩ 다운로드'·'✂ 분리 저장'·'🖨 인쇄'가 이 쪽 그대로 나갑니다.";
+        $('rbHint').textContent = 'Space 누른 채 끌기 = 이동 · Ctrl + + / − = 확대·축소';
+        $('rbApply').style.display = 'none';
+        $('rbUndo').style.display = '';
+        $('rbClose').className = 'merge-confirm';
+        showPage(cur);
+      };
+      // 되돌리기 — 바꾸기 전 쪽으로 돌리고 처음 점검 창으로
+      $('rbUndo').onclick = async () => {
+        if (!applied || busy) return;
+        busy = true;
+        $('rbUndo').disabled = true; $('rbUndo').textContent = '되돌리는 중…';
+        try { await k100UndoBake(applied.undo); } catch (e) { showError('되돌리기 실패: ' + ((e && e.message) || String(e))); }
+        busy = false;
+        applied = null;
+        close();
+        runRichBlackCheck();
+      };
+      showPage(cur);
+    }
+
     // ── 저장 직전 최종 바이트 — '⇩ 다운로드'와 '✂ 분리 저장'이 **이 함수 하나**를 쓴다 ──
     // 두 경로가 각자 조립하면 예전 '다운로드본만 잉크 정규화 누락'처럼 한쪽에만 단계가 빠진다.
     // 반환: { bytes, direct(외부 변환 결과 그대로인가), colorCheck(저장본 컬러 검수 결과) }
@@ -4872,6 +5655,11 @@
       // 외부 변환 결과(블리드 등)는 재조립하면 변환이 사라짐 — 그대로 쓰되 폰트 안전화만 얹는다
       if (directOutputBytes) {
         let bytes = directOutputBytes;
+        // 블리드·챕터 임포징 결과는 기본본(buildBaseOptimized)에서 만들어져 그때의 K100이 이미 들어 있다.
+        //   K100을 그 뒤에 켰고 뺀 개체가 없으면 문서 전체를 바꾼다(뺀 개체가 있으면 다시 만들어야 맞는다 — 안내).
+        if (_k100Enabled && !_k100Off.size) { showLoading('⚫ 혼합 검정 → K100 바꾸는 중…'); bytes = await applyK100Stage(bytes); hideLoading(); }
+        else _k100LastStats = null;
+        _rgbRichLastStats = null;
         if (_outlineEnabled) {
           showLoading(_outlineMode === 'embed' ? '폰트 완전 임베드 중… (Ghostscript)' : '폰트 → 곡선 변환 중… (Ghostscript 병렬 처리)');
           bytes = await buildOutlinedBytes(bytes);
@@ -4893,7 +5681,10 @@
       }
       hideLoading(); progressBar.style.display = 'none';
       // 🎨 저장본 컬러 검수 결과(buildBaseOptimized가 저장 직전에 남김)
-      const cc = (_optBaseCache.sig === baseSignature() && _optBaseCache.stats) ? _optBaseCache.stats.colorCheck : null;
+      const okBase = _optBaseCache.sig === baseSignature() + k100Sig() && _optBaseCache.stats;
+      const cc = okBase ? _optBaseCache.stats.colorCheck : null;
+      _k100LastStats = okBase ? (_optBaseCache.stats.k100 || null) : null;
+      _rgbRichLastStats = okBase ? (_optBaseCache.stats.rgbRich || null) : null;
       return { bytes: finalBytes, direct: false, colorCheck: cc };
     }
 
@@ -4920,7 +5711,7 @@
             setDirty(false);
             showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)'
               + (_outlineEnabled ? (_outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영') : '')
-              + (_outlineEnabled ? outlineResultNote() : ''));
+              + (_outlineEnabled ? outlineResultNote() : '') + k100ResultNote());
           }
         } catch (err) {
           console.error('다운로드 오류:', err);
@@ -4951,6 +5742,7 @@
           else if (ccWarn) m += `\n⚠ 컬러 검수 경고를 확인하고 저장했습니다 — 출력 전 ${[...cc.lost, ...cc.leftover].slice(0, 10).join(', ')}쪽을 확인하세요.`;
           if (_outlineEnabled) m += _outlineMode === 'embed' ? ' · 🔤 폰트 완전 임베드 반영' : ' · ✒ 폰트 곡선화 반영';
           if (_outlineEnabled) m += outlineResultNote();
+          m += k100ResultNote();
           showSuccess(m);
         }
       } catch (err) {
@@ -5122,7 +5914,7 @@
         hideLoading(); progressBar.style.display = 'none';
         if (!saved || !saved.length) { showError('분리 저장에 실패했습니다 — 저장 폴더를 확인하세요.'); return; }
         const pages = plan.reduce((s, r) => s + (r.to - r.from + 1), 0);
-        showSuccess(`✂ ${opts && opts.original ? '원본 PDF를' : 'PDF를'} ${saved.length}개로 나눠 저장했습니다 (${pages}쪽) — ${dir}\n`
+        showSuccess(`✂ ${opts && opts.original ? '원본 PDF를' : 'PDF를'} ${saved.length}개로 나눠 저장했습니다 (${pages}쪽)${opts && opts.original ? '' : k100ResultNote()} — ${dir}\n`
           + plan.slice(0, 6).map(r => `· ${splitPartFileName(stem, r.from, r.to, pad)} (${r.from}-${r.to}쪽)`).join('\n')
           + (plan.length > 6 ? `\n· … 그 밖 ${plan.length - 6}개` : '')
           + '\n같은 이름이 있으면 덮어쓰지 않고 뒤에 -1을 붙였습니다. 나눈 파일에는 목차 북마크가 들어가지 않습니다 — 전체 파일이 필요하면 ⇩ 다운로드로 따로 저장하세요.');
@@ -5192,7 +5984,8 @@
           // 프린터
           + '<div class="pr-sec"><div class="pr-line"><span class="pr-lab">프린터</span>'
           + '<select id="prPrinter" class="split-text pr-grow"><option value="">프린터 목록을 읽는 중…</option></select>'
-          + '<button class="merge-cancel pr-btn" id="prProps" title="설치된 프린터 드라이버의 설정 창 — 용지함·인쇄 품질·스테이플 등 드라이버가 제공하는 모든 설정">속성…</button></div>'
+          + '<button class="merge-cancel pr-btn" id="prProps" title="설치된 프린터 드라이버의 설정 창 — 용지함·인쇄 품질·스테이플 등 드라이버가 제공하는 모든 설정">속성…</button>'
+          + '<label class="pr-chk pr-compat" title="속성 창의 아이콘이 검게 깨지거나 글자 크기가 뒤섞이면 켜세요 — 대신 글자가 조금 흐려집니다. 프린터마다 기억하고, RICOH 드라이버는 처음부터 켜져 있습니다"><input type="checkbox" id="prCompat"> 속성 창 호환 모드</label></div>'
           + '<div class="pr-line"><span class="pr-lab">복사본</span><input type="number" id="prCopies" class="split-num" min="1" max="9999" step="1" value="1">'
           + '<label class="pr-chk"><input type="checkbox" id="prCollate"> 한 부씩 인쇄</label>'
           + '<label class="pr-chk"><input type="checkbox" id="prGray"> 회색 명암(흑백)으로 인쇄</label></div>'
@@ -5392,13 +6185,30 @@
         $('prNext').onclick = () => { if (cur < list.length - 1) { cur++; drawSoon(); } };
         $('prSlider').oninput = () => { cur = Math.max(0, Math.min(list.length - 1, ($('prSlider').value | 0) - 1)); drawSoon(); };
 
+        // 드라이버 속성 창 표시 방식 — 기본은 선명하게(GDI 배율 조정). 일부 드라이버(RICOH 원클릭 아이콘)는 그 방식에서
+        // 아이콘이 검게 깨져 '호환 모드'(Windows가 늘려 그림 — 조금 흐림)로 띄운다. 프린터마다 기억(2026-10-22).
+        const compatMap = () => { try { return JSON.parse(localStorage.getItem('printPropsCompat') || '{}') || {}; } catch (e) { return {}; } };
+        const compatOf = name => {
+          const m = compatMap();
+          if (Object.prototype.hasOwnProperty.call(m, name)) return !!m[name];
+          const p = printers.find(q => q.name === name);
+          return /ricoh/i.test((p && p.driver) || '');
+        };
+        const syncCompat = () => { const n = $('prPrinter').value; $('prCompat').checked = n ? compatOf(n) : false; };
+        $('prCompat').addEventListener('change', () => {
+          const n = $('prPrinter').value; if (!n) return;
+          const m = compatMap(); m[n] = $('prCompat').checked;
+          try { localStorage.setItem('printPropsCompat', JSON.stringify(m)); } catch (e) {}
+        });
+        $('prPrinter').addEventListener('change', syncCompat);
+
         $('prProps').onclick = async () => {
           const name = $('prPrinter').value;
           if (!name || busy) return;
           busy = true; refresh();
           $('prStatus').textContent = '프린터 속성 창에서 설정한 뒤 [확인]을 누르세요…';
           ov.classList.add('pr-wait');
-          const r = await window.electronAPI.printerProps({ printer: name, devmode, set: overrides() });
+          const r = await window.electronAPI.printerProps({ printer: name, devmode, set: overrides(), compat: $('prCompat').checked });
           ov.classList.remove('pr-wait');
           busy = false;
           if (closed) return;
@@ -5455,6 +6265,7 @@
           });
           const pick = printers.find(p => p.name === prefs.printer) || printers.find(p => p.isDefault) || printers[0];
           if (pick) { sel.value = pick.name; devmode = devmodes[pick.name] || ''; }
+          syncCompat();   // 속성 창 호환 모드 — 프린터마다 기억(RICOH는 처음부터 켬)
           if (booklet) { $('prDuplex').value = '3'; touched.duplex = true; }
           loadInfo();
         }).catch(() => { $('prStatus').textContent = '⚠ 프린터 목록을 읽지 못했습니다'; });
@@ -5513,7 +6324,7 @@
         const sc = { fit: '맞추기', actual: '실제 크기', shrink: '큰 페이지 축소', custom: `${st.pct}%` }[st.scale];
         const dup = { 1: '단면', 2: '양면 · 긴 쪽 넘김', 3: '양면 · 짧은 쪽 넘김' }[st.set.duplex] || '드라이버 설정대로';
         showSuccess(`🖨 ${st.printer}(으)로 보냈습니다 — ${res.pages}쪽 × ${st.set.copies}부 · ${sc} · ${dup}`
-          + (st.gray ? ' · 회색 명암' : '') + (opts && opts.original ? ' (원본 그대로)' : '')
+          + (st.gray ? ' · 회색 명암' : '') + (opts && opts.original ? ' (원본 그대로)' : k100ResultNote())
           + '\n인쇄 진행은 Windows 인쇄 대기열(프린터 아이콘)에서 확인하세요. 재단 전 첫 장의 크기·방향을 먼저 확인하세요.');
       } catch (err) {
         console.error('인쇄 오류:', err);
@@ -7675,17 +8486,57 @@
       return `일금 ${toKoreanAmount(Math.floor(n))}원정(￦${Math.floor(n).toLocaleString('ko-KR')})`;
     }
 
-    // 품목 합계(VAT포함) = 수량 × 단가 × 부수 × (1 − 할인율%)
+    // ══ 견적서 — 거래관리(business-mgmt) 견적서와 같은 구조 (2026-10-25) ════════════════════════
+    // 거래관리로 보내면 그대로 쓰게 데이터 모양을 그쪽 저장 형식과 똑같이 둔다.
+    //  · 품목 quoteItems[] = { name, spec, qty(=부수), price(VAT 포함 단가), taxRate, calcLinkId, isDiscount? }
+    //      할인 행은 isDiscount + 음수 단가(입력칸에는 양수) — 합계에서 빠진다.
+    //  · 단가산출내역 quoteCalc.rows[] = 그룹 행 { isGroup:true, content(그룹 제목), linkItemId } | 내용 행 { content, price, pages }
+    //      그룹 소계(= 1부당 단가)는 연결된 품목(linkItemId ↔ calcLinkId)의 단가로 자동 적용 → 부수는 그 품목의 수량.
+    //      연결하지 않은 품목은 단가·수량을 직접 넣는 개별 품목.
+    //  · quoteCalc.headers = { content, price, pages, total } · memo(비고) · workNotes(작업내역) · title(제목)
+    // 표 형식 산출표(calcTables)는 이번에 가져오지 않았다(사용자 결정) — 보낼 때 빈 배열.
+    const Q_QTY_MAX = 99999, Q_PRICE_MAX = 99999999;
+    const Q_HEADERS = { content: '내용', price: '단가(원)', pages: '페이지', total: '합계금액' };
+    const qUid = () => 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const qNum = v => { const n = Number(String(v == null ? '' : v).replace(/,/g, '')); return Number.isFinite(n) ? n : 0; };
+    const qEsc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    function newQuoteCalc() { return { rows: [], headers: { ...Q_HEADERS }, memo: '', workNotes: '', title: '' }; }
+    function ensureQuoteCalc() {
+      if (!quoteCalc || typeof quoteCalc !== 'object') quoteCalc = newQuoteCalc();
+      if (!Array.isArray(quoteCalc.rows)) quoteCalc.rows = [];
+      quoteCalc.headers = { ...Q_HEADERS, ...(quoteCalc.headers || {}) };
+      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteCalc = quoteCalc;
+      return quoteCalc;
+    }
+
+    // 품목 합계(VAT 포함) = 수량 × 단가 — 할인 행은 수량 1·음수 단가. (옛 작업 파일의 부수·할인율 필드도 계속 계산)
     function itemTotal(item) {
-      const base = item.qty * item.price * (item.copies || 1);
+      if (!item) return 0;
+      const qty = item.isDiscount ? 1 : qNum(item.qty);
+      const base = qty * qNum(item.price) * (item.copies || 1);
       const disc = Math.max(0, Math.min(100, item.discount || 0));
       return Math.round(base * (1 - disc / 100));
     }
+    function quoteItemByLink(id) { return id ? quoteItems.find(it => it.calcLinkId === id) : null; }
+    // 그룹별 소계 [{ idx(행 번호), name, sum, linkItemId }] — 그룹 앞에 있는(그룹 없는) 내용 행은 소계에 들지 않는다
+    function quoteCalcGroups() {
+      const out = []; let cur = null;
+      ensureQuoteCalc().rows.forEach((r, i) => {
+        if (r.isGroup) { cur = { idx: i, name: r.content || '', sum: 0, linkItemId: r.linkItemId || '' }; out.push(cur); return; }
+        if (cur) cur.sum += qNum(r.price) * qNum(r.pages);
+      });
+      return out;
+    }
+    const quoteCalcTotal = () => ensureQuoteCalc().rows.reduce((s, r) => s + (r.isGroup ? 0 : qNum(r.price) * qNum(r.pages)), 0);
+    // 그룹 소계 → 연결된 품목 단가 (거래관리 updateCalcTotal과 같은 규칙)
+    function applyQuoteCalcLinks() {
+      quoteCalcGroups().forEach(g => {
+        const it = quoteItemByLink(g.linkItemId);
+        if (it && !it.isDiscount) it.price = Math.min(g.sum, Q_PRICE_MAX);
+      });
+    }
 
-    // ── 견적서 ───────────────────────────────────────────────────────────────
-    // DOM에 의존하지 않는 견적 품목 생성 — 비활성(백그라운드) 탭의 분석이 끝났을 때도
-    // 해당 탭의 quoteItems를 채워둘 수 있어, 나중에 그 탭으로 전환해도 견적서가 보인다.
-    // 기본 단가 (localStorage에 저장 → 적용 버튼으로 갱신, 다음 견적부터 반영)
+    // ── 기본 단가 (localStorage에 저장 → 적용 버튼으로 갱신, 다음 견적부터 반영) ──
     const DEFAULT_PRICES_FALLBACK = { color: 200, bw: 60, binding: 2500 };
     function getDefaultPrices() {
       try {
@@ -7714,101 +8565,180 @@
       };
       try { localStorage.setItem('quoteDefaultPrices', JSON.stringify(dp)); } catch (e) {}
       loadDefaultPricesUI();
-      // 현재 견적에도 즉시 반영 — 기본 품목(컬러인쇄·흑백인쇄·제본비) 단가 갱신
+      // 지금 견적에도 바로 — 단가산출내역의 컬러인쇄·흑백인쇄·제본비 행 단가(연결된 품목 단가도 따라 바뀐다)
       const priceByName = { '컬러인쇄': dp.color, '흑백인쇄': dp.bw, '제본비': dp.binding };
-      quoteItems.forEach(item => {
-        if (Object.prototype.hasOwnProperty.call(priceByName, item.name)) item.price = priceByName[item.name];
-      });
-      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteItems = quoteItems;
+      ensureQuoteCalc().rows.forEach(r => { if (!r.isGroup && Object.prototype.hasOwnProperty.call(priceByName, r.content)) r.price = priceByName[r.content]; });
+      quoteItems.forEach(it => { if (!it.calcLinkId || !quoteCalcGroups().some(g => g.linkItemId === it.calcLinkId)) { if (Object.prototype.hasOwnProperty.call(priceByName, it.name)) it.price = priceByName[it.name]; } });
       renderQuoteTable();
-      showSuccess('기본 단가가 저장됐습니다. 현재 견적에 즉시 반영했고, 다음 견적부터도 적용됩니다.');
+      showSuccess('기본 단가가 저장됐습니다. 지금 견적의 단가산출내역에 바로 반영했고, 다음 견적부터도 이 단가로 시작합니다.');
     }
 
-    function buildQuoteItems(colorCount, bwCount) {
-      const dp = getDefaultPrices();
-      const items = [];
-      if (colorCount > 0) items.push({ name: '컬러인쇄', spec: '', qty: colorCount, price: dp.color, copies: 1, discount: 0 });
-      if (bwCount > 0)    items.push({ name: '흑백인쇄',  spec: '', qty: bwCount,   price: dp.bw,  copies: 1, discount: 0 });
-      items.push({ name: '제본비', spec: '', qty: 1, price: dp.binding, copies: 1, discount: 0 });
-      return items;
+    // ── 분석 결과 → 기본 견적: 문서 이름 그룹(컬러인쇄·흑백인쇄·제본비) → 같은 이름 품목(수량 1부)에 연결 ──
+    function quoteDocName(fileName) {
+      const n = String(fileName || (typeof effectiveBaseName === 'function' ? effectiveBaseName() : '') || '').replace(/\.[^.]+$/, '').trim();
+      return n || '인쇄물';
     }
+    function buildQuoteDoc(colorCount, bwCount, fileName) {
+      const dp = getDefaultPrices();
+      const name = quoteDocName(fileName);
+      const link = qUid();
+      const rows = [{ isGroup: true, content: name, linkItemId: link }];
+      if (colorCount > 0) rows.push({ content: '컬러인쇄', price: dp.color, pages: colorCount });
+      if (bwCount > 0)    rows.push({ content: '흑백인쇄', price: dp.bw, pages: bwCount });
+      rows.push({ content: '제본비', price: dp.binding, pages: 1 });
+      const sum = rows.reduce((s, r) => s + (r.isGroup ? 0 : r.price * r.pages), 0);
+      const pages = colorCount + bwCount;
+      return {
+        items: [{ name, spec: pages ? `${pages}쪽` : '', qty: 1, price: sum, taxRate: 0.1, calcLinkId: link }],
+        calc: { rows, headers: { ...Q_HEADERS }, memo: '', workNotes: '', title: '' },
+      };
+    }
+    // 옛 이름(다른 곳에서 부를 수 있다) — 품목만
+    function buildQuoteItems(colorCount, bwCount, fileName) { return buildQuoteDoc(colorCount, bwCount, fileName).items; }
 
     function initQuoteSection(colorCount, bwCount) {
+      const tab = activeTabId && tabs.has(activeTabId) ? tabs.get(activeTabId) : null;
+      const doc = buildQuoteDoc(colorCount, bwCount, tab ? tab.fileName : '');
       quoteItems.length = 0;
+      doc.items.forEach(it => quoteItems.push(it));
+      quoteCalc = doc.calc; if (tab) tab.quoteCalc = quoteCalc;
+      quoteCalc.customer = ''; quoteCalc.date = new Date().toISOString().split('T')[0];
       document.getElementById('q-customer').value = '';
-      document.getElementById('q-date').value = new Date().toISOString().split('T')[0];
-      quoteItems.push(...buildQuoteItems(colorCount, bwCount));
+      document.getElementById('q-date').value = quoteCalc.date;
       loadDefaultPricesUI();
       renderQuoteTable();
       document.getElementById('quoteSection').style.display = 'block';
     }
 
-    // 견적서의 컬러/흑백 인쇄 수량만 갱신 (고객명·단가·기타 항목은 보존).
-    // 항목이 없으면 새로 만든다. (편집 적용 결과 새로고침 시 사용)
+    // 다시 분석·적용 뒤 쪽수만 갱신 — 고객명·단가·다른 행은 그대로. 컬러/흑백 행이 없으면 첫 그룹에 넣는다.
     function updateQuoteCounts(colorCount, bwCount) {
-      const ci = quoteItems.find(it => it.name === '컬러인쇄');
-      const bi = quoteItems.find(it => it.name === '흑백인쇄');
-      if (!ci && !bi) { initQuoteSection(colorCount, bwCount); return; }
+      const calc = ensureQuoteCalc();
+      const ci = calc.rows.find(r => !r.isGroup && r.content === '컬러인쇄');
+      const bi = calc.rows.find(r => !r.isGroup && r.content === '흑백인쇄');
+      if (!ci && !bi) { if (!quoteItems.length && !calc.rows.length) { initQuoteSection(colorCount, bwCount); return; } }
       const dp = getDefaultPrices();
-      const copies = (quoteItems[0] && quoteItems[0].copies) || 1;
-      if (ci) ci.qty = colorCount;
-      else if (colorCount > 0) quoteItems.unshift({ name: '컬러인쇄', spec: '', qty: colorCount, price: dp.color, copies, discount: 0 });
-      if (bi) bi.qty = bwCount;
-      else if (bwCount > 0) {
-        const at = quoteItems.findIndex(it => it.name === '컬러인쇄');
-        quoteItems.splice(at >= 0 ? at + 1 : 0, 0, { name: '흑백인쇄', spec: '', qty: bwCount, price: dp.bw, copies, discount: 0 });
+      if (ci) ci.pages = colorCount;
+      if (bi) bi.pages = bwCount;
+      const gAt = calc.rows.findIndex(r => r.isGroup);
+      if (!ci && colorCount > 0) calc.rows.splice(gAt >= 0 ? gAt + 1 : 0, 0, { content: '컬러인쇄', price: dp.color, pages: colorCount });
+      if (!bi && bwCount > 0) {
+        const at = calc.rows.findIndex(r => !r.isGroup && r.content === '컬러인쇄');
+        calc.rows.splice(at >= 0 ? at + 1 : (gAt >= 0 ? gAt + 1 : 0), 0, { content: '흑백인쇄', price: dp.bw, pages: bwCount });
       }
-      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteItems = quoteItems;
       renderQuoteTable();
       document.getElementById('quoteSection').style.display = 'block';
     }
 
+    // ── 화면 ────────────────────────────────────────────────────────────────
+    // 구조가 바뀔 때(행 추가·삭제·연결)만 다시 그리고, 숫자 입력 중에는 합계 칸만 고친다(입력 커서 유지).
     function renderQuoteTable() {
+      ensureQuoteCalc();
+      applyQuoteCalcLinks();
       const tbody = document.getElementById('quoteItemBody');
       tbody.innerHTML = '';
+      const linkedIds = new Set(quoteCalcGroups().map(g => g.linkItemId).filter(Boolean));
       quoteItems.forEach((item, idx) => {
-        const total  = itemTotal(item);
-        const supply = Math.round(total / 1.1);
-        const vat    = total - supply;
+        if (!item.calcLinkId) item.calcLinkId = qUid();
+        const disc = !!item.isDiscount;
+        const linked = linkedIds.has(item.calcLinkId) && !disc;
         const tr = document.createElement('tr');
+        if (disc) tr.className = 'q-discount-row';
         tr.innerHTML = `
-          <td><input type="text" value="${item.name}" onchange="quoteItems[${idx}].name=this.value"></td>
-          <td><input type="text" value="${item.spec||''}" placeholder="규격" onchange="quoteItems[${idx}].spec=this.value"></td>
-          <td><input type="number" value="${item.qty}" min="0" onchange="quoteItems[${idx}].qty=+this.value;recalcQuote()"></td>
-          <td><input type="number" value="${item.price}" min="0" onchange="quoteItems[${idx}].price=+this.value;recalcQuote()"></td>
-          <td><input type="number" value="${item.copies||1}" min="1" style="text-align:right;" onchange="syncCopies(this.value)"></td>
-          <td><input type="number" value="${item.discount||0}" min="0" max="100" step="0.1" style="text-align:right;" onchange="quoteItems[${idx}].discount=Math.max(0,Math.min(100,+this.value||0));recalcQuote()"></td>
-          <td class="q-readonly q-col-hide" id="supply-${idx}">${supply.toLocaleString()}원</td>
-          <td class="q-readonly q-col-hide" id="vat-${idx}">${vat.toLocaleString()}원</td>
-          <td class="q-total-cell" id="total-${idx}">${total.toLocaleString()}원</td>
-          <td><button class="q-del-btn" onclick="removeQuoteItem(${idx})">✕</button></td>
+          <td><input type="text" class="q-item-name" value="${qEsc(item.name)}" placeholder="${disc ? '할인 사유 (예: 단골 할인)' : '품목명'}" oninput="quoteItems[${idx}].name=this.value;refreshQuoteLinkOptions()"></td>
+          <td><input type="text" class="q-item-spec" value="${qEsc(item.spec || '')}" placeholder="규격" oninput="quoteItems[${idx}].spec=this.value"></td>
+          <td><input type="number" class="q-item-qty" value="${disc ? 1 : qNum(item.qty)}" min="0" max="${Q_QTY_MAX}" ${disc ? 'readonly title="할인 행은 수량 1로 고정됩니다"' : 'title="수량 — 인쇄물이면 부수"'} oninput="quoteItems[${idx}].qty=Math.min(${Q_QTY_MAX},Math.max(0,+this.value||0));recalcQuote()"></td>
+          <td><input type="number" class="q-item-price${linked ? ' q-linked' : ''}" value="${disc ? Math.abs(qNum(item.price)) : qNum(item.price)}" min="0" max="${Q_PRICE_MAX}"
+               ${linked ? 'readonly title="단가산출내역 그룹 소계가 자동으로 들어갑니다 — 단가산출내역에서 바꾸세요"' : (disc ? 'title="할인 금액을 양수로 입력하세요 — 합계에서 빠집니다"' : '')}
+               oninput="setQuoteItemPrice(${idx}, this.value)"></td>
+          <td class="q-readonly q-col-hide" id="supply-${idx}"></td>
+          <td class="q-readonly q-col-hide" id="vat-${idx}"></td>
+          <td class="q-total-cell" id="total-${idx}"></td>
+          <td><button class="q-del-btn" onclick="removeQuoteItem(${idx})" title="이 행 삭제">✕</button></td>
         `;
         tbody.appendChild(tr);
       });
+      renderQuoteCalc();
+      const memo = document.getElementById('q-memo'); if (memo && memo.value !== (quoteCalc.memo || '')) memo.value = quoteCalc.memo || '';
+      const wn = document.getElementById('q-work-notes'); if (wn && wn.value !== (quoteCalc.workNotes || '')) wn.value = quoteCalc.workNotes || '';
+      const tt = document.getElementById('q-title'); if (tt && tt.value !== (quoteCalc.title || '')) tt.value = quoteCalc.title || '';
+      // 고객명·견적일 — 탭·작업 파일마다(예전엔 저장되지 않아 다시 열면 비었다)
+      const qc = document.getElementById('q-customer'); if (qc && quoteCalc.customer != null && qc.value !== quoteCalc.customer) qc.value = quoteCalc.customer;
+      const qd = document.getElementById('q-date'); if (qd && quoteCalc.date && qd.value !== quoteCalc.date) qd.value = quoteCalc.date;
+      ['content', 'price', 'pages', 'total'].forEach(k => { const el = document.getElementById('qc-h-' + k); if (el && el.value !== quoteCalc.headers[k]) el.value = quoteCalc.headers[k]; });
+      if (activeTabId && tabs.has(activeTabId)) { const t = tabs.get(activeTabId); t.quoteItems = quoteItems; t.quoteCalc = quoteCalc; }
       recalcQuote();
     }
+    function setQuoteItemPrice(idx, val) {
+      const it = quoteItems[idx]; if (!it) return;
+      const v = Math.min(Q_PRICE_MAX, Math.max(0, qNum(val)));
+      it.price = it.isDiscount ? -v : v;
+      recalcQuote();
+    }
+    function linkOptionsHtml(cur) {
+      return '<option value="">품목 연결 안 함</option>' + quoteItems.map((it, i) => it.isDiscount ? '' :
+        `<option value="${qEsc(it.calcLinkId)}"${it.calcLinkId === cur ? ' selected' : ''}>→ ${i + 1}. ${qEsc((it.name || '').trim() || '(품목 ' + (i + 1) + ')')}</option>`).join('');
+    }
+    // 품목 이름이 바뀌면 그룹의 '품목 연결' 목록 글자만 고친다
+    function refreshQuoteLinkOptions() {
+      document.querySelectorAll('#quoteCalcBody .qc-link').forEach(sel => { const cur = sel.value; sel.innerHTML = linkOptionsHtml(cur); sel.value = cur; });
+    }
+    function renderQuoteCalc() {
+      const tbody = document.getElementById('quoteCalcBody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      quoteCalc.rows.forEach((r, i) => {
+        const tr = document.createElement('tr');
+        if (r.isGroup) {
+          tr.className = 'qc-group-row';
+          tr.innerHTML = `
+            <td colspan="3"><div class="qc-group-cell">
+              <input type="text" class="qc-group-name" value="${qEsc(r.content || '')}" placeholder="■ 그룹 제목" oninput="quoteCalc.rows[${i}].content=this.value">
+              <select class="qc-link" title="이 그룹의 소계를 선택한 품목의 단가에 자동 적용" onchange="quoteCalc.rows[${i}].linkItemId=this.value;renderQuoteTable()">${linkOptionsHtml(r.linkItemId || '')}</select>
+            </div></td>
+            <td class="qc-group-sub" id="qc-sub-${i}"></td>
+            <td><button class="q-del-btn" onclick="removeQuoteCalcRow(${i})" title="그룹 제목 행 삭제(내용 행은 남음)">✕</button></td>`;
+        } else {
+          tr.innerHTML = `
+            <td><input type="text" class="qc-content" value="${qEsc(r.content || '')}" placeholder="내용" oninput="quoteCalc.rows[${i}].content=this.value"></td>
+            <td><input type="number" class="qc-price" value="${qNum(r.price)}" min="0" oninput="quoteCalc.rows[${i}].price=Math.max(0,+this.value||0);recalcQuote()"></td>
+            <td><input type="number" class="qc-pages" value="${qNum(r.pages)}" min="0" oninput="quoteCalc.rows[${i}].pages=Math.max(0,+this.value||0);recalcQuote()"></td>
+            <td class="q-readonly" id="qc-row-${i}"></td>
+            <td><button class="q-del-btn" onclick="removeQuoteCalcRow(${i})" title="이 행 삭제">✕</button></td>`;
+        }
+        tbody.appendChild(tr);
+      });
+    }
+    function setQuoteCalcHeader(k, v) { ensureQuoteCalc().headers[k] = String(v || '').trim() || Q_HEADERS[k]; }
 
-    function syncCopies(val) {
-      const n = Math.max(1, parseInt(val) || 1);
-      quoteItems.forEach(item => item.copies = n);
+    function addQuoteItem() { quoteItems.push({ name: '', spec: '', qty: 1, price: 0, taxRate: 0.1, calcLinkId: qUid() }); renderQuoteTable(); focusLastQuoteInput('.q-item-name'); }
+    function addQuoteDiscount() {
+      quoteItems.push({ name: '할인', spec: '', qty: 1, price: 0, taxRate: 0.1, calcLinkId: qUid(), isDiscount: true });
+      renderQuoteTable(); focusLastQuoteInput('.q-item-price');
+    }
+    function addQuoteCalcRow() { ensureQuoteCalc().rows.push({ content: '', price: 0, pages: 0 }); renderQuoteTable(); focusLastQuoteInput('.qc-content', '#quoteCalcBody'); }
+    function addQuoteCalcGroup() { ensureQuoteCalc().rows.push({ isGroup: true, content: '', linkItemId: '' }); renderQuoteTable(); focusLastQuoteInput('.qc-group-name', '#quoteCalcBody'); }
+    function focusLastQuoteInput(sel, scope) {
+      const all = document.querySelectorAll((scope || '#quoteItemBody') + ' ' + sel);
+      const el = all[all.length - 1]; if (el) { el.focus(); try { el.select(); } catch (e) {} }
+    }
+    function removeQuoteItem(idx) {
+      const it = quoteItems[idx]; if (!it) return;
+      quoteItems.splice(idx, 1);
+      ensureQuoteCalc().rows.forEach(r => { if (r.isGroup && r.linkItemId === it.calcLinkId) r.linkItemId = ''; });   // 연결 풀기
       renderQuoteTable();
     }
-
-    function addQuoteItem() {
-      const copies = quoteItems.length > 0 ? (quoteItems[0].copies || 1) : 1;
-      quoteItems.push({ name: '품목', spec: '', qty: 1, price: 0, copies, discount: 0 });
-      renderQuoteTable();
-    }
-
-    function removeQuoteItem(idx) { quoteItems.splice(idx, 1); renderQuoteTable(); }
+    function removeQuoteCalcRow(i) { ensureQuoteCalc().rows.splice(i, 1); renderQuoteTable(); }
     function removeEmptyItems() {
-      quoteItems = quoteItems.filter(item => item.name.trim() || item.qty > 0);
-      // sync back to active tab
-      if (activeTabId && tabs.has(activeTabId)) tabs.get(activeTabId).quoteItems = quoteItems;
+      const keep = quoteItems.filter(it => (it.name || '').trim() || qNum(it.price) !== 0);
+      quoteItems.length = 0; keep.forEach(it => quoteItems.push(it));
+      const calc = ensureQuoteCalc();
+      calc.rows = calc.rows.filter(r => r.isGroup || (r.content || '').trim() || qNum(r.price) || qNum(r.pages));
       renderQuoteTable();
     }
 
     function recalcQuote() {
+      ensureQuoteCalc();
+      applyQuoteCalcLinks();
       let supplySum = 0, vatSum = 0, totalSum = 0;
       quoteItems.forEach((item, idx) => {
         const total  = itemTotal(item);
@@ -7821,14 +8751,22 @@
         if (se) se.textContent = supply.toLocaleString() + '원';
         if (ve) ve.textContent = vat.toLocaleString() + '원';
         if (te) te.textContent = total.toLocaleString() + '원';
+        // 연결된 품목의 단가 칸은 그룹 소계를 따라간다(입력 중인 칸은 건드리지 않음)
+        const pr = document.querySelector(`#quoteItemBody tr:nth-child(${idx + 1}) .q-item-price.q-linked`);
+        if (pr && document.activeElement !== pr) pr.value = qNum(item.price);
       });
       document.getElementById('supplyTotal').textContent  = supplySum.toLocaleString() + '원';
       document.getElementById('vatTotal').textContent     = vatSum.toLocaleString() + '원';
       document.getElementById('grandTotal').textContent   = totalSum.toLocaleString() + '원';
       document.getElementById('koreanAmount').textContent = fmtKorean(totalSum);
+      // 단가산출내역 — 행 합계·그룹 소계·전체 합계(그룹이 2개 이상이면 숨김 — 인쇄와 같은 규칙)
+      quoteCalc.rows.forEach((r, i) => { if (!r.isGroup) { const el = document.getElementById('qc-row-' + i); if (el) el.textContent = (qNum(r.price) * qNum(r.pages)).toLocaleString() + '원'; } });
+      const groups = quoteCalcGroups();
+      groups.forEach(g => { const el = document.getElementById('qc-sub-' + g.idx); if (el) el.textContent = g.sum > 0 ? '소계 ' + g.sum.toLocaleString() + '원' : ''; });
+      const wrap = document.getElementById('qcTotalWrap'), tot = document.getElementById('qcGrandTotal');
+      if (wrap && tot) { wrap.style.display = (quoteCalc.rows.length > 1 && groups.length < 2) ? '' : 'none'; tot.textContent = quoteCalcTotal().toLocaleString() + '원'; }
     }
 
-    // ── 견적서 인쇄 ──────────────────────────────────────────────────────────
     // ── 견적서 PDF 저장 ──────────────────────────────────────────────────────
     async function saveQuotePDF() {
       if (!quoteItems.length) { alert('견적 품목이 없습니다.'); return; }
@@ -7852,30 +8790,54 @@
       if (saved) showSuccess('견적서 PDF가 저장됐습니다.');
     }
 
-    // 견적서 HTML 빌드 (인쇄 · PDF 저장 공용)
+    // 견적서 HTML (인쇄 · PDF 저장 공용) — 품목 표 + 합계 + 비고 + 단가산출내역(거래관리 인쇄 규칙) + 작업내역
     function buildQuoteHTML(forPrint = false) {
+      ensureQuoteCalc(); applyQuoteCalcLinks();
       const customer = document.getElementById('q-customer').value || '(고객명)';
       const date     = document.getElementById('q-date').value;
+      const title    = (quoteCalc.title || '').trim();
       let supplySum = 0, vatSum = 0, totalSum = 0;
-      const rows = quoteItems.map(item => {
-        const copies = item.copies || 1;
-        const disc   = Math.max(0, Math.min(100, item.discount || 0));
+      const rows = quoteItems.filter(it => (it.name || '').trim() || qNum(it.price) !== 0).map(item => {
         const total  = itemTotal(item);
         const supply = Math.round(total / 1.1);
         const vat    = total - supply;
         supplySum += supply; vatSum += vat; totalSum += total;
-        return `<tr>
-          <td>${item.name}</td>
-          <td style="text-align:center">${item.spec||''}</td>
-          <td style="text-align:right">${item.qty.toLocaleString()}</td>
-          <td style="text-align:right">${item.price.toLocaleString()}</td>
-          <td style="text-align:right">${copies.toLocaleString()}</td>
-          <td style="text-align:right">${disc ? disc + '%' : '-'}</td>
+        const qty = item.isDiscount ? 1 : qNum(item.qty);
+        return `<tr${item.isDiscount ? ' class="disc"' : ''}>
+          <td>${qEsc(item.name)}</td>
+          <td style="text-align:center">${qEsc(item.spec || '')}</td>
+          <td style="text-align:right">${qty.toLocaleString()}</td>
+          <td style="text-align:right">${qNum(item.price).toLocaleString()}</td>
           <td style="text-align:right">${supply.toLocaleString()}</td>
           <td style="text-align:right">${vat.toLocaleString()}</td>
           <td style="text-align:right;font-weight:700">${total.toLocaleString()}</td>
         </tr>`;
       }).join('');
+      // 단가산출내역 — 그룹이 2개 이상이면 그룹마다 '소계' 행·전체 합계 숨김, 아니면 '합 계' 행
+      const cr = quoteCalc.rows.filter(r => r.isGroup ? (r.content || '').trim() : ((r.content || '').trim() || qNum(r.price) || qNum(r.pages)));
+      const h = quoteCalc.headers;
+      const groupCount = cr.filter(r => r.isGroup).length, showSub = groupCount >= 2;
+      let calcRows = '', curName = null, curSum = 0;
+      const subRow = (label, sum) => `<tr class="cs"><td colspan="3">${qEsc(label)} 소계</td><td>${sum.toLocaleString()}원</td></tr>`;
+      cr.forEach(r => {
+        if (r.isGroup) {
+          if (showSub && curName !== null) calcRows += subRow(curName, curSum);
+          curName = r.content || ''; curSum = 0;
+          calcRows += `<tr class="cg"><td colspan="4">${qEsc(r.content || '')}</td></tr>`;
+          return;
+        }
+        const t = qNum(r.price) * qNum(r.pages); curSum += t;
+        calcRows += `<tr><td>${qEsc(r.content || '')}</td><td style="text-align:right">${qNum(r.price).toLocaleString()}</td><td style="text-align:right">${qNum(r.pages).toLocaleString()}</td><td style="text-align:right">${t.toLocaleString()}</td></tr>`;
+      });
+      if (showSub && curName !== null) calcRows += subRow(curName, curSum);
+      const calcTotal = cr.reduce((s, r) => s + (r.isGroup ? 0 : qNum(r.price) * qNum(r.pages)), 0);
+      const calcHtml = cr.length ? `<table class="calc">
+          <tr><td colspan="4" class="ch">▣ 단가산출내역</td></tr>
+          <tr class="chh"><td>${qEsc(h.content)}</td><td style="text-align:right">${qEsc(h.price)}</td><td style="text-align:right">${qEsc(h.pages)}</td><td style="text-align:right">${qEsc(h.total)}</td></tr>
+          ${calcRows}
+          ${(!showSub && cr.length > 1) ? `<tr class="cs"><td colspan="3">합 계</td><td>${calcTotal.toLocaleString()}원</td></tr>` : ''}
+        </table>` : '';
+      const memo = (quoteCalc.memo || '').trim(), work = (quoteCalc.workNotes || '').trim();
       const printScript = forPrint ? '' : `<script>window.onload=function(){window.print()}<\/script>`;
       return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>견적서</title>
         <style>
@@ -7887,24 +8849,33 @@
           th{background:#f0f0f0;padding:7px 8px;border:1px solid #888;font-size:8.5pt;text-align:center}
           th:first-child{text-align:left}
           td{padding:6px 8px;border:1px solid #ccc;font-size:8.5pt}
+          tr.disc td{color:#b42318}
           .tt{width:260px;margin:14px 0 0 auto;border-collapse:collapse}
           .tt td{padding:6px 10px;border:1px solid #ccc;font-size:9pt}
           .tt .tl{background:#f5f5f5;font-weight:600;text-align:right}
           .tt .tv{text-align:right;font-weight:600}
           .tt .gr td{background:#dbeafe;color:#1e3a8a;font-weight:700}
           .tt .kr td{background:#fff8db;color:#1d1d1f;font-weight:700;text-align:center;border-top:2px solid #ffd60a;font-size:9.5pt}
+          .box{margin-top:12px;border:1px solid #ccc;padding:8px 10px;font-size:8.5pt;white-space:pre-wrap}
+          .box b{display:block;margin-bottom:4px;color:#1e3a8a}
+          table.calc{width:auto;min-width:50%;max-width:100%;margin-top:14px}
+          table.calc td{border:1px solid #000;padding:4px 8px}
+          table.calc .ch{font-weight:700;color:#1e3a8a;background:#eef4ff}
+          table.calc .chh td{font-weight:700;background:#dbeafe;color:#1e3a8a}
+          table.calc .cg td{font-weight:700;color:#1e3a8a;background:#eef4ff}
+          table.calc .cs td{font-weight:700;background:#f5f8ff;color:#1e3a8a;text-align:right}
           @media print{body{padding:15mm}}
         </style></head><body>
         <h1>견 적 서</h1>
-        <div class="meta"><div><strong>고객명:</strong> ${customer}</div><div><strong>견적일:</strong> ${date}</div></div>
+        <div class="meta"><div><strong>고객명:</strong> ${qEsc(customer)}</div><div><strong>견적일:</strong> ${qEsc(date)}</div></div>
+        ${title ? `<p><strong>제목:</strong> ${qEsc(title)}</p>` : ''}
         <p>아래와 같이 견적합니다.</p>
         <table>
           <thead><tr>
-            <th>품목명</th><th style="width:9%">규격</th>
-            <th style="width:8%">수량</th><th style="width:10%">단가</th>
-            <th style="width:7%">부수</th><th style="width:7%">할인율</th>
-            <th style="width:10%">공급가</th><th style="width:9%">부가세</th>
-            <th style="width:11%">합계(VAT포함)</th>
+            <th>품목명</th><th style="width:11%">규격</th>
+            <th style="width:8%">수량</th><th style="width:11%">단가</th>
+            <th style="width:11%">공급가</th><th style="width:10%">부가세</th>
+            <th style="width:13%">합계(VAT포함)</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -7914,6 +8885,9 @@
           <tr class="gr"><td class="tl">최종 합계(VAT포함)</td><td class="tv">${totalSum.toLocaleString()}원</td></tr>
           <tr class="kr"><td colspan="2">${fmtKorean(totalSum)}</td></tr>
         </table>
+        ${memo ? `<div class="box"><b>비고</b>${qEsc(memo)}</div>` : ''}
+        ${calcHtml}
+        ${work ? `<div class="box"><b>작업내역</b>${qEsc(work)}</div>` : ''}
         ${printScript}
       </body></html>`;
     }
@@ -7926,26 +8900,67 @@
       win.document.close();
     }
 
+    // ── 옛 작업 파일의 견적 → 거래관리 구조로 옮기기 ──
+    // 옛 품목 = { name, spec, qty(쪽수), price, copies(부수), discount(%), group? }.
+    //  · 컬러인쇄·흑백인쇄·제본비(그리고 옛 '품목 그룹'의 품목) → 단가산출내역 그룹(내용 = 품목명, 단가 × 페이지(=옛 수량)) + 그 그룹에 연결한 품목(수량 = 부수)
+    //  · 나머지 → 개별 품목(수량 × 부수, 할인율은 단가에 녹임)
+    function migrateLegacyQuote(items, fileName) {
+      const old = (items || []).filter(Boolean);
+      const isLegacy = old.some(it => Object.prototype.hasOwnProperty.call(it, 'copies') || Object.prototype.hasOwnProperty.call(it, 'discount'));
+      if (!isLegacy) return null;
+      const DEF = ['컬러인쇄', '흑백인쇄', '제본비'];
+      const docName = quoteDocName(fileName);
+      const groups = new Map();   // 그룹 이름 → 품목들
+      const singles = [];
+      old.forEach(it => {
+        const g = it.group || (DEF.includes(it.name) && !Object.prototype.hasOwnProperty.call(it, 'group') ? docName : '');
+        if (g) { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(it); } else singles.push(it);
+      });
+      const disc = it => Math.max(0, Math.min(100, it.discount || 0));
+      const rows = [], outItems = [];
+      groups.forEach((members, g) => {
+        const link = qUid();
+        rows.push({ isGroup: true, content: g, linkItemId: link });
+        let sum = 0;
+        members.forEach(m => {
+          const price = Math.round(qNum(m.price) * (1 - disc(m) / 100));
+          rows.push({ content: m.name || '', price, pages: qNum(m.qty) });
+          sum += price * qNum(m.qty);
+        });
+        outItems.push({ name: g, spec: '', qty: Math.max(1, parseInt(members[0].copies, 10) || 1), price: sum, taxRate: 0.1, calcLinkId: link });
+      });
+      singles.forEach(m => {
+        outItems.push({ name: m.name || '', spec: m.spec || '', qty: qNum(m.qty) * (m.copies || 1),
+          price: Math.round(qNum(m.price) * (1 - disc(m) / 100)), taxRate: 0.1, calcLinkId: qUid() });
+      });
+      return { items: outItems, calc: { rows, headers: { ...Q_HEADERS }, memo: '', workNotes: '', title: '' } };
+    }
+
     // ── 📤 거래관리 시스템으로 견적 넘기기 ───────────────────────────────────
-    // 여기서는 '무엇을 얼마에 몇 장'까지만 만들어 넘기고, 고객 선택·신규 등록·견적번호
-    // 발급·저장은 거래관리 앱이 한다(그쪽이 고객·번호의 원장이라 한 곳에서만 관리해야 한다).
+    // 품목·단가산출내역·머리글·비고·작업내역을 거래관리 견적서 저장 형식 그대로 넘긴다(version 2).
+    // 고객 선택·신규 등록·견적번호 발급·저장은 거래관리 앱이 한다(그쪽이 고객·번호의 원장).
+    // ⚠ 거래관리의 받는 쪽(importPdfQuote)이 calcRows·calcHeaders·workNotes를 읽어야 단가산출내역까지 채워진다 —
+    //   읽지 않는 옛 거래관리도 items만으로 지금처럼 견적이 열린다(합계 같음).
     function buildBusinessQuotePayload() {
+      ensureQuoteCalc(); applyQuoteCalcLinks();
       const customer = (document.getElementById('q-customer').value || '').trim();
       const date = document.getElementById('q-date').value || new Date().toISOString().split('T')[0];
-      const copies = (quoteItems[0] && quoteItems[0].copies) || 1;
-      // 거래관리 품목 = {name, spec, qty, price, taxRate}. 이 앱의 '부수'와 '할인율'은
-      // 그쪽에 없는 개념이라 수량·단가에 녹여서 넘긴다(합계 금액이 양쪽에서 같아지도록).
       const items = quoteItems
-        .filter(it => (it.name || '').trim() || it.qty > 0)
-        .map(it => {
-          const qty = Math.max(0, (it.qty || 0) * (it.copies || 1));
-          const disc = Math.max(0, Math.min(100, it.discount || 0));
-          const price = Math.round((it.price || 0) * (1 - disc / 100));
-          const spec = [it.spec || '', disc ? `${disc}% 할인 반영` : '',
-                        (it.copies || 1) > 1 ? `${it.copies}부` : ''].filter(Boolean).join(' · ');
-          return { name: it.name || '품목', spec, qty, price, taxRate: 0.1 };
-        });
-      const total = quoteItems.reduce((s, it) => s + itemTotal(it), 0);
+        .filter(it => (it.name || '').trim() || qNum(it.price) !== 0)
+        .map(it => ({
+          name: it.name || '', spec: it.spec || '',
+          qty: it.isDiscount ? 1 : qNum(it.qty),
+          price: qNum(it.price), taxRate: it.taxRate == null ? 0.1 : it.taxRate,
+          calcLinkId: it.calcLinkId || '',
+          ...(it.isDiscount ? { isDiscount: true } : {}),
+        }));
+      const keptIds = new Set(items.map(it => it.calcLinkId));
+      const calcRows = quoteCalc.rows
+        .filter(r => r.isGroup ? true : ((r.content || '').trim() || qNum(r.price) || qNum(r.pages)))
+        .map(r => r.isGroup
+          ? { isGroup: true, content: (r.content || '').trim(), price: 0, pages: 0, linkItemId: keptIds.has(r.linkItemId) ? r.linkItemId : '' }
+          : { content: (r.content || '').trim(), price: qNum(r.price), pages: qNum(r.pages) });
+      const total = items.reduce((s, it) => s + itemTotal(it), 0);
       const stat = {
         total: +(totalPagesEl.textContent || 0) || 0,
         color: +(colorPagesEl.textContent || 0) || 0,
@@ -7953,12 +8968,13 @@
       };
       const fileName = effectiveBaseName();
       return {
-        source: 'pdf-analyzer', version: 1, sentAt: new Date().toISOString(),
+        source: 'pdf-analyzer', version: 2, sentAt: new Date().toISOString(),
         customerName: customer, date,
-        title: `인쇄 견적 (${fileName})`,
-        memo: `PDF 편집기에서 산출 — 전체 ${stat.total}쪽 · 컬러 ${stat.color}쪽 · 흑백 ${stat.gray}쪽`
-            + (copies > 1 ? ` · ${copies}부` : ''),
-        items, expectedTotal: total,
+        title: (quoteCalc.title || '').trim() || `인쇄 견적 (${fileName})`,
+        memo: (quoteCalc.memo || '').trim() || `PDF 편집기에서 산출 — 전체 ${stat.total}쪽 · 컬러 ${stat.color}쪽 · 흑백 ${stat.gray}쪽`,
+        workNotes: quoteCalc.workNotes || '',
+        items, calcRows, calcHeaders: { ...quoteCalc.headers }, calcTables: [],
+        expectedTotal: total,
         pages: stat, fileName,
       };
     }
@@ -8345,6 +9361,28 @@
         });
         if (annotPages.length) infos.push(`주석·링크 개체 — ${_pfFmtPages(annotPages)} (인쇄에 나오지 않을 수 있음)`);
 
+        // 4-0) ⚫ 혼합 검정(리치 블랙) — 검은 면·선·글자가 CMYK 혼합색·RGB 검정이면 4색으로 겹쳐 찍힌다
+        try {
+          if (typeof richBlackScanDoc === 'function') {
+            const rb = richBlackScanDoc(doc, { rgb: false });
+            if (rb.pages.length) {
+              const t = rb.total;
+              warns.push(`혼합 검정(리치 블랙) ${rb.pages.length}쪽 — ${_pfFmtPages(rb.pages.map(p => p.page))} · 면 ${t.fill}·선 ${t.stroke}·글자 ${t.text}곳`
+                + ` → 가는 선·작은 글자가 4색으로 겹쳐 번질 수 있음. 왼쪽 패널 '⚫ 검정 K100'에서 점검·K100으로 바꾸기${_k100Enabled ? ' (지금 켜져 있음 — 저장·인쇄 때 K100으로 나감)' : ''}`);
+            }
+          }
+          // RGB 검정 — 출력기가 제멋대로 4색(C75 M68 Y67 K90 등)으로 바꿔 찍는다
+          if (typeof rgbRichBlackDoc === 'function') {
+            const rg = richBlackScanDoc(doc, { rgb: true, rgbOnly: true });
+            if (rg.pages.length) {
+              const t = rg.total;
+              (_rgbRich ? infos : warns).push(`RGB 검정 ${rg.pages.length}쪽 — ${_pfFmtPages(rg.pages.map(p => p.page))} · 면 ${t.fill}·선 ${t.stroke}·글자 ${t.text}곳`
+                + (_rgbRich ? " → '🖤 RGB검정 리치블랙처리' 켜짐: 컬러 쪽은 저장·인쇄 때 면 C40 M30 Y30 K100 · 글자·선 K100으로 나감(흑백 쪽은 먹 1도)"
+                            : " → 출력기가 4색으로 바꿔 찍을 수 있음. 왼쪽 패널 '🖤 RGB검정 리치블랙처리'를 켜면 정한 값으로 나감"));
+            }
+          }
+        } catch (e) { console.warn('프리플라이트 혼합 검정 점검 실패:', e); }
+
         // 4-1) 보안 설정 (암호화)
         if (doc.isEncrypted) warns.push(`보안(암호화) 설정된 PDF — 일부 출력기·RIP에서 인쇄가 거부될 수 있음`);
 
@@ -8586,6 +9624,7 @@
         order: pageResults.slice(),
         rot:   pageResults.map(r => (r ? (r.rotation || 0) : 0)),
         flags: pageResults.map(r => (r ? PAGE_FLAG_KEYS.map(k => !!r[k]) : null)),
+        ch:    pageResults.map(r => (r ? r.chapter : undefined)),   // 다른 챕터로 옮기면 소속이 바뀐다 — 되돌리기도 함께
       };
     }
 
@@ -8610,6 +9649,7 @@
       pageResults.length = 0;
       snap.order.forEach(o => pageResults.push(o));
       snap.order.forEach((o, i) => { if (o) o.rotation = snap.rot[i]; });
+      if (snap.ch) snap.order.forEach((o, i) => { if (o) { if (snap.ch[i] === undefined) delete o.chapter; else o.chapter = snap.ch[i]; } });
       if (snap.flags) snap.order.forEach((o, i) => {
         const f = snap.flags[i];
         if (o && f) PAGE_FLAG_KEYS.forEach((k, j) => { if (f[j]) o[k] = true; else delete o[k]; });
@@ -8637,14 +9677,25 @@
       updateUndoBtn();
     }
 
+    // 지우려는 쪽이 고른 쪽(2개 이상) 중 하나면 **고른 쪽 전체**를 지운다(2026-10-22 — 예전엔 그 쪽 하나만).
+    // 카드 ✕·우클릭 '삭제'·Delete 키가 모두 여기로 온다(쪽 끌기 movePage·복제와 같은 규칙). 전부 지우기는 막는다.
     function deletePage(idx) {
+      const r = pageResults[idx];
+      if (!r) return;
+      const multi = selectedPages.size > 1 && selectedPages.has(r.pageNum);
+      const gone = multi ? new Set(pageResults.filter(p => p && selectedPages.has(p.pageNum))) : new Set([r]);
+      const left = pageResults.filter(p => p && !gone.has(p)).length;
+      if (!left) { showError('모든 페이지를 지울 수는 없습니다 — 남길 페이지의 선택을 풀고 다시 지우세요.'); return; }
       pushHistory();
-      pageResults.splice(idx, 1);
+      for (let i = pageResults.length - 1; i >= 0; i--) if (gone.has(pageResults[i])) pageResults.splice(i, 1);
+      ctxTargetIdx = -1;   // 지워서 인덱스가 밀렸다
       rebuildPageNums();
       syncTabPageResults();
       rerenderPages();
       setPageEdited();
       updateUndoBtn();
+      if (multi) showSuccess(`고른 ${gone.size}쪽을 지웠습니다 — 남은 ${left}쪽.
+잘못 지웠으면 Ctrl+Z(↩ 실행취소)로 되돌리세요.`);
     }
 
     // ── 챕터(합본 파일 구분) 단위 조작 ──────────────────────────────────────────
@@ -8683,6 +9734,34 @@
       setPageEdited();
       updateUndoBtn();
       showSuccess(`'${run.name}' 챕터(${run.idxs.length}페이지)를 삭제했습니다.`);
+    }
+
+    // 🔗 챕터 합치기 — 이웃 챕터와 하나로 (dir: -1 위 챕터와 / +1 아래 챕터와) · 2026-10-22
+    // 쪽 순서는 그대로, 아래 챕터의 쪽이 위 챕터 이름을 받는다(합친 챕터 이름 = 위 챕터). 되돌리기는 챕터 소속까지(스냅숏 ch).
+    // 아래 챕터에만 걸려 있던 챕터별 설정(editSettings.byChapter)은 지우지 않는다(되돌리기 대비) — 합친 쪽은 위 챕터 설정을 따른다.
+    function mergeChapterRun(startIdx, dir) {
+      hideCtxMenu();
+      const runs = chapterRuns();
+      const pos = runs.findIndex(r => r.idxs[0] === startIdx);
+      if (pos < 0) return;
+      const other = pos + dir;
+      if (other < 0 || other >= runs.length) return;
+      const upper = runs[Math.min(pos, other)], lower = runs[Math.max(pos, other)];
+      if (upper.name === lower.name) return;
+      pushHistory();
+      lower.idxs.forEach(i => { const r = pageResults[i]; if (r && r.chapter) r.chapter = upper.name; });
+      rebuildPageNums();
+      syncTabPageResults();
+      rerenderPages();
+      setPageEdited();
+      updateUndoBtn();
+      const bc = (editSettings && editSettings.byChapter) || {};
+      const lostSet = typeof hasActiveLayout === 'function' && bc[lower.name] && hasActiveLayout(bc[lower.name]);
+      showSuccess(`🔗 '${lower.name}' 챕터를 '${upper.name}'에 합쳤습니다 — 이제 한 챕터 ${upper.idxs.length + lower.idxs.length}쪽.`
+        + (lostSet ? `
+'${lower.name}'에만 걸어 둔 챕터별 편집(크기·여백 등)은 이제 '${upper.name}' 설정을 따릅니다.` : '')
+        + `
+잘못 합쳤으면 Ctrl+Z(↩ 실행취소)로 되돌리세요.`);
     }
 
     // 챕터 위치 이동 — 인접한 챕터와 통째로 자리 교환 (dir: -1 위 / +1 아래)
@@ -8744,6 +9823,44 @@
           else if (e.key === 'Escape') { e.preventDefault(); done(null); }
         });
         setTimeout(() => { inp.focus(); inp.select(); }, 30);
+      });
+    }
+
+    // 버튼 몇 개 중 하나를 고르는 대화상자 — promptText와 같은 모양(.pt-*).
+    // choices: [{ label, value, primary?, title? }] → 고른 value, 취소(Esc·바깥 클릭)는 null. Enter = primary.
+    function askChoice(message, choices) {
+      return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.style.cssText = 'position:fixed;inset:0;z-index:100060;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+        const box = document.createElement('div');
+        box.className = 'pt-box';
+        box.style.cssText = 'min-width:340px;max-width:90vw;padding:20px 22px;';
+        const msg = document.createElement('div');
+        msg.style.cssText = 'font-size:0.9em;white-space:pre-line;line-height:1.55;';
+        msg.textContent = message;
+        const btns = document.createElement('div');
+        btns.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:18px;';
+        let primary = null;
+        const done = v => { document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(v); };
+        (choices || []).forEach(c => {
+          const b = document.createElement('button');
+          b.textContent = c.label;
+          b.className = 'pt-btn' + (c.primary ? ' pt-ok' : '');
+          b.style.cssText = 'padding:8px 16px;cursor:pointer;font-size:0.85em;' + (c.primary ? 'font-weight:600;' : '');
+          if (c.title) b.title = c.title;
+          b.onclick = () => done(c.value);
+          if (c.primary) primary = { b, v: c.value };
+          btns.append(b);
+        });
+        const onKey = e => {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
+          else if (e.key === 'Enter' && primary && document.activeElement === primary.b) { e.preventDefault(); e.stopPropagation(); done(primary.v); }
+        };
+        document.addEventListener('keydown', onKey, true);
+        ov.onclick = e => { if (e.target === ov) done(null); };
+        box.append(msg, btns); ov.append(box); document.body.appendChild(ov);
+        if (typeof decolorEmojiIn === 'function') { try { [msg, ...btns.children].forEach(decolorEmojiIn); } catch (e) {} }   // 컬러 이모지 무채색(.ic)
+        setTimeout(() => { if (primary) primary.b.focus(); }, 30);
       });
     }
 
@@ -9026,11 +10143,27 @@
       actions.append(
         mkBtn('ch-edit', '✏ 편집', '이 챕터만 편집 — 크기·조판·여백·머리글이 이 파일에만 적용됩니다', false,
               () => editChapter(name)),
+        mkBtn('ch-merge', '⤒ 합치기', '이 챕터를 위 챕터에 합칩니다 — 쪽 순서는 그대로, 이름은 위 챕터(되돌리기 Ctrl+Z)', no <= 1, withAfter(() => mergeChapterRun(startIdx, -1))),
         mkBtn('', '▲', '이 챕터를 위로 이동', no <= 1,     withAfter(() => moveChapterRun(startIdx, -1))),
         mkBtn('', '▼', '이 챕터를 아래로 이동', no >= total, withAfter(() => moveChapterRun(startIdx, +1))),
         mkBtn('ch-del', '🗑', '이 챕터 전체 삭제', total <= 1, withAfter(() => deleteChapterAt(startIdx))),
       );
       d.append(badge, nm, pg, actions);
+      // 쪽을 구분선 위에 놓으면 그 챕터의 맨 앞으로(쪽 목록 화면에서만 — 결과 미리보기의 구분선은 제외)
+      d.addEventListener('dragover', e => {
+        if (afterChange || typeof dragSrcPageNum === 'undefined' || !dragSrcPageNum) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+        d.classList.add('drag-into');
+      });
+      d.addEventListener('dragleave', e => { if (!d.contains(e.relatedTarget)) d.classList.remove('drag-into'); });
+      d.addEventListener('drop', e => {
+        d.classList.remove('drag-into');
+        if (afterChange || typeof dragSrcPageNum === 'undefined' || !dragSrcPageNum) return;
+        e.preventDefault(); e.stopPropagation();
+        const srcIdx = pageResults.findIndex(r => r && r.pageNum === dragSrcPageNum);
+        if (srcIdx < 0 || srcIdx === startIdx || !pageResults[startIdx]) return;
+        movePage(srcIdx, startIdx, false);
+      });
       // 제목 우클릭 → 챕터 메뉴(편집·선택·방향·이동·삭제)
       d.oncontextmenu = (e) => openChapterMenu(e, name, startIdx, no, total);
       d.title = '우클릭하면 이 챕터에 할 수 있는 작업이 나옵니다';
@@ -11065,7 +12198,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         if (typeof contentEdits !== 'undefined' && contentEdits && contentEdits.size) {
           contentEdits.forEach((v, oi) => {
             if (!v || !v.bytes) return;
-            edits.push({ oi, model: v.model || [], rev: v.rev || 0 });
+            edits.push(Object.assign({ oi, model: v.model || [], rev: v.rev || 0 }, v.k100 ? { k100: v.k100 } : {}));
             entries.push({ k: 'edit', name: 'edit_' + oi });
             blobs.push(new Uint8Array(v.bytes));
           });
@@ -11108,6 +12241,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
             editSettings: editSettings ? JSON.parse(JSON.stringify(editSettings)) : null,
             docState: captureDocState(),
             quote: (typeof quoteItems !== 'undefined' && quoteItems) ? JSON.parse(JSON.stringify(quoteItems)) : [],
+            quoteCalc: (typeof quoteCalc !== 'undefined' && quoteCalc) ? JSON.parse(JSON.stringify(quoteCalc)) : null,   // 단가산출내역·머리글·비고·작업내역(거래관리 견적서 구조)
             edits,
             // 저장 시점에 '✔ 적용'까지 마친 상태였는지 + 그때의 저장 파일명.
             // 적용본 자체(entries의 k:'result')가 함께 들어 있어 열 때 그대로 보여준다.
@@ -11252,7 +12386,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           (manifest.entries || []).forEach((e, i) => { if (e.k === 'edit') editBlobs.push(blobs[i]); });
           st.edits.forEach((e, i) => {
             if (!editBlobs[i]) return;
-            contentEdits.set(e.oi, { model: e.model || [], bytes: editBlobs[i], rev: e.rev || 0 });
+            contentEdits.set(e.oi, Object.assign({ model: e.model || [], bytes: editBlobs[i], rev: e.rev || 0 }, e.k100 ? { k100: e.k100 } : {}));
             editN++;
           });
           tab.contentEdits = contentEdits;
@@ -11262,7 +12396,16 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         // 5) 견적 항목
         if (st.quote && typeof quoteItems !== 'undefined') {
           quoteItems.length = 0;
-          st.quote.forEach(q => quoteItems.push(q));
+          // 거래관리 구조(2026-10-25) 전에 저장한 견적(부수·할인율 칸)은 단가산출내역 그룹 + 연결 품목으로 옮긴다
+          const mig = !st.quoteCalc ? migrateLegacyQuote(st.quote, tab.fileName) : null;
+          (mig ? mig.items : st.quote).forEach(q => quoteItems.push(q));
+          quoteCalc = mig ? mig.calc : (st.quoteCalc || newQuoteCalc());
+          tab.quoteItems = quoteItems; tab.quoteCalc = quoteCalc;
+          // 화면도 되살린 견적으로 — 예전엔 다시 그리지 않아 분석 때 만든 기본 견적이 그대로 보였다
+          const qc = document.getElementById('q-customer'), qd = document.getElementById('q-date');
+          if (qc) qc.value = quoteCalc.customer || '';
+          if (qd && quoteCalc.date) qd.value = quoteCalc.date;
+          if (quoteItems.length || quoteCalc.rows.length) { renderQuoteTable(); document.getElementById('quoteSection').style.display = 'block'; }
         }
         if (typeof syncEditUI === 'function') syncEditUI();
         if (typeof clearProcessCaches === 'function') clearProcessCaches();

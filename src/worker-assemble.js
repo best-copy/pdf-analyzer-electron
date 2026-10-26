@@ -3,7 +3,7 @@
  * pdf-lib 문서 레벨 연산(load/copyPages/addPage/save)을 메인 스레드 밖에서 수행한다.
  */
 
-importScripts('./libs/pdf-lib.min.js', './libs/gray-blend.js', './libs/annot-flatten.js', './libs/fontkit.umd.min.js', './hf-core.js');
+importScripts('./libs/pdf-lib.min.js', './libs/gray-blend.js', './libs/pako.min.js', './libs/annot-flatten.js', './libs/fontkit.umd.min.js', './hf-core.js');
 
 // ── PDF 읽기 옵션 (pdf-lib) — 워커는 화면을 멈추지 않으므로 쉬지 않고 읽는다 ──
 // 기본(100객체마다 setTimeout)은 객체가 많은 문서에서 읽기가 20배 느렸다(합본 70.7MB: 9.54초 → 0.45초).
@@ -159,6 +159,7 @@ async function handleLayoutTransform(payload) {
       // 주석(펜 메모·형광펜·도장 그림)까지 — embedPage는 주석을 버린다(libs/annot-flatten.js)
       try { [e2] = await out.embedPages([{ node: copier(annotFlatNode(pages[i])) }]); }
       catch (err) { ensureContents(pages[i], true); [e2] = await out.embedPages([{ node: annotFlatNode(pages[i], true) }]); }   // 강제 복구 후 1회 재시도
+      fastEmbed(e2);   // 쪽 내용을 풀었다 다시 압축하지 않는다(annot-flatten.js)
       embCache.set(i, e2);
     }
     return embCache.get(i);

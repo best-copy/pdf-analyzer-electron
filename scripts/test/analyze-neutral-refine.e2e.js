@@ -105,7 +105,7 @@ app.whenReady().then(async () => {
     window.__forceGsAnalyze = false; window.__analysisDiskMinMs = 0;
     open('c1.pdf', bytes); await waitReady(); await sleep(3500); await closeAll();
     const key = await pdfFingerprint(bytes); const hit = await readAnalysisDiskCache(key);
-    ck('디스크 캐시 저장됨 + 보정 표시(nv)', !!(hit && hit.meta.nv === 1), hit && hit.meta.nv);
+    ck('디스크 캐시 저장됨 + 보정 표시(nv)', !!(hit && hit.meta.nv === 2), hit && hit.meta.nv);
     if (hit) {
       delete hit.meta.nv; hit.meta.pages.forEach(p => { if (p.oi === 0) p.isColor = true; });
       const js = new TextEncoder().encode(JSON.stringify(hit.meta)), head = new TextEncoder().encode(ANALYSIS_DISK_MAGIC);

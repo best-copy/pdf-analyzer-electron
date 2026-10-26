@@ -117,6 +117,10 @@ html.theme-light {
 .sbp-select { background: transparent; color: var(--c-text); border: 1px solid var(--c-outline); border-radius: var(--c-btn-radius); }
 .sbp-select:hover, .sbp-select:focus { background: var(--c-surface-2); border-color: var(--c-accent); }
 .sbp-select option { background: var(--c-surface); color: var(--c-text); }
+/* 왼쪽 패널 선택칸(Dot Gain 등)은 버튼과 같은 폭 — ?표를 칸 밖이 아니라 안(펼침 화살표 왼쪽)에 둔다 (사용자 요청 2026-10-20) */
+#sbPanel .sbp-hwrap { position: relative; }
+#sbPanel .sbp-hwrap > select { width: 100%; padding-right: 40px; }
+#sbPanel .sbp-hwrap > .sbp-help { position: absolute; right: 22px; top: 50%; transform: translateY(-50%); }
 /* 켜진 옵션 — 골드 테두리 + 옅은 골드 배경 (굵은 안쪽 링 대신) */
 .sbp-opt.active { background: var(--c-accent-soft); border-color: var(--c-accent); color: var(--c-accent-text); box-shadow: none; }
 .sbp-opt.active:hover { background: var(--c-accent); color: var(--c-accent-ink); }
@@ -643,3 +647,100 @@ body.edit-fullscreen #previewSection { background: var(--c-surface); }
 /* 떠 있는 메뉴(챕터 메뉴·E-book 워터마크 선택 등)는 왼쪽 사이드바(z 500) 위에 —
    예전 z 400이라 사이드바 버튼에서 연 메뉴가 사이드바 뒤에 숨어 '버튼이 안 눌린다'로 보였다 */
 .ch-menu { z-index: 100030; }
+
+/* ⚫ 검정 점검 창 */
+.rb-modal { width: min(760px, 94vw); max-width: none; max-height: 90vh; display: flex; flex-direction: column; }
+.rb-table-wrap { overflow: auto; max-height: 52vh; border: 1px solid var(--c-border); }
+.rb-table { width: 100%; border-collapse: collapse; font-size: .86em; color: var(--c-text); }
+.rb-table th { position: sticky; top: 0; background: var(--c-surface); color: var(--c-text-muted); font-weight: 600; text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--c-border); }
+.rb-table td { padding: 5px 8px; border-bottom: 1px solid var(--c-border); vertical-align: top; }
+.rb-table td:nth-child(2), .rb-table td:nth-child(3), .rb-table td:nth-child(4) { text-align: right; font-variant-numeric: tabular-nums; width: 3.5em; }
+.rb-table tr.rb-dim td { color: var(--c-text-muted); }
+.rb-colors { color: var(--c-text-muted); font-size: .92em; }
+.rb-page { background: transparent; border: 1px solid var(--c-outline); color: var(--c-text); padding: 1px 8px; cursor: pointer; font: inherit; }
+.rb-page:hover { border-color: var(--c-accent); }
+.rb-tag { font-size: .8em; padding: 0 5px; border: 1px solid var(--c-border); color: var(--c-text-muted); margin-left: 4px; }
+.rb-note { margin-top: 10px; line-height: 1.6; font-size: .84em; }
+
+/* ⚫ 검정 점검 미리보기 — 왼쪽 쪽·개체 목록 · 오른쪽 쪽 그림 위 개체 상자(쪽 그림은 흰 종이 그대로) */
+.rbv-modal { width: min(1240px, 96vw); max-width: none; height: min(880px, 92vh); display: flex; flex-direction: column; }
+.rbv-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; align-items: center; }
+.rbv-sep { width: 10px; }
+.rbv-btn { padding: 4px 10px; font-size: .84em; }
+.rbv-body { flex: 1 1 auto; min-height: 0; display: flex; gap: 12px; }
+.rbv-list { flex: 0 0 340px; overflow: auto; border: 1px solid var(--c-border); background: var(--c-bg); }
+.rbv-pghead { display: flex; align-items: center; gap: 6px; padding: 7px 8px; cursor: pointer; border-bottom: 1px solid var(--c-border); color: var(--c-text); font-size: .88em; }
+.rbv-pghead:hover { background: var(--c-surface); }
+.rbv-pghead.cur { background: var(--c-accent-soft); border-left: 3px solid var(--c-accent); }
+.rbv-items { padding: 2px 0 6px 18px; border-bottom: 1px solid var(--c-border); }
+.rbv-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: .84em; color: var(--c-text); cursor: pointer; }
+.rbv-item:hover, .rbv-item.hov { background: var(--c-surface); }
+.rbv-item.hid .rbv-kind { color: var(--c-text-muted); }
+.rbv-kind { min-width: 4.2em; }
+.rbv-c { color: var(--c-text-muted); font-variant-numeric: tabular-nums; }
+.rbv-modal input[type="checkbox"] { accent-color: var(--c-accent); }
+.rbv-view { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.rbv-pagebar { display: flex; align-items: center; gap: 8px; color: var(--c-text); font-size: .9em; }
+.rbv-hint { margin-left: auto; }
+/* 미리보기 — 맞춤이면 가운데, 확대하면 스크롤(Space+끌기·휠). 상자는 그림 위 겹친 div(비율 위치라 확대에도 그대로) */
+.rbv-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; background: var(--c-bg); border: 1px solid var(--c-border); overflow: auto; padding: 8px; }
+.rbv-stage { position: relative; margin: auto; flex: 0 0 auto; box-shadow: 0 1px 4px rgba(var(--c-shadow-rgb,0,0,0),.35); background: #fff; }
+.rbv-stage canvas { display: block; }
+.rbv-boxes { position: absolute; inset: 0; }
+.rbv-box { position: absolute; box-sizing: border-box; min-width: 4px; min-height: 4px; pointer-events: none; }
+.rbv-box.on { border: 2px solid var(--c-accent); background: rgba(216,189,110,.18); }
+.rbv-box.off { border: 2px dashed rgba(110,110,120,.95); }
+.rbv-box.hov { border-width: 4px; }
+.rbv-canvas-wrap.pan-ready, .rbv-canvas-wrap.pan-ready .rbv-stage { cursor: grab !important; }
+.rbv-canvas-wrap.panning, .rbv-canvas-wrap.panning .rbv-stage { cursor: grabbing !important; user-select: none; }
+.rbv-zoom { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; color: var(--c-text); }
+.rbv-titlebar { display: flex; align-items: center; gap: 10px; cursor: default; user-select: none; }
+.rbv-titlebar .merge-title { flex: 1; margin-bottom: 0; }
+.rbv-modal.rbv-full { width: 100vw; height: 100vh; max-height: none; position: fixed; inset: 0; }
+.rbv-modal.rbv-full .rbv-list { flex-basis: 380px; }
+.rb-tag.rb-done { border-color: var(--c-accent-line); color: var(--c-text); }
+.rb-tag.rb-bad { border-color: var(--c-danger); color: var(--c-danger-text); }
+/* 점검 창이 떠 있는 동안 앱 알림은 숨긴다(전체화면에서 아래 버튼을 가렸다) — 닫으면 다시 보인다 */
+body:has(.rbv-modal) #success, body:has(.rbv-modal) #error { visibility: hidden; }
+.rbv-loading { position: absolute; color: var(--c-text-muted); font-size: .9em; }
+.rbv-legend { display: flex; align-items: center; gap: 6px; font-size: .82em; color: var(--c-text); }
+.rbv-key { display: inline-block; width: 14px; height: 10px; border: 2px solid var(--c-accent); background: rgba(216,189,110,.18); }
+.rbv-key.off { border: 2px dashed var(--c-text-muted); background: transparent; margin-left: 10px; }
+
+/* 📦 압축에서 꺼낸 문서 — 순서 지정 창에 압축 안 폴더를 작게 */
+.ord-name .ord-arc { color: var(--c-text-muted); font-size: .85em; margin-left: 6px; }
+
+/* 쪽을 끄는 동안 안내 토스트가 놓기를 막지 않게(2026-10-21) — 합친 뒤 뜨는 안내가 아래 줄 쪽을 덮어
+   그 위에 놓은 이동이 무시됐다. 끄는 동안만 마우스를 통과시키고 흐리게 해 아래 쪽이 보이게 한다. */
+body.page-dragging #success, body.page-dragging #error,
+body.page-dragging #success *, body.page-dragging #error * { pointer-events: none !important; }
+body.page-dragging #success, body.page-dragging #error { opacity: .35; }
+/* 쪽을 챕터 구분선 위에 놓기 = 그 챕터 맨 앞으로 */
+.chapter-divider.drag-into { box-shadow: 0 0 0 2px var(--c-accent); }
+/* ⬚ 끌어서 쪽 고르기 사각형(2026-10-22) */
+.page-marquee { position: fixed; z-index: 90; pointer-events: none; border: 1px solid var(--c-accent); background: var(--c-accent-soft); }
+body.page-marqueeing, body.page-marqueeing * { user-select: none !important; cursor: crosshair !important; }
+/* 🔗 챕터 구분선 '⤒ 합치기' — 글자 버튼이라 정사각 아이콘 크기(26px)를 풀어 준다(2026-10-22) */
+.ch-btn.ch-merge { width: auto; padding: 0 9px; font-size: 12px; white-space: nowrap; }
+/* 📋 견적서 — 거래관리 견적서 구조(2026-10-25) · 견적서는 두 테마 모두 흰 종이라 밝은 무채색, 표식만 강조색 */
+.quote-section .q-discount-row td input { color: #b42318; }
+.quote-section .q-linked { background: #f3f6fb; color: #1e3a8a; }
+.quote-section .q-memo-row { margin-top: 12px; }
+.quote-section .q-textarea { width: 100%; box-sizing: border-box; resize: vertical; font-family: inherit; }
+.quote-section .q-calc-section { margin-top: 18px; }
+.quote-section .q-sec-title { font-weight: 700; color: #1d1d1f; margin-bottom: 4px; }
+.quote-section .q-sec-hint { font-weight: 400; color: #8e8e93; font-size: 0.85em; }
+.quote-section .qc-header { width: 100%; border: 0; background: transparent; font-weight: 600; color: #6e6e73; text-align: center; font-family: inherit; }
+.quote-section .qc-group-row td { background: #eef4ff; }
+.quote-section .qc-group-cell { display: flex; gap: 4px; align-items: center; }
+.quote-section .qc-group-name { flex: 1 1 auto; min-width: 0; font-weight: 700; color: #1e3a8a; }
+.quote-section .qc-link { flex: 0 0 auto; width: 170px; max-width: 45%; font-size: 0.82em; border: 1px solid #c7d7f5; color: #1e3a8a; background: #fff; padding: 3px 2px; font-family: inherit; }
+.quote-section .qc-group-sub { text-align: right; font-weight: 700; color: #1e3a8a; white-space: nowrap; }
+.quote-section .q-calc-btns { display: flex; justify-content: space-between; align-items: center; }
+.quote-section .q-calc-total { font-weight: 700; color: #1e3a8a; }
+/* 견적서는 흰 종이 — 앱 전체 다크(color-scheme)를 따라 입력칸·선택칸이 검게 그려지던 것을 밝게 */
+.quote-section { color-scheme: light; }
+/* 좁은 화면에서 칸이 눌려 숫자가 안 보이던 것 — 숫자 칸은 최소 폭을 두고, 모자라면 견적서 영역이 가로로 스크롤된다 */
+.quote-section { overflow-x: auto; }
+.quote-section .q-table td input[type=number] { min-width: 52px; }
+.quote-section .q-table td:nth-child(4) input[type=number] { min-width: 68px; }

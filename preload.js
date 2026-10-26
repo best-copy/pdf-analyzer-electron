@@ -209,6 +209,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // '저장 안 한 작업' 상태를 main에 보고 (종료 전 확인용)
   setUnsaved: (dirty) => ipcRenderer.send('app:dirty', !!dirty),
+  // 📦 압축 파일 풀기 — 경로 목록 → { items:[{path,name,rel,archive}], skipped:[{name,reason,archive}], dirs }
+  extractArchives: (paths) => ipcRenderer.invoke('archive:extract', paths),
+  // 화면 안 창의 확대 단축키(Ctrl + + / − / 0) — 켜 둔 동안 앱 확대 대신 cb('in'|'out'|'fit')
+  setZoomCapture: (on) => ipcRenderer.send('ui:zoomCapture', !!on),
+  onZoomKey: (cb) => { ipcRenderer.removeAllListeners('ui:zoomKey'); if (cb) ipcRenderer.on('ui:zoomKey', (_e, k) => cb(k)); },
 
   // '문서가 열려 있음' + 지금 작업 파일 이름 — 편집이 없어도 닫기 전에 저장을 묻기 위함
   setDocOpen: (open, name) => ipcRenderer.send('app:docopen', !!open, name || ''),

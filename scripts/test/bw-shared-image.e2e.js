@@ -98,7 +98,7 @@ app.whenReady().then(async () => {
     for (let i = 0; i < valid.length; i++) if (isBwTarget(valid[i])) await convertPageToGrayscaleVector(old, i, { errors: 0, errPages: [] }, 0);
     const oldSaved = colored(await colorPx(await old.save()));
     const lostWant = keep.filter(p => !oldSaved.includes(p));
-    const occ = checkColorIntent(old, valid, src);
+    const occ = await checkColorIntent(old, valid, src);   // 쪽마다 화면에 양보하는 비동기(2026-10-21)
     ck('옛 방식 재현: 실제로 컬러를 잃은 쪽이 있음', lostWant.length > 0, oldSaved);
     ck('컬러 검수가 잃은 쪽을 정확히 짚음', !!occ && JSON.stringify(occ.lost) === JSON.stringify(lostWant), { lost: occ && occ.lost, want: lostWant });
     ck('경고 문구에 쪽 번호가 들어감', (colorCheckWarning(occ) || '').includes(lostWant.join(', ')), (colorCheckWarning(occ) || '').slice(0, 120));

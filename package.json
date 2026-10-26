@@ -29,6 +29,7 @@
     },
     "files": [
       "main.js",
+      "archive.js",
       "preload.js",
       "preload-license.js",
       "remote-server.js",

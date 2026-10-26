@@ -104,11 +104,116 @@
       cache.set(node, out);
       return out;
     }
-    return { annotFlatNode };
+    // ── ⚡ 빠른 싣기 (2026-10-21) ─────────────────────────────────────────────────
+    // pdf-lib PDFPageEmbedder는 폼을 만들 때 쪽 내용을 **풀었다가(느린 JS 디코더) 다시 압축(pako 6단계)**한다.
+    // 글자를 곡선으로 바꾼 231쪽 보고서(쪽당 그리기 명령 1.1MB): 복제 2-up 한 번에 21.6초 화면 멈춤(16.5초가 재압축).
+    // 게다가 복사기가 옮겨 온 원래 내용 스트림은 어디서도 쓰지 않는데 파일에 남아 결과가 원고의 두 배(179MB 중 91MB)였다.
+    //  · 내용 스트림이 하나면: 압축된 바이트를 그대로 폼으로(필터·DecodeParms도 그대로) — 풀지도 압축하지도 않는다.
+    //  · 여럿이면(주석 평탄화한 쪽 등): 이어 붙이려면 풀어야 한다 — pako(있으면)로 풀고 브라우저 내장 압축으로.
+    //  · 옮겨 온 원래 스트림은 지운다(복사기가 만든 쪽 사본 = /Parent 없음일 때만). 여러 쪽이 같은 스트림을 쓰면
+    //    지운 뒤에도 같은 바이트로 다시 만들 수 있게 문서마다 기억해 둔다.
+    // 모르는 구조·오류면 pdf-lib 원래 방식 그대로.
+    const _dropped = new WeakMap();                // 문서 context → Map(참조 문자열 → 지운 스트림)
+    const NL = new Uint8Array([10]);
+    function partOf(ctx, list, i, drop) {
+      const ref = list[i];
+      if (ref && ref.objectNumber != null) {
+        const got = ctx.lookup(ref);
+        if (got) { if (drop) { drop.set(ref.toString(), got); ctx.delete(ref); } return got; }
+        const m = _dropped.get(ctx);
+        return m ? m.get(ref.toString()) : undefined;
+      }
+      return ref;
+    }
+    function decodePart(st) {
+      if (st instanceof PDFLib.PDFRawStream) {
+        const f = st.dict.lookup(Nm('Filter'));
+        if (!f) return st.contents;
+        const pk = (typeof self !== 'undefined' && self.pako) || (typeof window !== 'undefined' && window.pako) || null;
+        if (pk && f.encodedName === '/FlateDecode' && !st.dict.get(Nm('DecodeParms'))) {
+          try { const r = pk.inflate(st.contents); if (ArrayBuffer.isView(r)) return r; } catch (e) {}   // 실패는 undefined일 수 있다(함정 19)
+        }
+        return PDFLib.decodePDFRawStream(st).decode();
+      }
+      if (st && typeof st.getUnencodedContents === 'function') return st.getUnencodedContents();
+      return null;
+    }
+    async function deflateNative(u8) {
+      if (typeof CompressionStream !== 'function' || typeof Response !== 'function') return null;
+      try {
+        const s = new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate'));   // zlib 형식 = FlateDecode
+        return new Uint8Array(await new Response(s).arrayBuffer());
+      } catch (e) { return null; }
+    }
+    async function fastEmbedInto(em, ctx, ref, orig) {
+      // 내용은 쪽 노드에서 직접 — normalizedEntries()는 앞뒤에 q/Q 조각을 덧붙여 한 조각 쪽도 세 조각이 된다
+      //   (폼은 그래픽 상태를 스스로 가두므로 q/Q 감싸기는 필요 없다)
+      const raw = em.page.get(Nm('Contents'));
+      let arr = raw && typeof raw.asArray === 'function' ? raw.asArray()
+              : (raw && raw.objectNumber != null ? [raw] : null);
+      if (!arr || !arr.length) return orig(ctx, ref);
+      // 앱이 앞 단계에서 정규화한 쪽은 이미 [q 한 줄, 본문…, Q 한 줄]이다 — 그 한 쌍만 뗀다(모든 쪽이 함께 쓰는 작은 객체라 지우지 않는다)
+      const opOnly = (r, nm) => { const s = r && r.objectNumber != null ? ctx.lookup(r) : null;
+        return !!(s instanceof PDFLib.PDFContentStream && s.operators && s.operators.length === 1 && s.operators[0].name === nm); };
+      if (arr.length >= 3 && opOnly(arr[0], 'q') && opOnly(arr[arr.length - 1], 'Q')) arr = arr.slice(1, -1);
+      let res = em.page.get(Nm('Resources'));
+      if (!res) { try { res = em.page.normalizedEntries().Resources; } catch (e) { return orig(ctx, ref); } }
+      const bb = em.boundingBox;
+      const base = { Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [bb.left, bb.bottom, bb.right, bb.top],
+                     Matrix: em.transformationMatrix, Resources: res };
+      const isCopy = !em.page.get(Nm('Parent'));    // 복사기가 만든 쪽 사본 — 원래 내용 스트림은 이 사본만 가리킨다
+      let drop = null;
+      if (isCopy) { drop = _dropped.get(ctx); if (!drop) { drop = new Map(); _dropped.set(ctx, drop); } }
+      try {
+        const n = arr.length;
+        let stream;
+        if (n === 1) {
+          const st = partOf(ctx, arr, 0, null);
+          if (!(st instanceof PDFLib.PDFRawStream)) return orig(ctx, ref);
+          const dict = ctx.obj(base);
+          for (const k of ['Filter', 'DecodeParms']) { const v = st.dict.get(Nm(k)); if (v) dict.set(Nm(k), v); }
+          stream = PDFLib.PDFRawStream.of(dict, st.contents);
+          if (drop) partOf(ctx, arr, 0, drop);      // 바이트는 폼이 가져갔다 — 원래 스트림은 지운다
+        } else {
+          const bufs = [];
+          let total = 0;
+          for (let i = 0; i < n; i++) {
+            const st = partOf(ctx, arr, i, null);
+            const d = st ? decodePart(st) : null;
+            if (!d) return orig(ctx, ref);
+            bufs.push(d, NL); total += d.length + 1;
+          }
+          const all = new Uint8Array(total);
+          let p = 0;
+          for (const b of bufs) { all.set(b, p); p += b.length; }
+          const z = await deflateNative(all);
+          if (z) {
+            const dict = ctx.obj(base);
+            dict.set(Nm('Filter'), Nm('FlateDecode'));
+            stream = PDFLib.PDFRawStream.of(dict, z);
+          } else stream = ctx.flateStream(all, base);
+          if (drop) for (let i = 0; i < n; i++) partOf(ctx, arr, i, drop);
+        }
+        if (ref) { ctx.assign(ref, stream); return ref; }
+        return ctx.register(stream);
+      } catch (e) { return orig(ctx, ref); }
+    }
+    // embedPages가 돌려준 쪽(PDFEmbeddedPage)에 빠른 싣기를 건다 — 실제 싣기는 저장·flush 때
+    function fastEmbed(e) {
+      const em = e && e.embedder;
+      if (!em || em.__fastEmbed || typeof em.embedIntoContext !== 'function' || !em.page) return e;
+      const orig = em.embedIntoContext.bind(em);
+      em.embedIntoContext = (ctx, ref) => fastEmbedInto(em, ctx, ref, orig);
+      em.__fastEmbed = true;
+      return e;
+    }
+    return { annotFlatNode, fastEmbed };
   }
 
   if (root.PDFLib) {                              // 창·워커: pdf-lib 스크립트를 먼저 싣는다
-    root.annotFlatNode = create(root.PDFLib).annotFlatNode;
+    const api = create(root.PDFLib);
+    root.annotFlatNode = api.annotFlatNode;
+    root.fastEmbed = api.fastEmbed;
   }
   if (typeof module !== 'undefined' && module.exports) module.exports = { create };
 })(typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : globalThis);

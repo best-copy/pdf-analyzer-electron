@@ -9,6 +9,7 @@
   <script src="./libs/fontkit.umd.min.js"></script>
   <script src="./libs/pako.min.js"></script>
   <script src="./libs/gray-blend.js"></script>
+  <script src="./libs/rich-black.js"></script><!-- ⚫ 혼합 검정(리치 블랙) 점검·K100 바꾸기 — 저장 직전(buildFinalSaveBytes)·프리플라이트 -->
   <script src="./libs/annot-flatten.js"></script><!-- 쪽을 폼으로 실을 때 인쇄되는 주석까지 — 임포징·표지 (조립 워커·임포징 도구 공용) --><!-- 저장 직전 투명도 흑백 합성 그룹 — savePdfDoc (워커·편집기·임포징 도구 공용) -->
   <link rel="stylesheet" href="./style.css">
   <!-- 테마 층(색 변수 + 사이드바·기본 설정 패널) — style.css 뒤에 와야 덮어쓴다 -->
@@ -130,7 +131,7 @@
       </div>
 
       <h3 id="pagesDetailHead" style="color:#1d1d1f; margin:30px 0 8px;">📄 페이지별 상세 정보</h3>
-      <p class="convert-hint" id="pagesDetailHint">페이지 썸네일을 <b>클릭</b>하면 흑백으로 변환할 페이지를 선택할 수 있습니다 · <b>더블클릭</b>(또는 V)하면 크게 보기로 컬러/흑백을 눈으로 판별할 수 있습니다</p>
+      <p class="convert-hint" id="pagesDetailHint">페이지 썸네일을 <b>클릭</b>하면 흑백으로 변환할 페이지를 선택할 수 있습니다 · <b>더블클릭</b>(또는 V)하면 크게 보기로 컬러/흑백을 눈으로 판별할 수 있습니다 · 쪽 사이 <b>빈 곳에서 끌면</b> 여러 쪽을 한 번에 고릅니다(Ctrl+끌기 = 빼기)</p>
 
       <div class="pages-grid" id="pagesGrid"></div>
 
@@ -156,11 +157,15 @@
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px;">
           <div>
             <label class="q-label">고객명</label>
-            <input type="text" id="q-customer" placeholder="고객명 / 상호" class="q-input">
+            <input type="text" id="q-customer" placeholder="고객명 / 상호" class="q-input" oninput="ensureQuoteCalc().customer=this.value">
           </div>
           <div>
             <label class="q-label">견적일</label>
-            <input type="date" id="q-date" class="q-input">
+            <input type="date" id="q-date" class="q-input" onchange="ensureQuoteCalc().date=this.value">
+          </div>
+          <div style="grid-column:1 / -1;">
+            <label class="q-label">제목</label>
+            <input type="text" id="q-title" placeholder="견적 제목 (비우면 '인쇄 견적 (파일명)')" class="q-input" oninput="ensureQuoteCalc().title=this.value">
           </div>
         </div>
         <div class="q-price-settings">
@@ -176,10 +181,8 @@
             <tr>
               <th>품목명</th>
               <th style="width:80px;">규격</th>
-              <th style="width:88px;">수량</th>
-              <th style="width:88px;">단가</th>
-              <th style="width:88px;">부수</th>
-              <th style="width:64px;">할인율(%)</th>
+              <th style="width:76px;" title="인쇄물이면 부수">수량</th>
+              <th style="width:100px;">단가</th>
               <th style="width:90px;" class="q-col-hide">공급가</th>
               <th style="width:78px;" class="q-col-hide">부가세</th>
               <th style="width:108px;">합계(VAT포함)</th>
@@ -189,7 +192,8 @@
           <tbody id="quoteItemBody"></tbody>
         </table>
         <div class="q-btn-row">
-          <button class="q-add-btn" onclick="addQuoteItem()">+ 품목 추가</button>
+          <button class="q-add-btn" onclick="addQuoteItem()" title="품목을 추가합니다 — 단가산출내역 그룹에 연결하지 않으면 단가·수량을 직접 넣는 개별 품목">+ 품목 추가</button>
+          <button class="q-add-btn" onclick="addQuoteDiscount()" title="합계에서 빼는 할인 행을 추가합니다 (금액은 양수로 입력)">− 할인 행</button>
           <button class="q-del-empty-btn" onclick="removeEmptyItems()">빈 행 삭제</button>
         </div>
         <table class="q-total-table">
@@ -198,6 +202,36 @@
           <tr class="grand"><td class="tl">최종 합계(VAT포함)</td><td class="tv" id="grandTotal">0원</td></tr>
           <tr class="korean"><td colspan="2" id="koreanAmount">일금 영원정(￦0)</td></tr>
         </table>
+        <div class="q-memo-row">
+          <label class="q-label">비고</label>
+          <textarea id="q-memo" class="q-input q-textarea" rows="2" placeholder="특이사항, 결제조건 등" oninput="ensureQuoteCalc().memo=this.value"></textarea>
+        </div>
+        <div class="q-calc-section">
+          <div class="q-sec-title">단가산출내역 <span class="q-sec-hint">— 그룹 소계(1부당 단가)가 연결한 품목의 단가로 들어갑니다 · 부수는 품목의 수량</span></div>
+          <table class="q-table q-calc-table">
+            <thead>
+              <tr>
+                <th><input type="text" id="qc-h-content" class="qc-header" value="내용" onchange="setQuoteCalcHeader('content', this.value)"></th>
+                <th style="width:100px;"><input type="text" id="qc-h-price" class="qc-header" value="단가(원)" onchange="setQuoteCalcHeader('price', this.value)"></th>
+                <th style="width:80px;"><input type="text" id="qc-h-pages" class="qc-header" value="페이지" onchange="setQuoteCalcHeader('pages', this.value)"></th>
+                <th style="width:120px;"><input type="text" id="qc-h-total" class="qc-header" value="합계금액" onchange="setQuoteCalcHeader('total', this.value)"></th>
+                <th style="width:34px;"></th>
+              </tr>
+            </thead>
+            <tbody id="quoteCalcBody"></tbody>
+          </table>
+          <div class="q-btn-row q-calc-btns">
+            <span>
+              <button class="q-add-btn" onclick="addQuoteCalcRow()">+ 행 추가</button>
+              <button class="q-add-btn" onclick="addQuoteCalcGroup()" title="그룹 제목 행 — 아래 행들의 소계를 '품목 연결'로 고른 품목의 단가에 자동 적용">+ 그룹 추가</button>
+            </span>
+            <span id="qcTotalWrap" class="q-calc-total" style="display:none;">합 계 : <span id="qcGrandTotal">0원</span></span>
+          </div>
+        </div>
+        <div class="q-memo-row">
+          <label class="q-label">작업내역</label>
+          <textarea id="q-work-notes" class="q-input q-textarea" rows="4" placeholder="작업 내역, 진행 사항, 메모 등 (인쇄 시 포함)" oninput="ensureQuoteCalc().workNotes=this.value"></textarea>
+        </div>
         <div style="display:flex; gap:10px; margin-top:16px; justify-content:space-between; align-items:center; flex-wrap:wrap;">
           <label style="display:flex;align-items:center;gap:6px;font-size:0.85em;color:#48484a;font-weight:600;cursor:pointer;" title="다운로드하는 PDF 파일명 끝에 견적 최종 합계 금액을 붙입니다">
             <input type="checkbox" id="includeAmountChk" style="accent-color:#48484a;width:15px;height:15px;cursor:pointer;">
@@ -207,7 +241,7 @@
             <button class="q-print-btn" onclick="printQuote()">🖨️ 견적서 인쇄</button>
             <button class="q-pdf-btn" onclick="saveQuotePDF()">📄 PDF로 저장</button>
             <button class="q-pdf-btn" id="sendBizBtn" onclick="sendQuoteToBusiness()"
-              title="지금 산출된 품목·수량·단가를 거래관리 시스템으로 넘깁니다. 거래관리에서 고객을 고르거나 새로 등록한 뒤 견적서를 작성·저장하면 됩니다.">📤 거래관리로 보내기</button>
+              title="품목·단가산출내역·비고·작업내역을 거래관리 견적서 형식 그대로 넘깁니다. 거래관리에서 고객을 고르거나 새로 등록한 뒤 [저장]하면 견적번호가 발급됩니다.">📤 거래관리로 보내기</button>
           </span>
         </div>
       </div>
@@ -289,6 +323,20 @@
             <button class="sbp-opt active dim" data-olmode="embed" onclick="setOutlineMode('embed')" title="모든 폰트를 파일에 완전(비서브셋) 임베드 — 용량 증가 적고 텍스트 유지. 미임베드 폰트는 시스템 폰트에서 찾아 실으며, 없으면 대체될 수 있음">폰트 완전 임베드</button>
           </div>
           <div class="sbp-note" data-help-move><b>완전 임베드(권장)</b> = 빠지거나 대체될 폰트만 손봄 — 이미 모든 폰트가 들어 있는 문서는 그냥 건너뜁니다(대기 0초) · 용량 증가 없음·텍스트 유지 · <b>곡선화</b> = 글자를 곡선 데이터로(용량 수십~수백 배↑·수정 불가)</div>
+        </div>
+      </div>
+      <!-- ⚫ 검정 K100(먹 1도) — 혼합 검정(리치 블랙)·RGB 검정 점검과 K100 바꾸기. 저장할 때 반영(화면 모양 그대로) -->
+      <div class="sbp-section" data-sbsec="k100">
+        <div class="sbp-title" onclick="toggleSbSection(this)" title="접기/펴기"><span class="sbp-caret">▾</span><span class="ic">⚫</span> 검정 K100 (먹 1도)</div>
+        <div class="sbp-opts">
+          <div class="sbp-row2">
+            <button class="sbp-opt" id="k100CheckBtn" onclick="runRichBlackCheck()" title="검은 면·선·글자 중 CMYK가 섞인 검정(리치 블랙 · 예: C75 M68 Y67 K90)이 어느 쪽에 몇 곳 있는지 미리보기로 보여 주고, 고른 곳을 K100으로 바꿉니다(RGB 검정은 아래 'RGB검정 리치블랙처리'가 맡습니다)">🔍 검정 점검</button>
+            <button class="sbp-opt" id="k100OnBtn" onclick="setK100Enabled(!_k100Enabled)" title="켜면 '⇩ 다운로드'·'✂ 분리 저장'·'🖨 인쇄'로 나가는 파일에서 혼합 검정의 면·선·글자를 K100(C0 M0 Y0 K100)으로 바꿉니다. 화면 모양은 그대로이고, 사진·그러데이션·별색은 건드리지 않습니다">⚫ K100으로 바꾸기</button>
+          </div>
+          <div class="sbp-row2">
+            <button class="sbp-opt" id="rgbRichBtn" onclick="toggleRgbRich()" title="기본은 꺼짐. 켜면 컬러 쪽의 RGB 검정(0,0,0 근처)을 '⇩ 다운로드'·'✂ 분리 저장'·'🖨 인쇄' 때 자동으로 바꿉니다 — 면은 리치블랙 C40 M30 Y30 K100, 작은 글자·가는 선은 판이 어긋나도 번지지 않게 K100. RGB 검정을 그대로 두면 출력기가 C75 M68 Y67 K90 같은 4색으로 바꿔 찍습니다. 흑백 쪽은 원래대로 먹 1도이고, 화면 모양은 그대로입니다. ⚠ 글자를 곡선으로 바꾼 원고는 본문 글자도 면으로 보여 리치블랙이 됩니다">🖤 RGB검정 리치블랙처리</button>
+          </div>
+          <div class="sbp-note" data-help-move><b>혼합 검정</b> = K 95% 이상에 C·M·Y가 섞였거나, K 60% 이상에 C·M·Y가 고르게 섞여 거의 검게 나오는 색 · 남색 같은 짙은 색은 그대로 · 흑백 변환 쪽은 이미 먹 1도</div>
         </div>
       </div>
       <!-- 📖 E-book 시안 — 고객에게 보낼 확인용 단일 HTML (이미지 인라인, 자체 완결) -->
@@ -714,6 +762,20 @@
         <input type="number" class="es-input" id="repRows" min="1" placeholder="세로" style="flex:0 0 56px;" title="세로 칸 수 — 비우면 원고 실제 크기로 자동 최대 배치" oninput="impSettingsChanged()">
         <span class="es-hint" style="margin:0; flex:1;">비우면 실제 크기 자동 최대</span>
       </div>
+      <!-- 반복 전용: 🔀 셔플 — N부 전체를 PDF 하나로(재단 후 더미를 차례로 겹치면 1부·2부… 순서대로) -->
+      <div class="es-row" id="impShuffleRow" style="margin-top:6px; display:none;">
+        <label class="icr-chk" style="font-size:12px;" title="한 쪽을 시트 가득 반복하는 대신, N부 전체(1부 1~끝쪽, 2부 1~끝쪽 …)를 칸마다 더미로 나눠 PDF 하나에 담습니다. 1부만 인쇄 → 한 번에 재단 → 1번 더미 위에 2번, 3번… 차례로 겹치면 1부부터 순서대로 나옵니다(단면)">
+          <input type="checkbox" id="repShuffle" onchange="syncRepShuffleUI(); impSettingsChanged()">
+          🔀 셔플
+        </label>
+        <input type="number" class="es-input" id="repCopies" min="1" step="1" value="1" style="flex:0 0 64px;" title="셔플할 부수 — 결과 PDF에 이 부수가 모두 담깁니다" oninput="impSettingsChanged()" disabled>
+        <span class="es-hint" style="margin:0;">부</span>
+        <select class="es-input" id="repShuffleSides" style="flex:1 1 auto; min-width:0;" title="셔플 인쇄 면 — 양면이면 낱장(앞 = 홀수 쪽, 뒤 = 짝수 쪽) 단위로 섞고 뒷면 칸을 넘김 방향에 맞춰 거울로 앉힙니다. 프린터 양면 설정의 넘김 방향과 같게 고르세요" onchange="impSettingsChanged()" disabled>
+          <option value="">단면</option>
+          <option value="long">양면 · 긴 쪽 넘김</option>
+          <option value="short">양면 · 짧은 쪽 넘김</option>
+        </select>
+      </div>
       <div class="es-row" style="margin-top:6px;">
         <span class="es-label">거터(mm)</span>
         <input type="number" class="es-input" id="bkGutter" min="0" step="0.5" value="0" style="flex:0 0 64px;" title="칸 사이 간격 (중철=책등 여백 / 정합=재단 여유). 블리드 사용 시 블리드×2 이상 권장" oninput="impSettingsChanged()">
@@ -753,7 +815,7 @@
           <span class="ic">🏷</span> 슬러그(시트 정보)
         </label>
         <span id="impStackWrap" style="display:none;">
-          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="정합 전용 — 각 묶음 앞면 트림 왼쪽 바깥에 겹치기 순서 번호(원문자)를 인쇄합니다. 재단 시 잘려나가므로 여백·거터를 3mm 이상 두세요">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12.5px; color:#d1d1d6;" title="정합·셔플 — 각 묶음 앞면(셔플은 첫 시트) 트림 왼쪽 바깥에 겹치기 순서 번호(원문자)를 인쇄합니다. 재단 시 잘려나가므로 여백·거터를 3mm 이상 두세요">
             <input type="checkbox" id="impStackNum" style="accent-color:#ffd60a; width:14px; height:14px;" onchange="impSettingsChanged()">
             ① 묶음번호
           </label>
@@ -1628,7 +1690,7 @@
         <button id="ordClose" onclick="document.getElementById('orderModal').style.display='none'" title="닫기 (Esc)">✕</button>
       </div>
       <div id="orderBody">
-        <div style="color:#48484a; font-size:12.5px; margin-bottom:10px;">파일을 <b>클릭해 선택</b>한 뒤 <b>▲▼</b>로 옮기거나, <b>마우스로 끌어</b> 원하는 자리에 놓으세요.<br><b>통합창</b>은 이 순서대로 <b>파일별 챕터를 유지한 한 문서</b>로, <b>개별창</b>은 파일마다 별도 탭으로 엽니다.</div>
+        <div style="color:#48484a; font-size:12.5px; margin-bottom:10px;">파일을 <b>클릭해 선택</b>한 뒤 <b>▲▼</b>로 옮기거나, <b>마우스로 끌어</b> 원하는 자리에 놓으세요.<br><b>통합창</b>은 이 순서대로 <b>파일별 챕터를 유지한 한 문서</b>(새 탭)로, <b>개별창</b>은 파일마다 별도 탭으로 엽니다.<br>문서가 이미 열려 있으면 <b>지금 문서에 챕터로</b> 이어 붙일 수도 있습니다.</div>
         <div id="orderToolbar">
           <span id="ordSelInfo">옮길 파일을 선택하세요</span>
           <span style="flex:1;"></span>
@@ -1642,8 +1704,9 @@
       <div id="orderFooter">
         <button class="clear-opts-btn ord-foot" onclick="sortOrderItems()" title="파일명 자연 정렬 (숫자 순서 인식)">이름순 정렬</button>
         <span style="flex:1;"></span>
-        <button class="clear-opts-btn ord-foot" onclick="confirmOpenOrder(false)" title="파일마다 별도 탭으로 엽니다">📄 개별창</button>
-        <button class="apply-btn ord-foot" style="margin-left:0;" onclick="confirmOpenOrder(true)" title="정한 순서대로 이어붙여 한 문서로 엽니다 (파일별 챕터 유지)">📚 통합창</button>
+        <button class="clear-opts-btn ord-foot" id="ordChapterBtn" onclick="confirmOpenOrder('chapter')" style="display:none;">📑 지금 문서에 챕터로</button>
+        <button class="clear-opts-btn ord-foot" onclick="confirmOpenOrder('tabs')" title="파일마다 별도 탭으로 엽니다">📄 개별창</button>
+        <button class="apply-btn ord-foot" style="margin-left:0;" onclick="confirmOpenOrder('merge')" title="정한 순서대로 이어붙여 한 문서(새 탭)로 엽니다 (파일별 챕터 유지)">📚 통합창</button>
       </div>
       <!-- 크기 조절 손잡이 — 우측(가로) · 하단(세로) · 우하단(동시) -->
       <div class="ord-grip ord-grip-r" data-grip="r" title="좌우로 당겨 가로 크기 조절"></div>

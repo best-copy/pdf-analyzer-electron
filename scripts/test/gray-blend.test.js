@@ -139,6 +139,24 @@ function rawPage(doc, ops, extraRes) {
     ck('⑨ 투명도가 사라진 쪽은 예전 회색 그룹도 뗀다', !pageUsesTransparency(d, d.getPage(0).node) && !d.getPage(0).node.get(N('Group')));
     ck('⑨ 중간 투명도 마스크는 그대로 + 회색 그룹', !!soft.dict.get(N('SMask')) && !soft.dict.get(N('Mask')) && hasGrayGroup(d, 1));
   }
+  // 10) 폼은 부른 쪽의 색공간을 이어받는다 — 쪽에서 '/C1 cs'(ICC RGB)만 정하고 폼 안은 'r g b scn'만(Figma 달력)
+  //     옛 판정은 폼을 회색에서 시작해 무채색으로 읽고 컬러 쪽에 회색 그룹을 달았다(저장본 12쪽 중 7쪽이 흑백)
+  {
+    const d = await PDFDocument.create();
+    const icc = d.context.register(d.context.flateStream('', { N: 3, Alternate: 'DeviceRGB' }));
+    const mkForm = ops => d.context.register(d.context.flateStream(ops, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 200, 200] }));
+    const pinkForm = mkForm('0.95 0.6 0.7 scn 10 10 100 100 re f');
+    const grayForm = mkForm('0.5 0.5 0.5 scn 10 10 100 100 re f');
+    rawPage(d, '/C1 cs /GS0 gs /X1 Do', { ColorSpace: { C1: ['ICCBased', icc] }, XObject: { X1: pinkForm } });
+    rawPage(d, '/C1 cs /GS0 gs /X1 Do', { ColorSpace: { C1: ['ICCBased', icc] }, XObject: { X1: grayForm } });
+    rawPage(d, '/C1 cs /GS0 gs /X1 Do', { ColorSpace: { C1: ['ICCBased', icc] }, XObject: { X1: pinkForm } });
+    d.getPage(2).node.set(N('Group'), d.context.obj({ Type: 'Group', S: 'Transparency', CS: 'DeviceGray' }));   // 옛 저장이 잘못 단 그룹
+    ck('⑩ 폼 안 scn이 이어받은 ICC RGB 색 → 컬러', !pageIsNeutral(d, d.getPage(0).node));
+    ck('⑩ 같은 상태의 R=G=B → 무채색', pageIsNeutral(d, d.getPage(1).node));
+    await addGrayBlendGroups(d);
+    ck('⑩ 컬러 쪽엔 그룹 없음 · 회색 쪽엔 그룹', !hasGrayGroup(d, 0) && hasGrayGroup(d, 1));
+    ck('⑩ 옛 저장이 컬러 쪽에 단 회색 그룹은 뗀다', !d.getPage(2).node.get(N('Group')));
+  }
   // 8) 앱 연결: 세 곳의 savePdfDoc이 저장 전에 부르고, 창·워커·편집기가 파일을 싣는다
   {
     const rd = f => fs.readFileSync(path.join(ROOT, f), 'utf8');

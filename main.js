@@ -7,6 +7,7 @@ const remoteServer = require('./remote-server');   // 모바일 연동 LAN 변�
 const license      = require('./license');         // 체험판 1회용 키 (저장·출력 게이트)
 const licenseServer = require('./license-server'); // 활성화 서버 (관리자 PC에서만 구동)
 const licenseTunnel = require('./license-tunnel'); // 외부 접속 터널 (cloudflared)
+const archive       = require('./archive');        // 📦 압축 파일 풀기 (ZIP 직접 · 7z/RAR 등은 7-Zip)
 
 // ── 검사 모드 (npm run smoke 등 — 환경변수 TEST_WINDOW=left, 옛 이름 PDFEDIT_TEST_WINDOW) ──────
 // 사용자가 앱을 켜 둔 채 검사하면, 같은 사용자 폴더 = 같은 단일 인스턴스 잠금이라 검사 앱이 곧바로
@@ -39,7 +40,7 @@ const OPEN_DOC_RE = /\.(pdfw|pdf|hwpx?|docx?|xlsx?|pptx?|psd|indd|ai|png|jpe?g|g
 function docPathsFrom(argv) {
   return argv
     .slice(1)
-    .filter((a) => a && !a.startsWith('-') && OPEN_DOC_RE.test(a) && fs.existsSync(a));
+    .filter((a) => a && !a.startsWith('-') && (OPEN_DOC_RE.test(a) || archive.ARCHIVE_RE.test(a)) && fs.existsSync(a));
 }
 
 let pendingOpenPaths = docPathsFrom(process.argv);
@@ -420,16 +421,29 @@ function sweepTempConversions() {
       if (re.test(f)) { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} }
       // 분석용 gs 썸네일 폴더(gs:renderThumbs) — 분석 중 앱이 꺼지면 남는다
       else if (/^pdfedit_thumbs_/.test(f)) { try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); } catch (e) {} }
+      // 📦 압축에서 꺼낸 문서 폴더(archive:extract) — 작업 중에는 그 경로로 변환·분석하므로 시작·종료 때만 지운다
+      else if (/^pdfedit_arc_/.test(f)) { try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); } catch (e) {} }
     }
   } catch (e) {}
 }
 
 // ── 줌 단축키 (Ctrl++/Ctrl+-/Ctrl+0) — 메인·편집기 창 공통 ──────────────────
+// 화면 안 창이 Ctrl + + / − / 0을 자기 확대에 쓰는 동안(⚫ 검정 점검 미리보기) 앱 확대 대신 그 창으로 보낸다.
+// 키를 그대로 흘려보내면 기본 메뉴의 확대 단축키가 앱 전체를 키울 수 있어, 여기서 막고 IPC로 넘긴다.
+const _zoomCaptured = new Set();
+ipcMain.on('ui:zoomCapture', (e, on) => { const id = e.sender.id; if (on) _zoomCaptured.add(id); else _zoomCaptured.delete(id); });
 function installZoomShortcuts(win) {
+  const wcId = win.webContents.id;
+  win.webContents.once('destroyed', () => _zoomCaptured.delete(wcId));
   win.webContents.on('before-input-event', (event, input) => {
     if (!input.control) return;
     const wc = win.webContents;
     if (input.type !== 'keyDown') return;
+    if (_zoomCaptured.has(wc.id)) {
+      const k = input.key === '=' || input.key === '+' ? 'in' : input.key === '-' ? 'out' : input.key === '0' ? 'fit' : '';
+      if (k) { event.preventDefault(); wc.send('ui:zoomKey', k); }
+      return;
+    }
     if (input.key === '=' || input.key === '+') {
       wc.setZoomLevel(wc.getZoomLevel() + 0.5); event.preventDefault();
     } else if (input.key === '-') {
@@ -789,6 +803,8 @@ app.whenReady().then(() => {
   if (!st.canSave && !IS_TEST_MODE) setTimeout(() => openLicenseWindow(), 700);
   // 7일 주기 서버 재확인 — 부팅 직후 한 번, 이후 6시간마다. 실패해도 유예 안에서는 조용히 넘어간다.
   setTimeout(() => license.recheckIfDue().then(pushLicenseStatus).catch(() => {}), 5000);
+  setTimeout(sweepOrphanRenderersAtStart, 4000);   // 지난 실행에서 남은 고아 렌더러 정리(이 사용자 폴더 것만)
+  startOrphanGuard();                                // 이번 실행이 끝나면 남은 렌더러 정리(본체 옆 감시 프로세스)
   setInterval(() => license.recheckIfDue().then(pushLicenseStatus).catch(() => {}), 6 * 3600 * 1000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -798,6 +814,66 @@ app.whenReady().then(() => {
 app.on('will-quit', () => { if (!IS_TEST_MODE) sweepTempConversions(); }); // 종료 시에도 한 번 더 정리 (검사 앱은 사용자 앱의 임시파일을 건드리지 않는다)
 app.on('will-quit', stopPrintJobPoller);   // 인쇄 작업 감시 프로세스 정리(상주했다면)
 app.on('will-quit', () => { try { licenseTunnel.stop(); } catch (e) {} }); // cloudflared 자식 프로세스 정리
+
+// ── 🧟 고아 렌더러 정리 (2026-10-23) ─────────────────────────────────────────
+// 본체가 꺼진 뒤에도 메인 창의 렌더러가 남아 코어 하나씩을 계속 썼다(사용자 PC: 10-20~10-23 사이 9개 · CPU 89%).
+// 렌더러는 본체가 사라지면 '한가할 때' 스스로 끝나는데, 그 순간 쉬지 않고 일하던 렌더러는 영영 끝나지 않는다.
+// 그래서 ① 본체 옆 감시 프로세스가 본체가 끝나면(어떻게 끝나든) 남은 것을 끄고 ② 켤 때: 지난번에 남은 것을 끈다.
+// 끄는 것은 **이 앱 실행 파일 + 이 사용자 폴더(--user-data-dir) + --type= 자식 + 부모가 없거나 이 앱이 아님**뿐 —
+// 새로 켠 앱(부모 살아 있음)·다른 프로젝트의 electron.exe(사용자 폴더 다름)는 건드리지 않는다. 경로는 환경변수로만 넘긴다.
+const ORPHAN_SWEEP_PS = [
+  "$ErrorActionPreference = 'SilentlyContinue'",
+  'if ($env:PE_WAIT) { Start-Sleep -Seconds ([int]$env:PE_WAIT) }',
+  '$all = @(Get-CimInstance Win32_Process)',
+  '$exeOf = @{}; foreach ($p in $all) { $exeOf[[int]$p.ProcessId] = $p.ExecutablePath }',
+  "$ud = '--user-data-dir=\"' + $env:PE_UD + '\"'",
+  '$n = 0',
+  'foreach ($p in $all) {',
+  '  if ($p.ExecutablePath -ne $env:PE_EXE) { continue }',
+  '  $c = [string]$p.CommandLine',
+  "  if ($c.IndexOf('--type=') -lt 0 -or $c.IndexOf($ud) -lt 0) { continue }",
+  '  if ($exeOf[[int]$p.ParentProcessId] -eq $env:PE_EXE) { continue }',   // 부모(본체)가 살아 있다 — 한 줄로 이어 붙이므로 PS 주석(#)을 넣지 말 것
+  '  Stop-Process -Id $p.ProcessId -Force; $n++',
+  '}',
+  "Write-Output ('SWEPT:' + $n)",
+].join('; ').replace(/\{; /g, '{ ').replace(/; \}/g, ' }');
+function orphanSweepEnv(waitSec) {
+  return { ...process.env, PE_EXE: process.execPath, PE_UD: app.getPath('userData'), PE_WAIT: String(waitSec || 0) };
+}
+// 켤 때 — 지난 실행에서 남은 고아 렌더러. 정리했으면 기록해 둔다(원인 추적용 · userData/orphan-sweep.log)
+function sweepOrphanRenderersAtStart() {
+  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ORPHAN_SWEEP_PS],
+    { windowsHide: true, env: orphanSweepEnv(0), timeout: 60000 }, (err, stdout) => {
+      const m = /SWEPT:(\d+)/.exec(String(stdout || ''));
+      const n = m ? +m[1] : 0;
+      if (!n) return;
+      console.warn(`[orphan] 지난 실행에서 남은 렌더러 ${n}개를 정리했습니다.`);
+      try { fs.appendFileSync(path.join(app.getPath('userData'), 'orphan-sweep.log'), `${new Date().toISOString()} start-sweep ${n}\n`); } catch (e) {}
+    });
+}
+// 본체 옆 감시 프로세스 — 본체가 어떻게 끝나든(정상 종료·충돌·작업 관리자 강제 종료) 끝난 뒤 남은 렌더러를 정리한다.
+// 렌더러 안에서 스스로 끄는 방법은 안 된다: 본체가 꺼지면 화면의 자바스크립트 타이머가 멈추고(실측),
+// 렌더러에서는 worker_threads도 만들 수 없다('V8 platform … does not support creating Workers').
+// 앱 실행 파일을 Node 모드(ELECTRON_RUN_AS_NODE)로 띄워 가볍게 3초마다 본체만 본다(정리할 때만 PowerShell).
+const ORPHAN_GUARD_JS = [
+  "const main = +process.env.PE_MAIN_PID;",
+  "const t = setInterval(() => {",
+  "  try { process.kill(main, 0); return; } catch (e) { if (e && e.code === 'EPERM') return; }",
+  "  clearInterval(t);",
+  "  setTimeout(() => require('child_process').execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', process.env.PE_PS],",
+  "    { windowsHide: true, env: process.env, timeout: 60000 }, () => process.exit(0)), 2000);",
+  "}, 3000);",
+].join('\n');
+function startOrphanGuard() {
+  if (process.platform !== 'win32') return;
+  try {
+    const ch = spawn(process.execPath, ['-e', ORPHAN_GUARD_JS], {
+      windowsHide: true, detached: true, stdio: 'ignore',
+      env: { ...orphanSweepEnv(0), ELECTRON_RUN_AS_NODE: '1', PE_MAIN_PID: String(process.pid), PE_PS: ORPHAN_SWEEP_PS },
+    });
+    ch.unref();
+  } catch (e) { console.warn('[orphan] 감시 프로세스를 띄우지 못했습니다:', e && e.message); }
+}
 
 // 렌더러 → '저장 안 한 작업' 상태 보고
 ipcMain.on('app:dirty', (_, dirty) => { unsavedWork = !!dirty; });
@@ -1614,6 +1690,18 @@ ipcMain.handle('dialog:openCoverFile', async () => {
   return (canceled || !filePaths.length) ? null : filePaths[0];
 });
 
+// 📦 압축 파일 풀기 — 작업 스레드에서(큰 압축도 창이 멈추지 않게). 꺼낸 문서 경로·건너뛴 파일(이유)을 돌려준다
+ipcMain.handle('archive:extract', async (_e, paths) => {
+  const list = (Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' && archive.ARCHIVE_RE.test(p) && fs.existsSync(p));
+  if (!list.length) return { items: [], skipped: [], dirs: [] };
+  const { Worker } = require('worker_threads');
+  return new Promise((resolve, reject) => {
+    const w = new Worker(path.join(__dirname, 'archive.js'), { workerData: { archiveJob: true, paths: list, wantRe: OPEN_DOC_RE.source } });
+    w.once('message', m => { if (m && m.ok) resolve(m.res); else reject(new Error((m && m.err) || '압축 풀기 실패')); w.terminate(); });
+    w.once('error', reject);
+  });
+});
+
 ipcMain.handle('dialog:openFile', async (_e, opts) => {
   // kind:'pdfw' — 💼 작업 파일 전용 다이얼로그 (그 외에는 지금까지처럼 문서·이미지 전체)
   if (opts && opts.kind === 'pdfw') {
@@ -1628,9 +1716,10 @@ ipcMain.handle('dialog:openFile', async (_e, opts) => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe · 이미지)',
     filters: [
-      { name: '문서·이미지 전체 (PDF·HWP·Office·Adobe·이미지)',
+      { name: '문서·이미지·압축 전체 (PDF·HWP·Office·Adobe·이미지·ZIP)',
         extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'ai', 'psd', 'indd',
-                     'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'avif'] },
+                     'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'avif',
+                     'zip', '7z', 'rar', 'alz', 'egg', 'tar', 'tgz', 'gz'] },
       { name: '이미지 (PNG·JPG·GIF·BMP·WEBP·TIFF)', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'avif'] },
       { name: 'PDF',  extensions: ['pdf'] },
       { name: '한글 (HWP·HWPX)', extensions: ['hwp', 'hwpx'] },
@@ -1638,6 +1727,7 @@ ipcMain.handle('dialog:openFile', async (_e, opts) => {
       { name: 'Excel (XLS·XLSX)', extensions: ['xls', 'xlsx'] },
       { name: 'PowerPoint (PPT·PPTX)', extensions: ['ppt', 'pptx'] },
       { name: 'Adobe (AI·PSD·INDD)', extensions: ['ai', 'psd', 'indd'] },
+      { name: '압축 (ZIP·7Z·RAR·ALZ·EGG — 속의 문서를 엽니다)', extensions: ['zip', '7z', 'rar', 'alz', 'egg', 'tar', 'tgz', 'gz'] },
     ],
     properties: ['openFile', 'multiSelections'],
   });
@@ -1865,7 +1955,10 @@ ipcMain.handle('printer:props', async (e, a) => {
     const b = w && w.getNativeWindowHandle();
     if (b) hwnd = (b.length >= 8 ? b.readBigUInt64LE(0) : BigInt(b.readUInt32LE(0))).toString();
   } catch (err) {}
-  return runPrintHelper({ PE_MODE: 'props', PE_PRINTER: o.printer, PE_DEVMODE: typeof o.devmode === 'string' ? o.devmode : '', PE_HWND: hwnd, ...printOverrideEnv(o.set) });
+  // 창 표시 방식: 기본 -5(GDI 배율 조정 — 글자 선명) · 호환 모드 -1(배율 모름 — Windows가 늘려 그림, 조금 흐림)
+  //   RICOH 원클릭 아이콘은 -5에서 검게 깨진다(인쇄 창이 RICOH면 호환 모드를 기본으로 켠다 · 프린터마다 기억)
+  return runPrintHelper({ PE_MODE: 'props', PE_PRINTER: o.printer, PE_DEVMODE: typeof o.devmode === 'string' ? o.devmode : '', PE_HWND: hwnd,
+    PE_DPICTX: o.compat ? '-1' : '-5', ...printOverrideEnv(o.set) });
 });
 
 // 인쇄 — 렌더러가 만든 임시 PDF(tmpdir의 pdfedit_*.pdf)만 받는다

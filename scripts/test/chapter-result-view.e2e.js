@@ -68,10 +68,10 @@ app.whenReady().then(async () => {
     ck('결과 화면이 기본으로 보인다', document.getElementById('previewSection').style.display !== 'none');
     ck('결과 시트에 챕터 구분선 2개 · 시트 2장씩', divs().length === 2 && JSON.stringify(between()) === '[2,2]', { n: divs().length, between: between() });
     ck('구분선 표기: 원고 3쪽 → 2장', divs().every(d => /원고 3쪽 → 2장/.test(d.querySelector('.chapter-pages').textContent)), divs().map(d => d.querySelector('.chapter-pages').textContent));
-    ck('구분선 버튼 ✏ ▲▼ 🗑', divs()[0].querySelectorAll('.ch-btn').length === 4);
+    ck('구분선 버튼 ✏ ⤒합치기 ▲▼ 🗑', divs()[0].querySelectorAll('.ch-btn').length === 5 && !!divs()[0].querySelector('.ch-btn.ch-merge'));
     const t1 = window.electronAPI.writeTempFile(processedPdfBytes, 'pdf');
     // ▼: A장을 아래로 → 결과 화면 유지·순서 바뀜
-    divs()[0].querySelectorAll('.ch-btn')[2].click(); await sleep(300); await waitApplied();
+    [...divs()[0].querySelectorAll('.ch-btn')].find(b => b.textContent.trim() === '▼').click(); await sleep(300); await waitApplied();
     ck('▼ 뒤에도 결과 화면 유지 · B장이 먼저', document.getElementById('previewSection').style.display !== 'none' && /B장/.test(divs()[0].textContent), divs().map(d => d.querySelector('.chapter-name').textContent));
     // 🗑 취소 → 그대로
     window.__yes = false; const n0 = pageResults.length;
