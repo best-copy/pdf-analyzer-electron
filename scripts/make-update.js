@@ -44,4 +44,4 @@ if (path.resolve(installDir) === path.resolve(path.join(ROOT, 'dist', 'win-unpac
 const mb = n => (n / 1048576).toFixed(1) + 'MB';
 console.log(`✔ 업데이트 파일: ${out}`);
 console.log(`  버전 ${version} · 파일 ${manifest.files.length}개 · 압축 ${mb(bytes.length)} (원본 ${mb(manifest.files.reduce((a, f) => a + f.size, 0))})${includeModules ? ' · node_modules 포함' : ''}`);
-console.log(`  받는 PC: 앱 첫 화면 '🔄 업데이트' 또는 왼쪽 패널 ⚙ → '🔄 업데이트 적용' → 이 파일 선택 → 자동으로 다시 시작`);
+console.log(`  받는 PC: 앱 창 메뉴(Alt) Help → '🔄 업데이트 적용' 또는 왼쪽 패널 ⚙ → '🔄 업데이트 적용' → 이 파일 선택 → 자동으로 다시 시작`);
