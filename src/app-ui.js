@@ -480,7 +480,7 @@
       { key: 'imp',  title: '📖 임포징 · 제본', ids: ['secImp'] },
       { key: 'page', title: '📄 페이지 보정', ids: [
         { wrap: 'secScaleAll', title: '<span class="ic">📐</span> 크기 · 여백 · 제본여백 · 블리드', ids: ['secScale', 'secMargins', 'secBind', 'secBleed'] },
-        { wrap: 'secAdjust', title: '<span class="ic">🎯</span> 기울기 · 정렬 · 개별 보정', ids: ['secDeskew', 'secCenter', 'secPageAdjust'] },
+        { wrap: 'secAdjust', title: '<span class="ic">🎯</span> 스캔 정리 · 기울기 · 정렬 · 개별 보정', ids: ['secScanClean', 'secDeskew', 'secCenter', 'secPageAdjust'] },
         'secBorder'] },
       { key: 'cover', title: '📕 표지 만들기', ids: ['secCover'] },
       { key: 'mark', title: '🔖 머릿말 · 꼬릿말 · 페이지 번호 · 워터마크', ids: ['secHf', 'secPn', 'secWm'] },
@@ -5160,3 +5160,193 @@
     (function initImpCropStyle() {
       if (typeof restoreImpCropStyle === 'function') restoreImpCropStyle();
     })();
+
+    // ── ⚙ 설정 내보내기 / 가져오기 — 다른 PC로 '지금 쓰는 상태 그대로' 옮기기 (2026-10-27) ──────────
+    // 앱 설정은 전부 localStorage에 있다(임포징 프리셋·단가·사용자 용지·재단선 모양·표지 프리셋·테마·
+    // 최근 작업 설정·패널 크기 …). 키를 하나씩 나열하면 새 설정이 생길 때마다 빠지므로 **전부** 담고,
+    // 빼야 할 것만 거른다. 비밀값(API 키)은 넣을지 따로 묻는다.
+    // 가져오기는 지금 설정을 먼저 백업(SETTINGS_BACKUP_KEY)하고 덮어쓴 뒤 앱을 새로고침한다 —
+    // 화면마다 켤 때 읽는 값이 많아 새로고침해야 모두 반영된다. ⚙ 메뉴에서 '가져오기 전으로' 되돌릴 수 있다.
+    // 라이선스(license.dat)·분석 캐시·인쇄 접수 폴더는 파일이라 여기 들어가지 않는다(PC마다 따로).
+    const SETTINGS_FORMAT = 'pdf-editor-settings';
+    const SETTINGS_BACKUP_KEY = '__settingsBackup';
+    const SETTINGS_SKIP = new Set([SETTINGS_BACKUP_KEY]);
+    const SETTINGS_SECRET = new Set(['aiImageApiKey']);
+    function collectAppSettings(includeSecrets) {
+      const items = {};
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k || SETTINGS_SKIP.has(k)) continue;
+          if (SETTINGS_SECRET.has(k) && !includeSecrets) continue;
+          const v = localStorage.getItem(k);
+          if (v != null) items[k] = v;
+        }
+      } catch (e) {}
+      return items;
+    }
+    async function exportAppSettings() {
+      let secrets = false;
+      const hasSecret = [...SETTINGS_SECRET].some(k => { try { return !!localStorage.getItem(k); } catch (e) { return false; } });
+      if (hasSecret) {
+        const c = await askChoice('설정에 AI 이미지 API 키가 들어 있습니다.\n설정 파일에 함께 넣을까요?\n\n넣으면 이 파일을 가진 사람은 누구나 그 키를 쓸 수 있습니다 — 본인 PC로 옮길 때만 넣으세요.',
+          [{ label: '키 빼고 내보내기', value: 'no', primary: true }, { label: '키도 넣기', value: 'yes' }, { label: '취소', value: null }]);
+        if (c == null) return;
+        secrets = c === 'yes';
+      }
+      const items = collectAppSettings(secrets);
+      const n = Object.keys(items).length;
+      if (!n) { showError('내보낼 설정이 없습니다.'); return; }
+      const d = new Date(), p2 = x => String(x).padStart(2, '0');
+      const data = { format: SETTINGS_FORMAT, v: 1, exportedAt: d.toISOString(), secrets, count: n, items };
+      try {
+        const saved = await window.electronAPI.saveFile({
+          defaultName: `PDF Editor 설정_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.json`,
+          buffer: new TextEncoder().encode(JSON.stringify(data, null, 1)), kind: 'json' });
+        if (!saved) return;
+        const nProf = (() => { try { return (JSON.parse(items.impProfiles || '[]') || []).length; } catch (e) { return 0; } })();
+        showSuccess(`⚙ 설정 ${n}개 항목을 내보냈습니다${nProf ? ` (임포징 프리셋 ${nProf}개 포함)` : ''}${secrets ? ' · API 키 포함' : ''}.\n`
+          + `새 PC에서: 앱 첫 화면 '⬇ 설정 가져오기'(또는 왼쪽 패널 ⚙) → 이 파일을 고르면 그대로 옮겨집니다.\n`
+          + `라이선스는 PC마다 따로 등록합니다.`);
+      } catch (e) { showError('설정 내보내기 실패: ' + (e && e.message ? e.message : String(e))); }
+    }
+    function importAppSettingsClick() {
+      const inp = document.getElementById('appSettingsImportFile');
+      if (inp) { inp.value = ''; inp.click(); }
+    }
+    function importAppSettingsFile(input) {
+      const f = input && input.files && input.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => { applyImportedSettings(String(rd.result || '')).catch(e => showError('설정 가져오기 실패: ' + (e && e.message ? e.message : String(e)))); };
+      rd.onerror = () => showError('파일을 읽지 못했습니다.');
+      rd.readAsText(f);
+    }
+    // 가져온 JSON 문자열 → 확인 → 백업 → 덮어쓰기 → 새로고침 (검사에서 직접 부를 수 있게 파일 읽기와 나눴다)
+    async function applyImportedSettings(text, opts) {
+      let data;
+      try { data = JSON.parse(text); } catch (e) { throw new Error('JSON 형식이 아닙니다.'); }
+      if (!data || data.format !== SETTINGS_FORMAT || !data.items || typeof data.items !== 'object')
+        throw new Error('PDF Editor 설정 파일이 아닙니다 (⚙ 설정 내보내기로 만든 파일을 고르세요).');
+      const items = {};
+      for (const [k, v] of Object.entries(data.items)) if (typeof k === 'string' && !SETTINGS_SKIP.has(k) && typeof v === 'string') items[k] = v;
+      const n = Object.keys(items).length;
+      if (!n) throw new Error('가져올 설정이 없습니다.');
+      const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString('ko-KR') : '알 수 없음';
+      const hasDoc = !!(typeof originalPdfBytes !== 'undefined' && originalPdfBytes && pageResults.filter(Boolean).length);
+      if (!(opts && opts.noConfirm)) {
+        const c = await askChoice(`설정 ${n}개 항목을 가져옵니다 (내보낸 때: ${when}).\n`
+          + `임포징 프리셋·단가·사용자 용지·재단선 모양·표지 프리셋·테마 등이 이 파일 값으로 바뀝니다.\n`
+          + `지금 설정은 백업해 두며 ⚙ → '↺ 가져오기 전으로'로 되돌릴 수 있습니다.\n\n`
+          + `반영하려면 앱을 새로고침합니다${hasDoc ? ' — ⚠ 열려 있는 문서와 적용하지 않은 편집 내용이 닫힙니다(필요하면 취소 후 저장)' : ''}.`,
+          [{ label: '⬇ 가져오고 새로고침', value: 'ok', primary: true }, { label: '취소', value: null }]);
+        if (c !== 'ok') return false;
+      }
+      try { localStorage.setItem(SETTINGS_BACKUP_KEY, JSON.stringify({ at: new Date().toISOString(), items: collectAppSettings(true) })); } catch (e) {}
+      let written = 0;
+      for (const [k, v] of Object.entries(items)) { try { localStorage.setItem(k, v); written++; } catch (e) {} }
+      if (opts && opts.noReload) return written;
+      reloadAfterSettings();
+      return written;
+    }
+    function reloadAfterSettings() {
+      try { if (window.electronAPI && window.electronAPI.setUnsaved) window.electronAPI.setUnsaved(false); } catch (e) {}
+      try { if (window.electronAPI && window.electronAPI.forceReload) window.electronAPI.forceReload(); else location.reload(); }
+      catch (e) { location.reload(); }
+    }
+    // ↺ 가져오기 전 설정으로 — 백업과 똑같이(백업에 없던 키는 지운다)
+    async function restoreSettingsBackup(opts) {
+      let bk = null;
+      try { bk = JSON.parse(localStorage.getItem(SETTINGS_BACKUP_KEY) || 'null'); } catch (e) {}
+      if (!bk || !bk.items) { showError('되돌릴 백업이 없습니다 — 설정을 가져온 적이 없습니다.'); return false; }
+      if (!(opts && opts.noConfirm)) {
+        const c = await askChoice(`설정을 가져오기 전 상태(${new Date(bk.at).toLocaleString('ko-KR')})로 되돌립니다.\n반영하려면 앱을 새로고침합니다 — 열려 있는 문서는 닫힙니다.`,
+          [{ label: '↺ 되돌리고 새로고침', value: 'ok', primary: true }, { label: '취소', value: null }]);
+        if (c !== 'ok') return false;
+      }
+      const keep = new Set(Object.keys(bk.items));
+      const now = [];
+      try { for (let i = 0; i < localStorage.length; i++) now.push(localStorage.key(i)); } catch (e) {}
+      now.forEach(k => { if (k && !SETTINGS_SKIP.has(k) && !keep.has(k)) { try { localStorage.removeItem(k); } catch (e) {} } });
+      for (const [k, v] of Object.entries(bk.items)) { try { localStorage.setItem(k, v); } catch (e) {} }
+      try { localStorage.removeItem(SETTINGS_BACKUP_KEY); } catch (e) {}
+      if (opts && opts.noReload) return true;
+      reloadAfterSettings();
+      return true;
+    }
+    // 왼쪽 패널 ⚙ — 문서를 연 뒤에도 쓸 수 있게 (설정 옮기기 + 🔄 업데이트)
+    async function openSettingsMenu() {
+      let hasBk = false, upBk = null, ver = '';
+      try { hasBk = !!localStorage.getItem(SETTINGS_BACKUP_KEY); } catch (e) {}
+      try { upBk = window.electronAPI && window.electronAPI.updateBackupInfo ? await window.electronAPI.updateBackupInfo() : null; } catch (e) {}
+      try { ver = window.electronAPI && window.electronAPI.appVersion ? await window.electronAPI.appVersion() : ''; } catch (e) {}
+      const choices = [
+        { label: '⬆ 설정 내보내기', value: 'export', primary: true },
+        { label: '⬇ 설정 가져오기', value: 'import' },
+      ];
+      if (hasBk) choices.push({ label: '↺ 설정 가져오기 전으로', value: 'restore' });
+      choices.push({ label: '🔄 업데이트 적용', value: 'update' });
+      choices.push({ label: '💬 불편 메모', value: 'memo', title: '불편한 점을 적어 두면 그때 상황과 함께 이 PC에 저장됩니다 (Ctrl+Shift+M)' });
+      choices.push({ label: '📊 사용 기록 폴더', value: 'usage', title: '이 PC에만 남는 사용 기록(기능 이름·걸린 시간·오류 — 문서 내용·파일 이름 없음) 폴더를 엽니다' });
+      if (upBk && upBk.fromVersion) choices.push({ label: `↺ 이전 버전(${upBk.fromVersion})으로`, value: 'rollback' });
+      choices.push({ label: '닫기', value: null });
+      const c = await askChoice(`⚙ 설정·업데이트${ver ? ` — 지금 버전 ${ver}` : ''}\n\n`
+        + '· 설정 옮기기: 임포징 프리셋·단가·사용자 용지·재단선 모양·표지 프리셋·테마 등 앱 설정 전체를 JSON 파일 하나로 내보내고, 다른 PC에서 가져옵니다(라이선스는 PC마다 따로).\n'
+        + '· 업데이트: 발급자에게 받은 업데이트 파일(.pdfupd)로 프로그램만 새 버전으로 바꿉니다 — 설정·라이선스는 그대로.', choices);
+      if (c === 'export') exportAppSettings();
+      else if (c === 'import') importAppSettingsClick();
+      else if (c === 'restore') restoreSettingsBackup();
+      else if (c === 'update') updateApplyClick();
+      else if (c === 'rollback') updateRollbackClick();
+      else if (c === 'memo' && typeof openUsageMemo === 'function') openUsageMemo();
+      else if (c === 'usage' && window.electronAPI.usageOpenDir) window.electronAPI.usageOpenDir();
+    }
+
+    // 창 메뉴(Alt) Help → 🔄 업데이트·되돌리기·⚙ 메뉴 (main installAppMenu — 첫 화면 머리 버튼에서 옮겨 옴)
+    if (window.electronAPI && window.electronAPI.onMenuCommand) {
+      window.electronAPI.onMenuCommand((cmd) => {
+        if (cmd === 'update') updateApplyClick();
+        else if (cmd === 'rollback') updateRollbackClick();
+        else if (cmd === 'settings') openSettingsMenu();
+      });
+    }
+
+    // ── 🔄 업데이트 적용 — 발급자가 만든 .pdfupd(서명) → 확인 → 적용 → 앱 다시 시작 (main·updater.js) ──
+    async function updateApplyClick(pickedPath) {
+      const api = window.electronAPI;
+      if (!api || !api.updatePick) { showError('이 화면에서는 업데이트를 적용할 수 없습니다.'); return; }
+      const p = pickedPath || await api.updatePick();
+      if (!p) return;
+      const info = await api.updateInspect(p);
+      if (!info || !info.ok) { showError('업데이트 파일을 확인하지 못했습니다: ' + ((info && info.error) || '알 수 없는 오류')); return; }
+      if (!info.canApply) { showError('업데이트를 적용할 수 없습니다: ' + info.why); return; }
+      const hasDoc = !!(typeof originalPdfBytes !== 'undefined' && originalPdfBytes && pageResults.filter(Boolean).length);
+      const made = info.createdAt ? new Date(info.createdAt).toLocaleString('ko-KR') : '';
+      const head = info.cmp > 0 ? `🔄 ${info.current} → ${info.version} 으로 업데이트합니다.`
+        : info.cmp === 0 ? `⚠ 지금과 같은 버전(${info.version})입니다 — 다시 덮어쓸까요? (파일이 손상됐을 때 복구용)`
+        : `⚠ 지금(${info.current})보다 옛 버전(${info.version})입니다 — 정말 내려갈까요?`;
+      const c = await askChoice(head + (made ? `\n(만든 때: ${made})` : '')
+        + (info.notes ? `\n\n바뀐 점:\n${info.notes}` : '')
+        + `\n\n프로그램 파일만 바꿉니다 — 설정·프리셋·라이선스는 그대로입니다. 바뀌는 파일은 백업해 두며 ⚙ → '↺ 이전 버전으로'로 되돌릴 수 있습니다.`
+        + `\n적용하면 앱을 다시 시작합니다${hasDoc ? ' — ⚠ 열려 있는 문서와 저장하지 않은 편집 내용이 닫힙니다(필요하면 취소 후 저장)' : ''}.`,
+        [{ label: info.cmp > 0 ? '🔄 업데이트하고 다시 시작' : '덮어쓰고 다시 시작', value: 'ok', primary: info.cmp > 0 }, { label: '취소', value: null, primary: info.cmp <= 0 }]);
+      if (c !== 'ok') return;
+      showLoading('업데이트 적용 중…');
+      const r = await api.updateApply(p);
+      hideLoading();
+      if (!r || !r.ok) { showError('업데이트 실패: ' + ((r && r.error) || '알 수 없는 오류')); return; }
+      showSuccess(`🔄 ${r.version} 업데이트 완료 — 바뀐 파일 ${r.changed}개.` + (r.relaunch ? '\n잠시 뒤 앱이 다시 시작됩니다.' : ''));
+      return r;
+    }
+    async function updateRollbackClick() {
+      const api = window.electronAPI;
+      const bk = api && api.updateBackupInfo ? await api.updateBackupInfo() : null;
+      if (!bk) { showError('되돌릴 업데이트 백업이 없습니다.'); return; }
+      const c = await askChoice(`마지막 업데이트(${bk.fromVersion} → ${bk.toVersion}) 전으로 되돌립니다.\n바뀌었던 파일 ${bk.files.length}개를 되살리고 앱을 다시 시작합니다.`,
+        [{ label: '↺ 되돌리고 다시 시작', value: 'ok', primary: true }, { label: '취소', value: null }]);
+      if (c !== 'ok') return;
+      const r = await api.updateRollback();
+      if (!r || !r.ok) { showError('되돌리기 실패: ' + ((r && r.error) || '알 수 없는 오류')); return; }
+      showSuccess(`↺ ${r.version} 버전으로 되돌렸습니다.` + (r.relaunch ? ' 잠시 뒤 앱이 다시 시작됩니다.' : ''));
+      return r;
+    }

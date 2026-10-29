@@ -134,8 +134,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // PDF 저장: 경로는 main에서 다이얼로그로 취득, 파일 쓰기는 여기서 직접 처리
   // (IPC로 대용량 버퍼 전달 시 직렬화 과정에서 손상되므로 fs로 직접 기록)
-  saveFile: async ({ defaultName, buffer, kind }) => {
-    const filePath = await ipcRenderer.invoke('dialog:saveFilePath', { defaultName, kind });
+  saveFile: async ({ defaultName, buffer, kind, defaultDir }) => {
+    const filePath = await ipcRenderer.invoke('dialog:saveFilePath', { defaultName, kind, defaultDir });
     if (!filePath) return false;
     writeFileSafe(filePath, buffer);
     return filePath;
@@ -174,6 +174,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     try { return webUtils.getPathForFile(file); }
     catch (e) { return (file && file.path) || ''; }
   },
+
+  // 📊 사용 기록(이 PC 안에만) — 화면이 모아 보낸 사건 줄·💬 불편 메모·기록 폴더 열기
+  usageAppend: (lines) => ipcRenderer.send('usage:append', lines),
+  usageMemo: (memo) => ipcRenderer.invoke('usage:memo', memo),
+  usageOpenDir: () => ipcRenderer.invoke('usage:openDir'),
+
+  // 🔍 AI 업스케일(Real-ESRGAN, GPU) — 입출력은 tmpdir의 pdfedit_* 그림만
+  upscaleRun: (opts) => ipcRenderer.invoke('upscale:run', opts),
+  upscaleCancel: () => ipcRenderer.invoke('upscale:cancel'),
+  onUpscaleProgress: (cb) => {
+    const h = (_, p) => cb(p);
+    ipcRenderer.on('upscale:progress', h);
+    return () => ipcRenderer.removeListener('upscale:progress', h);
+  },
+  // 임시 경로 하나 만들기(파일은 만들지 않음) — 업스케일 결과 자리
+  tempPath: (ext) => path.join(os.tmpdir(), `pdfedit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext === 'jpg' ? 'jpg' : 'png'}`),
 
   // 견적서 HTML → PDF 변환 (main 프로세스의 printToPDF 사용)
   printToPDF: (html) => ipcRenderer.invoke('print:toPDF', html),
@@ -220,8 +236,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 앱 강제 새로고침 (캐시 무시) — 화면·상태가 꼬였을 때 재시작 없이 복구
   forceReload: () => ipcRenderer.invoke('app:forceReload'),
+  // 🔄 업데이트 파일(.pdfupd) — 고르기·확인·적용(적용 뒤 main이 앱을 다시 시작)·되돌리기 (updater.js)
+  updatePick: () => ipcRenderer.invoke('update:pick'),
+  updateInspect: (p) => ipcRenderer.invoke('update:inspect', p),
+  updateApply: (p) => ipcRenderer.invoke('update:apply', p),
+  updateBackupInfo: () => ipcRenderer.invoke('update:backupInfo'),
+  updateRollback: () => ipcRenderer.invoke('update:rollback'),
+  appVersion: () => ipcRenderer.invoke('app:version'),
   // Ctrl+R·Ctrl+Shift+R를 main이 가로채 전달 — 확인 후 렌더러가 새로고침을 결정
   onReloadRequest: (cb) => ipcRenderer.on('app:reload-request', () => cb()),
+  // 창 메뉴 Help의 🔄 업데이트 등 (main installAppMenu)
+  onMenuCommand: (cb) => ipcRenderer.on('menu:command', (_e, cmd) => cb(cmd)),
 
   // 사용 끝난 변환 임시 PDF 삭제 요청
   cleanupTempFile: (filePath) => ipcRenderer.invoke('temp:cleanup', filePath),
@@ -313,7 +338,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 큰 PDF 바이트는 IPC로 넘기지 않고 임시파일(디스크)로 주고받는다(50MB+ 직렬화 손상 방지).
   // 임시 파일 쓰기 — tmpdir에 pdfedit_ 접두사로 저장, 경로 반환. (bytes=ArrayBuffer/TypedArray)
   writeTempFile: (bytes, ext) => {
-    const name = `pdfedit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext === 'bin' ? 'bin' : 'pdf'}`;
+    const name = `pdfedit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${['bin', 'png', 'jpg'].includes(ext) ? ext : 'pdf'}`;   // png·jpg: 🔍 업스케일 입력
     const p = path.join(os.tmpdir(), name);
     writeBig(p, bytes);
     return p;
@@ -323,7 +348,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     try {
       if (!p) return false;
       const base = path.basename(p);
-      if (!/^pdfedit_.*\.(pdf|bin|png)$/i.test(base)) return false;   // png: AI 뒤표지 생성 결과
+      if (!/^pdfedit_.*\.(pdf|bin|png|jpg)$/i.test(base)) return false;   // png: AI 뒤표지 생성 결과·업스케일 입출력
       if (path.dirname(p) !== os.tmpdir()) return false;
       fs.unlinkSync(p);
       return true;

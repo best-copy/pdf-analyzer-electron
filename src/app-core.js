@@ -778,12 +778,32 @@
       try { localStorage.removeItem('recentFiles'); } catch (e) {}
       renderRecentFiles();
     }
+    // 첫 화면 '🕘 최근 파일' 버튼을 눌러야 목록이 펼쳐진다(사용자 요청 2026-10-29 — 늘 보이지 않게)
+    let _recentOpen = false;
+    function toggleRecentFiles(force) {
+      _recentOpen = typeof force === 'boolean' ? force : !_recentOpen;
+      if (_recentOpen && !loadRecentFiles().length) _recentOpen = false;
+      renderRecentFiles();
+    }
+    document.addEventListener('mousedown', (e) => {   // 목록·버튼 밖을 누르면 접기
+      if (!_recentOpen) return;
+      const t = e.target;
+      if (t && t.closest && (t.closest('#recentFiles') || t.closest('#recentToggleBtn'))) return;
+      toggleRecentFiles(false);
+    }, true);
     function renderRecentFiles() {
       const box = document.getElementById('recentFiles');
       if (!box) return;
       const list = loadRecentFiles();
+      const btn = document.getElementById('recentToggleBtn');
+      if (btn) {
+        btn.classList.toggle('on', _recentOpen && list.length > 0);
+        btn.classList.toggle('is-empty', !list.length);
+        btn.title = list.length ? `최근에 연 파일 ${list.length}개 — 눌러서 ${_recentOpen ? '접기' : '펼치기'}` : '최근에 연 파일이 없습니다';
+      }
       box.innerHTML = '';
-      if (!list.length) { box.style.display = 'none'; return; }
+      if (!list.length) _recentOpen = false;
+      if (!list.length || !_recentOpen) { box.style.display = 'none'; return; }
       box.style.display = 'flex';
       const lbl = document.createElement('span'); lbl.className = 'recent-label'; lbl.textContent = '🕘 최근 파일:';
       box.appendChild(lbl);
@@ -3055,7 +3075,14 @@
             if (prev && prev.k100 && typeof k100ReapplyEdit === 'function') {
               try { bytes = await k100ReapplyEdit(idx, bytes, prev.k100); } catch (err) { console.warn('K100 다시 적용 실패:', err); }
             }
-            contentEdits.set(idx, Object.assign({ model: e.model || [], bytes, rev: (prev ? prev.rev : 0) + 1 }, prev && prev.k100 ? { k100: prev.k100 } : {}));
+            // 🧹 스캔 정리했던 쪽 — 같은 이유로 다시 입힌다(정리 전 편집본은 scanPrev로)
+            let scanKeep = {};
+            if (prev && prev.scan && typeof scanReapplyEdit === 'function') {
+              const before = Object.assign({ model: e.model || [], bytes, rev: 0 }, prev.k100 ? { k100: prev.k100 } : {});
+              try { bytes = await scanReapplyEdit(idx, bytes, prev.scan); scanKeep = { scan: prev.scan, scanPrev: before }; }
+              catch (err) { console.warn('스캔 정리 다시 적용 실패:', err); }
+            }
+            contentEdits.set(idx, Object.assign({ model: e.model || [], bytes, rev: (prev ? prev.rev : 0) + 1 }, prev && prev.k100 ? { k100: prev.k100 } : {}, scanKeep));
             changed.push(idx);
           }
         }
@@ -3063,6 +3090,16 @@
           for (const idx of removed) {
             const prev = contentEdits.get(idx);
             if (!prev) continue;
+            // 편집을 다 지워도 스캔 정리는 남긴다 — 원본 쪽(K100이 있었으면 그것까지)에 다시 입힌다
+            if (prev.scan && typeof scanReapplyEdit === 'function') {
+              try {
+                const kb = prev.k100 && typeof k100ReapplyEdit === 'function' ? await k100ReapplyEdit(idx, null, prev.k100) : null;
+                const before = kb ? { model: [], bytes: kb, rev: 0, k100: prev.k100 } : null;
+                contentEdits.set(idx, Object.assign({ model: [], bytes: await scanReapplyEdit(idx, kb, prev.scan), rev: (prev.rev || 0) + 1 },
+                  prev.k100 ? { k100: prev.k100 } : {}, { scan: prev.scan, scanPrev: before }));
+                changed.push(idx); continue;
+              } catch (err) { console.warn('스캔 정리 다시 적용 실패:', err); }
+            }
             // 편집을 다 지워도 K100은 남긴다 — 원본 쪽에 다시 입힌다
             if (prev.k100 && typeof k100ReapplyEdit === 'function') {
               try {
@@ -3088,10 +3125,19 @@
     }
 
     // 편집/삭제된 페이지의 썸네일을 편집본(또는 원본)으로 다시 렌더
-    async function regenEditedThumbs(indices) {
-      for (const idx of indices) {
+    // onProgress(끝낸 수, 전체) — 많은 쪽을 한꺼번에 바꾼 뒤(🧹 스캔 정리 등) 진행바용
+    // ⚡ 여러 쪽을 동시에(2026-10-29) — 쪽마다 pdf.js 문서를 따로 열어 그리므로 문서 수만큼 그림 풀기 스레드가 함께 돈다.
+    //   예전엔 한 쪽씩(267쪽 97초). 동시 수는 코어 절반·최대 6.
+    async function regenEditedThumbs(indices, onProgress) {
+      let nDone = 0, qi = 0;
+      const lanes = Math.max(1, Math.min(indices.length, 6, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+      const lane = async () => { while (qi < indices.length) { await regenOneThumb(indices[qi++]); nDone++; if (onProgress) onProgress(nDone, indices.length); } };
+      await Promise.all(Array.from({ length: lanes }, lane));
+    }
+    async function regenOneThumb(idx) {
+      {
         const r = pageResults.find(x => x && !x.isBlank && x.originalIdx === idx);
-        if (!r) continue;
+        if (!r) return;
         const ed = contentEdits.get(idx);
         let pdf = null;
         try {

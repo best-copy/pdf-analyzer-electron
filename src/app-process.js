@@ -4297,7 +4297,7 @@
         sheet: (p.sw && p.sh) ? [p.sw * MM, p.sh * MM] : null,
         margin, hgap: p.hg || 0, vgap: p.vg || 0, gutter: p.hg || 0, justifyX: !!p.jx, justifyEdge: p.je || 0,
         bleed: p.bl || 0, srcBleed: p.sb || 0, crop: !!p.cr, cropDims: !!p.cd, frame: !!p.fr,
-        cropStyle: (typeof _impCropStyle === 'function' ? _impCropStyle() : null),
+        cropStyle: p.cs ? Object.assign({}, p.cs, { dims: !!p.cd }) : (typeof _impCropStyle === 'function' ? _impCropStyle() : null),
         creep: 0, binding: p.bd === 'right' ? 'right' : 'left',
         order: p.m === 'cutstack' ? 'cutstack' : 'sequential',
         cols: p.ax || 0, rows: p.dn || 0, dupDir: p.dd || 'auto', shuffleCopies: p.m === 'repeat' ? (p.rs || 0) : 0, shuffleDuplex: p.m === 'repeat' && p.rs ? (p.rd || '') : '',
@@ -4353,6 +4353,24 @@
         if (g('impSlug'))   g('impSlug').checked = !!p.sl;
         if (g('impStackNum')) g('impStackNum').checked = !!p.sn;
         if (g('impDupDir')) g('impDupDir').value = p.dd || 'auto';
+        if (p.cs) {
+          if (g('impCropShape') && p.cs.shape) g('impCropShape').value = p.cs.shape;
+          if (g('impCropGap') && p.cs.gap != null) g('impCropGap').value = p.cs.gap;
+          if (g('impCropLen') && p.cs.len != null) g('impCropLen').value = p.cs.len;
+          if (g('impCropTh') && p.cs.th != null) g('impCropTh').value = p.cs.th;
+          if (g('impCropCenter')) g('impCropCenter').checked = !!p.cs.center;
+          saveImpCropStyle();   // 재단선 모양은 앱 전체 기억값이기도 하다
+        }
+        if (g('impCropDims')) g('impCropDims').checked = !!p.cd;
+        if (g('impCropOptRow')) g('impCropOptRow').style.display = p.cr ? '' : 'none';
+        if (p.bg !== undefined && typeof setBleedEnabled === 'function') {
+          if (p.bg > 0) {
+            if (g('bleedGenMm')) g('bleedGenMm').value = p.bg;
+            if (g('bleedCrop')) g('bleedCrop').checked = !!p.bgc;
+          }
+          if (!!_bleedEnabled !== (p.bg > 0)) setBleedEnabled(p.bg > 0);
+          else if (p.bg > 0) { _bleedCache = { sig: null, bytes: null }; invalidateProcessed(); }   // 폭만 바뀐 경우
+        }
         if (p.m === 'repeat') {
           if (g('repCols')) g('repCols').value = p.ax || '';
           if (g('repRows')) g('repRows').value = p.dn || '';
@@ -4391,7 +4409,28 @@
         const chk = document.getElementById('impEnabled'); if (chk) chk.checked = true;
       }
       invalidateProcessed();                   // '적용 필요' 표시만 (렌더 없음)
-      showSuccess(`프리셋 '${p.n}' 불러옴 — 용지 ${_impProfile.paper}, ${p.m}${p.sd ? (p.sd === 2 ? ' 양면' : ' 단면') : ''}. 옵션만 적용됨 — '📖 임포징 PDF 생성' 또는 메인 '✔ 적용'을 눌러 반영하세요.`);
+      showSuccess(`프리셋 '${p.n}' 불러옴 — 용지 ${_impProfile.paper}, ${p.m}${p.sd ? (p.sd === 2 ? ' 양면' : ' 단면') : ''}`
+        + (p.bg > 0 ? ` · ◲ 블리드 ${p.bg}mm` : p.bg === 0 ? ' · 블리드 생성 끔' : '') + (p.cr ? ' · 재단선' : '')
+        + `.\n옵션만 적용됨 — '📖 임포징 PDF 생성' 또는 메인 '✔ 적용'을 눌러 반영하세요.`);
+    }
+    // 💾 지금 설정을 프리셋으로 바로 저장 — '▸ 관리'를 펼치지 않아도 되게. 이름 제안: 방식_용지(예: 복제2부_위아래_219x312)
+    async function impProfileQuickSave() {
+      if (!_impMode && !_impProfile) { showError('임포징 방식을 먼저 고르세요.'); return; }
+      const g = id => document.getElementById(id);
+      let suggest = (g('impProfName')?.value || '').trim();
+      if (!suggest) {
+        const o = currentImpOptions();
+        const MM = 72 / 25.4;
+        const modeName = { booklet: '중철', nup: '모아찍기', cutstack: '반반', repeat: o.shuffleCopies ? '셔플' : '반복', dup: '복제2부' }[o.mode] || '임포징';
+        const extra = o.mode === 'dup' && o.dupDir === 'v' ? '_위아래' : o.mode === 'dup' && o.dupDir === 'h' ? '_좌우'
+          : (o.mode === 'nup' || o.mode === 'cutstack') ? `_${o.across}x${o.down}` : '';
+        const paper = o.sheet ? `_${Math.round(Math.min(o.sheet[0], o.sheet[1]) / MM)}x${Math.round(Math.max(o.sheet[0], o.sheet[1]) / MM)}` : '';
+        suggest = modeName + extra + paper;
+      }
+      const name = await promptText('지금 임포징 설정을 프리셋으로 저장합니다.\n(방식·용지·여백·거터·재단선 모양·◲ 블리드 생성까지)\n\n프리셋 이름:', suggest);
+      if (name == null || !String(name).trim()) return;
+      if (g('impProfName')) g('impProfName').value = String(name).trim();
+      impProfileSave();
     }
     // 프리셋 수정 — 선택 프리셋의 내부 항목을 UI 컨트롤에 펼쳐 직접 편집.
     // 이름칸에 이름을 채워두고 _impProfile은 비워 UI 기준으로 전환(편집 후 '💾 저장'으로 반영).
@@ -4419,7 +4458,7 @@
       const json = JSON.stringify(list, null, 2);
       (async () => {
         try {
-          const saved = await window.electronAPI.saveFile({ defaultName: 'imposition-profiles.json', buffer: new TextEncoder().encode(json) });
+          const saved = await window.electronAPI.saveFile({ defaultName: 'imposition-profiles.json', buffer: new TextEncoder().encode(json), kind: 'json' });   // JSON 저장 창(예전엔 PDF 필터가 떴다)
           if (saved) showSuccess(`프리셋 ${list.length}개를 내보냈습니다 (imposition-profiles.json). 독립 임포징 도구(dist/임포징도구.html)의 '⬇ 가져오기'로 불러오면 동기화됩니다.`);
         } catch (e) { showError('내보내기 실패: ' + (e && e.message ? e.message : String(e))); }
       })();
@@ -4479,6 +4518,13 @@
       const oy = parseFloat(g('impOffY')?.value) || 0; if (oy) s.oy = oy;
       if (_impMode === 'booklet' && _bkBind === 'right') s.bd = 'right';
       if (_impMode === 'dup') { const dd = g('impDupDir')?.value || 'auto'; if (dd !== 'auto') s.dd = dd; }   // 복제 2부 배치 방향
+      // ◲ 블리드 생성(임포징 앞 단계)과 재단선 모양도 함께 — 같은 작업을 프리셋 하나로 되살리게(2026-10-27).
+      //   bg = 블리드 폭 mm(0 = 끔), bgc = 블리드 재단선, cs = 재단선 모양(📏 치수는 cd로 따로)
+      if (typeof _bleedEnabled !== 'undefined') {
+        s.bg = _bleedEnabled ? (+_bleedOpts().mm || 0) : 0;
+        if (_bleedEnabled && _bleedOpts().crop) s.bgc = 1;
+      }
+      { const c = _impCropStyle(); s.cs = { shape: c.shape, gap: c.gap, len: c.len, th: c.th, center: !!c.center }; }
       if (_impMode === 'repeat') {
         const rc = parseInt(g('repCols')?.value) || 0, rr = parseInt(g('repRows')?.value) || 0;
         if (rc && rr) { s.ax = rc; s.dn = rr; }
@@ -5331,9 +5377,9 @@
       return { pages, items, undo, changed };
     }
     // 쪽 편집본이 바뀐 뒤 — 캐시·썸네일·화면·다운로드 버튼(내부 편집 반영과 같은 순서)
-    async function k100AfterPagesChanged(changed) {
+    async function k100AfterPagesChanged(changed, onThumbProgress, thumbDone) {
       clearProcessCaches();
-      await regenEditedThumbs([...new Set(changed)]);
+      await regenEditedThumbs([...new Set(changed)].filter(i => !(thumbDone && thumbDone.has(i))), onThumbProgress);
       setDirty(true);
       refreshResults();
       updateDownloadBtn();
@@ -5356,6 +5402,975 @@
       const off = new Set(k100.off || []);
       const { bytes: out } = await k100BakeDoc(doc, idx, 'o' + idx, k => !off.has(k), false);
       return out;
+    }
+
+    // ── 🧹 스캔 정리 — 빛샘·그늘 무늬 지우기 + 기울기 바로잡기 (2026-10-28, libs/scan-clean.js) ─────────────
+    // 판정: 원본 쪽을 pdf.js(globalPdfDoc — 이미 열려 있어 추가 메모리 없음)로 150dpi 회색으로 그려 scanAnalyze.
+    // 굽기: K100처럼 쪽 편집본(contentEdits)이 된다 — 썸네일·결과·다운로드·인쇄·임포징이 모두 바뀐 쪽을 쓴다.
+    //   원본 내용(스캔 그림)은 그대로 두고 회전 cm + 흰 사각형으로 감싼다(scanBakePage) → 용량이 늘지 않는다.
+    //   편집본에 scan = 적용한 계획, scanPrev = 굽기 전 편집본(되돌리기·다시 굽기용 — 작업 파일에는 scan만 저장).
+    const SCAN_DPI = 150;
+    // ⚡ 속도(2026-10-28): ① 같은 파일로 pdf.js 문서를 몇 개 더 열어 여러 쪽을 동시에 그린다(문서 하나 = 그림 풀기 스레드 하나)
+    //   ② 회색 바꾸기·판정은 작업 스레드(worker-scan.js — 같은 scan-clean.js라 결과 동일) ③ 판정 결과를 디스크에 기억
+    //   (열쇠 = 파일 지문 + 판정 기준 — 기준을 바꾸면 자동으로 새로 판정). 기억에서 꺼낸 쪽은 미리보기 그림을 볼 때 그린다.
+    let _scanPool = null;
+    const scanPool = () => _scanPool || (_scanPool = new WorkerPool('./worker-scan.js', Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 2))));
+    const SCAN_CACHE_MAGIC = 'PDFSCAN2\n';   // 2: 머리 뒤 JSON 길이(4바이트) + JSON + 쪽마다 미리보기 JPEG
+    async function scanCacheKey(bytes) {
+      const fp = await pdfFingerprint(bytes);
+      if (!fp) return null;
+      const sig = new TextEncoder().encode('scan|2|' + SCAN_DPI + '|' + JSON.stringify(SCAN_CLEAN_DEFAULTS) + '|' + fp);
+      const h = new Uint8Array(await crypto.subtle.digest('SHA-256', sig));
+      let s = ''; for (const b of h) s += b.toString(16).padStart(2, '0');
+      return s;
+    }
+    async function scanCacheRead(key) {
+      const api = window.electronAPI;
+      if (!key || !api || !api.analysisCacheRead) return null;
+      try {
+        const ab = await api.analysisCacheRead(key);
+        if (!ab) return null;
+        const u8 = new Uint8Array(ab), m = SCAN_CACHE_MAGIC.length;
+        if (u8.length < m + 4 || new TextDecoder().decode(u8.subarray(0, m)) !== SCAN_CACHE_MAGIC) return null;
+        const jl = new DataView(ab).getUint32(m, true);
+        if (m + 4 + jl > u8.length) return null;
+        const j = JSON.parse(new TextDecoder().decode(u8.subarray(m + 4, m + 4 + jl)));
+        if (!j || !j.pages) return null;
+        const blobAt = m + 4 + jl;
+        for (const k of Object.keys(j.pages)) {
+          const c = j.pages[k];
+          if (c && c.imgLen > 0 && blobAt + c.imgOff + c.imgLen <= u8.length)
+            c.img = URL.createObjectURL(new Blob([u8.subarray(blobAt + c.imgOff, blobAt + c.imgOff + c.imgLen)], { type: 'image/jpeg' }));
+          else if (c) c.img = null;
+          if (c) { delete c.imgOff; delete c.imgLen; }
+        }
+        return j.pages;
+      } catch (e) { return null; }
+    }
+    async function scanCacheWrite(key, map) {
+      const api = window.electronAPI;
+      if (!key || !api || !api.analysisCacheWrite) return;
+      try {
+        const pages = {}, bins = [];
+        let off = 0;
+        for (const [idx, r] of map) {
+          const c = Object.assign({}, r); delete c.img;
+          if (r.img) {
+            try { const b = new Uint8Array(await (await fetch(r.img)).arrayBuffer()); c.imgOff = off; c.imgLen = b.length; bins.push(b); off += b.length; } catch (e) {}
+          }
+          pages[idx] = c;
+        }
+        const head = new TextEncoder().encode(SCAN_CACHE_MAGIC), js = new TextEncoder().encode(JSON.stringify({ pages }));
+        const out = new Uint8Array(head.length + 4 + js.length + off);
+        out.set(head, 0); new DataView(out.buffer).setUint32(head.length, js.length, true); out.set(js, head.length + 4);
+        let at = head.length + 4 + js.length; for (const b of bins) { out.set(b, at); at += b.length; }
+        await api.analysisCacheWrite(key, out);
+      } catch (e) { console.warn('스캔 판정 기억 실패:', e); }
+    }
+    // 미리보기 그림(약 75dpi JPEG blob 주소) — 기억에서 꺼낸 쪽은 볼 때 그린다
+    async function scanPreviewImg(idx) {
+      const page = await globalPdfDoc.getPage(idx + 1);
+      const vp = page.getViewport({ scale: SCAN_DPI / 2 / 72 });
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(vp.width)); cv.height = Math.max(1, Math.round(vp.height));
+      const cx = cv.getContext('2d');
+      cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+      await renderPageNoSeams(page, { canvasContext: cx, viewport: vp });
+      const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.85));
+      cv.width = cv.height = 0;
+      return blob ? URL.createObjectURL(blob) : null;
+    }
+    // opts: { docs: 강제 문서 수, worker: false = 화면 스레드에서 판정, cache: false = 기억 안 씀 } — 검사용
+    async function scanAnalyzeRows(rows, onProgress, cancelled, opts) {
+      if (!globalPdfDoc) throw new Error('문서를 먼저 여세요.');
+      const o = opts || {};
+      const out = new Map();
+      const t0 = performance.now();
+      // ③ 기억한 판정
+      let key = null, todo = rows, got = null;
+      if (o.cache !== false && originalPdfBytes) {
+        try { key = await scanCacheKey(originalPdfBytes); } catch (e) { key = null; }
+        got = key ? await scanCacheRead(key) : null;
+        if (got) {
+          todo = [];
+          for (const x of rows) { const c = got[x.r.originalIdx]; if (c && c.edges) out.set(x.r.originalIdx, Object.assign({}, c)); else todo.push(x); }
+        }
+      }
+      const fromCache = out.size;
+      let done = fromCache;
+      if (onProgress && rows.length) onProgress(done / rows.length);
+      if (!todo.length) { scanAnalyzeRows.last = { ms: performance.now() - t0, cached: fromCache, docs: 0 }; return out; }
+      // ① 문서 수 — 처음 분석과 같은 기준(메모리 512MB ÷ 파일 크기, PC 메모리 상한, 코어)
+      let nDocs = o.docs;
+      if (!nDocs) {
+        let ramGB = 0;
+        try { ramGB = (window.electronAPI && window.electronAPI.totalMemoryGB) ? window.electronAPI.totalMemoryGB() : 0; } catch (e) {}
+        const ramCap = ramGB >= 24 ? 6 : ramGB >= 12 ? 4 : ramGB >= 8 ? 3 : 2;
+        const srcLen = Math.max(1, (originalPdfBytes && originalPdfBytes.byteLength) || 1);
+        // 보조 문서는 원본 바이트 사본을 하나씩 든다 — 600dpi 스캔은 수백 MB(사용자 도록 596MB)라 처음 분석의 '512MB ÷ 파일'이면
+        // 늘 1개였다. 보조 사본 합계를 PC 메모리의 1/8(최대 4GB, 모르면 512MB)까지 허용한다.
+        const extraBudget = ramGB ? Math.min(4096, ramGB * 1024 / 8) * 1024 * 1024 : 512 * 1024 * 1024;
+        nDocs = Math.max(1, Math.min(ramCap, 1 + Math.floor(extraBudget / srcLen), Math.ceil(todo.length / 4),
+          Math.max(1, Math.floor((navigator.hardwareConcurrency || 4) / 2))));
+      }
+      const docs = [globalPdfDoc];
+      if (nDocs > 1 && originalPdfBytes) {
+        const opened = await Promise.allSettled(Array.from({ length: nDocs - 1 },
+          () => openPdfDoc({ data: originalPdfBytes.slice(0) }).promise));
+        for (const r of opened) if (r.status === 'fulfilled') docs.push(r.value); else console.warn('스캔 판정 보조 문서 열기 실패:', r.reason);
+      }
+      const useWorker = o.worker !== false && typeof Worker !== 'undefined';
+      const analyze = async (rgba, w, h) => {
+        if (useWorker) {
+          return scanPool().run('scan', { rgba: rgba.buffer, w, h, dpi: SCAN_DPI }, [rgba.buffer]);
+        }
+        const g = new Uint8Array(w * h);
+        for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (rgba[j] * 77 + rgba[j + 1] * 150 + rgba[j + 2] * 29) >> 8;
+        return scanAnalyze(g, w, h, { dpi: SCAN_DPI });
+      };
+      const one = async (doc, x) => {
+        const page = await doc.getPage(x.r.originalIdx + 1);
+        const vp = page.getViewport({ scale: SCAN_DPI / 72 });
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(vp.width)); cv.height = Math.max(1, Math.round(vp.height));
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+        cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+        await renderPageNoSeams(page, { canvasContext: cx, viewport: vp });
+        try { page.cleanup(); } catch (e) {}
+        const W = cv.width, H = cv.height;
+        const rgba = new Uint8Array(cx.getImageData(0, 0, W, H).data.buffer);
+        // 창에서 쓸 그림(약 75dpi) — 판정이 작업 스레드에서 도는 동안 만든다
+        const sm = document.createElement('canvas');
+        sm.width = Math.round(W / 2); sm.height = Math.round(H / 2);
+        sm.getContext('2d').drawImage(cv, 0, 0, sm.width, sm.height);
+        cv.width = cv.height = 0;
+        const [res, blob] = await Promise.all([analyze(rgba, W, H), new Promise(r => sm.toBlob(r, 'image/jpeg', 0.85))]);
+        res.img = blob ? URL.createObjectURL(blob) : null;
+        res.wMm = vp.width / SCAN_DPI * 25.4; res.hMm = vp.height / SCAN_DPI * 25.4;
+        out.set(x.r.originalIdx, res);
+        if (onProgress) onProgress(++done / rows.length);
+      };
+      // 문서마다 두 줄 — 한 줄이 그림을 기다리는 동안 다른 줄이 판정
+      let qi = 0, stopped = false;
+      const lane = async doc => {
+        while (qi < todo.length) {
+          if (cancelled && cancelled()) { stopped = true; return; }
+          const x = todo[qi++]; await one(doc, x); await uiYield();
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: docs.length * 2 }, (_, i) => lane(docs[i % docs.length])));
+      } finally {
+        for (const d of docs.slice(1)) { try { await d.destroy(); } catch (e) {} }
+      }
+      if (!stopped && key) {
+        const all = new Map();
+        if (got) for (const k of Object.keys(got)) if (got[k] && got[k].edges) all.set(+k, got[k]);   // 이번에 안 본 쪽의 기억도 남긴다
+        out.forEach((r, k) => all.set(k, r));
+        await scanCacheWrite(key, all);
+      }
+      // 이번에 안 쓰는 쪽의 기억 그림 주소는 풀어 준다
+      if (got) for (const k of Object.keys(got)) if (got[k] && got[k].img && !out.has(+k)) { try { URL.revokeObjectURL(got[k].img); } catch (e) {} }
+      scanAnalyzeRows.last = { ms: performance.now() - t0, cached: fromCache, docs: docs.length, want: nDocs, worker: useWorker };
+      return out;
+    }
+    // 판정 → 이 쪽에 실제로 넣을 계획(창에서 고친 값 반영)
+    function scanPlanOf(res, ov) {
+      const o = ov || {};
+      return {
+        edges: o.edgeMm ? Object.assign({}, res.edges, o.edgeMm) : res.edges, spots: res.spots,
+        deskew: o.angle != null ? o.angle : res.deskew,
+        useEdges: o.edges !== false, useSpots: o.spots !== false, useDeskew: o.deskew !== false,
+        ...(o.shift && (o.shift.x || o.shift.y) ? { shift: { x: +o.shift.x || 0, y: +o.shift.y || 0 } } : {}),
+        ...(o.manual && o.manual.length ? { manual: o.manual.map(m => m.t === 'p' ? { t: 'p', w: m.w, pts: m.pts.map(q => [q[0], q[1]]) } : { x: m.x, y: m.y, w: m.w, h: m.h }) } : {}),
+      };
+    }
+    const scanPlanEmpty = p => !((p.useEdges && p.edges && (p.edges.top || p.edges.bottom || p.edges.left || p.edges.right))
+      || (p.useSpots && p.spots && p.spots.length) || (p.useDeskew && p.deskew) || (p.manual && p.manual.length) || (p.shift && (p.shift.x || p.shift.y)));
+    // 굽기 전 편집본 — 이미 스캔 정리한 쪽이면 그 전 편집본에서 다시 굽는다(두 번 돌지 않게)
+    async function scanBaseRecord(idx) {
+      const prev = contentEdits.get(idx) || null;
+      if (!prev || !prev.scan) return prev;
+      if (prev.scanPrev !== undefined) return prev.scanPrev;
+      // 작업 파일에서 다시 연 쪽(scanPrev 없음) — 붙였던 감싸기 조각을 떼어 정리 전 쪽을 되찾는다(내부 편집·K100 그대로)
+      try {
+        const doc = await PDFLib.PDFDocument.load(prev.bytes.slice ? prev.bytes.slice(0) : prev.bytes, { ignoreEncryption: true, updateMetadata: false });
+        if (scanUnbakePage(PDFLib, doc, 0)) {
+          const rest = Object.assign({}, prev, { bytes: new Uint8Array(await savePdfDoc(doc)), rev: 0 });
+          delete rest.scan; delete rest.scanPrev;
+          // 내부 편집도 K100도 없던 쪽이면 정리 전 = 원본 쪽 그대로 → 편집본 없음으로
+          return (rest.model && rest.model.length) || rest.k100 ? rest : null;
+        }
+      } catch (e) { console.warn('스캔 정리 떼어 내기 실패 — 원본에서 다시 굽습니다:', e); }
+      // 떼어 낼 수 없으면(다른 처리가 내용을 다시 썼다) 원본 쪽에서 다시(K100은 다시 입힘)
+      if (prev.k100) return { model: [], bytes: await k100ReapplyEdit(idx, null, prev.k100), rev: 0, k100: prev.k100 };
+      return null;
+    }
+    async function scanBakeBytes(idx, baseBytes, plan) {
+      let doc;
+      if (baseBytes) doc = await PDFLib.PDFDocument.load(baseBytes.slice ? baseBytes.slice(0) : baseBytes, { ignoreEncryption: true, updateMetadata: false });
+      else {
+        doc = await PDFLib.PDFDocument.create();
+        const [pg] = await doc.copyPages(await getSourceDoc(), [idx]);
+        doc.addPage(pg);
+      }
+      scanBakePage(PDFLib, doc, 0, plan);
+      return new Uint8Array(await savePdfDoc(doc));
+    }
+    // 정리 후 모습을 ctx의 (ox, oy)부터 W×H 칸에 그린다 — 굽는 것과 같은 순서(흰 덮기 → 반시계 회전 → 이동).
+    // im = 정리 전 쪽 그림(화면 방향), wMm = 그 쪽 가로 mm. 정리 창 오른쪽 그림과 🧹 빠른 썸네일이 함께 쓴다.
+    function scanPaintAfter(ctx, ox, oy, im, W, H, p, wMm) {
+      const mm = v => v / wMm * W, e = p.edges || {};
+      const t = document.createElement('canvas'); t.width = W; t.height = H;
+      const tc = t.getContext('2d'); tc.drawImage(im, 0, 0, W, H); tc.fillStyle = '#fff';
+      if (p.useEdges !== false) { if (e.top) tc.fillRect(0, 0, W, mm(e.top)); if (e.bottom) tc.fillRect(0, H - mm(e.bottom), W, mm(e.bottom)); if (e.left) tc.fillRect(0, 0, mm(e.left), H); if (e.right) tc.fillRect(W - mm(e.right), 0, mm(e.right), H); }
+      if (p.useSpots !== false && Array.isArray(p.spots)) for (const s of p.spots) tc.fillRect(mm(s.x), mm(s.y), mm(s.w), mm(s.h));
+      for (const s of (p.manual || [])) {
+        if (s.t === 'p') {
+          tc.save(); tc.strokeStyle = '#fff'; tc.lineWidth = Math.max(1, mm(s.w)); tc.lineCap = 'round'; tc.lineJoin = 'round';
+          tc.beginPath(); s.pts.forEach((q, i) => i ? tc.lineTo(mm(q[0]), mm(q[1])) : tc.moveTo(mm(q[0]), mm(q[1])));
+          if (s.pts.length === 1) tc.lineTo(mm(s.pts[0][0]) + 0.01, mm(s.pts[0][1]));
+          tc.stroke(); tc.restore();
+        } else tc.fillRect(mm(s.x), mm(s.y), mm(s.w), mm(s.h));
+      }
+      const shx = p.shift ? mm(p.shift.x) : 0, shy = p.shift ? mm(p.shift.y) : 0;
+      ctx.save(); ctx.fillStyle = '#fff'; ctx.fillRect(ox, oy, W, H);
+      ctx.beginPath(); ctx.rect(ox, oy, W, H); ctx.clip();
+      ctx.translate(ox + W / 2 + shx, oy + H / 2 + shy); ctx.rotate(-((p.useDeskew !== false && p.deskew) || 0) * Math.PI / 180); ctx.drawImage(t, -W / 2, -H / 2); ctx.restore();
+      t.width = t.height = 0;
+    }
+    // ⚡ 빠른 썸네일(2026-10-29) — PDF에서 다시 그리지 않고 정리 전 썸네일에 정리를 입힌다(267쪽 97초 → 몇 초).
+    //   정리 전 썸네일 = 이 쪽에 다른 편집이 없을 때만 있다: 처음 정리면 지금 썸네일, 다시 정리면 r.scanThumbOrig(처음 정리 때 남겨 둔 것).
+    //   스캔 정리는 흰색만 더하므로 컬러 판정은 그대로 둔다. 내부 편집·K100이 있는 쪽은 기존 방식(PDF에서 다시 그림).
+    function scanSetThumb(r, url) {
+      r.thumbnail = url;
+      const el = document.querySelector(`[data-page="${r.pageNum}"]`);
+      const img = el && el.querySelector('.page-thumbnail');
+      if (img) img.src = url;
+      const sbImg = document.querySelector(`[data-sb-page="${r.pageNum}"] img`);
+      if (sbImg) sbImg.src = url;
+    }
+    async function scanComposeThumb(r, srcUrl, plan, wMm) {
+      const im = new Image();
+      await new Promise((ok, no) => { im.onload = ok; im.onerror = no; im.src = srcUrl; });
+      const W = im.naturalWidth, H = im.naturalHeight;
+      if (!W || !H) throw new Error('썸네일 크기 없음');
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      scanPaintAfter(cv.getContext('2d'), 0, 0, im, W, H, plan, wMm);
+      const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.92));
+      cv.width = cv.height = 0;
+      if (!blob) throw new Error('썸네일 굽기 실패');
+      return { url: URL.createObjectURL(blob), w: W, h: H };
+    }
+    // 정리 전 썸네일(다른 편집 없는 쪽만) — 되돌리기·정리 끄기에서 그대로 되돌릴 그림. 없으면 null
+    function scanPristineThumb(r, prevRec) {
+      if (!r) return null;
+      if (r.scanThumbOrig) return { url: r.scanThumbOrig, w: r.scanThumbOrigW, h: r.scanThumbOrigH, low: r.scanThumbOrigLow };
+      if (!prevRec && r.thumbnail) return { url: r.thumbnail, w: r.thumbW, h: r.thumbH, low: !!r.thumbLow };   // 편집이 전혀 없던 쪽 — 지금 썸네일이 원본 모습
+      return null;
+    }
+    function scanRestorePristine(r, pr) {
+      if (r.thumbnail && r.thumbnail !== pr.url && String(r.thumbnail).startsWith('blob:')) { try { URL.revokeObjectURL(r.thumbnail); } catch (e) {} }
+      r.thumbW = pr.w; r.thumbH = pr.h; r.thumbLow = pr.low;
+      scanSetThumb(r, pr.url);
+      delete r.scanThumbOrig; delete r.scanThumbOrigW; delete r.scanThumbOrigH; delete r.scanThumbOrigLow;
+    }
+    // items: [{ idx, plan, wMm, img }] → { pages, undo } — img = 정리 창의 정리 전 미리보기 그림(blob 주소, 있으면 빠른 썸네일 출처)
+    async function scanBakeItems(items, onProgress) {
+      const undo = new Map(), changed = [], fast = [];
+      let done = 0;
+      for (const { idx, plan, wMm, img } of items) {
+        const prev = contentEdits.get(idx) || null;
+        const base = await scanBaseRecord(idx);
+        // 정리 뒤에 다른 편집이 없는 쪽(base 없음)이면 빠른 썸네일로 — 출처: 정리 창 미리보기 그림 > 흐리지 않은 정리 전 썸네일
+        // (⚠ 대용량 원고는 처음 분석을 Ghostscript로 해 썸네일이 거칠다(thumbLow) — 그 위에 입히면 거친 채로 남는다:
+        //  편집한 쪽은 선명하게 다시 굽기(scheduleThumbUpgrade) 대상이 아니다)
+        if (!base && wMm > 0) {
+          const r = pageResults.find(x => x && !x.isBlank && x.originalIdx === idx);
+          const pr = scanPristineThumb(r, prev);
+          const empty = scanPlanEmpty(plan);
+          const src = img || (pr && !pr.low ? pr.url : null);
+          if (r && (empty ? pr : src)) fast.push({ idx, r, src, pr, plan: empty ? null : plan, wMm });
+        }
+        undo.set(idx, prev);
+        if (scanPlanEmpty(plan)) {   // 고칠 것이 없으면 정리 전으로(이미 정리한 쪽을 끈 경우)
+          if (prev && prev.scan) { if (base) contentEdits.set(idx, Object.assign({}, base, { rev: (prev.rev || 0) + 1 })); else contentEdits.delete(idx); changed.push(idx); }
+        } else {
+          const bytes = await scanBakeBytes(idx, base ? base.bytes : null, plan);
+          contentEdits.set(idx, Object.assign({ model: base ? base.model || [] : [], bytes, rev: (prev ? prev.rev || 0 : 0) + 1 },
+            base && base.k100 ? { k100: base.k100 } : {}, { scan: plan, scanPrev: base }));
+          changed.push(idx);
+        }
+        // 진행바: 굽기 0~10% · 썸네일 다시 그리기 10~100%(실측 267쪽 굽기 1.6초 · 썸네일 97초)
+        if (onProgress) onProgress(++done / items.length * 0.1, `스캔 정리 적용 중… ${done}/${items.length}쪽`);
+        await uiYield();
+      }
+      // 빠른 썸네일 — 정리 창 오른쪽 그림과 같은 함수로 정리 전 썸네일에 입힌다
+      const fastDone = new Set();
+      const fastSet = new Set(changed);
+      for (let i = 0; i < fast.length; i++) {
+        const f = fast[i];
+        if (!fastSet.has(f.idx)) continue;
+        try {
+          if (!f.plan) {   // 정리를 끈 쪽 — 정리 전 썸네일로 되돌림
+            scanRestorePristine(f.r, f.pr);
+          } else {
+            const { url, w, h } = await scanComposeThumb(f.r, f.src, f.plan, f.wMm);
+            // 정리 전 썸네일은 지우지 않고 남겨 둔다(되돌리기·정리 끄기용) — 처음 정리할 때만
+            if (!f.r.scanThumbOrig && f.pr) { f.r.scanThumbOrig = f.pr.url; f.r.scanThumbOrigW = f.pr.w; f.r.scanThumbOrigH = f.pr.h; f.r.scanThumbOrigLow = f.pr.low; }
+            else if (f.r.thumbnail && f.r.thumbnail !== f.r.scanThumbOrig && String(f.r.thumbnail).startsWith('blob:')) { try { URL.revokeObjectURL(f.r.thumbnail); } catch (e) {} }
+            f.r.thumbW = w; f.r.thumbH = h; f.r.thumbLow = false;
+            scanSetThumb(f.r, url);
+          }
+          fastDone.add(f.idx);
+        } catch (e) { console.warn('빠른 썸네일 실패 — PDF에서 다시 그립니다:', e); }
+        if (onProgress && (i % 8 === 7)) { onProgress(0.1 + 0.9 * (i + 1) / changed.length, `썸네일 반영 중… ${i + 1}/${changed.length}쪽`); await uiYield(); }
+      }
+      if (changed.length) {
+        const nFast = fastDone.size;
+        await k100AfterPagesChanged(changed, onProgress ? (n, t) => onProgress(0.1 + 0.9 * (nFast + n) / changed.length, `썸네일·결과 반영 중… ${nFast + n}/${changed.length}쪽`) : null,
+          fastDone);
+      }
+      return { pages: changed.length, undo, fast: fastDone.size };
+    }
+    async function scanUndoBake(undo) {
+      // 되돌린 뒤 편집이 없는 쪽(=정리만 있던 쪽)은 남겨 둔 정리 전 썸네일로 바로 — PDF에서 다시 그리지 않는다
+      const quick = new Set();
+      undo.forEach((prevRec, idx) => {
+        if (prevRec) return;
+        const r = pageResults.find(x => x && !x.isBlank && x.originalIdx === idx);
+        if (r && r.scanThumbOrig) { scanRestorePristine(r, scanPristineThumb(r, null)); quick.add(idx); }
+      });
+      const changed = [];
+      undo.forEach((prev, idx) => { if (prev) contentEdits.set(idx, Object.assign({}, prev, { rev: ((contentEdits.get(idx) || {}).rev || 0) + 1 })); else contentEdits.delete(idx); changed.push(idx); });
+      if (changed.length) await k100AfterPagesChanged(changed, null, quick);
+    }
+    // 내부 편집기 저장 뒤 — 편집기는 원본에서 다시 구우므로 스캔 정리를 다시 입힌다(bytes 없으면 원본 쪽에)
+    async function scanReapplyEdit(idx, bytes, plan) { return scanBakeBytes(idx, bytes, plan); }
+
+    async function openScanCleanModal() {
+      if (!originalPdfBytes || !globalPdfDoc) { showError('먼저 스캔 문서를 여세요.'); return; }
+      if (typeof scanAnalyze !== 'function') { showError('스캔 정리 모듈을 불러오지 못했습니다.'); return; }
+      const rowsAll = pageResults.map((r, i) => ({ r, shown: i + 1 })).filter(x => x.r && !x.r.isBlank && x.r.originalIdx != null);
+      if (!rowsAll.length) { showError('정리할 쪽이 없습니다.'); return; }
+      const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const ov = document.createElement('div');
+      ov.className = 'merge-overlay';
+      ov.innerHTML =
+        '<div class="merge-modal rbv-modal rbv-full sc-modal">'
+        + '<div class="rbv-titlebar"><h3 class="merge-title"><span class="ic">🧹</span> 스캔 정리 — 빛샘·그늘 무늬 · 기울기</h3></div>'
+        + '<p class="merge-sub" id="scSub">쪽마다 판정하는 중…</p>'
+        + '<div class="rbv-tools" id="scTools">'
+        + '<label class="sc-opt"><input type="checkbox" id="scUseEdges" checked> 가장자리 검은 띠·그늘 줄</label>'
+        + '<label class="sc-opt"><input type="checkbox" id="scUseSpots" checked> 모서리 옅은 점 무늬</label>'
+        + '<label class="sc-opt"><input type="checkbox" id="scUseDeskew" checked> 기울기 바로잡기</label>'
+        + '<label class="sc-opt" title="내용(글자·사진)이 한쪽으로 쏠린 쪽을 쪽 가운데로 옮깁니다 — 쏠림이 2mm 미만이면 그대로"><input type="checkbox" id="scUseCenter"> 쏠린 쪽 가운데로</label>'
+        + '<select class="es-input sc-axis" id="scCenterAxis" title="가운데로 맞출 방향"><option value="x">가로만</option><option value="xy">가로·세로</option></select>'
+        + '<span class="rbv-sep"></span>'
+        + '<button class="merge-cancel rbv-btn" id="scAllOn" title="보이는 목록의 쪽을 모두 정리 대상으로">모두 선택</button>'
+        + '<button class="merge-cancel rbv-btn" id="scAllOff" title="보이는 목록의 쪽을 모두 정리하지 않음으로">모두 해제</button>'
+        + '<span class="rbv-sep"></span>'
+        + '<button class="merge-cancel rbv-btn sc-filter" data-f="all">전체</button>'
+        + '<button class="merge-cancel rbv-btn sc-filter" data-f="change">바뀌는 쪽</button>'
+        + '<button class="merge-cancel rbv-btn sc-filter" data-f="review">⚠ 확인 필요</button>'
+        + '</div>'
+        + '<div class="rbv-body"><div class="rbv-list" id="scList"></div>'
+        + '<div class="rbv-view"><div class="rbv-pagebar"><button class="merge-cancel rbv-btn" id="scPrev" title="이전 쪽 (PageUp · 마우스 휠 위로)">‹</button><span id="scPageLbl"></span>'
+        + '<button class="merge-cancel rbv-btn" id="scNext" title="다음 쪽 (PageDown · 마우스 휠 아래로)">›</button><span class="rbv-sep"></span>'
+        + '<label class="sc-opt"><input type="checkbox" id="scPgOn"> 이 쪽 정리</label>'
+        + '<label class="sc-opt"><input type="checkbox" id="scPgEdges"> 띠·그늘</label>'
+        + '<label class="sc-opt"><input type="checkbox" id="scPgSpots"> 점 무늬</label>'
+        + '<label class="sc-opt"><input type="checkbox" id="scPgDeskew"> 기울기</label>'
+        + '<input type="number" class="es-input sc-angle" id="scPgAngle" step="0.05" min="-5" max="5" title="바로잡을 각도(°) — + = 반시계로 돌려 바로잡음(내용이 시계방향으로 기운 경우)"><span class="split-dim">°</span>'
+        + '<span class="rbv-sep"></span>'
+        + '<button class="merge-cancel rbv-btn" id="scCenterBtn" title="이 쪽 내용을 쪽 가운데로 옮깁니다 (단축키 C)">⊕ 가운데로</button>'
+        + '<span class="sc-shift" title="내용 옮김(mm) — 오른쪽·아래가 + · 화살표 키 0.5mm(Shift 5mm) · ✥ 이동 도구로 끌어도 됨">↔<input type="number" class="es-input sc-angle" id="scShiftX" step="0.5">↕<input type="number" class="es-input sc-angle" id="scShiftY" step="0.5"><span class="split-dim">mm</span></span>'
+        + '<button class="merge-cancel rbv-btn" id="scEdgeAuto" title="이 쪽 가장자리 띠 폭을 판정값으로 되돌립니다 (경계선 더블클릭 = 그 쪽만)">↺ 띠 자동</button>'
+        + '<button class="merge-cancel rbv-btn sc-tool" id="scToolPen" data-tool="pen" title="펜 — 끄는 대로 자유롭게 지웁니다 (단축키 P)">✎ 펜 <kbd class="sc-kbd">P</kbd></button>'
+        + '<button class="merge-cancel rbv-btn sc-tool" id="scToolMove" data-tool="move" title="이동 — 오른쪽(정리 후) 그림을 끌어 내용을 옮깁니다 (단축키 M)">✥ 이동 <kbd class="sc-kbd">M</kbd></button>'
+        + '<button class="merge-cancel rbv-btn sc-tool" id="scToolRect" data-tool="rect" title="사각형 — 끌어 고른 사각형을 지웁니다 (단축키 R)">▭ 사각형 <kbd class="sc-kbd">R</kbd></button>'
+        + '<span class="sc-size" id="scPenSize" title="펜 굵기 — [ 가늘게 · ] 굵게 (Shift+휠도 됨)"></span>'
+        + '<button class="merge-cancel rbv-btn" id="scManUndo" title="이 쪽에서 직접 지운 곳 중 마지막 하나를 취소 (Ctrl+Z)">↶ 하나 취소</button>'
+        + '<button class="merge-cancel rbv-btn" id="scManClear" title="이 쪽에서 직접 지운 곳을 모두 취소">✕ 직접 지운 곳 없애기</button>'
+        + '</div>'
+        + '<div class="rbv-canvas-wrap sc-wrap" id="scWrap"><canvas id="scCanvas"></canvas><div class="rbv-loading" id="scLoading">판정 중…</div></div>'
+        + '<div class="rbv-legend"><span class="sc-key sc-red"></span>가장자리 <span class="sc-key sc-blue"></span>점 무늬 <span class="sc-key sc-orange"></span>직접 지움 · 왼쪽 지금 / 오른쪽 정리 후 · <b>끌어서 지우기</b>(✎ 펜 굵기 <kbd>[</kbd> <kbd>]</kbd> · 우클릭 = 취소) <span class="split-dim" id="scWhy"></span></div></div></div>'
+        + '<p class="split-dim rb-note">원본 스캔 그림은 그대로 두고 흰색 덮기·회전만 그 쪽에 얹습니다(용량 그대로 · 되돌리기 가능). 썸네일·적용·다운로드·인쇄·임포징에 모두 반영됩니다. '
+        + '<b>📐 기울기 보정</b>(편집 모드)과 같이 켜면 두 번 돌아가니 하나만 쓰세요. ⚠ 확인 필요 쪽은 직접 보고 고르세요.</p>'
+        + '<div class="merge-actions"><span class="split-dim sc-saveinfo" id="scSaveInfo"></span>'
+        + '<button class="merge-cancel" id="scMidSave" title="지금까지 고친 것을 쪽에 반영하고 💼 작업 파일로 저장합니다 — 창은 그대로, 이어서 작업 (Ctrl+S)">💾 중간 저장 <kbd class="sc-kbd">Ctrl+S</kbd></button>'
+        + '<button class="merge-cancel" id="scUndo" style="display:none" title="이 창에서 정리한 것(중간 저장 포함)을 모두 되돌립니다">↺ 되돌리기</button>'
+        + '<button class="merge-cancel" id="scClose">닫기</button><button class="merge-confirm" id="scApply" disabled>판정 중…</button></div>'
+        + '</div>';
+      document.body.appendChild(ov);
+      const $ = id => ov.querySelector('#' + id);
+      let closed = false, cur = 0, filter = 'all', results = null, applied = null;
+      const onResize = () => { if (results) drawCur(); };
+      const over = new Map();   // originalIdx → { on, edges, spots, deskew, angle } 쪽마다 고친 값
+      const imgCache = new Map();
+      const close = () => {
+        closed = true; ov.remove(); document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', onResize);
+        if (results) results.forEach(r => { if (r.img) URL.revokeObjectURL(r.img); });
+      };
+      $('scClose').onclick = close;
+      const onKey = e => {
+        if (e.key === 'Escape') { e.preventDefault(); close(); }
+        // Ctrl+S = 💾 중간 저장(앱 전체의 Ctrl+S 작업 저장보다 먼저 — 고친 것을 반영한 뒤 저장)
+        else if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyS') { e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) midSave(); }
+        else if (e.key === 'PageDown') { e.preventDefault(); go(1); }
+        else if (e.key === 'PageUp') { e.preventDefault(); go(-1); }
+        else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && results && !applied) { e.preventDefault(); e.stopPropagation(); manUndo(); }
+        else if (results && !applied && !e.ctrlKey && !e.altKey && !e.metaKey && !(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))) {
+          // 펜 굵기 [ ] (한글 자판에서도 같은 자리 — e.code로) · 도구 P/R
+          if (e.code === 'BracketLeft' || e.code === 'BracketRight') { e.preventDefault(); e.stopPropagation(); penStep(e.code === 'BracketRight' ? 1 : -1); }
+          else if (e.code === 'KeyP') { e.preventDefault(); setTool('pen'); }
+          else if (e.code === 'KeyR') { e.preventDefault(); setTool('rect'); }
+          else if (e.code === 'KeyM') { e.preventDefault(); setTool('move'); }
+          else if (e.code === 'KeyC') { e.preventDefault(); centerCur(); }
+          else if (/^Arrow(Left|Right|Up|Down)$/.test(e.code)) {
+            e.preventDefault(); e.stopPropagation();
+            const st = e.shiftKey ? 5 : 0.5;
+            nudgeShift(e.code === 'ArrowLeft' ? -st : e.code === 'ArrowRight' ? st : 0, e.code === 'ArrowUp' ? -st : e.code === 'ArrowDown' ? st : 0);
+          }
+        }
+      };
+      document.addEventListener('keydown', onKey, true);
+
+      // 판정
+      try {
+        results = await scanAnalyzeRows(rowsAll, p => { if (!closed) $('scLoading').textContent = `판정 중… ${Math.round(p * 100)}% (${rowsAll.length}쪽)`; }, () => closed);
+      } catch (e) { if (!closed) { close(); showError('스캔 판정 실패: ' + ((e && e.message) || String(e))); } return; }
+      if (closed) { results.forEach(r => { if (r.img) URL.revokeObjectURL(r.img); }); return; }
+
+      // 이미 정리한 쪽 — 그때 고른 값(쪽 켜기·각도·직접 지운 곳)으로 시작한다(다시 적용해도 그대로 남게)
+      for (const x of rowsAll) {
+        const ce = contentEdits.get(x.r.originalIdx), pl = ce && ce.scan, r = results.get(x.r.originalIdx);
+        if (!pl || !r) continue;
+        const o = { edges: pl.useEdges !== false, spots: pl.useSpots !== false, deskew: !!(pl.useDeskew !== false && pl.deskew) };
+        if (pl.deskew && pl.deskew !== r.deskew) o.angle = pl.deskew;
+        if (pl.shift) o.shift = { x: pl.shift.x || 0, y: pl.shift.y || 0 };
+        if (pl.edges && ['top', 'bottom', 'left', 'right'].some(k => (pl.edges[k] || 0) !== (r.edges[k] || 0))) o.edgeMm = Object.assign({}, pl.edges);
+        if (Array.isArray(pl.manual) && pl.manual.length) o.manual = pl.manual.map(m => Object.assign({}, m));
+        over.set(x.r.originalIdx, o);
+      }
+      const anaInfo = scanAnalyzeRows.last || null;
+      const resOf = x => results.get(x.r.originalIdx);
+      const gUse = () => ({ edges: $('scUseEdges').checked, spots: $('scUseSpots').checked, deskew: $('scUseDeskew').checked });
+      const CENTER_MIN = (SCAN_CLEAN_DEFAULTS && SCAN_CLEAN_DEFAULTS.centerMinMm) || 2;
+      // 가운데로 옮길 거리(쏠림이 CENTER_MIN 미만인 방향은 0) — axis 'x' = 가로만
+      const autoShift = (r, axis) => {
+        const c = r && r.center; if (!c) return { x: 0, y: 0 };
+        return { x: Math.abs(c.dx) >= CENTER_MIN ? c.dx : 0, y: axis === 'xy' && Math.abs(c.dy) >= CENTER_MIN ? c.dy : 0 };
+      };
+      const shiftOf = (x, o) => o.shift ? o.shift : ($('scUseCenter').checked ? autoShift(resOf(x), $('scCenterAxis').value) : null);
+      // 쪽의 실제 계획(전체 선택 + 쪽마다 고친 값)
+      const planOf = x => {
+        const r = resOf(x), o = over.get(x.r.originalIdx) || {}, g = gUse();
+        if (o.on === false) return scanPlanOf(r, { edges: false, spots: false, deskew: false });
+        return scanPlanOf(r, { edges: o.edges != null ? o.edges : g.edges, spots: o.spots != null ? o.spots : g.spots,
+          deskew: o.deskew != null ? o.deskew : g.deskew, angle: o.angle, manual: o.manual, edgeMm: o.edgeMm, shift: shiftOf(x, o) });
+      };
+      const changes = x => !scanPlanEmpty(planOf(x));
+      const isReview = x => { const r = resOf(x); return r && r.review.length > 0; };
+      const visible = () => rowsAll.filter(x => filter === 'all' || (filter === 'change' ? changes(x) : isReview(x)));
+      const tags = x => {
+        const r = resOf(x), p = planOf(x), t = [];
+        if (p.useEdges && (p.edges.top || p.edges.bottom || p.edges.left || p.edges.right)) t.push(`<span class="rb-tag sc-t-red">띠${(over.get(x.r.originalIdx) || {}).edgeMm ? '·직접' : ''}</span>`);
+        if (p.useSpots && r.spots.length) t.push('<span class="rb-tag sc-t-blue">점</span>');
+        if (p.manual && p.manual.length) t.push(`<span class="rb-tag sc-t-orange">직접 ${p.manual.length}</span>`);
+        if (p.useDeskew && p.deskew) t.push(`<span class="rb-tag">${p.deskew > 0 ? '↺' : '↻'} ${Math.abs(p.deskew)}°</span>`);
+        if (p.shift) t.push(`<span class="rb-tag" title="내용 옮김(mm)">⇔ ${p.shift.x ? (p.shift.x > 0 ? '→' : '←') + Math.abs(p.shift.x) : ''}${p.shift.y ? (p.shift.y > 0 ? '↓' : '↑') + Math.abs(p.shift.y) : ''}</span>`);
+        if (r.blank) t.push('<span class="split-dim">빈 쪽</span>');
+        if (r.review.length) t.push(`<span class="rb-tag sc-t-warn" title="${esc(r.review.join(' · '))}">⚠</span>`);
+        return t.join(' ');
+      };
+      function summary() {
+        const n = rowsAll.filter(changes).length, rv = rowsAll.filter(isReview).length;
+        $('scSub').innerHTML = applied
+          ? `<b>${applied.pages}쪽</b>을 정리했습니다 — 썸네일·결과에 반영됐습니다. 마음에 들지 않으면 ↺ 되돌리기.`
+          : `<b>${rowsAll.length}쪽</b> 판정 — 정리할 쪽 <b>${n}</b>쪽 · 확인 필요 <b>${rv}</b>쪽`
+            + (anaInfo ? ` <span class="split-dim">· 판정 ${(anaInfo.ms / 1000).toFixed(1)}초${anaInfo.cached ? ` (기억한 쪽 ${anaInfo.cached})` : ''}</span>` : '')
+            + ` <span class="split-dim">(가장자리 ${rowsAll.filter(x => { const e = resOf(x).edges; return e.top || e.bottom || e.left || e.right; }).length} · 점 무늬 ${rowsAll.filter(x => resOf(x).spots.length).length} · 기울기 ${rowsAll.filter(x => resOf(x).deskew).length} · 쏠림 ${rowsAll.filter(x => { const c = resOf(x).center; return c && Math.abs(c.dx) >= CENTER_MIN; }).length})</span>`;
+        $('scApply').disabled = !!applied || !n;
+        $('scApply').textContent = applied ? '✔ 정리함' : (n ? `🧹 ${n}쪽 정리하기` : '정리할 쪽이 없습니다');
+        ov.querySelectorAll('.sc-filter').forEach(b => b.classList.toggle('sc-on', b.dataset.f === filter));
+      }
+      function renderList() {
+        const vis = visible();
+        $('scList').innerHTML = vis.length ? vis.map(x => {
+          const i = rowsAll.indexOf(x), o = over.get(x.r.originalIdx) || {};
+          return `<div class="rbv-pg"><div class="rbv-pghead${i === cur ? ' cur' : ''}" data-row="${i}">`
+            + (applied ? '' : `<input type="checkbox" class="rbv-pgchk" data-row="${i}" ${o.on === false ? '' : 'checked'}>`)
+            + `<b>${x.shown}쪽</b> ${tags(x)}</div></div>`;
+        }).join('') : '<div class="split-dim" style="padding:10px">해당하는 쪽이 없습니다.</div>';
+        summary();
+        const om = rowsAll[cur] && (over.get(rowsAll[cur].r.originalIdx) || {}).manual;
+        $('scManUndo').disabled = $('scManClear').disabled = !!applied || !(om && om.length);
+        $('scEdgeAuto').disabled = !!applied || !(rowsAll[cur] && (over.get(rowsAll[cur].r.originalIdx) || {}).edgeMm);
+      }
+      async function imgOf(r, idx) {
+        if (!r.img) { r.img = await scanPreviewImg(idx); if (closed && r.img) { URL.revokeObjectURL(r.img); r.img = null; } }
+        if (imgCache.has(r.img)) return imgCache.get(r.img);
+        const im = new Image(); await new Promise(ok => { im.onload = ok; im.onerror = ok; im.src = r.img; });
+        imgCache.set(r.img, im); if (imgCache.size > 12) imgCache.delete(imgCache.keys().next().value);
+        return im;
+      }
+      let drawSeq = 0;
+      async function drawCur() {
+        const x = rowsAll[cur]; if (!x) return;
+        const r = resOf(x), p = planOf(x), o = over.get(x.r.originalIdx) || {};
+        $('scPageLbl').textContent = `${x.shown}쪽 (${cur + 1}/${rowsAll.length})`;
+        $('scPgOn').checked = o.on !== false; $('scPgEdges').checked = p.useEdges; $('scPgSpots').checked = p.useSpots; $('scPgDeskew').checked = p.useDeskew;
+        $('scPgAngle').value = p.deskew || 0;
+        [$('scPgEdges'), $('scPgSpots'), $('scPgDeskew'), $('scPgAngle'), $('scPgOn')].forEach(el => el.disabled = !!applied);
+        $('scWhy').textContent = r.review.length ? '⚠ ' + r.review.join(' · ') : (r.blank ? '빈 쪽 — 기울기는 재지 않음' : `측정 각도 ${r.angle}° (신뢰 ×${r.gain})`);
+        const seq = ++drawSeq;
+        const im = await imgOf(r, x.r.originalIdx);
+        if (seq !== drawSeq || closed) return;
+        const wrap = $('scWrap'), cv = $('scCanvas');
+        const avW = Math.max(200, wrap.clientWidth - 24), avH = Math.max(200, wrap.clientHeight - 16);
+        const k = Math.min((avW - 12) / 2 / im.width, avH / im.height);
+        const W = Math.round(im.width * k), H = Math.round(im.height * k);
+        cv.width = W * 2 + 12; cv.height = H;
+        $('scLoading').style.display = 'none';
+        const c = cv.getContext('2d');
+        c.clearRect(0, 0, cv.width, cv.height);   // 두 그림 사이 틈은 투명 — 창 배경(테마)이 비친다
+        const mm = v => v / r.wMm * W;
+        // 왼쪽: 지금 + 지울 곳 표시
+        c.drawImage(im, 0, 0, W, H);
+        const e = p.edges;
+        // 이미 반영된 쪽(방금 정리했거나 다시 연 창에서 같은 계획으로 구워져 있는 쪽) — 왼쪽은 원본 그대로(표시 없이), 오른쪽 = 지금 결과
+        const ce0 = contentEdits.get(x.r.originalIdx), done = !!applied || !!(ce0 && ce0.scan && JSON.stringify(ce0.scan) === JSON.stringify(p));
+        $('scWhy').textContent = (done ? '✔ 이 쪽은 정리가 반영되어 있습니다 — 왼쪽 = 원본 스캔, 오른쪽 = 지금 결과' + (applied ? '' : ' (표시를 고치면 다시 정리할 수 있음)') + ' · ' : '') + $('scWhy').textContent;
+        $('scWhy').title = $('scWhy').textContent;
+        if (p.useEdges && !(done && applied)) {
+          c.fillStyle = done ? 'rgba(230,40,40,0.12)' : 'rgba(230,40,40,0.4)';
+          if (e.top) c.fillRect(0, 0, W, mm(e.top)); if (e.bottom) c.fillRect(0, H - mm(e.bottom), W, mm(e.bottom));
+          if (e.left) c.fillRect(0, 0, mm(e.left), H); if (e.right) c.fillRect(W - mm(e.right), 0, mm(e.right), H);
+          // 띠 안쪽 경계 = 끄는 손잡이(점선) — 끌면 폭이 바뀐다
+          if (!applied) {
+            c.save(); c.strokeStyle = 'rgba(200,20,20,0.95)'; c.lineWidth = 2; c.setLineDash([6, 4]);
+            const ln = (x0, y0, x1, y1) => { c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke(); };
+            if (e.top) ln(0, mm(e.top), W, mm(e.top)); if (e.bottom) ln(0, H - mm(e.bottom), W, H - mm(e.bottom));
+            if (e.left) ln(mm(e.left), 0, mm(e.left), H); if (e.right) ln(W - mm(e.right), 0, W - mm(e.right), H);
+            c.restore();
+          }
+        }
+        if (p.useSpots && !(done && applied)) { c.fillStyle = done ? 'rgba(40,100,240,0.15)' : 'rgba(40,100,240,0.45)'; for (const s of r.spots) c.fillRect(mm(s.x), mm(s.y), mm(s.w), mm(s.h)); }
+        const man = p.manual || [];
+        if (man.length && !(done && applied)) {
+          for (const s of man) {
+            if (s.t === 'p') { manStroke(c, s, mm, done ? 'rgba(255,150,0,0.2)' : 'rgba(255,150,0,0.55)'); continue; }
+            c.fillStyle = done ? 'rgba(255,150,0,0.15)' : 'rgba(255,150,0,0.45)'; c.strokeStyle = 'rgba(230,120,0,0.95)'; c.lineWidth = 1;
+            c.fillRect(mm(s.x), mm(s.y), mm(s.w), mm(s.h)); c.strokeRect(Math.round(mm(s.x)) + 0.5, Math.round(mm(s.y)) + 0.5, Math.round(mm(s.w)), Math.round(mm(s.h)));
+          }
+        }
+        const shx = p.shift ? p.shift.x * W / r.wMm : 0, shy = p.shift ? p.shift.y * W / r.wMm : 0;
+        geo = { W, H, gap: 12, angle: (p.useDeskew && p.deskew) || 0, wMm: r.wMm, hMm: r.hMm, idx: x.r.originalIdx, sx: shx, sy: shy };
+        if (document.activeElement !== $('scShiftX')) $('scShiftX').value = p.shift ? p.shift.x : 0;
+        if (document.activeElement !== $('scShiftY')) $('scShiftY').value = p.shift ? p.shift.y : 0;
+        $('scShiftX').disabled = $('scShiftY').disabled = $('scCenterBtn').disabled = !!applied;
+        $('scCenterBtn').disabled = !!applied || !r.center;
+        // 오른쪽: 정리 후(흰색 덮기 → 반시계 회전 → 이동) — 굽는 것과 같은 순서 · 빠른 썸네일과 같은 함수
+        scanPaintAfter(c, W + 12, 0, im, W, H, p, r.wMm);
+        // 바로 섰는지 보이게 가로 기준선
+        c.strokeStyle = 'rgba(255,60,60,0.35)'; c.lineWidth = 1;
+        for (let y = H / 8; y < H; y += H / 8) { c.beginPath(); c.moveTo(W + 12, Math.round(y) + 0.5); c.lineTo(W * 2 + 12, Math.round(y) + 0.5); c.stroke(); }
+        cv.style.cursor = applied ? '' : (tool === 'pen' ? 'none' : tool === 'move' ? 'move' : 'crosshair');
+      }
+      // ✏ 직접 지우기 — 펜(끄는 대로) 또는 사각형으로 그 부분을 흰색으로(왼쪽 = 지금 그림, 오른쪽 = 정리 후 그림 어느 쪽이든).
+      //   저장은 mm·원래 스캔 기준(무늬처럼 내용과 함께 돈다): 사각형 {x,y,w,h} · 펜 {t:'p', w: 굵기, pts: [[x,y]…]}
+      //   오른쪽(돌아간 그림)에서 그리면 점마다 거꾸로 돌린다(사각형은 감싸는 사각형).
+      let geo = null, drag = null;
+      const PEN_STEPS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
+      let tool = 'pen', penMm = 3;
+      try { const t = localStorage.getItem('scanEraseTool'); if (t === 'rect' || t === 'pen' || t === 'move') tool = t; const w = parseFloat(localStorage.getItem('scanPenMm')); if (PEN_STEPS.includes(w)) penMm = w; } catch (e) {}
+      function manStroke(ctx, s, mm, color) {
+        ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = Math.max(1, mm(s.w)); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); s.pts.forEach((q, i) => i ? ctx.lineTo(mm(q[0]), mm(q[1])) : ctx.moveTo(mm(q[0]), mm(q[1])));
+        if (s.pts.length === 1) ctx.lineTo(mm(s.pts[0][0]) + 0.01, mm(s.pts[0][1]));   // 한 번 찍기 = 동그란 점
+        ctx.stroke(); ctx.restore();
+      }
+      function syncToolUi() {
+        ov.querySelectorAll('.sc-tool').forEach(b => b.classList.toggle('sc-on', b.dataset.tool === tool));
+        $('scPenSize').textContent = tool === 'pen' ? `굵기 ${penMm}mm` : '';
+        $('scPenSize').style.visibility = tool === 'pen' ? '' : 'hidden';   // display:none이면 도구 줄 줄바꿈이 바뀌어 그림이 15px 튀었다(1920×1080) — 자리는 남긴다
+        if (!applied) $('scCanvas').style.cursor = tool === 'pen' ? 'none' : 'crosshair';
+        if (tool !== 'pen') hideBrush();
+      }
+      function setTool(t) { tool = t; try { localStorage.setItem('scanEraseTool', t); } catch (e) {} syncToolUi(); }
+      function penStep(d) {
+        let i = PEN_STEPS.indexOf(penMm); if (i < 0) i = 5;
+        penMm = PEN_STEPS[Math.max(0, Math.min(PEN_STEPS.length - 1, i + d))];
+        try { localStorage.setItem('scanPenMm', String(penMm)); } catch (e) {}
+        if (tool !== 'pen') setTool('pen'); else syncToolUi();
+        if (lastMouse) moveBrush(lastMouse);
+      }
+      ov.querySelectorAll('.sc-tool').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+      // 펜 굵기 원(마우스를 따라다님) — 실제 지워지는 폭 그대로
+      const brush = document.createElement('div'); brush.className = 'sc-brush'; $('scWrap').appendChild(brush);
+      let lastMouse = null;
+      function hideBrush() { brush.style.display = 'none'; }
+      function moveBrush(ev) {
+        const cv = $('scCanvas');
+        if (tool !== 'pen' || applied || !geo) { hideBrush(); return; }
+        const b = cv.getBoundingClientRect(), wr = $('scWrap'), wb = wr.getBoundingClientRect();
+        if (ev.clientX < b.left || ev.clientX > b.right || ev.clientY < b.top || ev.clientY > b.bottom) { hideBrush(); return; }
+        const d = penMm / geo.wMm * geo.W * (b.width / cv.width);
+        Object.assign(brush.style, { display: 'block', width: d + 'px', height: d + 'px',
+          left: (ev.clientX - wb.left + wr.scrollLeft - d / 2) + 'px', top: (ev.clientY - wb.top + wr.scrollTop - d / 2) + 'px' });
+      }
+      $('scCanvas').addEventListener('mousemove', ev => {
+        lastMouse = { clientX: ev.clientX, clientY: ev.clientY };
+        if (drag) return;
+        const h = !applied && geo ? edgeHit(canvasPt(ev)) : null;
+        if (h) { hideBrush(); $('scCanvas').style.cursor = (h === 'top' || h === 'bottom') ? 'ns-resize' : 'ew-resize'; return; }
+        $('scCanvas').style.cursor = applied ? '' : (tool === 'pen' ? 'none' : tool === 'move' ? 'move' : 'crosshair');
+        moveBrush(ev);
+      });
+      $('scCanvas').addEventListener('mouseleave', () => { lastMouse = null; if (!drag) hideBrush(); });
+      // Shift+휠 = 펜 굵기
+      $('scCanvas').addEventListener('wheel', ev => {
+        if (!ev.shiftKey || applied) return;
+        ev.preventDefault(); const d = (ev.deltaY || ev.deltaX) > 0 ? -1 : 1; penStep(d);
+      }, { passive: false });
+      // 휠 = 이전·다음 쪽(그림 영역 어디서나) — 휠 한 칸에 한 쪽, 터치패드의 작은 값은 모아서, 너무 빠른 연속은 거른다
+      let wheelAcc = 0, wheelAt = 0;
+      $('scWrap').addEventListener('wheel', ev => {
+        if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey || !results || drag) return;
+        ev.preventDefault();
+        const dy = ev.deltaMode === 1 ? ev.deltaY * 40 : ev.deltaMode === 2 ? ev.deltaY * 800 : ev.deltaY;
+        if (Math.sign(dy) !== Math.sign(wheelAcc)) wheelAcc = 0;
+        wheelAcc += dy;
+        const now = performance.now();
+        if (Math.abs(wheelAcc) < 50 || now - wheelAt < 120) return;
+        wheelAt = now; const d = wheelAcc > 0 ? 1 : -1; wheelAcc = 0;
+        go(d);
+      }, { passive: false });
+      // 캔버스 화소 → 원래 스캔 기준 화소(왼쪽 그림 좌표)
+      function toSrcPx(px, py) {
+        const g = geo; if (!g) return null;
+        if (px < g.W + g.gap / 2) return { x: px, y: py };
+        const qx = px - (g.W + g.gap) - g.W / 2 - (g.sx || 0), qy = py - g.H / 2 - (g.sy || 0), a = g.angle * Math.PI / 180;
+        // 오른쪽은 rotate(-a)로 그렸다 → rotate(+a)로 되돌린다
+        return { x: qx * Math.cos(a) - qy * Math.sin(a) + g.W / 2, y: qx * Math.sin(a) + qy * Math.cos(a) + g.H / 2 };
+      }
+      // 원래 스캔 기준 화소 → 오른쪽(정리 후) 캔버스 화소
+      function toRightPx(x, y) {
+        const g = geo, a = -g.angle * Math.PI / 180, qx = x - g.W / 2, qy = y - g.H / 2;
+        return { x: qx * Math.cos(a) - qy * Math.sin(a) + g.W / 2 + g.W + g.gap + (g.sx || 0), y: qx * Math.sin(a) + qy * Math.cos(a) + g.H / 2 + (g.sy || 0) };
+      }
+      function canvasPt(ev) {
+        const cv = $('scCanvas'), b = cv.getBoundingClientRect();
+        return { x: (ev.clientX - b.left) * cv.width / b.width, y: (ev.clientY - b.top) * cv.height / b.height };
+      }
+      function curOv() { const x = rowsAll[cur]; const o = over.get(x.r.originalIdx) || {}; over.set(x.r.originalIdx, o); return o; }
+      function manUndo() { const o = curOv(); if (o.manual && o.manual.length) { o.manual.pop(); renderList(); drawCur(); } }
+      $('scManUndo').onclick = manUndo;
+      $('scManClear').onclick = () => { const o = curOv(); if (o.manual && o.manual.length) { o.manual = []; renderList(); drawCur(); } };
+      const r2 = v => Math.round(v * 100) / 100;
+      // 끈 사각형(캔버스 화소, 시작한 쪽 그림) → 원래 스캔 기준 mm 사각형
+      function dragToMm(p0, p1, side) {
+        const g = geo, xs = [], ys = [];
+        for (const [cx, cy] of [[p0.x, p0.y], [p1.x, p0.y], [p0.x, p1.y], [p1.x, p1.y]]) {
+          const q = side === 0 ? { x: Math.min(cx, g.W), y: cy } : toSrcPx(Math.max(cx, g.W + g.gap), cy);
+          xs.push(q.x); ys.push(q.y);
+        }
+        const pxMm = g.wMm / g.W;
+        const x0 = Math.max(0, Math.min(...xs)) * pxMm, y0 = Math.max(0, Math.min(...ys)) * pxMm;
+        const x1 = Math.min(g.W, Math.max(...xs)) * pxMm, y1 = Math.min(g.H, Math.max(...ys)) * pxMm;
+        if (!(x1 - x0 > 0.3 && y1 - y0 > 0.3)) return null;
+        return { x: r2(x0), y: r2(y0), w: r2(x1 - x0), h: r2(y1 - y0) };
+      }
+      // 펜 점들(캔버스 화소, 시작한 쪽 그림) → 원래 스캔 기준 mm 획. 굵기의 1/4보다 가까운 점은 건너뛴다(획이 가볍게)
+      function penToMm(pts, side, w) {
+        const g = geo, pxMm = g.wMm / g.W, out = [], minD = Math.max(0.2, w / 4);
+        for (const pt of pts) {
+          const q = side === 0 ? { x: Math.min(pt.x, g.W + g.gap / 2), y: pt.y } : toSrcPx(Math.max(pt.x, g.W + g.gap / 2), pt.y);
+          const m = [r2(q.x * pxMm), r2(q.y * pxMm)];
+          const l = out[out.length - 1];
+          if (!l || Math.hypot(m[0] - l[0], m[1] - l[1]) >= minD) out.push(m);
+        }
+        const lastPt = pts[pts.length - 1];
+        if (pts.length > 1 && out.length) {   // 끝점은 꼭 남긴다
+          const q = side === 0 ? lastPt : toSrcPx(Math.max(lastPt.x, g.W + g.gap / 2), lastPt.y), m = [r2(q.x * pxMm), r2(q.y * pxMm)], l = out[out.length - 1];
+          if (m[0] !== l[0] || m[1] !== l[1]) out.push(m);
+        }
+        return out.length ? { t: 'p', w, pts: out } : null;
+      }
+      function addManual(item) {
+        if (!item) return;
+        const o = curOv(); o.on = true; (o.manual || (o.manual = [])).push(item);
+        renderList(); drawCur();
+      }
+      // ── ✥ 내용 옮기기 — 가운데로(C)·이동 도구 끌기(M)·화살표(0.5mm, Shift 5mm)·입력칸. 값 = 쪽마다 o.shift(mm, 오른쪽·아래 +)
+      const r1s = v => Math.round(v * 10) / 10;
+      function curShift() { const p = planOf(rowsAll[cur]); return p.shift ? { x: p.shift.x, y: p.shift.y } : { x: 0, y: 0 }; }
+      function setShift(x, y) {
+        if (applied) return;
+        const o = curOv(), r = resOf(rowsAll[cur]), lim = Math.max(r.wMm, r.hMm) / 2;
+        o.shift = { x: r1s(Math.max(-lim, Math.min(lim, x))), y: r1s(Math.max(-lim, Math.min(lim, y))) };
+        o.on = true;
+      }
+      let shiftRaf = 0;
+      const redrawSoon = () => { if (!shiftRaf) shiftRaf = requestAnimationFrame(() => { shiftRaf = 0; drawCur(); }); };
+      function centerCur() {
+        if (applied) return;
+        const r = resOf(rowsAll[cur]); if (!r || !r.center) return;
+        const axis = $('scCenterAxis').value;
+        setShift(r.center.dx, axis === 'xy' ? r.center.dy : curShift().y);
+        renderList(); drawCur();
+      }
+      function nudgeShift(dx, dy) { if (applied || !rowsAll[cur]) return; const s0 = curShift(); setShift(s0.x + dx, s0.y + dy); renderList(); drawCur(); }
+      $('scCenterBtn').onclick = centerCur;
+      const onShiftInput = () => { setShift(parseFloat($('scShiftX').value) || 0, parseFloat($('scShiftY').value) || 0); renderList(); drawCur(); };
+      $('scShiftX').onchange = onShiftInput; $('scShiftY').onchange = onShiftInput;
+      ['scUseCenter', 'scCenterAxis'].forEach(id => $(id).onchange = () => { renderList(); drawCur(); });
+      function startMoveDrag(p0) {
+        const s0 = curShift(), k = geo.W / geo.wMm;
+        const tip = document.createElement('div'); tip.className = 'sc-edgetip'; $('scWrap').appendChild(tip);
+        drag = { move: true };
+        const move = e2 => {
+          const pt = canvasPt(e2);
+          setShift(s0.x + (pt.x - p0.x) / k, s0.y + (pt.y - p0.y) / k);
+          const sh = curOv().shift, wr = $('scWrap'), wb = wr.getBoundingClientRect();
+          tip.textContent = `↔ ${sh.x}mm ↕ ${sh.y}mm`;
+          Object.assign(tip.style, { left: (e2.clientX - wb.left + wr.scrollLeft + 14) + 'px', top: (e2.clientY - wb.top + wr.scrollTop + 10) + 'px' });
+          redrawSoon();
+        };
+        const up = () => {
+          window.removeEventListener('mousemove', move, true); window.removeEventListener('mouseup', up, true);
+          drag = null; tip.remove(); renderList(); drawCur();
+        };
+        window.addEventListener('mousemove', move, true); window.addEventListener('mouseup', up, true);
+      }
+      // ── 가장자리 띠(빨강) 폭 고치기 — 왼쪽 그림에서 띠 안쪽 경계(폭 0이면 종이 가장자리)를 끈다
+      const EDGE_HIT = 7, EDGE_MAX = 60;
+      function curEdges() { return planOf(rowsAll[cur]).edges; }
+      function edgeHit(pt) {
+        const g = geo; if (!g || pt.x < 0 || pt.x > g.W || pt.y < 0 || pt.y > g.H) return null;
+        const k = g.W / g.wMm, e = curEdges(), use = planOf(rowsAll[cur]).useEdges;
+        const ez = side => use ? (e[side] || 0) : 0;
+        const cand = [['top', Math.abs(pt.y - ez('top') * k)], ['bottom', Math.abs(pt.y - (g.H - ez('bottom') * k))],
+          ['left', Math.abs(pt.x - ez('left') * k)], ['right', Math.abs(pt.x - (g.W - ez('right') * k))]]
+          .filter(c => c[1] <= EDGE_HIT).sort((a, b) => a[1] - b[1]);
+        return cand.length ? cand[0][0] : null;
+      }
+      const SIDE_KO = { top: '위', bottom: '아래', left: '왼쪽', right: '오른쪽' };
+      function setEdge(side, mmv) {
+        const o = curOv(), base = curEdges();
+        o.edgeMm = Object.assign({ top: base.top || 0, bottom: base.bottom || 0, left: base.left || 0, right: base.right || 0 }, o.edgeMm || {});
+        o.edgeMm[side] = mmv;
+        o.edges = true; o.on = true;
+      }
+      function edgeAuto(side) {
+        const o = curOv(); if (!o.edgeMm) return;
+        const r = resOf(rowsAll[cur]);
+        if (side) o.edgeMm[side] = r.edges[side] || 0;
+        if (!side || ['top', 'bottom', 'left', 'right'].every(k => (o.edgeMm[k] || 0) === (r.edges[k] || 0))) delete o.edgeMm;
+        renderList(); drawCur();
+      }
+      $('scEdgeAuto').onclick = () => edgeAuto(null);
+      $('scCanvas').addEventListener('dblclick', ev => {
+        if (applied || !geo) return;
+        const h = edgeHit(canvasPt(ev)); if (h) { ev.preventDefault(); edgeAuto(h); }
+      });
+      function startEdgeDrag(side, ev) {
+        const tip = document.createElement('div'); tip.className = 'sc-edgetip'; $('scWrap').appendChild(tip);
+        const g = geo, k = g.W / g.wMm;
+        let raf = 0;
+        drag = { edge: side };
+        const move = e2 => {
+          const pt = canvasPt(e2);
+          let v = side === 'top' ? pt.y / k : side === 'bottom' ? (g.H - pt.y) / k : side === 'left' ? pt.x / k : (g.W - pt.x) / k;
+          v = Math.round(Math.max(0, Math.min(EDGE_MAX, v)) * 10) / 10;
+          setEdge(side, v);
+          const wr = $('scWrap'), wb = wr.getBoundingClientRect();
+          tip.textContent = `${SIDE_KO[side]} ${v.toFixed(1)}mm`;
+          Object.assign(tip.style, { left: (e2.clientX - wb.left + wr.scrollLeft + 14) + 'px', top: (e2.clientY - wb.top + wr.scrollTop + 10) + 'px' });
+          if (!raf) raf = requestAnimationFrame(() => { raf = 0; drawCur(); });
+        };
+        const up = () => {
+          window.removeEventListener('mousemove', move, true); window.removeEventListener('mouseup', up, true);
+          drag = null; tip.remove(); renderList(); drawCur();
+        };
+        window.addEventListener('mousemove', move, true); window.addEventListener('mouseup', up, true);
+        move(ev);
+      }
+      $('scCanvas').addEventListener('mousedown', ev => {
+        if (ev.button !== 0 || applied || !geo) return;
+        const p0 = canvasPt(ev); if (p0.y < 0 || p0.y > geo.H) return;
+        ev.preventDefault();
+        if (ev.detail < 2) { const h = edgeHit(p0); if (h) { hideBrush(); startEdgeDrag(h, ev); return; } }
+        else if (edgeHit(p0)) return;   // 더블클릭의 두 번째 누름 — 되돌리기는 dblclick에서
+        if (tool === 'move') { startMoveDrag(p0); return; }
+        const d = { p0, p1: p0, side: p0.x < geo.W + geo.gap / 2 ? 0 : 1, pts: [p0] };
+        drag = d;
+        if (tool === 'pen') {
+          // 그리는 동안은 캔버스에 바로 덧그린다(왼쪽 주황 · 오른쪽 흰색) — 놓으면 정식으로 다시 그림
+          const c = $('scCanvas').getContext('2d'), k = geo.W / geo.wMm, lw = Math.max(1, penMm * k);
+          const seg = (a, b) => {
+            const sa = d.side === 0 ? a : toSrcPx(a.x, a.y), sb = d.side === 0 ? b : toSrcPx(b.x, b.y);
+            c.save(); c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = lw;
+            c.beginPath(); c.rect(0, 0, geo.W, geo.H); c.clip();
+            c.strokeStyle = 'rgba(255,150,0,0.55)'; c.beginPath(); c.moveTo(sa.x, sa.y); c.lineTo(sb.x + (sa === sb ? 0.01 : 0), sb.y); c.stroke(); c.restore();
+            const ra = toRightPx(sa.x, sa.y), rb = toRightPx(sb.x, sb.y);
+            c.save(); c.lineCap = 'round'; c.lineWidth = lw; c.beginPath(); c.rect(geo.W + geo.gap, 0, geo.W, geo.H); c.clip();
+            c.strokeStyle = '#fff'; c.beginPath(); c.moveTo(ra.x, ra.y); c.lineTo(rb.x + 0.01, rb.y); c.stroke(); c.restore();
+          };
+          seg(p0, p0);
+          const move = e2 => { lastMouse = { clientX: e2.clientX, clientY: e2.clientY }; moveBrush(e2); const pt = canvasPt(e2); seg(d.pts[d.pts.length - 1], pt); d.pts.push(pt); };
+          const up = () => {
+            window.removeEventListener('mousemove', move, true); window.removeEventListener('mouseup', up, true);
+            drag = null;
+            addManual(penToMm(d.pts, d.side, penMm));
+          };
+          window.addEventListener('mousemove', move, true); window.addEventListener('mouseup', up, true);
+          return;
+        }
+        const box = document.createElement('div'); box.className = 'sc-dragbox'; $('scWrap').appendChild(box);
+        const move = e2 => {
+          d.p1 = canvasPt(e2);
+          const cv = $('scCanvas'), b = cv.getBoundingClientRect(), wr = $('scWrap'), wb = wr.getBoundingClientRect(), k = b.width / cv.width;
+          const x0 = Math.min(d.p0.x, d.p1.x), y0 = Math.min(d.p0.y, d.p1.y);
+          Object.assign(box.style, { left: (b.left - wb.left + wr.scrollLeft + x0 * k) + 'px', top: (b.top - wb.top + wr.scrollTop + y0 * k) + 'px',
+            width: Math.abs(d.p1.x - d.p0.x) * k + 'px', height: Math.abs(d.p1.y - d.p0.y) * k + 'px' });
+        };
+        const up = () => {
+          window.removeEventListener('mousemove', move, true); window.removeEventListener('mouseup', up, true);
+          drag = null; box.remove();
+          if (Math.abs(d.p1.x - d.p0.x) < 3 || Math.abs(d.p1.y - d.p0.y) < 3) return;   // 클릭만 — 지우지 않음
+          addManual(dragToMm(d.p0, d.p1, d.side));
+        };
+        window.addEventListener('mousemove', move, true); window.addEventListener('mouseup', up, true);
+      });
+      // 우클릭 = 그 자리의 직접 지운 곳(사각형·펜 획) 취소 — 나중에 그린 것부터
+      function hitManual(s, mx, my) {
+        if (s.t !== 'p') return mx >= s.x && mx <= s.x + s.w && my >= s.y && my <= s.y + s.h;
+        const r = s.w / 2 + 0.5;
+        for (let i = 0; i < s.pts.length; i++) {
+          const a = s.pts[i], b = s.pts[Math.min(i + 1, s.pts.length - 1)];
+          const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+          const t = L ? Math.max(0, Math.min(1, ((mx - a[0]) * dx + (my - a[1]) * dy) / L)) : 0;
+          if (Math.hypot(mx - (a[0] + t * dx), my - (a[1] + t * dy)) <= r) return true;
+        }
+        return false;
+      }
+      $('scCanvas').addEventListener('contextmenu', ev => {
+        if (applied || !geo) return;
+        ev.preventDefault();
+        const pt = canvasPt(ev), q = toSrcPx(pt.x, pt.y); if (!q) return;
+        const o = curOv(); if (!o.manual || !o.manual.length) return;
+        const mx = q.x * geo.wMm / geo.W, my = q.y * geo.wMm / geo.W;
+        for (let i = o.manual.length - 1; i >= 0; i--) if (hitManual(o.manual[i], mx, my)) { o.manual.splice(i, 1); renderList(); drawCur(); return; }
+      });
+      syncToolUi();
+      // 검사용 손잡이 — 화면 좌표 대신 캔버스 화소로 끌기를 흉내 낸다
+      ov.__scTest = { dragToMm: (p0, p1, side) => dragToMm(p0, p1, side), penToMm, addManual, hitManual, geo: () => geo, over, planOfCur: () => planOf(rowsAll[cur]),
+        goRow: i => { cur = i; renderList(); return drawCur(); }, tool: () => tool, penMm: () => penMm, setTool, edgeHit, setEdge, edgeAuto, curEdges, curShift, centerCur, nudgeShift, setShift };
+      function go(d) { const vis = visible(); if (!vis.length) return; let k = vis.indexOf(rowsAll[cur]); k = Math.max(0, Math.min(vis.length - 1, (k < 0 ? 0 : k + d))); cur = rowsAll.indexOf(vis[k]); renderList(); drawCur(); scrollCur(); }
+      function scrollCur() { const el = $('scList').querySelector('.rbv-pghead.cur'); if (el) el.scrollIntoView({ block: 'nearest' }); }
+      $('scPrev').onclick = () => go(-1); $('scNext').onclick = () => go(1);
+      $('scList').addEventListener('click', ev => {
+        const chk = ev.target.closest('.rbv-pgchk');
+        if (chk) { const x = rowsAll[+chk.dataset.row], o = over.get(x.r.originalIdx) || {}; o.on = chk.checked; over.set(x.r.originalIdx, o); renderList(); if (rowsAll[cur] === x) drawCur(); return; }
+        const h = ev.target.closest('.rbv-pghead'); if (!h) return;
+        cur = +h.dataset.row; renderList(); drawCur();
+      });
+      const setOv = (key, val) => { const x = rowsAll[cur], o = over.get(x.r.originalIdx) || {}; o[key] = val; over.set(x.r.originalIdx, o); renderList(); drawCur(); };
+      $('scPgOn').onchange = e => setOv('on', e.target.checked);
+      $('scPgEdges').onchange = e => setOv('edges', e.target.checked);
+      $('scPgSpots').onchange = e => setOv('spots', e.target.checked);
+      $('scPgDeskew').onchange = e => setOv('deskew', e.target.checked);
+      $('scPgAngle').onchange = e => { const v = Math.max(-5, Math.min(5, parseFloat(e.target.value) || 0)); const x = rowsAll[cur], o = over.get(x.r.originalIdx) || {}; o.angle = v; o.deskew = v !== 0; over.set(x.r.originalIdx, o); renderList(); drawCur(); };
+      ['scUseEdges', 'scUseSpots', 'scUseDeskew'].forEach(id => $(id).onchange = () => { renderList(); drawCur(); });
+      const setAll = on => { visible().forEach(x => { const o = over.get(x.r.originalIdx) || {}; o.on = on; over.set(x.r.originalIdx, o); }); renderList(); drawCur(); };
+      $('scAllOn').onclick = () => setAll(true); $('scAllOff').onclick = () => setAll(false);
+      ov.querySelectorAll('.sc-filter').forEach(b => b.onclick = () => { filter = b.dataset.f; const vis = visible(); if (vis.length && !vis.includes(rowsAll[cur])) cur = rowsAll.indexOf(vis[0]); renderList(); drawCur(); });
+      window.addEventListener('resize', onResize);
+      const allItems = () => rowsAll.map(x => ({ idx: x.r.originalIdx, plan: planOf(x), wMm: resOf(x).wMm, img: resOf(x).img, had: !!(contentEdits.get(x.r.originalIdx) || {}).scan }))
+        .filter(it => !scanPlanEmpty(it.plan) || it.had);
+      // 📐 기울기 보정(편집 모드)이 켜져 있으면 두 번 돌아간다 — 기본은 꺼져 있지만 프리셋·최근 작업 설정으로 켜질 수 있어 묻는다. false = 취소
+      async function deskewConflictOk(items) {
+        if (!(items.some(it => it.plan.useDeskew && it.plan.deskew) && typeof editSettings !== 'undefined' && editSettings)) return true;
+        const lsAll = [editSettings, ...Object.values(editSettings.byChapter || {})].filter(ls => ls && ls.deskew && ls.deskew.enabled);
+        if (!lsAll.length) return true;
+        const c = await askChoice('📐 기울기 보정(편집 모드)이 켜져 있습니다.\n스캔 정리도 기울기를 바로잡으므로 둘 다 쓰면 쪽이 두 번 돌아갑니다.',
+          [{ label: '📐 기울기 보정 끄고 정리(권장)', value: 'off', primary: true }, { label: '그대로 정리', value: 'keep' }, { label: '취소', value: null }]);
+        if (!c) return false;
+        if (c === 'off') {
+          lsAll.forEach(ls => { ls.deskew.enabled = false; });
+          const chk = document.getElementById('esDkEnabled'); if (chk) chk.checked = false;
+          const body = document.getElementById('esDkBody'); if (body) body.classList.remove('show');
+          if (typeof invalidateProcessed === 'function') invalidateProcessed();
+        }
+        return true;
+      }
+      const bakeProgress = (p, msg) => { updateProgress(Math.round(p * 100)); if (msg && typeof loadingMsg !== 'undefined') loadingMsg.textContent = msg; };
+      // 이 창에서 처음 바꾸기 전의 편집본 — 중간 저장 뒤에 정리해도 ↺ 되돌리기는 창을 열기 전으로
+      const sessUndo = new Map();
+      const mergeUndo = u => u.forEach((v, k) => { if (!sessUndo.has(k)) sessUndo.set(k, v); });
+      // 💾 중간 저장: 지금 표시대로 쪽에 반영(저장된 것과 달라진 쪽만) → 💼 작업 저장 → 창은 그대로 이어서 작업
+      let saving = false;
+      async function midSave() {
+        if (!results || saving || closed) return;
+        saving = true; $('scMidSave').disabled = true;
+        try {
+          if (!applied) {
+            const items = allItems().filter(it => {
+              const st = (contentEdits.get(it.idx) || {}).scan;
+              return scanPlanEmpty(it.plan) ? !!st : !(st && JSON.stringify(st) === JSON.stringify(it.plan));
+            });
+            if (items.length) {
+              if (!(await deskewConflictOk(items))) return;
+              showLoading('💾 중간 저장 — 고친 쪽 반영 중…');
+              try { const res = await scanBakeItems(items, bakeProgress); mergeUndo(res.undo); }
+              catch (e) { showError('중간 저장 실패(정리 반영): ' + ((e && e.message) || String(e))); return; }
+              finally { hideLoading(); }
+              if (sessUndo.size) $('scUndo').style.display = '';
+            }
+          }
+          const ok = await saveWorkFile();
+          if (closed) return;
+          if (ok) {
+            const t = new Date(), hh = String(t.getHours()).padStart(2, '0'), mi = String(t.getMinutes()).padStart(2, '0');
+            $('scSaveInfo').textContent = `💾 ${hh}:${mi} 저장함`;
+            $('scSaveInfo').title = currentWorkPath() || '';
+          }
+          renderList(); drawCur();
+        } finally { saving = false; if (!closed) $('scMidSave').disabled = false; }
+      }
+      $('scMidSave').onclick = () => midSave();
+      $('scApply').onclick = async () => {
+        if (saving) return;
+        const items = allItems();
+        if (!items.length) return;
+        if (!(await deskewConflictOk(items))) return;
+        $('scApply').disabled = true;
+        showLoading('스캔 정리 적용 중…');
+        try {
+          applied = await scanBakeItems(items, bakeProgress);
+        } catch (e) { hideLoading(); showError('스캔 정리 실패: ' + ((e && e.message) || String(e))); $('scApply').disabled = false; return; }
+        mergeUndo(applied.undo); applied.undo = new Map(sessUndo);
+        hideLoading();
+        $('scUndo').style.display = '';
+        $('scTools').querySelectorAll('input, #scAllOn, #scAllOff').forEach(el => el.disabled = true);
+        renderList(); drawCur();
+        showSuccess(`🧹 ${applied.pages}쪽을 정리했습니다 — 빛샘·그늘 무늬를 지우고 기울기를 바로잡았습니다.\n썸네일·결과에 반영됐습니다 → '✔ 적용'·'⇩ 다운로드'로 저장하세요. 되돌리려면 정리 창의 '↺ 되돌리기'.`);
+      };
+      $('scUndo').onclick = async () => {
+        if (!applied && !sessUndo.size) return;
+        showLoading('되돌리는 중…');
+        try { await scanUndoBake(applied ? applied.undo : new Map(sessUndo)); } finally { hideLoading(); }
+        applied = null; sessUndo.clear();
+        $('scUndo').style.display = 'none';
+        $('scTools').querySelectorAll('input, #scAllOn, #scAllOff').forEach(el => el.disabled = false);
+        renderList(); drawCur();
+        showSuccess('↺ 스캔 정리를 되돌렸습니다.');
+      };
+      cur = 0;
+      renderList();
+      await drawCur();
     }
 
     let _rbFull = false;   // 점검 창 전체화면 — 다시 열어도 그대로
@@ -5397,7 +6412,7 @@
         + ['fill', 'stroke', 'text'].filter(k => cntKind(k)).map(k => `<button class="merge-cancel rbv-btn" data-kind="${k}">${KIND[k]} 모두 선택/해제</button>`).join('')
         + '</div>'
         + '<div class="rbv-body"><div class="rbv-list" id="rbList"></div>'
-        + '<div class="rbv-view"><div class="rbv-pagebar"><button class="merge-cancel rbv-btn" id="rbPrev" title="이전 쪽 (PageUp)">‹</button><span id="rbPageLbl"></span><button class="merge-cancel rbv-btn" id="rbNext" title="다음 쪽 (PageDown)">›</button>'
+        + '<div class="rbv-view"><div class="rbv-pagebar"><button class="merge-cancel rbv-btn" id="rbPrev" title="이전 쪽 (PageUp · 마우스 휠 위로)">‹</button><span id="rbPageLbl"></span><button class="merge-cancel rbv-btn" id="rbNext" title="다음 쪽 (PageDown · 마우스 휠 아래로)">›</button>'
         + '<span class="rbv-sep"></span><button class="merge-cancel rbv-btn" id="rbZoomOut" title="축소 (Ctrl + − · Ctrl+휠 아래)">−</button><span id="rbZoomPct" class="rbv-zoom">100%</span>'
         + '<button class="merge-cancel rbv-btn" id="rbZoomIn" title="확대 (Ctrl + + · Ctrl+휠 위)">+</button><button class="merge-cancel rbv-btn" id="rbZoomFit" title="화면에 맞춤 (Ctrl + 0)">맞춤</button>'
         + '<span class="split-dim rbv-hint" id="rbHint">상자 클릭 = 선택·해제 · Space 누른 채 끌기 = 이동 · Ctrl + + / − = 확대·축소</span></div>'
@@ -12295,7 +13310,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
         if (typeof contentEdits !== 'undefined' && contentEdits && contentEdits.size) {
           contentEdits.forEach((v, oi) => {
             if (!v || !v.bytes) return;
-            edits.push(Object.assign({ oi, model: v.model || [], rev: v.rev || 0 }, v.k100 ? { k100: v.k100 } : {}));
+            edits.push(Object.assign({ oi, model: v.model || [], rev: v.rev || 0 }, v.k100 ? { k100: v.k100 } : {}, v.scan ? { scan: v.scan } : {}));   // 🧹 스캔 정리 계획(작은 JSON) — scanPrev는 저장하지 않는다
             entries.push({ k: 'edit', name: 'edit_' + oi });
             blobs.push(new Uint8Array(v.bytes));
           });
@@ -12483,7 +13498,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           (manifest.entries || []).forEach((e, i) => { if (e.k === 'edit') editBlobs.push(blobs[i]); });
           st.edits.forEach((e, i) => {
             if (!editBlobs[i]) return;
-            contentEdits.set(e.oi, Object.assign({ model: e.model || [], bytes: editBlobs[i], rev: e.rev || 0 }, e.k100 ? { k100: e.k100 } : {}));
+            contentEdits.set(e.oi, Object.assign({ model: e.model || [], bytes: editBlobs[i], rev: e.rev || 0 }, e.k100 ? { k100: e.k100 } : {}, e.scan ? { scan: e.scan } : {}));
             editN++;
           });
           tab.contentEdits = contentEdits;

@@ -772,7 +772,32 @@ ipcMain.on('editor:close', (event) => {
   if (win && !win.isDestroyed()) win.close();
 });
 
+// ── 창 메뉴(Alt로 보임) Help에 🔄 업데이트 — 첫 화면 머리 버튼에서 옮겨 옴(사용자 요청 2026-10-29) ──
+// 기본 메뉴(File·Edit·View·Window — 단축키·확대 역할)는 그대로 두고 Help만 우리 항목으로 바꾼다.
+// 누르면 화면(app-ui updateApplyClick·updateRollbackClick·openSettingsMenu)으로 넘긴다.
+function installAppMenu() {
+  const { Menu, MenuItem } = require('electron');
+  const send = (cmd) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('menu:command', cmd); };
+  const items = [
+    { label: '🔄 업데이트 적용… (.pdfupd)', click: () => send('update') },
+    { label: '↺ 이전 버전으로 되돌리기…', click: () => send('rollback') },
+    { type: 'separator' },
+    { label: '⚙ 설정·업데이트 메뉴…', click: () => send('settings') },
+  ];
+  let menu = Menu.getApplicationMenu();
+  if (!menu) menu = Menu.buildFromTemplate([{ role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]);
+  // Help = 우리 항목만(기본 Help의 Electron 안내 링크는 이 앱과 무관) — 다른 메뉴 항목은 그대로 옮겨 담는다
+  const isHelp = (i) => i.role === 'help' || /^help$/i.test(String(i.label).replace('&', ''));
+  const old = menu; menu = new Menu();
+  old.items.filter(i => !isHelp(i)).forEach(i => menu.append(i));
+  const help = new MenuItem({ label: 'Help', submenu: Menu.buildFromTemplate(items) });
+  menu.append(help);
+  Menu.setApplicationMenu(menu);
+  if (IS_TEST_MODE) console.log('[SMOKE] MENU ' + menu.items.map(i => String(i.label).replace('&', '') + (i === help ? '[' + help.submenu.items.map(x => x.label).filter(Boolean).join('|') + ']' : '')).join(' / '));
+}
+
 app.whenReady().then(() => {
+  try { installAppMenu(); } catch (e) { console.warn('app menu:', e.message); }
   // 라이선스 먼저 — 저장 게이트가 창보다 앞서 준비돼 있어야 한다
   license.init({ userDataDir: app.getPath('userData'), appVersion: app.getVersion() });
   licenseServer.init(license, {
@@ -888,6 +913,133 @@ ipcMain.on('app:saveWorkResult', (event, ok) => {
 
 // 렌더러 → 앱 강제 새로고침(캐시 무시). 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 복구한다.
 // 새로고침하면 편집 내용이 사라지므로 '저장 안 한 작업' 플래그도 함께 해제한다.
+// ── 🔄 업데이트 파일(.pdfupd) 적용 — updater.js (2026-10-27) ─────────────────────────────
+// 설치 폴더 = 실행 파일이 있는 폴더(포터블 win-unpacked). 개발 실행(npm start)은 저장소를 덮어쓰면 안 되니 막고,
+// 단일 exe 포터블(electron-builder portable)은 실행할 때마다 임시 폴더에 풀려 적용해도 남지 않으니 막는다.
+// 검사 모드에서만 PDFEDIT_UPDATE_ROOT로 가짜 설치 폴더를 쓴다.
+const updater = require('./updater');
+function updateInstallDir() {
+  if (IS_TEST_MODE && process.env.PDFEDIT_UPDATE_ROOT) return process.env.PDFEDIT_UPDATE_ROOT;
+  if (!app.isPackaged) return { error: '개발 실행에서는 업데이트를 적용하지 않습니다(저장소 파일을 덮어쓰게 됩니다).' };
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return { error: '실행 파일 하나로 된 포터블은 업데이트를 적용할 수 없습니다 — 폴더(win-unpacked)로 된 배포본을 쓰세요.' };
+  const dir = path.dirname(process.execPath);
+  if (!fs.existsSync(path.join(dir, 'resources', 'app', 'package.json'))) return { error: '프로그램 폴더 구조가 달라 업데이트를 적용할 수 없습니다(resources/app 없음).' };
+  return dir;
+}
+const updateBackupDir = () => path.join(app.getPath('userData'), 'update-backup');
+function installedVersion(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'resources', 'app', 'package.json'), 'utf8')).version || app.getVersion(); }
+  catch (e) { return app.getVersion(); }
+}
+function relaunchSoon() {
+  if (IS_TEST_MODE) return false;   // 검사에서는 다시 켜지 않는다
+  setTimeout(() => { try { app.relaunch(); } catch (e) {} app.exit(0); }, 600);
+  return true;
+}
+ipcMain.handle('update:pick', async () => {
+  const r = await dialog.showOpenDialog({ title: '업데이트 파일 선택', filters: [{ name: 'PDF Editor 업데이트', extensions: ['pdfupd'] }], properties: ['openFile'] });
+  return (r.canceled || !r.filePaths.length) ? null : r.filePaths[0];
+});
+ipcMain.handle('update:inspect', (_e, p) => {
+  const dir = updateInstallDir();
+  const current = typeof dir === 'string' ? installedVersion(dir) : app.getVersion();
+  try {
+    const { manifest, files } = updater.readUpdate(fs.readFileSync(p));
+    return { ok: true, version: manifest.version, current, cmp: updater.compareVersions(manifest.version, current),
+      notes: manifest.notes || '', createdAt: manifest.createdAt, files: files.length, modules: !!manifest.modules,
+      canApply: typeof dir === 'string', why: typeof dir === 'string' ? '' : dir.error };
+  } catch (e) { return { ok: false, current, error: e && e.message ? e.message : String(e) }; }
+});
+ipcMain.handle('update:apply', (_e, p) => {
+  const dir = updateInstallDir();
+  if (typeof dir !== 'string') return { ok: false, error: dir.error };
+  try {
+    const r = updater.applyUpdate({ buf: fs.readFileSync(p), installDir: dir, backupDir: updateBackupDir(), currentVersion: installedVersion(dir) });
+    unsavedWork = false; docOpen = false;
+    return Object.assign({ ok: true, relaunch: relaunchSoon() }, r);
+  } catch (e) { return { ok: false, error: e && e.message ? e.message : String(e) }; }
+});
+ipcMain.handle('update:backupInfo', () => updater.backupInfo(updateBackupDir()));
+ipcMain.handle('update:rollback', () => {
+  const dir = updateInstallDir();
+  if (typeof dir !== 'string') return { ok: false, error: dir.error };
+  try {
+    const r = updater.rollbackUpdate({ installDir: dir, backupDir: updateBackupDir() });
+    unsavedWork = false; docOpen = false;
+    return Object.assign({ ok: true, relaunch: relaunchSoon() }, r);
+  } catch (e) { return { ok: false, error: e && e.message ? e.message : String(e) }; }
+});
+ipcMain.handle('app:version', () => { const d = updateInstallDir(); return typeof d === 'string' ? installedVersion(d) : app.getVersion(); });
+
+// ── 📊 사용 기록(이 PC 안에만 — 밖으로 보내지 않는다) ──────────────────────────
+//   userData/usage-log/YYYY-MM-DD.jsonl(한 줄 = 사건 하나) · memos.jsonl(💬 불편 메모, 지우지 않음).
+//   화면(src/usage-log.js)이 기능 이름·숫자·설정값만 모아 보낸다 — 문서 내용·파일 이름은 담지 않는다(그쪽에서 지움).
+//   90일 지난 날짜 파일은 켤 때 지운다. 검사 모드는 USAGE_LOG_TEST=1일 때만 기록(검사용 사용자 폴더).
+//   분석: node scripts/usage-report.js  (CLAUDE.md '사용 기록 분석')
+//   기록 폴더: 앱이 시스템 드라이브(C:) 밖에서 실행되면 그 드라이브의 '<드라이브>\PDF분석기-사용기록' —
+//   Windows 시스템 복원은 C:의 시스템·프로그램을 되돌리므로 기록이 복원과 상관없이 남게(사용자 요청 2026-10-29).
+//   C:에서 실행되면 예전대로 userData\usage-log. 검사 모드는 항상 검사용 userData.
+const USAGE_ON = !IS_TEST_MODE || process.env.USAGE_LOG_TEST === '1';
+const USAGE_SAFE_NAME = 'PDF분석기-사용기록';
+let _usageDir = null;
+function usageDir() {
+  if (_usageDir) return _usageDir;
+  const legacy = path.join(app.getPath('userData'), 'usage-log');
+  _usageDir = legacy;
+  if (IS_TEST_MODE || process.platform !== 'win32') return _usageDir;
+  try {
+    const sys = String(process.env.SystemDrive || 'C:').toUpperCase();
+    const exeDrive = path.parse(app.getPath('exe')).root.replace(/[\\/]+$/, '').toUpperCase();
+    if (/^[A-Z]:$/.test(exeDrive) && exeDrive !== sys) {
+      const dir = path.join(exeDrive + path.sep, USAGE_SAFE_NAME);
+      fs.mkdirSync(dir, { recursive: true });
+      _usageDir = dir;
+      // 예전 폴더(C:)에 쌓인 기록은 옮겨 합친다(같은 날 파일은 이어 붙임)
+      try {
+        for (const f of fs.readdirSync(legacy)) {
+          if (!/\.jsonl$/.test(f)) continue;
+          const from = path.join(legacy, f), to = path.join(dir, f);
+          const txt = fs.readFileSync(from, 'utf8');
+          fs.appendFileSync(to, txt.endsWith('\n') || !txt ? txt : txt + '\n', 'utf8');
+          fs.unlinkSync(from);
+        }
+        try { fs.rmdirSync(legacy); } catch (e) {}
+      } catch (e) {}
+    }
+  } catch (e) { _usageDir = legacy; }
+  return _usageDir;
+}
+function usageDay(d) { const z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`; }
+function usagePrune() {
+  try {
+    const cut = Date.now() - 90 * 86400000;
+    for (const f of fs.readdirSync(usageDir())) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})\.jsonl$/.exec(f);
+      if (m && new Date(+m[1], +m[2] - 1, +m[3]).getTime() < cut) { try { fs.unlinkSync(path.join(usageDir(), f)); } catch (e) {} }
+    }
+  } catch (e) {}
+}
+ipcMain.on('usage:append', (_e, lines) => {
+  if (!USAGE_ON || !Array.isArray(lines) || !lines.length) return;
+  try {
+    fs.mkdirSync(usageDir(), { recursive: true });
+    const txt = lines.slice(0, 500).map(o => { try { return JSON.stringify(o).slice(0, 2000); } catch (e) { return ''; } }).filter(Boolean).join('\n') + '\n';
+    fs.appendFileSync(path.join(usageDir(), usageDay(new Date()) + '.jsonl'), txt, 'utf8');
+  } catch (e) {}
+});
+ipcMain.handle('usage:memo', (_e, memo) => {
+  if (!USAGE_ON || !memo || typeof memo !== 'object') return false;
+  try {
+    fs.mkdirSync(usageDir(), { recursive: true });
+    fs.appendFileSync(path.join(usageDir(), 'memos.jsonl'), JSON.stringify(memo).slice(0, 20000) + '\n', 'utf8');
+    return true;
+  } catch (e) { return false; }
+});
+ipcMain.handle('usage:openDir', async () => {
+  try { fs.mkdirSync(usageDir(), { recursive: true }); return (await shell.openPath(usageDir())) === ''; } catch (e) { return false; }
+});
+app.whenReady().then(() => { if (USAGE_ON) { try { usageDir(); } catch (e) {} setTimeout(usagePrune, 15000); } });
+
 ipcMain.handle('app:forceReload', (event) => {
   const w = BrowserWindow.fromWebContents(event.sender);
   if (!w) return false;
@@ -1713,6 +1865,16 @@ ipcMain.handle('dialog:openFile', async (_e, opts) => {
     if (r.canceled || !r.filePaths.length) return [];
     return r.filePaths.map(fp => ({ path: fp, name: path.basename(fp) }));
   }
+  // kind:'image' — 🖼 이미지 업스케일·벡터화 창(이미지만, 여러 개)
+  if (opts && opts.kind === 'image') {
+    const r = await dialog.showOpenDialog({
+      title: '이미지 선택 (업스케일·벡터화)',
+      filters: [{ name: '이미지 (PNG·JPG·GIF·BMP·WEBP·TIFF)', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'avif'] }],
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (r.canceled || !r.filePaths.length) return [];
+    return r.filePaths.map(fp => ({ path: fp, name: path.basename(fp) }));
+  }
   const { canceled, filePaths } = await dialog.showOpenDialog({
     title: '파일 선택 (PDF · HWP · HWPX · MS Office · Adobe · 이미지)',
     filters: [
@@ -1779,13 +1941,41 @@ ipcMain.handle('dialog:confirmSavePath', (_, { filePath, kind }) => {
   return filePath;
 });
 
-ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind }) => {
+const SAVE_IMG_KINDS = { png: ['PNG 이미지', ['png']], jpg: ['JPEG 이미지', ['jpg', 'jpeg']], svg: ['SVG 벡터', ['svg']] };
+ipcMain.handle('dialog:saveFilePath', async (_, { defaultName, kind, defaultDir }) => {
+  // kind:'png'|'jpg'|'svg' — 🖼 업스케일·벡터화 결과. defaultDir(원본 이미지 폴더)가 있으면 그 폴더부터
+  if (SAVE_IMG_KINDS[kind]) {
+    if (!licenseGate(kind === 'svg' ? 'SVG' : '이미지')) return null;
+    let idir = defaultDir && usableSaveDir(defaultDir) ? defaultDir
+      : (_lastSaveDir && usableSaveDir(_lastSaveDir) ? _lastSaveDir : (desktopDir() || app.getPath('downloads')));
+    const [fname, exts] = SAVE_IMG_KINDS[kind];
+    const r = await dialog.showSaveDialog({
+      title: fname + ' 저장',
+      defaultPath: idir ? uniqueSavePath(idir, path.basename(String(defaultName || ('image.' + exts[0])))) : defaultName,
+      filters: [{ name: fname, extensions: exts }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    try { _lastSaveDir = path.dirname(r.filePath); } catch (e) {}
+    return r.filePath;
+  }
   // kind:'html' — E-book 시안 등 PDF가 아닌 산출물. 없으면 지금까지처럼 PDF로 동작한다.
   const isHtml = kind === 'html';
   const isWork = kind === 'pdfw';
+  // kind:'json' — ⚙ 설정·임포징 프리셋 내보내기. 출력물이 아니므로 체험판 검사를 하지 않는다
+  //   (만료된 PC에서도 설정을 꺼내 새 PC로 옮길 수 있어야 한다). 기본 위치는 바탕화면.
+  if (kind === 'json') {
+    let jdir = _lastSaveDir && usableSaveDir(_lastSaveDir) ? _lastSaveDir : (desktopDir() || app.getPath('downloads'));
+    const r = await dialog.showSaveDialog({
+      title: '설정 파일 저장',
+      defaultPath: jdir ? uniqueSavePath(jdir, path.basename(String(defaultName || 'settings.json'))) : defaultName,
+      filters: [{ name: 'JSON 설정 파일', extensions: ['json'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    return r.filePath;
+  }
   if (!licenseGate(isHtml ? '시안 HTML' : isWork ? '작업 파일' : 'PDF')) return null;   // 체험판 만료·미인증 → 저장 경로를 주지 않는다
   // 기본 폴더 = 문서를 연 폴더(app:docDir) → 그 뒤로는 직전 저장 폴더, 둘 다 없으면 다운로드
-  let dir = pickSaveDir(kind, _docDir, _lastSaveDir, isTempPath);
+  let dir = (defaultDir && usableSaveDir(defaultDir)) ? defaultDir : pickSaveDir(kind, _docDir, _lastSaveDir, isTempPath);
   try { if (!usableSaveDir(dir)) dir = desktopDir() || app.getPath('downloads'); } catch (e) { dir = null; }
   const defaultPath = dir ? uniqueSavePath(dir, defaultName) : defaultName;
   const { canceled, filePath } = await dialog.showSaveDialog({
@@ -1962,6 +2152,56 @@ ipcMain.handle('printer:props', async (e, a) => {
 });
 
 // 인쇄 — 렌더러가 만든 임시 PDF(tmpdir의 pdfedit_*.pdf)만 받는다
+// ── 🔍 AI 업스케일 — Real-ESRGAN ncnn Vulkan(src/libs/realesrgan, BSD-3). GPU(Vulkan)에서 돈다.
+//   GPU가 없는 PC는 'invalid gpu device' 등으로 실패 → 화면이 일반 보간으로 대신한다(noGpu).
+//   입출력은 tmpdir의 pdfedit_* 그림만(경로 조작 차단). 진행률은 stderr의 'nn.nn%'를 그대로 넘긴다.
+const UPSCALE_DIR = path.join(__dirname, 'src', 'libs', 'realesrgan');
+const UPSCALE_MODELS = new Set(['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3']);
+let _upscaleChild = null;
+function upscaleTmpOk(p) {
+  try { return /^pdfedit_[\w.-]+\.(png|jpg|webp)$/i.test(path.basename(String(p || ''))) && path.dirname(p) === os.tmpdir(); } catch (e) { return false; }
+}
+ipcMain.handle('upscale:run', (e, a) => new Promise((resolve) => {
+  a = a || {};
+  if (!upscaleTmpOk(a.inPath) || !upscaleTmpOk(a.outPath)) return resolve({ ok: false, error: '잘못된 임시파일 경로' });
+  if (!UPSCALE_MODELS.has(a.model)) return resolve({ ok: false, error: '알 수 없는 모델: ' + a.model });
+  const exe = path.join(UPSCALE_DIR, 'realesrgan-ncnn-vulkan.exe');
+  if (!fs.existsSync(exe)) return resolve({ ok: false, missing: true, error: '업스케일 엔진이 없습니다 (src/libs/realesrgan)' });
+  // realesrgan-x4plus·x4plus-anime은 4배 전용 — 다른 배율로 돌리면 결과가 조각조각 뒤섞인다(실측). 2·3배는 animevideov3만.
+  const scale = /^realesrgan-x4plus/.test(a.model) ? 4 : ([2, 3, 4].includes(+a.scale) ? +a.scale : 4);
+  const args = ['-i', a.inPath, '-o', a.outPath, '-n', a.model, '-s', String(scale), '-m', path.join(UPSCALE_DIR, 'models'), '-f', 'png'];
+  if (a.gpu != null && /^-?\d+$/.test(String(a.gpu))) args.push('-g', String(a.gpu));
+  if (_upscaleChild) { try { _upscaleChild.kill(); } catch (err) {} }
+  const t0 = Date.now();
+  let log = '', gpu = '';
+  let ch;
+  try { ch = spawn(exe, args, { cwd: UPSCALE_DIR, windowsHide: true }); }
+  catch (err) { return resolve({ ok: false, error: err.message }); }
+  _upscaleChild = ch;
+  const onData = d => {
+    const t = d.toString();
+    log += t; if (log.length > 20000) log = log.slice(-8000);
+    const m = t.match(/(\d+(?:\.\d+)?)%/g);
+    if (m) { try { e.sender.send('upscale:progress', parseFloat(m[m.length - 1])); } catch (err) {} }
+    if (!gpu) { const g = t.match(/\[0 ([^\]]+)\]/); if (g) gpu = g[1].trim(); }
+  };
+  ch.stderr.on('data', onData); ch.stdout.on('data', onData);
+  ch.on('error', err => { if (_upscaleChild === ch) _upscaleChild = null; resolve({ ok: false, error: err.message }); });
+  ch.on('close', code => {
+    const canceled = _upscaleChild !== ch;
+    if (_upscaleChild === ch) _upscaleChild = null;
+    let ok = false; try { ok = code === 0 && fs.statSync(a.outPath).size > 0; } catch (err) {}
+    const tail = log.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/%$/.test(l) && !/^\[\d/.test(l)).slice(-3).join(' · ');
+    resolve({ ok, ms: Date.now() - t0, gpu, canceled: canceled && !ok,
+      noGpu: !ok && /invalid gpu|vkCreateInstance|vulkan|failed to create gpu|no gpu/i.test(log),
+      error: ok ? null : (tail || ('종료 코드 ' + code)) });
+  });
+}));
+ipcMain.handle('upscale:cancel', () => {
+  if (_upscaleChild) { const c = _upscaleChild; _upscaleChild = null; try { c.kill(); } catch (err) {} }
+  return true;
+});
+
 ipcMain.handle('printer:print', async (e, a) => {
   const o = a || {};
   const file = typeof o.path === 'string' ? path.resolve(o.path) : '';

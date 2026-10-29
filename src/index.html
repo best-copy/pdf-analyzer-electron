@@ -9,6 +9,9 @@
   <script src="./libs/fontkit.umd.min.js"></script>
   <script src="./libs/pako.min.js"></script>
   <script src="./libs/gray-blend.js"></script>
+  <script src="./libs/scan-clean.js"></script><!-- 🧹 스캔 정리 — 빛샘·그늘 무늬·기울기 판정과 굽기(쪽 편집본) -->
+  <script src="./libs/gray-jpeg.js"></script><!-- 1성분(DeviceGray) JPEG 인코더 — 🖼 흑백 업스케일 결과를 흑백 그대로 (worker-gray.js와 공용) -->
+  <script src="./libs/img-enhance.js"></script><!-- 🖼 업스케일 배율·윤곽 → PDF/SVG (worker-trace.js와 공용, 순수) -->
   <script src="./libs/rich-black.js"></script><!-- ⚫ 혼합 검정(리치 블랙) 점검·K100 바꾸기 — 저장 직전(buildFinalSaveBytes)·프리플라이트 -->
   <script src="./libs/annot-flatten.js"></script><!-- 쪽을 폼으로 실을 때 인쇄되는 주석까지 — 임포징·표지 (조립 워커·임포징 도구 공용) --><!-- 저장 직전 투명도 흑백 합성 그룹 — savePdfDoc (워커·편집기·임포징 도구 공용) -->
   <link rel="stylesheet" href="./style.css">
@@ -25,6 +28,11 @@
       <div class="theme-seg" role="group" aria-label="화면 밝기">
         <button type="button" data-theme-pick="light" onclick="setUiTheme('light')">☀ 주간</button><button type="button" data-theme-pick="dark" onclick="setUiTheme('dark')">🌙 야간</button>
       </div>
+      <!-- ⚙ 설정 옮기기·메모 — 주간/야간과 같은 크기(🔄 업데이트는 창 메뉴 Help로 · main installAppMenu) · 다른 PC로 앱 설정 전체(프리셋·단가·용지·재단선 모양·테마 …)를 JSON 하나로 (app-ui exportAppSettings) -->
+      <div class="theme-seg cfg-seg" role="group" aria-label="설정 옮기기">
+        <button type="button" id="cfgExportBtn" onclick="exportAppSettings()" title="⬆ 설정 내보내기 — 앱 설정 전체(임포징 프리셋·단가·사용자 용지·재단선 모양·표지 프리셋·테마 등)를 JSON 파일 하나로 저장 — 다른 PC에서 '설정 가져오기'로 그대로 옮깁니다">⬆ 설정</button><button type="button" id="cfgImportBtn" onclick="importAppSettingsClick()" title="⬇ 설정 가져오기 — '설정 내보내기'로 만든 JSON 파일을 불러와 이 PC에 적용 — 지금 설정은 백업해 두고 앱을 새로고침합니다">⬇ 설정</button><button type="button" id="usageMemoBtn2" onclick="openUsageMemo()" title="💬 불편 메모 — 쓰다가 불편한 점·바라는 점을 적어 둡니다 — 그때 상황과 함께 이 PC에만 저장 (어디서든 Ctrl+Shift+M)">💬 메모</button>
+      </div>
+      <input type="file" id="appSettingsImportFile" accept=".json,application/json" style="display:none" onchange="importAppSettingsFile(this)">
       <!-- 체험판 배지 — 정품(관리자) PC에서는 표시되지 않는다. 클릭 시 인증 창 -->
       <div id="licBadge" class="lic-badge" style="display:none" title="클릭하면 체험판 인증 창이 열립니다 (Ctrl+Shift+Alt+L)"
            onclick="window.electronAPI.openLicenseWindow()"></div>
@@ -34,6 +42,8 @@
       <p class="drop-hint">📂 파일을 여기로 드래그<br><span class="drop-hint-sub">(여러 파일 가능)</span></p>
       <div class="file-input-wrapper">
         <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()"><span class="ic">📁</span> 파일 선택하기</button>
+        <button class="file-input-label ie-entry" id="imgEnhanceBtn" onclick="openImageEnhance()" title="흐린 사진·작은 이미지를 AI로 키우거나(업스케일), 로고·도장·일러스트를 벡터(선·면)로 바꿉니다 — 결과는 인쇄 크기 그대로 PDF로 열거나 파일로 저장"><span class="ic">🖼</span> 이미지 업스케일·벡터화</button>
+        <button class="file-input-label ie-entry" id="recentToggleBtn" onclick="toggleRecentFiles()" title="최근에 연 파일 목록을 펼치거나 접습니다"><span class="ic">🕘</span> 최근 파일</button>
       </div>
       <p class="drop-sub">한글·MS Office·Adobe 문서와 이미지(PNG·JPG·GIF·BMP·WEBP·TIFF)는 자동으로 PDF 변환 후 처리 · 여러 파일은 각각 탭으로 열립니다<br>이미지는 파일에 기록된 해상도(DPI)로 실제 인쇄 크기의 1쪽 PDF가 됩니다 (기록이 없으면 큰 이미지는 300DPI, 작은 이미지는 96DPI)</p>
       <div class="recent-files" id="recentFiles"></div>
@@ -254,6 +264,8 @@
     <div id="sbPanel">
       <div class="sbp-head">
         <span class="sbp-head-title">📊 분석·처리옵션</span>
+        <button type="button" id="usageMemoBtn" class="sbp-theme-btn" onclick="openUsageMemo()" title="💬 불편 메모 — 쓰다가 불편한 점·바라는 점을 적어 두면 그때 상황과 함께 이 PC에 저장됩니다 (어디서든 Ctrl+Shift+M)">💬</button>
+        <button type="button" id="cfgMenuBtn" class="sbp-theme-btn" onclick="openSettingsMenu()" title="⚙ 설정·업데이트 — 앱 설정 전체를 내보내거나 가져오고, 받은 업데이트 파일(.pdfupd)을 적용합니다">⚙</button>
         <button type="button" id="themeToggleBtn" class="sbp-theme-btn" onclick="toggleUiTheme()" title="밝은 화면(라이트)으로 바꾸기">☀</button>
         <label class="sbp-switch" title="패널 열기/닫기">
           <input type="checkbox" id="sbPanelToggle" checked onchange="toggleSbPanel(this.checked)">
@@ -298,6 +310,7 @@
           <button class="sbp-clear" id="sb-refreshBtn" onclick="refreshResults()" title="결과 새로고침 (F5)">🔄 결과 새로고침<span class="sb-long"> (F5)</span></button>
           <button class="sbp-clear" id="sb-forceReloadBtn" onclick="forceReloadApp()" title="앱 강제 새로고침 (Ctrl+Shift+R) — 화면·상태가 꼬였을 때 앱을 껐다 켜지 않고 처음 상태로 되돌립니다">⟳ 앱 새로고침<span class="sb-long"> (Force Reload)</span></button>
           <button class="sbp-clear" id="sbPfBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·색공간·페이지 크기 혼재를 점검합니다"><span class="ic">🧪</span> 프리플라이트<span class="sb-long"> 검사</span></button>
+          <button class="sbp-clear" id="sbImgEnhanceBtn" onclick="openImageEnhance()" title="이미지 파일을 AI로 키우거나(업스케일) 로고·도장·일러스트를 벡터로 바꿉니다 — 결과는 PDF로 열거나(챕터·새 탭) 파일로 저장"><span class="ic">🖼</span> 이미지 업스케일·벡터화</button>
           <button class="sbp-clear" id="tocBtn" onclick="openTocDialog()" title="선택한 페이지들을 목차 항목(장 시작)으로 지정 — 제목 글자를 자동 인식해 목차 페이지·PDF 북마크를 만듭니다"><span class="ic">📑</span> 목차 생성<span class="sb-long"> (선택 페이지)</span></button>
           <button class="sbp-clear" id="printerSetupBtn" style="display:none;" onclick="setupVirtualPrinter()" title="가상 프린터 'PDF Editor' 설치 — 아크로뱃 등 어떤 프로그램에서든 인쇄 → PDF Editor 선택으로 문서(페이지 범위 지정 가능)를 이 앱에 보냅니다"><span class="ic">🖨</span> '인쇄로 받기' 프린터 설치</button>
           <button class="sbp-clear" id="sb-clearOptsBtn" onclick="clearOptions()" style="display:none;">✖ 해제</button>
@@ -679,6 +692,7 @@
       <div class="es-row">
         <span class="es-label">프리셋</span>
         <select class="es-select" id="impProfile" style="flex:1; min-width:0;" onchange="onImpProfileChange()" title="선택하면 즉시 프리셋 설정이 적용됩니다"></select>
+        <button class="es-chip" id="impProfQuickSave" style="flex:0 0 auto;" onclick="impProfileQuickSave()" title="지금 설정(방식·용지·여백·거터·재단선·◲ 블리드 생성)을 프리셋으로 저장 — 이름을 물어봅니다. 다음부터 왼쪽 목록에서 고르면 그대로 적용됩니다">💾</button>
         <button class="es-chip" id="impProfMgmtBtn" style="flex:0 0 auto;" onclick="toggleImpProfMgmt()" title="프리셋 저장·수정·목록·동기화 펼치기/접기">▸ 관리</button>
       </div>
       <div id="impProfMgmt" style="display:none;">
@@ -988,6 +1002,15 @@
         <span style="color:#d1d1d6;">원본 배율 유지 (100% — 맞추지 않음)</span>
       </label>
       <div class="es-hint" id="esScaleHint">원본 크기를 유지합니다. 규격 용지/사용자 정의를 선택하면 콘텐츠를 그 크기에 맞춰 확대·축소합니다.</div>
+    </div>
+
+    <!-- 🧹 스캔 정리 — 쪽마다 판정해 빛샘·그늘 무늬를 지우고 기울기를 바로잡는다(쪽 편집본으로 굽기) -->
+    <div class="es-section" id="secScanClean">
+      <div class="es-section-title"><span class="ic">🧹</span> 스캔 정리</div>
+      <div class="es-row" style="margin-top:6px;">
+        <button class="es-chip" style="flex:1;" onclick="openScanCleanModal()" title="스캔 원고를 쪽마다 판정해 가장자리 검은 띠(빛샘)·책등 그늘 줄·모서리 옅은 점 무늬를 흰색으로 지우고 기울어진 쪽을 바로잡습니다 — 쪽마다 보정 전·후를 보고 고른 뒤 적용(되돌리기 가능)">🔍 판정하고 정리하기</button>
+      </div>
+      <div class="es-hint">스캐너 유리판 빛샘·책등 그늘·기울어진 쪽을 쪽마다 찾아 고칩니다. 원본 스캔 그림은 그대로 두어 용량이 늘지 않습니다. 이것으로 기울기를 바로잡으면 아래 <b>📐 기울기 보정</b>은 끄세요(두 번 돌아감).</div>
     </div>
 
     <!-- 기울기 보정 (스캔 문서 자동/수동 디스큐) -->
@@ -1833,5 +1856,7 @@
   <script src="./app-core.js"></script>
   <script src="./app-process.js"></script>
   <script src="./app-ui.js"></script>
+  <script src="./app-enhance.js"></script>
+  <script src="./usage-log.js"></script><!-- 📊 사용 기록·💬 불편 메모 (이 PC 안에만 — 전역 함수를 감싸므로 맨 뒤) --><!-- 🖼 이미지 업스케일·벡터화 창 (app-ui 뒤 — 최상위 즉시 실행문 없음) -->
 </body>
 </html>

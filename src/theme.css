@@ -27,6 +27,8 @@
   --c-accent-soft: rgba(216,189,110,.14);
   --c-accent-line: rgba(216,189,110,.55);
   --c-danger:      #e0736c;
+  --c-info:        #6b9cf0;   /* 🧹 스캔 정리 — 지울 점 무늬 표시 */
+  --c-mark:        #f0a040;   /* 🧹 스캔 정리 — 직접 지울 곳 표시 */
   --c-radius:      0;         /* 카드·입력 상자 — 모두 사각(사용자 결정) */
   --c-btn-radius:  0;         /* 버튼·칩·메뉴 — 사각(사용자 결정 2026-09-30, business-mgmt 라이트와 같은 각진 모양) */
   --c-radius-lg:   0;
@@ -63,6 +65,8 @@ html.theme-light {
   --c-accent-soft: rgba(255,214,10,.38);
   --c-accent-line: rgba(230,190,0,.85);
   --c-danger:      #c4453d;
+  --c-info:        #2f6fd8;
+  --c-mark:        #e08a10;
   --c-danger-text: #b3362f;
   --c-head:        #e9e9ed;
   --c-head-2:      #ededf1;
@@ -620,6 +624,10 @@ body.edit-fullscreen #previewSection { background: var(--c-surface); }
 .theme-seg button + button { border-left: none; }
 .theme-seg button:hover { background: var(--c-surface-2); color: var(--c-text); }
 .theme-seg button.active { background: var(--c-accent); border-color: var(--c-accent); color: var(--c-accent-ink); }
+/* ⚙ 설정 옮기기·메모 — 주간/야간 바로 아래, 두 줄 버튼 모두 같은 크기(글은 짧게 · 자세한 설명은 title) */
+.cfg-seg { top: 14px; left: auto; right: 18px; }   /* 오른쪽 위 (사용자 요청 2026-10-29) */
+.header .lic-badge { top: 48px; }                    /* 체험판 배지는 설정 버튼 아래로 */
+.theme-seg button { width: 74px; padding-left: 4px; padding-right: 4px; text-align: center; white-space: nowrap; }
 
 /* 사이드바 썸네일 크기(−/%/+) — 칸 최소 폭 --sb-thumb(app-ui applySbThumbZoom) */
 #thumbSidebar:not(.sb-compact) { grid-template-columns: repeat(auto-fill, minmax(min(var(--sb-thumb, 110px), 100%), 1fr)); }
@@ -744,3 +752,72 @@ body.page-marqueeing, body.page-marqueeing * { user-select: none !important; cur
 .quote-section { overflow-x: auto; }
 .quote-section .q-table td input[type=number] { min-width: 52px; }
 .quote-section .q-table td:nth-child(4) input[type=number] { min-width: 68px; }
+
+/* 🧹 스캔 정리 창 (app-process openScanCleanModal) — 점검 창(rbv-*) 짜임을 그대로 쓴다 */
+.sc-modal .sc-opt { display: inline-flex; align-items: center; gap: 4px; font-size: .82em; color: var(--c-text); margin-right: 10px; cursor: pointer; white-space: nowrap; }
+.sc-modal .sc-filter.sc-on { background: var(--c-accent); border-color: var(--c-accent); color: var(--c-accent-ink); }
+.sc-modal .sc-angle { flex: 0 0 64px; width: 64px; margin-left: 2px; }
+.sc-modal .sc-wrap { display: flex; align-items: center; justify-content: center; }
+.sc-modal .sc-key { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; margin: 0 4px 0 10px; border: 1px solid var(--c-border); }
+.sc-modal .sc-red { background: var(--c-danger); opacity: .6; }
+.sc-modal .sc-blue { background: var(--c-info); opacity: .6; }
+.sc-modal .sc-t-red { border-color: var(--c-danger); color: var(--c-danger-text); }
+.sc-modal .sc-t-blue { border-color: var(--c-info); color: var(--c-text); }
+.sc-modal .rbv-pagebar { flex-wrap: wrap; row-gap: 4px; }
+.sc-modal .rbv-pagebar .rbv-btn { white-space: nowrap; }
+.sc-modal .sc-kbd { font: inherit; font-size: .78em; padding: 0 4px; margin-left: 2px; border: 1px solid var(--c-border); opacity: .8; }
+.sc-modal .rbv-legend kbd { font: inherit; padding: 0 4px; border: 1px solid var(--c-border); }
+/* 높이 고정 — 쪽 설명(scWhy)이 길어졌다 짧아지면(정리 반영됨 ↔ 표시 고침) 그림 칸 높이가 바뀌어 마킹 중 그림이 튀었다. 넘치는 글은 title로 */
+.sc-modal .rbv-legend { flex-wrap: wrap; white-space: nowrap; height: 4.6em; align-content: flex-start; overflow: hidden; flex: 0 0 auto; }
+.sc-modal .rbv-legend #scWhy { white-space: normal; }
+.sc-modal .sc-orange { background: var(--c-mark); opacity: .7; }
+.sc-modal .sc-t-orange { border-color: var(--c-mark); color: var(--c-text); }
+/* overflow hidden: 펜 원·끌기 상자·mm 표시가 가장자리 밖으로 나가면 스크롤 막대가 잠깐 생겨 그림이 9px 옆으로 튀었다(마킹 중 화면 흔들림) — 그림은 늘 칸에 맞춰 그리므로 스크롤할 일이 없다 */
+.sc-modal .sc-wrap { position: relative; user-select: none; overflow: hidden; }
+.sc-modal .sc-tool.sc-on { background: var(--c-accent-soft, transparent); border-color: var(--c-accent); color: var(--c-text); }
+.sc-modal .sc-size { font-size: .82em; color: var(--c-text-dim, var(--c-text)); white-space: nowrap; min-width: 88px; }   /* 굵기 0.75mm·12mm 등 글자 폭이 바뀌어 도구 줄이 줄바꿈되면 그림 칸 높이가 바뀌어 그림이 튄다 */
+.sc-modal #scPageLbl { display: inline-block; min-width: 8.6em; text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }   /* 쪽 번호 자릿수(9→10·99→100)로 폭이 바뀌지 않게 */
+.sc-modal .sc-saveinfo { margin-right: auto; align-self: center; font-variant-numeric: tabular-nums; }   /* 💾 중간 저장 시각 — 왼쪽 끝 */
+.sc-modal .sc-axis { flex: 0 0 auto; width: auto; margin-right: 10px; }
+.sc-modal .sc-shift { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; font-size: .9em; }
+.sc-modal .sc-edgetip { position: absolute; pointer-events: none; padding: 2px 6px; font-size: .8em; white-space: nowrap; background: var(--c-surface); color: var(--c-text); border: 1px solid var(--c-danger); }
+.sc-modal .sc-brush { position: absolute; display: none; pointer-events: none; border-radius: 50% !important; border: 1px solid var(--c-mark); box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+.sc-modal .sc-dragbox { position: absolute; pointer-events: none; border: 1px dashed var(--c-mark); background: color-mix(in srgb, var(--c-mark) 25%, transparent); }
+.sc-modal .sc-t-warn { border-color: var(--c-accent-line); color: var(--c-accent-text); }
+
+/* ── 🖼 이미지 업스케일·벡터화 (app-enhance.js) ── */
+.file-input-label.ie-entry { background: transparent; color: var(--c-text); border-color: var(--c-outline); }
+.file-input-label.ie-entry:hover { background: var(--c-accent); color: var(--c-accent-ink); border-color: var(--c-accent); }
+/* 첫 화면 버튼 셋(파일 선택·이미지·최근 파일) = 같은 크기 (2026-10-29) */
+.upload-section .file-input-wrapper { display: inline-grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-width: 100%; }
+.upload-section .file-input-wrapper > .file-input-label { min-width: 220px; white-space: nowrap; text-align: center; display: flex; align-items: center; justify-content: center; gap: 6px; }
+@media (max-width: 860px) { .upload-section .file-input-wrapper { grid-template-columns: minmax(0, 1fr); } }
+#recentToggleBtn.on { background: var(--c-accent-soft); border-color: var(--c-accent); color: var(--c-text); }
+#recentToggleBtn.is-empty { opacity: .45; }
+.ie-modal .ie-tab.ie-on { background: var(--c-accent); border-color: var(--c-accent); color: var(--c-accent-ink); }
+.ie-modal .ie-grp { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ie-modal .ie-lbl { display: inline-flex; align-items: center; gap: 4px; font-size: .84em; color: var(--c-text); white-space: nowrap; }
+.ie-modal .ie-lbl .es-input { width: auto !important; min-width: 0; padding: 3px 4px; }
+.ie-modal .ie-mm { width: 5.4em !important; }
+.ie-modal .ie-list { flex-basis: 300px; }
+.ie-modal .ie-row { align-items: flex-start; }
+.ie-modal .ie-thumb { width: 54px; height: 54px; object-fit: contain; background: #fff; flex: 0 0 auto; border: 1px solid var(--c-border); }
+.ie-modal .ie-rowtxt { min-width: 0; word-break: break-all; line-height: 1.45; }
+.ie-modal .ie-panes { flex: 1 1 auto; min-height: 0; display: flex; gap: 8px; cursor: grab; user-select: none; }
+.ie-modal .ie-panes.ie-panning { cursor: grabbing; }
+.ie-modal .ie-pane { position: relative; flex: 1 1 0; min-width: 0; overflow: hidden; background: #fff; border: 1px solid var(--c-border); }
+.ie-modal .ie-img { position: absolute; max-width: none; max-height: none; pointer-events: none; }
+.ie-modal .ie-cap { position: absolute; left: 0; top: 0; padding: 3px 8px; font-size: .78em; background: var(--c-glass); color: var(--c-text); pointer-events: none; font-variant-numeric: tabular-nums; }
+.ie-modal .ie-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; color: rgb(var(--c-ink-rgb)); font-size: .92em; line-height: 1.7; pointer-events: none; }
+.ie-modal .ie-warn { color: var(--c-danger-text); font-weight: 600; }
+.ie-modal .ie-info { margin-right: auto; align-self: center; font-variant-numeric: tabular-nums; }
+.ie-modal .ie-fmt { width: auto !important; flex: 0 0 auto; align-self: center; }
+.ie-modal .rbv-legend { flex: 0 0 auto; }
+.ie-modal .ie-cap:empty { display: none; }
+
+/* ── 💬 불편 메모 (usage-log.js) ── */
+.um-box .um-head { font-weight: 700; margin-bottom: 6px; color: var(--c-text); }
+.um-box .um-sub { font-size: .82em; line-height: 1.55; color: var(--c-text-muted); margin-bottom: 10px; }
+.um-box .um-text { width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: .9em; resize: vertical; min-height: 6em; font-family: inherit; }
+.um-box .um-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.um-box .um-btns .pt-btn { padding: 8px 16px; cursor: pointer; font-size: .85em; }
