@@ -5120,7 +5120,7 @@
     function renderLicenseBadge(st) {
       const el = document.getElementById('licBadge');
       if (!el || !st) return;
-      if (st.mode === 'admin') { el.style.display = 'none'; return; }   // 정품(발급자) PC
+      if (st.mode === 'admin' || st.mode === 'full') { el.style.display = 'none'; return; }   // 발급자 PC · 정식판(full-license.dat)
       el.style.display = '';
       el.textContent = (st.canSave ? '체험판 · ' : '⚠ ') + (st.label || '');
       el.classList.toggle('expired', !st.canSave);

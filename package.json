@@ -1,6 +1,6 @@
 {
   "name": "pdf-analyzer",
-  "version": "3.9.1",
+  "version": "3.9.2",
   "description": "PDF 컬러/흑백 분석 및 변환",
   "author": "일청기획",
   "main": "main.js",

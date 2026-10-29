@@ -8,3 +8,4 @@ mobile/android/local.properties
 
 # 동봉 Ghostscript 런타임 (배포본에 포함, 저장소에는 넣지 않음)
 vendor/
+full-license.dat

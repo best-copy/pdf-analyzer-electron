@@ -41,6 +41,17 @@ function adminDir()  { return path.join(os.homedir(), '.pdfeditor-license'); }
 function adminPath() { return path.join(adminDir(), 'admin.json'); }
 function keysPath()  { return path.join(adminDir(), 'keys.json'); }
 function tokenPath() { return path.join(_deps.userDataDir, 'license.dat'); }
+// 정식판 증명 — 앱 폴더(resources/app)에 관리자 키로 서명한 이 파일이 있으면 체험 키 없이 쓴다
+// (2026-10-29 사용자 요청 · scripts/make-full-dist.js가 정식판 zip·업데이트 파일에 넣는다 · 저장소에는 두지 않음)
+const FULL_FORMAT = 'pdf-editor-full';
+function fullPath() { return path.join(__dirname, 'full-license.dat'); }
+function makeFullToken(privPem, note) { return signToken({ format: FULL_FORMAT, v: 1, issued: Date.now(), note: String(note || '') }, privPem); }
+function readFull() {
+  try {
+    const p = verifyToken(fs.readFileSync(fullPath(), 'utf8').trim());
+    return p && p.format === FULL_FORMAT ? p : null;
+  } catch (e) { return null; }
+}
 
 // ── base64url ───────────────────────────────────────────────────────────────
 const b64u  = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -152,11 +163,12 @@ function saveToken(tok) {
 }
 
 // ── 상태 판정 ───────────────────────────────────────────────────────────────
-// mode: 'admin' | 'licensed' | 'expired' | 'none'
+// mode: 'admin' | 'full' | 'licensed' | 'expired' | 'none'
 // canSave 는 저장·출력 길목이 참조하는 유일한 값이다.
 function evaluate() {
   const now = Date.now();
   if (isAdminPC()) return { mode: 'admin', canSave: true, label: '관리자 PC (무제한)' };
+  if (readFull()) return { mode: 'full', canSave: true, label: '정식판' };   // 체험 키·서버 확인 없음
 
   const tok = loadToken();
   if (!tok) return { mode: 'none', canSave: false, label: '체험 키 미등록', reason: '체험 키를 등록해야 저장·출력이 가능합니다.' };
@@ -260,7 +272,7 @@ async function activate(key, server) {
 async function recheckIfDue(force) {
   if (_rechecking) return { ok: false, error: '확인 중' };
   const st = status();
-  if (st.mode === 'admin') return { ok: true };
+  if (st.mode === 'admin' || st.mode === 'full') return { ok: true };
   if (!force && st.mode === 'licensed' && !st.recheckDue) return { ok: true, skipped: true };
   const srv = savedServer();
   const tok = loadToken();
@@ -439,6 +451,6 @@ module.exports = {
   activateRecord, offlineRequest, offlineIssue, offlineActivate,
   isAdminPC, adminDir, adminPath, keysPath, adminData,
   issueKey, listKeys, revokeKey, loadKeys, saveKeys,
-  signToken, verifyToken, savedServer, saveServer,
+  signToken, verifyToken, savedServer, saveServer, makeFullToken, readFull, fullPath, FULL_FORMAT,
   RECHECK_DAYS, GRACE_DAYS, DAY, PUBKEY_B64,
 };
