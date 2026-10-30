@@ -186,14 +186,23 @@
         x.classList.toggle('active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false'); decolorEmojiIn(x);
       });
     }
+    function syncThemeOneBtn() {
+      const b = document.getElementById('themeOneBtn'); if (!b) return;
+      const light = document.documentElement.classList.contains('theme-light');
+      b.innerHTML = light ? '☀ 주간' : '🌙 야간';
+      b.title = light ? '지금 주간(밝은 화면) — 누르면 야간으로' : '지금 야간(어두운 화면) — 누르면 주간으로';
+      try { decolorEmojiIn(b); } catch (e) {}
+    }
     function setUiTheme(mode) {
       const light = mode === 'light';
       document.documentElement.classList.toggle('theme-light', light);
       try { localStorage.setItem('uiTheme', light ? 'light' : 'dark'); } catch (e) {}
-      syncThemeBtn();
+      syncThemeBtn(); syncThemeOneBtn();
     }
     function toggleUiTheme() { setUiTheme(document.documentElement.classList.contains('theme-light') ? 'dark' : 'light'); }
-    syncThemeBtn();
+    syncThemeBtn(); syncThemeOneBtn();
+    // 프로그램 버전 표시(머리 제목 옆) — 설치 폴더의 resources/app/package.json(업데이트하면 바뀐다)
+    try { if (window.electronAPI && window.electronAPI.appVersion) window.electronAPI.appVersion().then(v => { const el = document.getElementById('appVerTag'); if (el && v) el.textContent = 'v' + v; }).catch(() => {}); } catch (e) {}
 
     // ── 버튼 설명 = 버튼 오른쪽 '?' 표식 (왼쪽 패널 · 편집 모드 패널) ──────────────
     // 예전엔 버튼 전체에 title 툴팁이 걸려, 누르려고 올릴 때마다 긴 설명이 튀어나왔다.
@@ -1861,6 +1870,7 @@
           () => { selectChapterPages(name); if (typeof autoOrientPages === 'function') autoOrientPages(); });
       add('⤒ 위 챕터와 합치기', '쪽 순서 그대로 · 이름은 위 챕터', () => mergeChapterRun(startIdx, -1), no <= 1);
       add('⤓ 아래 챕터와 합치기', '쪽 순서 그대로 · 이름은 이 챕터', () => mergeChapterRun(startIdx, +1), no >= total);
+      add('🔗 여러 챕터 한꺼번에 합치기…', '골라서 한 번에 · 떨어진 챕터는 모아 붙임', () => openMultiChapterMerge(startIdx), total <= 1);
       add('▲ 위로 이동', '', () => moveChapterRun(startIdx, -1), no <= 1);
       add('▼ 아래로 이동', '', () => moveChapterRun(startIdx, +1), no >= total);
       add('🗑 이 챕터 전체 삭제', '', () => deleteChapterAt(startIdx), total <= 1);
@@ -5308,6 +5318,8 @@
         if (cmd === 'update') updateApplyClick();
         else if (cmd === 'rollback') updateRollbackClick();
         else if (cmd === 'settings') openSettingsMenu();
+        else if (cmd === 'cfgExport') exportAppSettings();
+        else if (cmd === 'cfgImport') importAppSettingsClick();
       });
     }
 

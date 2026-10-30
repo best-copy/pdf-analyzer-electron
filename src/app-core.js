@@ -3253,7 +3253,7 @@
       }
       // 페이지가 있을 때만 띄운다 (빈 화면에 위젯만 떠 있지 않게)
       const bar = document.getElementById('jumpBar');
-      if (bar) { bar.style.display = total ? 'flex' : 'none'; alignJumpBar(); }
+      if (bar) { bar.style.display = total ? 'flex' : 'none'; alignJumpBar(); setTimeout(alignJumpBar, 300); }
     }
     // 떠 있는 위젯의 높이를 상단 툴바의 버튼 줄에 맞춘다.
     // 기준 줄은 '🧾 프린터 판정'이 있는 첫 줄이다 — 다운로드가 있는 아랫줄에 맞추면 그 높이의
@@ -3271,9 +3271,31 @@
       const r = ref.getBoundingClientRect(), pnl = panel.getBoundingClientRect();
       if (!r.height) return;
       const pinnedTop = tabH + (r.top - pnl.top);          // 툴바가 붙었을 때 그 줄의 화면 높이
-      bar.style.top = Math.round(pinnedTop + (r.height - bar.offsetHeight) / 2) + 'px';
+      let top = pinnedTop + (r.height - bar.offsetHeight) / 2;
+      // 맨 위에서는 머리 오른쪽 위 ⬆ 설정 · ⬇ 설정 · 💬 메모를 가린다(2026-10-30 지적) — 그 버튼이 보이는 동안만
+      // 그 아래로 비켜 있다가, 스크롤로 머리가 올라가면 원래 자리로(늘 내리면 붙은 툴바 둘째 줄 버튼을 덮는다).
+      // 위쪽 버튼을 가리지 않게 — 겹치는 버튼이 있으면 그 아래로(2026-10-30 지적: 첫 화면 머리 ⬆설정·💬메모,
+      //   편집 작업공간 '✕ 닫기·💾 저장하고 닫기', 미리보기 머리 '결과 보기·원본 보기·펼침'). 화면에 보이는 것만 · 가로로 겹칠 때만.
+      // (늘 내리면 붙은 툴바 둘째 줄 버튼을 덮으므로 겹칠 때만 · 스크롤·크기 변화 때 다시 계산)
+      const b = bar.getBoundingClientRect(), bh = b.height || bar.offsetHeight;
+      const obs = [...document.querySelectorAll('.cfg-seg, #editWsBar button, .preview-head button, .preview-head .pv-view-btn')]
+        .filter(el => el.offsetParent && el.getClientRects().length).map(el => el.getBoundingClientRect())
+        .filter(c => c.width && c.bottom > 0 && c.left < b.right + 8 && c.right > b.left - 8);
+      for (let pass = 0; pass < 4; pass++) {
+        const hit = obs.filter(c => c.top < top + bh + 4 && c.bottom + 4 > top);
+        if (!hit.length) break;
+        top = Math.max(...hit.map(c => c.bottom)) + 18;
+      }
+      bar.style.top = Math.round(top) + 'px';
     }
     window.addEventListener('resize', alignJumpBar);
+    // 머리(설정 버튼)·툴바 크기가 바뀌면(테마·글꼴·분석 결과 그리기) 다시 — 처음 뜬 직후 자리가 덜 잡힌 채 남지 않게
+    try {
+      const ro = new ResizeObserver(() => alignJumpBar());
+      ['.header', '.sticky-panel', '#editWsBar', '.preview-head'].forEach(sel => { const el = document.querySelector(sel); if (el) ro.observe(el); });
+    } catch (e) {}
+    { let _jbRaf = 0;   // 스크롤할 때 머리 버튼과의 겹침만 다시 본다(한 프레임에 한 번)
+      window.addEventListener('scroll', () => { if (!_jbRaf) _jbRaf = requestAnimationFrame(() => { _jbRaf = 0; alignJumpBar(); }); }, { passive: true, capture: true }); }
     // 칸 위에서 마우스 휠로도 넘긴다 (참고 UI와 동일). passive:false — 페이지 스크롤은 막는다.
     (function bindJumpWheel() {
       const bar = document.getElementById('jumpBar');
@@ -3834,6 +3856,13 @@
       if (!IMP_TAG_RE.test(b)) return tag ? `${b}_${tag}` : b;
       const m = b.match(/^(.*?)-(\d+)$/);
       return m ? `${m[1]}-${Number(m[2]) + 1}` : `${b}-1`;
+    }
+    // 🖼 업스케일을 바꿔 넣은 문서는 저장 이름에 '_이미지-Up' (사용자 요청 2026-10-30) — 다운로드(적용본·원본)·분리 저장 공통
+    function ieUpName(name) {
+      const tab = tabs.get(activeTabId);
+      if (!tab || !tab.ieUpscaled || !name || /_이미지-Up/.test(name)) return name;
+      const s = String(name), m = s.match(/\.[A-Za-z0-9]{1,5}$/);   // 확장자 앞에(없으면 끝에)
+      return m ? s.slice(0, m.index) + '_이미지-Up' + m[0] : s + '_이미지-Up';
     }
     function defaultProcessedName() {
       const base = effectiveBaseName();

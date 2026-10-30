@@ -778,9 +778,15 @@ ipcMain.on('editor:close', (event) => {
 function installAppMenu() {
   const { Menu, MenuItem } = require('electron');
   const send = (cmd) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('menu:command', cmd); };
+  let ver = ''; try { const d = updateInstallDir(); ver = typeof d === 'string' ? installedVersion(d) : app.getVersion(); } catch (e) { ver = app.getVersion(); }
   const items = [
+    { label: 'PDF Editor  v' + (ver || app.getVersion()), enabled: false },   // 지금 버전(업데이트하면 바뀐다)
+    { type: 'separator' },
     { label: '🔄 업데이트 적용… (.pdfupd)', click: () => send('update') },
     { label: '↺ 이전 버전으로 되돌리기…', click: () => send('rollback') },
+    { type: 'separator' },
+    { label: '⬆ 설정 내보내기… (JSON)', click: () => send('cfgExport') },
+    { label: '⬇ 설정 가져오기…', click: () => send('cfgImport') },
     { type: 'separator' },
     { label: '⚙ 설정·업데이트 메뉴…', click: () => send('settings') },
   ];

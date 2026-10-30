@@ -788,8 +788,8 @@ body.page-marqueeing, body.page-marqueeing * { user-select: none !important; cur
 /* ── 🖼 이미지 업스케일·벡터화 (app-enhance.js) ── */
 .file-input-label.ie-entry { background: transparent; color: var(--c-text); border-color: var(--c-outline); }
 .file-input-label.ie-entry:hover { background: var(--c-accent); color: var(--c-accent-ink); border-color: var(--c-accent); }
-/* 첫 화면 버튼 셋(파일 선택·이미지·최근 파일) = 같은 크기 (2026-10-29) */
-.upload-section .file-input-wrapper { display: inline-grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-width: 100%; }
+/* 첫 화면 버튼 둘(파일 선택·최근 파일) = 같은 크기 (2026-10-29 · 🖼 업스케일은 2026-10-30 문서 툴바로) */
+.upload-section .file-input-wrapper { display: inline-grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-width: 100%; }
 .upload-section .file-input-wrapper > .file-input-label { min-width: 220px; white-space: nowrap; text-align: center; display: flex; align-items: center; justify-content: center; gap: 6px; }
 @media (max-width: 860px) { .upload-section .file-input-wrapper { grid-template-columns: minmax(0, 1fr); } }
 #recentToggleBtn.on { background: var(--c-accent-soft); border-color: var(--c-accent); color: var(--c-text); }
@@ -821,3 +821,60 @@ body.page-marqueeing, body.page-marqueeing * { user-select: none !important; cur
 .um-box .um-text { width: 100%; box-sizing: border-box; padding: 9px 11px; font-size: .9em; resize: vertical; min-height: 6em; font-family: inherit; }
 .um-box .um-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
 .um-box .um-btns .pt-btn { padding: 8px 16px; cursor: pointer; font-size: .85em; }
+
+/* 🔗 여러 챕터 한꺼번에 합치기 창 (app-process openMultiChapterMerge · 2026-10-30) */
+.mcm-overlay { position: fixed; inset: 0; z-index: 100060; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+.mcm-box { width: 460px; max-width: 92vw; max-height: 86vh; display: flex; flex-direction: column; padding: 18px 20px; gap: 10px; }
+.mcm-title { font-weight: 700; font-size: 1em; }
+.mcm-sub, .mcm-note { font-size: .82em; color: var(--c-text-sub); line-height: 1.5; white-space: pre-line; }
+.mcm-note { min-height: 2.9em; }
+.mcm-tools { display: flex; gap: 6px; }
+.mcm-tools .pt-btn, .mcm-btns .pt-btn { padding: 6px 12px; cursor: pointer; font-size: .82em; }
+.mcm-btns .pt-btn { padding: 8px 16px; font-size: .85em; }
+.mcm-btns .pt-ok { font-weight: 600; }
+.mcm-btns .pt-ok:disabled { opacity: .45; cursor: default; }
+.mcm-list { flex: 1 1 auto; min-height: 80px; overflow-y: auto; border: 1px solid var(--c-border); background: var(--c-bg); }
+.mcm-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: .85em; border-bottom: 1px solid var(--c-border); user-select: none; }
+.mcm-row:last-child { border-bottom: none; }
+.mcm-row:hover { background: var(--c-surface); }
+.mcm-row.on { box-shadow: inset 3px 0 0 var(--c-accent); }
+.mcm-row input { accent-color: var(--c-accent); margin: 0; }
+.mcm-no { color: var(--c-text-sub); font-size: .9em; white-space: nowrap; }
+.mcm-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcm-pg { color: var(--c-text-sub); white-space: nowrap; }
+.mcm-namerow { display: flex; align-items: center; gap: 8px; font-size: .85em; }
+.mcm-namerow .mcm-sel { flex: 1; min-width: 0; padding: 5px 8px; }
+.mcm-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+/* ✏ 오타 고치기 창 (app-enhance openTypoFix · 2026-10-30) */
+.ty-modal .ty-viewwrap { flex: 1 1 auto; min-width: 0; overflow: auto; background: var(--c-bg); border: 1px solid var(--c-border); position: relative; }
+.ty-modal .ty-viewwrap.ty-pan, .ty-modal .ty-viewwrap.ty-pan * { cursor: grab !important; }
+.ty-modal .ty-stage { position: relative; margin: 10px; cursor: crosshair; box-shadow: 0 2px 10px rgba(var(--c-shadow-rgb, 0,0,0), .25); }
+.ty-modal .ty-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ty-modal .ty-side { flex: 0 0 320px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ty-modal .ty-list { flex: 0 1 40%; overflow-y: auto; border: 1px solid var(--c-border); background: var(--c-bg); }
+.ty-modal .ty-row { padding: 6px 10px; border-bottom: 1px solid var(--c-border); cursor: pointer; font-size: .86em; color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ty-modal .ty-row.cur { box-shadow: inset 3px 0 0 var(--c-accent); background: var(--c-accent-soft); }
+.ty-modal .ty-empty { padding: 10px; }
+.ty-modal .ty-form { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.ty-modal .ty-f { display: flex; flex-direction: column; gap: 3px; font-size: .84em; color: var(--c-text); }
+.ty-modal .ty-f2 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .84em; color: var(--c-text); }
+.ty-modal .ty-f2 .ty-f { flex-direction: row; align-items: center; gap: 5px; }
+.ty-modal .ty-f .pt-input { padding: 5px 8px; font-size: 1em; }
+.ty-modal #tyText { font-size: 1.15em; }
+.ty-modal .ty-num { width: 72px; }
+.ty-modal input[type=color] { width: 34px; height: 24px; padding: 0; border: 1px solid var(--c-outline); background: none; }
+.ty-modal .ty-sm { padding: 3px 9px; font-size: .9em; }
+.ty-modal .ty-del { align-self: flex-start; padding: 5px 12px; font-size: .84em; }
+
+/* 버전 표시(머리 제목 옆) · 주간/야간 버튼 하나 (2026-10-30) */
+.header h1 .app-ver { font-size: .38em; font-weight: 600; color: var(--c-text-sub); margin-left: 10px; vertical-align: .55em; letter-spacing: 0; }
+
+/* 🔍 스캔 정리 확대 (2026-10-30) — 확대하면 그림 영역이 스크롤된다 */
+.sc-modal .sc-wrap.sc-zoomed { overflow: auto; display: block; }
+.sc-modal .sc-wrap.sc-zoomed #scCanvas { display: block; margin: 0 auto; max-width: none; max-height: none; }
+.sc-modal .sc-wrap.pan-ready #scCanvas, .sc-modal .sc-wrap.pan-ready { cursor: grab !important; }
+.sc-modal .sc-wrap.panning #scCanvas, .sc-modal .sc-wrap.panning { cursor: grabbing !important; }
+.sc-modal .sc-zoomctl { display: inline-flex; align-items: center; gap: 4px; }
+.sc-modal .sc-zoomctl .rbv-btn { padding: 2px 9px; }
+.sc-modal .sc-zoompct { min-width: 46px; text-align: center; font-variant-numeric: tabular-nums; color: var(--c-text); }

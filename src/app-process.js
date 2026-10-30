@@ -362,7 +362,7 @@
       if (ev) ev.preventDefault();
       if (!originalPdfBytes) { showError('다운로드할 PDF가 없습니다.'); return; }
       try {
-        const name = (originalFileName || 'document') + '.pdf';
+        const name = ieUpName((originalFileName || 'document') + '.pdf');
         const saved = await window.electronAPI.saveFile({ defaultName: name, buffer: originalPdfBytes });
         if (saved) { setDirty(false); showSuccess('원본 PDF를 다운로드했습니다.'); }
       } catch (err) {
@@ -5794,7 +5794,7 @@
         + '<button class="merge-cancel rbv-btn" id="scManClear" title="이 쪽에서 직접 지운 곳을 모두 취소">✕ 직접 지운 곳 없애기</button>'
         + '</div>'
         + '<div class="rbv-canvas-wrap sc-wrap" id="scWrap"><canvas id="scCanvas"></canvas><div class="rbv-loading" id="scLoading">판정 중…</div></div>'
-        + '<div class="rbv-legend"><span class="sc-key sc-red"></span>가장자리 <span class="sc-key sc-blue"></span>점 무늬 <span class="sc-key sc-orange"></span>직접 지움 · 왼쪽 지금 / 오른쪽 정리 후 · <b>끌어서 지우기</b>(✎ 펜 굵기 <kbd>[</kbd> <kbd>]</kbd> · 우클릭 = 취소) <span class="split-dim" id="scWhy"></span></div></div></div>'
+        + '<div class="rbv-legend"><span class="sc-zoomctl" title="확대 — Ctrl+휠(마우스 자리 기준) · + / − / 0 키 · 확대 중 휠 = 위아래 스크롤, Space+끌기·가운데 단추 끌기 = 이동, 쪽 넘기기 = PageUp/PageDown"><button class="merge-cancel rbv-btn" id="scZoomOut">−</button><span class="sc-zoompct" id="scZoomPct">맞춤</span><button class="merge-cancel rbv-btn" id="scZoomIn">+</button><button class="merge-cancel rbv-btn" id="scZoomFit">맞춤</button></span><span class="rbv-sep"></span><span class="sc-key sc-red"></span>가장자리 <span class="sc-key sc-blue"></span>점 무늬 <span class="sc-key sc-orange"></span>직접 지움 · 왼쪽 지금 / 오른쪽 정리 후 · <b>끌어서 지우기</b>(✎ 펜 굵기 <kbd>[</kbd> <kbd>]</kbd> · 우클릭 = 취소) <span class="split-dim" id="scWhy"></span></div></div></div>'
         + '<p class="split-dim rb-note">원본 스캔 그림은 그대로 두고 흰색 덮기·회전만 그 쪽에 얹습니다(용량 그대로 · 되돌리기 가능). 썸네일·적용·다운로드·인쇄·임포징에 모두 반영됩니다. '
         + '<b>📐 기울기 보정</b>(편집 모드)과 같이 켜면 두 번 돌아가니 하나만 쓰세요. ⚠ 확인 필요 쪽은 직접 보고 고르세요.</p>'
         + '<div class="merge-actions"><span class="split-dim sc-saveinfo" id="scSaveInfo"></span>'
@@ -5808,8 +5808,15 @@
       const onResize = () => { if (results) drawCur(); };
       const over = new Map();   // originalIdx → { on, edges, spots, deskew, angle } 쪽마다 고친 값
       const imgCache = new Map();
+      // 🔍 확대(2026-10-30 사용자 요청 — 정밀하게 직접 지우기): zoom = 맞춤 대비 배율. 확대하면 캔버스 자체를 그 크기로 다시 그리고
+      //   (좌표 계산은 모두 캔버스 화소라 그대로), 미리보기(75dpi)가 모자라면 그 배율에 맞는 해상도(150·225·300dpi)로 쪽을 다시 그려 바꾼다.
+      let zoom = 1, spaceDown = false, zoomAnchor = null;
+      const hiCache = new Map(), hiPending = new Set();   // 'idx|dpi' → 캔버스(최근 4장)
+      const onKeyUp = e => { if (e.code === 'Space' && spaceDown) { spaceDown = false; $('scWrap').classList.remove('pan-ready'); } };
+      document.addEventListener('keyup', onKeyUp, true);
       const close = () => {
-        closed = true; ov.remove(); document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', onResize);
+        closed = true; ov.remove(); document.removeEventListener('keydown', onKey, true); document.removeEventListener('keyup', onKeyUp, true); window.removeEventListener('resize', onResize);
+        hiCache.forEach(c => { c.width = c.height = 0; }); hiCache.clear();
         if (results) results.forEach(r => { if (r.img) URL.revokeObjectURL(r.img); });
       };
       $('scClose').onclick = close;
@@ -5820,6 +5827,13 @@
         else if (e.key === 'PageDown') { e.preventDefault(); go(1); }
         else if (e.key === 'PageUp') { e.preventDefault(); go(-1); }
         else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && results && !applied) { e.preventDefault(); e.stopPropagation(); manUndo(); }
+        else if (results && !e.ctrlKey && !e.altKey && !e.metaKey && !(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) && /^(Equal|Minus|Digit0|NumpadAdd|NumpadSubtract|Numpad0|Space)$/.test(e.code)) {
+          // 🔍 확대 + / − / 0(맞춤) · Space = 끌어서 이동 준비 (정리를 마친 뒤에도 들여다볼 수 있게 applied여도)
+          e.preventDefault(); e.stopPropagation();
+          if (e.code === 'Space') { if (!spaceDown) { spaceDown = true; $('scWrap').classList.add('pan-ready'); hideBrush(); } }
+          else if (e.code === 'Digit0' || e.code === 'Numpad0') setZoom(1);
+          else setZoom(zoom * (e.code === 'Minus' || e.code === 'NumpadSubtract' ? 1 / 1.25 : 1.25));
+        }
         else if (results && !applied && !e.ctrlKey && !e.altKey && !e.metaKey && !(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))) {
           // 펜 굵기 [ ] (한글 자판에서도 같은 자리 — e.code로) · 도구 P/R
           if (e.code === 'BracketLeft' || e.code === 'BracketRight') { e.preventDefault(); e.stopPropagation(); penStep(e.code === 'BracketRight' ? 1 : -1); }
@@ -5925,13 +5939,52 @@
         [$('scPgEdges'), $('scPgSpots'), $('scPgDeskew'), $('scPgAngle'), $('scPgOn')].forEach(el => el.disabled = !!applied);
         $('scWhy').textContent = r.review.length ? '⚠ ' + r.review.join(' · ') : (r.blank ? '빈 쪽 — 기울기는 재지 않음' : `측정 각도 ${r.angle}° (신뢰 ×${r.gain})`);
         const seq = ++drawSeq;
-        const im = await imgOf(r, x.r.originalIdx);
+        const im0 = await imgOf(r, x.r.originalIdx);
         if (seq !== drawSeq || closed) return;
         const wrap = $('scWrap'), cv = $('scCanvas');
-        const avW = Math.max(200, wrap.clientWidth - 24), avH = Math.max(200, wrap.clientHeight - 16);
-        const k = Math.min((avW - 12) / 2 / im.width, avH / im.height);
-        const W = Math.round(im.width * k), H = Math.round(im.height * k);
+        // 맞춤 크기는 확대 전 창 크기로(확대하면 스크롤 막대가 생겨 맞춤이 흔들리지 않게 기억)
+        if (zoom === 1) { wrap.classList.remove('sc-zoomed'); cv.style.width = cv.style.height = ''; }   // 스크롤 막대를 먼저 걷고 잰다(맞춤이 막대만큼 작아지지 않게)
+        if (zoom === 1 || !wrap._fit) wrap._fit = { w: wrap.clientWidth, h: wrap.clientHeight };
+        const avW = Math.max(200, wrap._fit.w - 24), avH = Math.max(200, wrap._fit.h - 16);
+        const k0 = Math.min((avW - 12) / 2 / im0.width, avH / im0.height);
+        // 캔버스가 너무 커지지 않게(넓이 4천만 화소·폭 16000px) 배율 상한
+        const zMax = Math.max(1, Math.min(8, Math.sqrt(40e6 / ((im0.width * k0 * 2 + 12) * im0.height * k0)), 16000 / (im0.width * k0 * 2 + 12)));
+        if (zoom > zMax) zoom = zMax;
+        const k = k0 * zoom;
+        const W = Math.round(im0.width * k), H = Math.round(im0.height * k);
+        // 확대해서 미리보기(SCAN_DPI/2 dpi) 화소가 모자라면 그 배율에 맞는 해상도로 다시 그린 쪽 — 준비되면 다시 그린다
+        let im = im0;
+        const needDpi = SCAN_DPI / 2 * k;
+        if (zoom > 1 && needDpi > SCAN_DPI / 2 * 1.2) {
+          const dpi = needDpi <= 160 ? 150 : needDpi <= 240 ? 225 : 300, key = x.r.originalIdx + '|' + dpi;
+          if (hiCache.has(key)) im = hiCache.get(key);
+          else if (!hiPending.has(key)) {
+            hiPending.add(key);
+            (async () => {
+              try {
+                const page = await globalPdfDoc.getPage(x.r.originalIdx + 1), vp = page.getViewport({ scale: dpi / 72 });
+                const hc = document.createElement('canvas'); hc.width = Math.max(1, Math.round(vp.width)); hc.height = Math.max(1, Math.round(vp.height));
+                const hx = hc.getContext('2d'); hx.fillStyle = '#fff'; hx.fillRect(0, 0, hc.width, hc.height);
+                await renderPageNoSeams(page, { canvasContext: hx, viewport: vp });
+                if (closed) { hc.width = hc.height = 0; return; }
+                hiCache.set(key, hc);
+                while (hiCache.size > 4) { const k1 = hiCache.keys().next().value; const c1 = hiCache.get(k1); hiCache.delete(k1); c1.width = c1.height = 0; }
+                if (rowsAll[cur] === x && zoom > 1) drawCur();
+              } catch (e) { console.warn('스캔 정리 확대 그림 실패:', e); }
+              finally { hiPending.delete(key); }
+            })();
+          }
+        }
         cv.width = W * 2 + 12; cv.height = H;
+        wrap.classList.toggle('sc-zoomed', zoom > 1);
+        cv.style.width = zoom > 1 ? cv.width + 'px' : ''; cv.style.height = zoom > 1 ? cv.height + 'px' : '';
+        $('scZoomPct').textContent = zoom > 1 ? Math.round(zoom * 100) + '%' : '맞춤';
+        if (zoomAnchor) {   // 확대 기준점(마우스 자리)이 그 자리에 머물게 스크롤
+          const a = zoomAnchor; zoomAnchor = null;
+          const b = cv.getBoundingClientRect();
+          wrap.scrollLeft += (b.left + a.fx * b.width) - a.cx;
+          wrap.scrollTop += (b.top + a.fy * b.height) - a.cy;
+        }
         $('scLoading').style.display = 'none';
         const c = cv.getContext('2d');
         c.clearRect(0, 0, cv.width, cv.height);   // 두 그림 사이 틈은 투명 — 창 배경(테마)이 비친다
@@ -6036,8 +6089,40 @@
       }, { passive: false });
       // 휠 = 이전·다음 쪽(그림 영역 어디서나) — 휠 한 칸에 한 쪽, 터치패드의 작은 값은 모아서, 너무 빠른 연속은 거른다
       let wheelAcc = 0, wheelAt = 0;
+      // 🔍 확대 — anchor = 마우스 자리(없으면 보이는 가운데)가 그대로 머문다
+      function setZoom(z, ev) {
+        z = Math.max(1, Math.min(8, z));
+        if (Math.abs(z - zoom) < 1e-3 || !geo) { zoom = z; return; }
+        const cv = $('scCanvas'), wr = $('scWrap'), b = cv.getBoundingClientRect(), wb = wr.getBoundingClientRect();
+        const cx = ev ? ev.clientX : wb.left + wb.width / 2, cy = ev ? ev.clientY : wb.top + wb.height / 2;
+        zoomAnchor = { fx: Math.max(0, Math.min(1, (cx - b.left) / b.width)), fy: Math.max(0, Math.min(1, (cy - b.top) / b.height)), cx, cy };
+        zoom = z < 1.02 ? 1 : z;
+        if (zoom === 1) zoomAnchor = null;
+        hideBrush(); drawCur().then(() => { if (lastMouse) moveBrush(lastMouse); });
+      }
+      $('scZoomIn').onclick = () => setZoom(zoom * 1.25);
+      $('scZoomOut').onclick = () => setZoom(zoom / 1.25);
+      $('scZoomFit').onclick = () => setZoom(1);
+      // Ctrl+휠 = 확대·축소(마우스 자리 기준) — 휠 한 칸에 1.25배, 터치패드의 작은 값은 그만큼만
+      $('scWrap').addEventListener('wheel', ev => {
+        if (!(ev.ctrlKey || ev.metaKey) || !results) return;
+        ev.preventDefault(); ev.stopPropagation();
+        const dy = ev.deltaMode === 1 ? ev.deltaY * 40 : ev.deltaMode === 2 ? ev.deltaY * 800 : ev.deltaY;
+        setZoom(zoom * Math.pow(1.25, Math.max(-1, Math.min(1, -dy / 100))), ev);
+      }, { passive: false, capture: true });
+      // Space+끌기·가운데 단추 끌기 = 이동(확대했을 때) — 지우기보다 먼저 가로챈다
+      $('scWrap').addEventListener('mousedown', ev => {
+        if (!(ev.button === 1 || (ev.button === 0 && spaceDown))) return;
+        ev.preventDefault(); ev.stopPropagation();
+        const wr = $('scWrap'), sx = wr.scrollLeft, sy = wr.scrollTop, x0 = ev.clientX, y0 = ev.clientY;
+        wr.classList.add('panning');
+        const mv = e2 => { wr.scrollLeft = sx - (e2.clientX - x0); wr.scrollTop = sy - (e2.clientY - y0); };
+        const up = () => { wr.classList.remove('panning'); window.removeEventListener('mousemove', mv, true); window.removeEventListener('mouseup', up, true); };
+        window.addEventListener('mousemove', mv, true); window.addEventListener('mouseup', up, true);
+      }, true);
       $('scWrap').addEventListener('wheel', ev => {
         if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey || !results || drag) return;
+        if (zoom > 1) { if (lastMouse) requestAnimationFrame(() => lastMouse && moveBrush(lastMouse)); return; }   // 확대 중 = 보통 스크롤(쪽 넘기기는 PageUp/PageDown)
         ev.preventDefault();
         const dy = ev.deltaMode === 1 ? ev.deltaY * 40 : ev.deltaMode === 2 ? ev.deltaY * 800 : ev.deltaY;
         if (Math.sign(dy) !== Math.sign(wheelAcc)) wheelAcc = 0;
@@ -6267,7 +6352,7 @@
       syncToolUi();
       // 검사용 손잡이 — 화면 좌표 대신 캔버스 화소로 끌기를 흉내 낸다
       ov.__scTest = { dragToMm: (p0, p1, side) => dragToMm(p0, p1, side), penToMm, addManual, hitManual, geo: () => geo, over, planOfCur: () => planOf(rowsAll[cur]),
-        goRow: i => { cur = i; renderList(); return drawCur(); }, tool: () => tool, penMm: () => penMm, setTool, edgeHit, setEdge, edgeAuto, curEdges, curShift, centerCur, nudgeShift, setShift };
+        goRow: i => { cur = i; renderList(); return drawCur(); }, tool: () => tool, penMm: () => penMm, setTool, edgeHit, setEdge, edgeAuto, curEdges, curShift, centerCur, nudgeShift, setShift, zoom: () => zoom, hiCount: () => hiCache.size };
       function go(d) { const vis = visible(); if (!vis.length) return; let k = vis.indexOf(rowsAll[cur]); k = Math.max(0, Math.min(vis.length - 1, (k < 0 ? 0 : k + d))); cur = rowsAll.indexOf(vis[k]); renderList(); drawCur(); scrollCur(); }
       function scrollCur() { const el = $('scList').querySelector('.rbv-pghead.cur'); if (el) el.scrollIntoView({ block: 'nearest' }); }
       $('scPrev').onclick = () => go(-1); $('scNext').onclick = () => go(1);
@@ -6818,7 +6903,7 @@
       if (directOutputBytes) {
         try {
           const { bytes } = await buildFinalSaveBytes();
-          const saved = await window.electronAPI.saveFile({ defaultName: processedFileName, buffer: bytes });
+          const saved = await window.electronAPI.saveFile({ defaultName: ieUpName(processedFileName), buffer: bytes });
           if (saved) {
             setDirty(false);
             showSuccess('PDF를 저장했습니다. (변환 결과 그대로 — 재조립 없음)'
@@ -6844,7 +6929,7 @@
         const ccWarn = colorCheckWarning(cc);
         if (ccWarn && !confirm(ccWarn)) return;
         const saved = await window.electronAPI.saveFile({
-          defaultName: processedFileName,
+          defaultName: ieUpName(processedFileName),
           buffer: finalBytes,
         });
         if (saved) {
@@ -6998,6 +7083,7 @@
 
     // 나눠 저장 본체 — 적용본·원본 두 경로가 함께 쓴다
     async function runSplitSave(bytes, stem, colorCheck, opts) {
+      stem = ieUpName(stem);   // 🖼 업스케일한 문서 → 조각 이름에도 _이미지-Up
       try {
         const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
         const total = doc.getPageCount();
@@ -10876,6 +10962,119 @@
 잘못 합쳤으면 Ctrl+Z(↩ 실행취소)로 되돌리세요.`);
     }
 
+    // 🔗 여러 챕터 한꺼번에 합치기 (2026-10-30) — starts = 고른 챕터들의 첫 쪽 인덱스, name = 합친 챕터 이름.
+    // 이어진 챕터면 이름만 바꾸고, 떨어진 챕터는 첫 챕터 바로 뒤로 (챕터 순서대로) 옮겨 붙인다.
+    // 챕터 없는 쪽(끼워 넣은 빈 쪽 등)은 mergeChapterRun처럼 그대로 둔다. 되돌리기는 순서·챕터 소속까지(pushHistory).
+    function mergeChaptersMulti(starts, name) {
+      const runs = chapterRuns();
+      const want = new Set(starts);
+      const sel = runs.filter(r => want.has(r.idxs[0]));
+      if (sel.length < 2 || !name) return null;
+      const pos = sel.map(r => runs.indexOf(r));
+      const contiguous = pos.every((p, i) => i === 0 || p === pos[i - 1] + 1);
+      pushHistory();
+      const blockOf = r => pageResults.slice(r.idxs[0], r.idxs[r.idxs.length - 1] + 1);
+      const moved = new Set();
+      sel.forEach(r => blockOf(r).forEach(p => { if (p) moved.add(p); }));
+      if (!contiguous) {
+        const first = runs[0].idxs[0], lastRun = runs[runs.length - 1];
+        const next = pageResults.slice(0, first);
+        runs.forEach(r => {
+          if (r === sel[0]) sel.forEach(s => next.push(...blockOf(s)));
+          else if (!want.has(r.idxs[0])) next.push(...blockOf(r));
+        });
+        next.push(...pageResults.slice(lastRun.idxs[lastRun.idxs.length - 1] + 1));
+        pageResults.splice(0, pageResults.length, ...next);
+      }
+      moved.forEach(r => { if (r.chapter) r.chapter = name; });
+      rebuildPageNums();
+      syncTabPageResults();
+      rerenderPages();
+      setPageEdited();
+      updateUndoBtn();
+      return { n: sel.length, pages: moved.size, contiguous, names: sel.map(r => r.name) };
+    }
+
+    // 🔗 여러 챕터 합치기 창 — 체크로 고르고(Shift+클릭 = 범위) 이름을 정해 한 번에. pre = 미리 체크할 챕터의 첫 쪽 인덱스.
+    // afterChange — 결과 미리보기 구분선에서 열었을 때 결과를 다시 만든다(실제로 합쳤을 때만).
+    function openMultiChapterMerge(pre, afterChange) {
+      hideCtxMenu();
+      document.querySelectorAll('.ch-menu').forEach(m => m.remove());
+      const runs = chapterRuns();
+      if (runs.length < 2) { showError('합칠 챕터가 2개 이상 있어야 합니다.'); return; }
+      const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const ov = document.createElement('div');
+      ov.className = 'mcm-overlay';
+      const box = document.createElement('div');
+      box.className = 'pt-box mcm-box';
+      box.innerHTML = `<div class="merge-title mcm-title">🔗 여러 챕터 한꺼번에 합치기</div>
+        <div class="mcm-sub">합칠 챕터를 고르세요 — Shift+클릭으로 범위를 한 번에 고릅니다.</div>
+        <div class="mcm-tools"><button type="button" class="pt-btn" data-a="all">모두 고르기</button><button type="button" class="pt-btn" data-a="none">모두 풀기</button></div>
+        <div class="mcm-list">${runs.map((r, i) => `<label class="mcm-row"><input type="checkbox" data-i="${i}"${r.idxs[0] === pre ? ' checked' : ''}><span class="mcm-no">파일 ${i + 1}</span><span class="mcm-name">📄 ${esc(r.name)}</span><span class="mcm-pg">${r.idxs.length}쪽</span></label>`).join('')}</div>
+        <div class="mcm-namerow"><span>합친 챕터 이름</span><select class="pt-input mcm-sel"></select></div>
+        <div class="mcm-note"></div>
+        <div class="mcm-btns"><button type="button" class="pt-btn" data-a="cancel">취소</button><button type="button" class="pt-btn pt-ok" data-a="ok">🔗 합치기</button></div>`;
+      ov.append(box); document.body.appendChild(ov);
+      const boxes = [...box.querySelectorAll('.mcm-row input')];
+      const selEl = box.querySelector('.mcm-sel'), note = box.querySelector('.mcm-note'), okBtn = box.querySelector('[data-a="ok"]');
+      let lastClick = -1;
+      const picked = () => boxes.filter(b => b.checked).map(b => +b.dataset.i);
+      const sync = () => {
+        const p = picked();
+        boxes.forEach(b => b.closest('.mcm-row').classList.toggle('on', b.checked));
+        const keep = selEl.value;
+        const names = [...new Set(p.map(i => runs[i].name))];
+        selEl.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join('');
+        if (names.includes(keep)) selEl.value = keep;
+        selEl.disabled = names.length < 2;
+        const pages = p.reduce((s, i) => s + runs[i].idxs.length, 0);
+        okBtn.disabled = p.length < 2;
+        okBtn.textContent = p.length >= 2 ? `🔗 ${p.length}개 합치기` : '🔗 합치기';
+        const contiguous = p.every((x, k) => k === 0 || x === p[k - 1] + 1);
+        note.textContent = p.length < 2 ? '챕터를 2개 이상 고르세요.'
+          : `${p.length}개 챕터 · ${pages}쪽이 한 챕터가 됩니다.`
+            + (contiguous ? ' 쪽 순서는 그대로입니다.' : `\n떨어져 있는 챕터는 '파일 ${p[0] + 1}' 바로 뒤로 옮겨 붙입니다(고른 순서대로).`);
+        if (typeof decolorEmojiIn === 'function') { try { decolorEmojiIn(okBtn); } catch (e) {} }
+      };
+      boxes.forEach((b, i) => b.addEventListener('click', e => {
+        if (e.shiftKey && lastClick >= 0) {
+          const [a, z] = [Math.min(lastClick, i), Math.max(lastClick, i)];
+          for (let k = a; k <= z; k++) boxes[k].checked = b.checked;
+        }
+        lastClick = i; sync();
+      }));
+      const done = () => { document.removeEventListener('keydown', onKey, true); ov.remove(); };
+      const doMerge = () => {
+        const p = picked();
+        if (p.length < 2) return;
+        const name = selEl.value || runs[p[0]].name;
+        done();
+        const res = mergeChaptersMulti(p.map(i => runs[i].idxs[0]), name);
+        if (!res) return;
+        const bc = (editSettings && editSettings.byChapter) || {};
+        const lost = res.names.filter(n => n !== name && bc[n] && typeof hasActiveLayout === 'function' && hasActiveLayout(bc[n]));
+        showSuccess(`🔗 챕터 ${res.n}개를 '${name}' 하나로 합쳤습니다 — ${res.pages}쪽.`
+          + (res.contiguous ? '' : `\n떨어져 있던 챕터는 첫 챕터 바로 뒤로 옮겼습니다.`)
+          + (lost.length ? `\n${lost.map(n => `'${n}'`).join(', ')}에만 걸어 둔 챕터별 편집(크기·여백 등)은 이제 '${name}' 설정을 따릅니다.` : '')
+          + `\n잘못 합쳤으면 Ctrl+Z(↩ 실행취소)로 되돌리세요.`);
+        if (afterChange) afterChange();
+      };
+      box.querySelector('[data-a="all"]').onclick = () => { boxes.forEach(b => b.checked = true); sync(); };
+      box.querySelector('[data-a="none"]').onclick = () => { boxes.forEach(b => b.checked = false); sync(); };
+      box.querySelector('[data-a="cancel"]').onclick = done;
+      okBtn.onclick = doMerge;
+      ov.onclick = e => { if (e.target === ov) done(); };
+      const onKey = e => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(); }
+        else if (e.key === 'Enter' && !okBtn.disabled && e.target.tagName !== 'SELECT') { e.preventDefault(); e.stopPropagation(); doMerge(); }
+      };
+      document.addEventListener('keydown', onKey, true);
+      sync();
+      if (typeof decolorEmojiIn === 'function') { try { decolorEmojiIn(box); } catch (e) {} }
+      const first = boxes.find(b => b.checked);
+      if (first) first.closest('.mcm-row').scrollIntoView({ block: 'nearest' });
+    }
+
     // 챕터 위치 이동 — 인접한 챕터와 통째로 자리 교환 (dir: -1 위 / +1 아래)
     function moveChapterRun(startIdx, dir) {
       hideCtxMenu();
@@ -11256,6 +11455,8 @@
         mkBtn('ch-edit', '✏ 편집', '이 챕터만 편집 — 크기·조판·여백·머리글이 이 파일에만 적용됩니다', false,
               () => editChapter(name)),
         mkBtn('ch-merge', '⤒ 합치기', '이 챕터를 위 챕터에 합칩니다 — 쪽 순서는 그대로, 이름은 위 챕터(되돌리기 Ctrl+Z)', no <= 1, withAfter(() => mergeChapterRun(startIdx, -1))),
+        mkBtn('ch-merge-multi', '🔗 여러 개', '여러 챕터를 골라 한꺼번에 합칩니다 — 떨어진 챕터는 첫 챕터 뒤로 모아 붙입니다(되돌리기 Ctrl+Z)', total <= 1,
+              () => openMultiChapterMerge(startIdx, afterChange)),
         mkBtn('', '▲', '이 챕터를 위로 이동', no <= 1,     withAfter(() => moveChapterRun(startIdx, -1))),
         mkBtn('', '▼', '이 챕터를 아래로 이동', no >= total, withAfter(() => moveChapterRun(startIdx, +1))),
         mkBtn('ch-del', '🗑', '이 챕터 전체 삭제', total <= 1, withAfter(() => deleteChapterAt(startIdx))),
@@ -13353,6 +13554,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
             editSettings: editSettings ? JSON.parse(JSON.stringify(editSettings)) : null,
             docState: captureDocState(),
             quote: (typeof quoteItems !== 'undefined' && quoteItems) ? JSON.parse(JSON.stringify(quoteItems)) : [],
+            ieUp: !!((tabs.get(activeTabId) || {}).ieUpscaled),   // 🖼 업스케일을 바꿔 넣은 원본 — 저장 이름 '_이미지-Up'
             quoteCalc: (typeof quoteCalc !== 'undefined' && quoteCalc) ? JSON.parse(JSON.stringify(quoteCalc)) : null,   // 단가산출내역·머리글·비고·작업내역(거래관리 견적서 구조)
             edits,
             // 저장 시점에 '✔ 적용'까지 마친 상태였는지 + 그때의 저장 파일명.
@@ -13503,6 +13705,7 @@ body{background:#161618;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFo
           });
           tab.contentEdits = contentEdits;
         }
+        if (st.ieUp) tab.ieUpscaled = tab.ieUpFromFile = true;   // 🖼 업스케일 표시(되돌리기 기록은 세션 안에서만 — 표시는 이어서)
         // 4) 문서 상태(순서·회전·빈페이지·흑백확정·선택·개별보정)
         const full = st.docState ? restoreDocState(st.docState) : false;
         // 5) 견적 항목

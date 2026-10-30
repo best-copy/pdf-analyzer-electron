@@ -22,15 +22,15 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1><svg viewBox="0 0 24 24" style="height:1.15em; vertical-align:-0.2em; margin-right:10px;" aria-hidden="true"><g fill="#ffd60a"><path d="M8 2h9l4 4v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" opacity="0.55"/><path d="M4 5h9l4 4v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></g><rect x="4" y="13.5" width="9" height="6" rx="1.4" fill="#1d1d1f"/><text x="8.5" y="18.15" text-anchor="middle" font-size="4" font-weight="800" font-family="Arial, sans-serif" fill="#ffd60a">PDF</text></svg> PDF Editor</h1>
+      <h1><svg viewBox="0 0 24 24" style="height:1.15em; vertical-align:-0.2em; margin-right:10px;" aria-hidden="true"><g fill="#ffd60a"><path d="M8 2h9l4 4v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" opacity="0.55"/><path d="M4 5h9l4 4v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></g><rect x="4" y="13.5" width="9" height="6" rx="1.4" fill="#1d1d1f"/><text x="8.5" y="18.15" text-anchor="middle" font-size="4" font-weight="800" font-family="Arial, sans-serif" fill="#ffd60a">PDF</text></svg> PDF Editor<span class="app-ver" id="appVerTag" title="지금 쓰는 프로그램 버전 — 창 메뉴(Alt) Help에도 있습니다"></span></h1>
       <p>PDF · 한글 · MS Office · Adobe · Image &nbsp;인쇄용 조판하기</p>
-      <!-- 주간/야간 선택 — 켜자마자(문서 열기 전) 고를 수 있게 머리 왼쪽 위에. 왼쪽 패널 ☀/🌙과 같은 상태(toggleUiTheme) -->
+      <!-- 주간/야간 — 버튼 하나(지금 상태 표시 · 누르면 바뀜, 2026-10-30) · 왼쪽 패널 ☀/🌙과 같은 상태(toggleUiTheme) -->
       <div class="theme-seg" role="group" aria-label="화면 밝기">
-        <button type="button" data-theme-pick="light" onclick="setUiTheme('light')">☀ 주간</button><button type="button" data-theme-pick="dark" onclick="setUiTheme('dark')">🌙 야간</button>
+        <button type="button" id="themeOneBtn" onclick="toggleUiTheme()">🌙 야간</button>
       </div>
-      <!-- ⚙ 설정 옮기기·메모 — 주간/야간과 같은 크기(🔄 업데이트는 창 메뉴 Help로 · main installAppMenu) · 다른 PC로 앱 설정 전체(프리셋·단가·용지·재단선 모양·테마 …)를 JSON 하나로 (app-ui exportAppSettings) -->
-      <div class="theme-seg cfg-seg" role="group" aria-label="설정 옮기기">
-        <button type="button" id="cfgExportBtn" onclick="exportAppSettings()" title="⬆ 설정 내보내기 — 앱 설정 전체(임포징 프리셋·단가·사용자 용지·재단선 모양·표지 프리셋·테마 등)를 JSON 파일 하나로 저장 — 다른 PC에서 '설정 가져오기'로 그대로 옮깁니다">⬆ 설정</button><button type="button" id="cfgImportBtn" onclick="importAppSettingsClick()" title="⬇ 설정 가져오기 — '설정 내보내기'로 만든 JSON 파일을 불러와 이 PC에 적용 — 지금 설정은 백업해 두고 앱을 새로고침합니다">⬇ 설정</button><button type="button" id="usageMemoBtn2" onclick="openUsageMemo()" title="💬 불편 메모 — 쓰다가 불편한 점·바라는 점을 적어 둡니다 — 그때 상황과 함께 이 PC에만 저장 (어디서든 Ctrl+Shift+M)">💬 메모</button>
+      <!-- 💬 메모 — 주간/야간과 같은 크기 · 설정 내보내기/가져오기·🔄 업데이트는 창 메뉴(Alt) Help와 왼쪽 패널 ⚙로(2026-10-30 · main installAppMenu) -->
+      <div class="theme-seg cfg-seg" role="group" aria-label="불편 메모">
+        <button type="button" id="usageMemoBtn2" onclick="openUsageMemo()" title="💬 불편 메모 — 쓰다가 불편한 점·바라는 점을 적어 둡니다 — 그때 상황과 함께 이 PC에만 저장 (어디서든 Ctrl+Shift+M)">💬 메모</button>
       </div>
       <input type="file" id="appSettingsImportFile" accept=".json,application/json" style="display:none" onchange="importAppSettingsFile(this)">
       <!-- 체험판 배지 — 정품(관리자) PC에서는 표시되지 않는다. 클릭 시 인증 창 -->
@@ -42,7 +42,6 @@
       <p class="drop-hint">📂 파일을 여기로 드래그<br><span class="drop-hint-sub">(여러 파일 가능)</span></p>
       <div class="file-input-wrapper">
         <button class="file-input-label" id="openFileBtn" onclick="openFilesDialog()"><span class="ic">📁</span> 파일 선택하기</button>
-        <button class="file-input-label ie-entry" id="imgEnhanceBtn" onclick="openImageEnhance()" title="흐린 사진·작은 이미지를 AI로 키우거나(업스케일), 로고·도장·일러스트를 벡터(선·면)로 바꿉니다 — 결과는 인쇄 크기 그대로 PDF로 열거나 파일로 저장"><span class="ic">🖼</span> 이미지 업스케일·벡터화</button>
         <button class="file-input-label ie-entry" id="recentToggleBtn" onclick="toggleRecentFiles()" title="최근에 연 파일 목록을 펼치거나 접습니다"><span class="ic">🕘</span> 최근 파일</button>
       </div>
       <p class="drop-sub">한글·MS Office·Adobe 문서와 이미지(PNG·JPG·GIF·BMP·WEBP·TIFF)는 자동으로 PDF 변환 후 처리 · 여러 파일은 각각 탭으로 열립니다<br>이미지는 파일에 기록된 해상도(DPI)로 실제 인쇄 크기의 1쪽 PDF가 됩니다 (기록이 없으면 큰 이미지는 300DPI, 작은 이미지는 96DPI)</p>
@@ -118,6 +117,7 @@
           <!-- 버튼 순서: 검사(프리플라이트) → 색 처리(흑백·잉크) → 출력 안전화·해제 → 보기·원고 교체
                (사용자 지시 2026-09-08 — 실제 작업 순서대로 왼쪽에서 오른쪽) -->
           <button class="opt-btn" id="pfMainBtn" onclick="runPreflight()" title="출력 적합성 검사 — 폰트 미임베드·저해상도 이미지·블리드·별색·투명도 등 인쇄 사고 요소 점검"><span class="ic">🧪</span> 프리플라이트</button>
+          <button class="opt-btn" id="ieMainBtn" onclick="openImageEnhance()" title="저해상도 쪽 전체·PDF 안 흐린 그림을 AI로 키우거나(업스케일) 로고·도장을 벡터로 바꿉니다 — 누르면 무엇을 고칠지 묻습니다 (다운로드 파일 이름에 _이미지-Up)"><span class="ic">🖼</span> 업스케일</button>
           <button class="opt-btn" id="opt-bw" onclick="toggleOption('bw')">⬛ 흑백변환</button>
           <button class="opt-btn active" id="opt-inkNorm" onclick="toggleOption('inkNorm')" title="흑백으로 판정된 페이지도 내부 색공간을 DeviceGray로 통일합니다. 화면상 흑백인데 프린터가 컬러로 과금하는 문제(리치블랙·RGB회색)를 해결합니다.">🖨 잉크 정규화</button>
           <select class="opt-select" id="dotGainSelect" onchange="setDotGain(this.value)" title="Dot Gain 보정 — 인쇄기에서 망점이 번져 흑백 출력이 탁해지는 만큼, 컬러→흑백 변환 페이지의 중간 톤을 미리 밝게 합니다.&#10;원래 흑백인 페이지는 바뀌지 않습니다. 출력물이 탁하면 한 단계 올리세요.">
@@ -1696,6 +1696,9 @@
     </div>
     <div class="ctx-item" onclick="ctxEditContent()">
       <span>🖊 내부 내용 편집</span><span class="ctx-key">T</span>
+    </div>
+    <div class="ctx-item" onclick="ctxTypoFix()" title="스캔·업스케일한 쪽(그림)의 틀린 글자를 고칩니다 — 끌어서 고르면 종이 색·글자 크기를 자동으로 맞춰 바른 글자를 덮습니다">
+      <span>✏ 오타 고치기 (스캔·업스케일 쪽)</span>
     </div>
     <div class="ctx-item" onclick="ctxDuplicatePage()">
       <span>⧉ 페이지 복제</span><span class="ctx-key">D</span>

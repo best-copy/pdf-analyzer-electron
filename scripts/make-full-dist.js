@@ -61,25 +61,60 @@ const updOut = path.join(DIST, `PDF분석기-정식판-업데이트-${version}.p
 fs.writeFileSync(updOut, bytes);
 console.log(`✔ 업데이트 파일: ${updOut}\n  파일 ${manifest.files.length}개 · ${mb(bytes.length)}`);
 
-// 4) zip — 새 PC용 (안쪽 폴더 win-unpacked/)
-if (!args.includes('--no-zip')) {
-  const d = new Date();
-  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const zipOut = path.join(DIST, `win-unpacked_${version}_정식판_${ymd}.zip`);
-  fs.rmSync(zipOut, { force: true });
-  console.log('🗜 zip 만드는 중… (1~2분)');
-  // PowerShell 5.1의 ZipFile.CreateFromDirectory는 경로를 '\'로 적는다(표준은 '/') — 항목을 하나씩 '/' 경로로 넣는다
+// zip 만들기 — PowerShell 5.1의 ZipFile.CreateFromDirectory는 경로를 '\'로 적는다(표준은 '/') — 항목을 하나씩 '/' 경로로 넣는다
+//   src 폴더 자체가 zip 안의 맨 위 폴더가 된다
+function makeZip(src, out) {
+  fs.rmSync(out, { force: true });
   const ps = `Add-Type -AssemblyName System.IO.Compression; Add-Type -AssemblyName System.IO.Compression.FileSystem;
     $base = Split-Path -Parent $env:ZSRC; $zip = [IO.Compression.ZipFile]::Open($env:ZOUT, 'Create');
     try { Get-ChildItem -LiteralPath $env:ZSRC -Recurse -File | ForEach-Object {
       $rel = $_.FullName.Substring($base.Length + 1).Replace('\\', '/');
       [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $rel, [IO.Compression.CompressionLevel]::Optimal) } }
     finally { $zip.Dispose() }`;
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { env: Object.assign({}, process.env, { ZSRC: STAGE, ZOUT: zipOut }), stdio: 'inherit' });
+  execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { env: Object.assign({}, process.env, { ZSRC: src, ZOUT: out }), stdio: 'inherit' });
+}
+const d0 = new Date();
+const ymd = `${d0.getFullYear()}${String(d0.getMonth() + 1).padStart(2, '0')}${String(d0.getDate()).padStart(2, '0')}`;
+
+// 4) zip — 새 PC용 (안쪽 폴더 win-unpacked/)
+if (!args.includes('--no-zip')) {
+  const zipOut = path.join(DIST, `win-unpacked_${version}_정식판_${ymd}.zip`);
+  console.log('🗜 새 PC용 zip 만드는 중… (1~2분)');
+  makeZip(STAGE, zipOut);
   console.log(`✔ 정식판 zip: ${zipOut}\n  ${mb(fs.statSync(zipOut).size)}`);
+}
+
+// 5) 덮어쓰기 zip — 업데이트 기능이 없는 옛 버전(3.8 이하)용 (2026-10-30 사용자 요청)
+//    Electron이 같으므로(31) resources/app만 바꾸면 된다. zip 안: 업데이트.bat + update-from-old.ps1 + app/(새 resources/app 전체) + root/(실행 폴더 스크립트)
+//    받는 PC: 압축을 풀고 '업데이트.bat' 더블클릭 → 설치 폴더 자동으로 찾기(보내기 바로 가기·실행 중인 앱·폴더 고르기) → 원래 app은 app.bak-…로 남기고 교체
+if (!args.includes('--no-zip')) {
+  const owRoot = path.join(STAGE_ROOT, 'ow'), ow = path.join(owRoot, `PDF분석기-업데이트-${version}`);
+  fs.rmSync(owRoot, { recursive: true, force: true });
+  fs.mkdirSync(path.join(ow, 'root'), { recursive: true });
+  fs.cpSync(path.join(STAGE, 'resources', 'app'), path.join(ow, 'app'), { recursive: true });
+  for (const f of fs.readdirSync(STAGE)) {
+    if (/\.(ps1|bat|txt|pdf)$/i.test(f) && !/^LICENSE/i.test(f) && fs.statSync(path.join(STAGE, f)).isFile()) fs.copyFileSync(path.join(STAGE, f), path.join(ow, 'root', f));
+  }
+  fs.copyFileSync(path.join(ROOT, 'scripts', 'old-update', 'update-from-old.ps1'), path.join(ow, 'update-from-old.ps1'));
+  fs.copyFileSync(path.join(ROOT, 'scripts', 'old-update', 'update.bat'), path.join(ow, '업데이트.bat'));
+  fs.writeFileSync(path.join(ow, '읽어보기.txt'), [
+    `PDF 분석기 ${version} 정식판 — 옛 버전(3.8 이하)에서 올리기`, '',
+    '1. 이 zip을 아무 곳에나 모두 풉니다(바탕화면 등).',
+    "2. 풀린 폴더의 '업데이트.bat'를 더블클릭합니다.",
+    '   - 설치된 PDF 분석기 폴더를 자동으로 찾습니다(못 찾으면 폴더를 고르는 창이 뜹니다).',
+    '   - 앱이 켜져 있으면 닫으라고 안내합니다.',
+    "   - 원래 프로그램은 resources\\app.bak-옛버전-날짜 폴더로 남겨 둡니다(문제가 있으면 이름을 app으로 되돌리면 원래대로).",
+    '3. 끝나면 앱을 켭니다 — 체험 키 없이, 사용 기한 없이 저장·출력됩니다.', '',
+    '설정·프리셋·작업 기록은 그대로 남습니다.',
+    "다음부터는 앱의 창 메뉴(Alt) Help → '업데이트 적용'으로 .pdfupd 파일을 적용하면 됩니다.", '',
+  ].join('\r\n'), 'utf8');
+  const owOut = path.join(DIST, `PDF분석기-정식판-3.8용-덮어쓰기-${version}.zip`);
+  console.log('🗜 3.8용 덮어쓰기 zip 만드는 중…');
+  makeZip(ow, owOut);
+  console.log(`✔ 3.8용 덮어쓰기 zip: ${owOut}\n  ${mb(fs.statSync(owOut).size)}`);
 }
 fs.rmSync(STAGE_ROOT, { recursive: true, force: true });   // 복사본(약 450MB) 정리 — 결과는 zip·업데이트 파일에 있다
 console.log(`\n받는 PC
   · 새로 깔 때: zip을 풀어 '설치.bat' 또는 'PDF 분석기.exe' — 체험 키 창이 뜨지 않습니다
   · 체험판으로 깔린 PC: 앱에서 Alt → Help → '🔄 업데이트 적용'(또는 왼쪽 패널 ⚙) → 정식판 업데이트 파일 선택 → 자동 재시작
-    (3.8.1 이하처럼 업데이트 기능이 없는 PC는 zip으로 다시 까세요 — 설정은 그대로 남습니다)`);
+  · 3.8 이하(업데이트 기능 없음): '3.8용 덮어쓰기' zip을 풀고 '업데이트.bat' 더블클릭 — 설정은 그대로 남습니다`);
